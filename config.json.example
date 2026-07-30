@@ -2,5 +2,6 @@
   "provider": "gemini",
   "model_name": "gemini-3.6-flash",
   "api_key": "your_api_key",
-  "instruction": "You are an autonomous AI agent harness built in Golang. Executing user directives cleanly."
+  "instruction": "You are a web automation agent harness. Use the available web browsing tools to complete user requests.",
+  "mcp_server_url": "http://localhost:9223/mcp"
 }
