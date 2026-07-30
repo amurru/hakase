@@ -1,0 +1,6 @@
+{
+  "provider": "gemini",
+  "model_name": "gemini-3.6-flash",
+  "api_key": "your_api_key",
+  "instruction": "You are an autonomous AI agent harness built in Golang. Executing user directives cleanly."
+}
