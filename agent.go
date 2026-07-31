@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -66,10 +68,35 @@ type PythonExecOutput struct {
 	Stderr string `json:"stderr" doc:"Standard error or execution trace"`
 }
 
+// getVenvPython returns the executable path to the virtualenv python binary, creating .venv if missing.
+func getVenvPython() (string, error) {
+	venvDir := "./.venv"
+	pyBin := filepath.Join(venvDir, "bin", "python3")
+	if runtime.GOOS == "windows" {
+		pyBin = filepath.Join(venvDir, "Scripts", "python.exe")
+	}
+
+	// Create .venv if it does not exist
+	if _, err := os.Stat(pyBin); os.IsNotExist(err) {
+		fmt.Println("📦 Creating local Python virtual environment in ./.venv ...")
+		cmd := exec.Command("python3", "-m", "venv", venvDir)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to create virtual environment: %w", err)
+		}
+	}
+
+	return pyBin, nil
+}
+
 // createPythonTool returns an ADK tool that executes Python code in a temporary directory.
 func createPythonTool() (tool.Tool, error) {
 	// Function tool handler signature takes agent.ToolContext
 	execHandler := func(ctx agent.ToolContext, input PythonExecInput) (PythonExecOutput, error) {
+		pyBin, err := getVenvPython()
+		if err != nil {
+			return PythonExecOutput{}, err
+		}
+
 		tmpDir, err := os.MkdirTemp("", "agent_python_*")
 		if err != nil {
 			return PythonExecOutput{}, err
@@ -81,26 +108,53 @@ func createPythonTool() (tool.Tool, error) {
 			return PythonExecOutput{}, err
 		}
 
-		// Execute Python using the invocation context
-		// Execute Python with local directory in PYTHONPATH so 'import skills.<name>' works!
-		cmd := exec.CommandContext(ctx, "python3", scriptPath)
-		cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
-		stdout, errOut := cmd.CombinedOutput()
+		runScript := func() (string, string) {
+			cmd := exec.CommandContext(ctx, pyBin, scriptPath)
+			cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
+			out, errOut := cmd.CombinedOutput()
+			errStr := ""
+			if errOut != nil {
+				errStr = errOut.Error()
+			}
+			return string(out), errStr
+		}
 
-		stderrStr := ""
-		if errOut != nil {
-			stderrStr = errOut.Error()
+		stdout, stderr := runScript()
+
+		// Auto-Dependency Resolution Loop
+		// If execution failed due to a missing package, attempt pip install inside .venv and retry
+		if strings.Contains(stdout, "ModuleNotFoundError: No module named") {
+			re := regexp.MustCompile(`ModuleNotFoundError: No module named '([^']+)'`)
+			matches := re.FindStringSubmatch(stdout)
+			if len(matches) > 1 {
+				missingPkg := strings.Split(matches[1], ".")[0] // Handle sub-modules like 'bs4.element' -> 'bs4'
+
+				pipBin := filepath.Join("./.venv", "bin", "pip")
+				if runtime.GOOS == "windows" {
+					pipBin = filepath.Join("./.venv", "Scripts", "pip.exe")
+				}
+
+				fmt.Printf(
+					"⚡ Missing package '%s' detected. Auto-installing into .venv...\n",
+					missingPkg,
+				)
+				installCmd := exec.CommandContext(ctx, pipBin, "install", missingPkg)
+				_ = installCmd.Run()
+
+				// Retry running the script after package installation
+				stdout, stderr = runScript()
+			}
 		}
 
 		return PythonExecOutput{
-			Stdout: string(stdout),
-			Stderr: stderrStr,
+			Stdout: stdout,
+			Stderr: stderr,
 		}, nil
 	}
 
 	return functiontool.New(functiontool.Config{
 		Name:        "python_interpreter",
-		Description: "Executes a string of Python code locally and returns stdout and stderr.",
+		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution.",
 	}, execHandler)
 }
 
