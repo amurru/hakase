@@ -54,7 +54,7 @@ type model struct {
 
 func newModel(ctx context.Context, r *runner.Runner) model {
 	ti := textinput.New()
-	ti.Placeholder = "Ask agent to navigate or search..."
+	ti.Placeholder = "Ask me anything and I will do it..."
 	ti.Focus()
 
 	return model{

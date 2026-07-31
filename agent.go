@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -80,7 +82,9 @@ func createPythonTool() (tool.Tool, error) {
 		}
 
 		// Execute Python using the invocation context
+		// Execute Python with local directory in PYTHONPATH so 'import skills.<name>' works!
 		cmd := exec.CommandContext(ctx, "python3", scriptPath)
+		cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
 		stdout, errOut := cmd.CombinedOutput()
 
 		stderrStr := ""
@@ -174,6 +178,158 @@ func createDownloadTool() (tool.Tool, error) {
 	}, execHandler)
 }
 
+// Skills and auto-learning
+
+type SkillMeta struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	FileName    string `json:"file_name"`
+	SavedAt     string `json:"saved_at"`
+}
+
+type SkillRegistry struct {
+	Skills []SkillMeta `json:"skills"`
+}
+
+type SaveSkillInput struct {
+	Name        string `json:"name"        doc:"Unique identifier for the skill (e.g. pdf_table_extractor, stock_growth_calculator)"`
+	Description string `json:"description" doc:"Detailed explanation of what the script does, its inputs, and how to use/import it"`
+	Code        string `json:"code"        doc:"The complete, verified Python script code"`
+}
+
+type SaveSkillOutput struct {
+	FilePath string `json:"file_path" doc:"Location where the Python skill was saved"`
+	Message  string `json:"message"   doc:"Status confirmation message"`
+}
+
+// createSaveSkillTool creates a tool to save tested Python code into ./skills/
+func createSaveSkillTool() (tool.Tool, error) {
+	execHandler := func(ctx agent.ToolContext, input SaveSkillInput) (SaveSkillOutput, error) {
+		skillsDir := "./skills"
+		if err := os.MkdirAll(skillsDir, 0755); err != nil {
+			return SaveSkillOutput{}, fmt.Errorf("failed to create skills directory: %w", err)
+		}
+
+		// Ensure ./skills/__init__.py exists so it acts as a Python package
+		initPath := filepath.Join(skillsDir, "__init__.py")
+		if _, err := os.Stat(initPath); os.IsNotExist(err) {
+			_ = os.WriteFile(initPath, []byte("# Skills package\n"), 0644)
+		}
+
+		// Save Python code
+		scriptFileName := fmt.Sprintf("%s.py", input.Name)
+		scriptPath := filepath.Join(skillsDir, scriptFileName)
+		if err := os.WriteFile(scriptPath, []byte(input.Code), 0644); err != nil {
+			return SaveSkillOutput{}, fmt.Errorf("failed to save skill code: %w", err)
+		}
+
+		// Update skills.json registry
+		registryPath := filepath.Join(skillsDir, "skills.json")
+		var registry SkillRegistry
+
+		data, err := os.ReadFile(registryPath)
+		if err == nil {
+			_ = json.Unmarshal(data, &registry)
+		}
+
+		// Check if skill exists and update, or append
+		newSkill := SkillMeta{
+			Name:        input.Name,
+			Description: input.Description,
+			FileName:    scriptFileName,
+			SavedAt:     time.Now().Format(time.RFC3339),
+		}
+
+		updated := false
+		for i, s := range registry.Skills {
+			if s.Name == input.Name {
+				registry.Skills[i] = newSkill
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			registry.Skills = append(registry.Skills, newSkill)
+		}
+
+		regBytes, err := json.MarshalIndent(registry, "", "  ")
+		if err == nil {
+			_ = os.WriteFile(registryPath, regBytes, 0644)
+		}
+
+		return SaveSkillOutput{
+			FilePath: scriptPath,
+			Message: fmt.Sprintf(
+				"Skill '%s' successfully saved and registered in ./skills/",
+				input.Name,
+			),
+		}, nil
+	}
+
+	return functiontool.New(functiontool.Config{
+		Name:        "save_skill",
+		Description: "Persists a tested, working Python script into the local ./skills library for future reuse.",
+	}, execHandler)
+}
+
+type ListSkillsInput struct{}
+
+type ListSkillsOutput struct {
+	Skills []SkillMeta `json:"skills" doc:"List of all saved skills currently available in the registry"`
+}
+
+// createListSkillsTool allows agents to inspect all previously learned skills
+func createListSkillsTool() (tool.Tool, error) {
+	execHandler := func(ctx agent.ToolContext, _ ListSkillsInput) (ListSkillsOutput, error) {
+		registryPath := filepath.Join("./skills", "skills.json")
+		data, err := os.ReadFile(registryPath)
+		if err != nil {
+			return ListSkillsOutput{Skills: []SkillMeta{}}, nil
+		}
+
+		var registry SkillRegistry
+		if err := json.Unmarshal(data, &registry); err != nil {
+			return ListSkillsOutput{}, err
+		}
+
+		return ListSkillsOutput{Skills: registry.Skills}, nil
+	}
+
+	return functiontool.New(functiontool.Config{
+		Name:        "list_skills",
+		Description: "Lists all previously saved Python skills and their descriptions from the ./skills library.",
+	}, execHandler)
+}
+
+// getSkillsPrompt Reads skills.json and builds a string for the system prompt
+func getSkillsPrompt() string {
+	registryPath := filepath.Join("./skills", "skills.json")
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return "No pre-existing skills currently saved."
+	}
+
+	var registry SkillRegistry
+	if err := json.Unmarshal(data, &registry); err != nil || len(registry.Skills) == 0 {
+		return "No pre-existing skills currently saved."
+	}
+
+	var sb strings.Builder
+	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
+	for _, s := range registry.Skills {
+		sb.WriteString(
+			fmt.Sprintf(
+				"- Skill: '%s'\n  Description: %s\n  Import Usage: `from skills.%s import ...` or `import %s`\n\n",
+				s.Name,
+				s.Description,
+				s.Name,
+				s.Name,
+			),
+		)
+	}
+	return sb.String()
+}
+
 func setupRunner(ctx context.Context, cfg *Config) (*runner.Runner, error) {
 	model, err := gemini.NewModel(ctx, cfg.ModelName, &genai.ClientConfig{
 		APIKey: cfg.APIKey,
@@ -211,12 +367,32 @@ func setupRunner(ctx context.Context, cfg *Config) (*runner.Runner, error) {
 		return nil, err
 	}
 
+	saveSkillTool, err := createSaveSkillTool()
+	if err != nil {
+		return nil, err
+	}
+	listSkillsTool, err := createListSkillsTool()
+	if err != nil {
+		return nil, err
+	}
+
+	// Load currently saved skills from disk
+	installedSkills := getSkillsPrompt()
+
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
-		Description: "Specialist agent for executing Python code, data analysis, parsing JSON/CSV, and math computations.",
-		Instruction: CodeInterpreterSystemInstruction,
-		Model:       model,
-		Tools:       []tool.Tool{pythonTool},
+		Description: "Specialist agent for executing Python code, data analysis, parsing JSON/CSV, and managing learned skills.",
+		Instruction: CodeInterpreterSystemInstruction + "\n\n" + installedSkills + `
+### SKILL REUSE & EVOLUTION RULES:
+1. REUSE FIRST: Check the "AVAILABLE PRE-LEARNED SKILLS" list above before writing code. If a skill exists that can solve or assist in the task, write a Python script that imports and calls it!
+2. SAVE NOVEL SKILLS: If you solve a new problem with fresh code, test it with python_interpreter, then call save_skill to store it for future reuse.
+3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.`,
+		Model: model,
+		Tools: []tool.Tool{
+			pythonTool,
+			saveSkillTool,
+			listSkillsTool,
+		}, // 👈 Attached skill tools here!
 	})
 	if err != nil {
 		return nil, err
