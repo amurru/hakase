@@ -139,6 +139,85 @@ Edit `config.json`:
 }
 ```
 
+### Providers
+
+hermes-go-agent supports multiple LLM providers, selected via the `provider` field in `config.json`. An empty or missing `provider` value defaults to `gemini`, preserving previous behavior.
+
+| Provider             | Description                                        | Default Model      |
+| -------------------- | -------------------------------------------------- | ------------------ |
+| `gemini`             | Google Gemini                                      | `gemini-2.5-flash` |
+| `openai`             | OpenAI API                                         | `gpt-4o-mini`      |
+| `openai-compatible`  | OpenAI-compatible endpoints (Ollama, vLLM, etc.)    | `gpt-4o-mini`      |
+
+When `model_name` is empty, the provider's default model is used.
+
+**Gemini** (default):
+
+```json
+{
+  "provider": "gemini",
+  "model_name": "gemini-2.5-flash",
+  "api_key": "your_gemini_api_key",
+  "instruction": "You are a web automation agent harness.",
+  "mcp_server_url": "http://localhost:9223/mcp",
+  "fallback_providers": ["openai"],
+  "base_url": "",
+  "provider_options": {}
+}
+```
+
+**OpenAI**:
+
+```json
+{
+  "provider": "openai",
+  "model_name": "gpt-4o-mini",
+  "api_key": "your_openai_api_key",
+  "instruction": "You are a web automation agent harness.",
+  "mcp_server_url": "http://localhost:9223/mcp"
+}
+```
+
+**OpenAI-compatible endpoint (e.g. Ollama)**:
+
+```json
+{
+  "provider": "openai-compatible",
+  "model_name": "llama-3.3-70b",
+  "api_key": "optional_key",
+  "base_url": "http://localhost:11434/v1",
+  "instruction": "You are a web automation agent harness.",
+  "mcp_server_url": "http://localhost:9223/mcp"
+}
+```
+
+#### Provider configuration fields
+
+- `base_url` — Base URL for OpenAI-compatible endpoints (e.g. `http://localhost:11434/v1` for Ollama). Ignored when empty; used only by the `openai` / `openai-compatible` providers.
+- `fallback_providers` — Optional ordered list of provider names to try if the primary provider fails (e.g. `["openai"]`). Empty by default.
+- `provider_options` — Optional map of provider-specific settings. Reserved for future use.
+
+#### Environment variables
+
+Environment variable support is planned and has not landed yet. When implemented, the following variables will override the matching `config.json` fields, with environment variables taking precedence over the file:
+
+| Variable          | Overrides    |
+| ----------------- | ------------ |
+| `HERMES_API_KEY`  | `api_key`    |
+| `HERMES_PROVIDER` | `provider`   |
+| `HERMES_MODEL`    | `model_name` |
+| `HERMES_BASE_URL` | `base_url`   |
+
+#### Migration note
+
+hermes-go-agent migrated from the ADK v1 stack to the ADK v2 stack (`google.golang.org/adk/v2`). The configuration format is unchanged, so existing `config.json` files continue to work without modification (backward compatible). An empty `provider` field still selects Gemini, matching the previous single-provider behavior.
+
+#### Troubleshooting
+
+- **Unsupported provider error** — `unsupported provider: <name>` means the `provider` field is set to a value other than `gemini`, `openai`, or `openai-compatible`. Correct the value or leave it empty to use the default.
+- **Empty API key error** — `gemini provider requires an api_key` or `openai provider requires an api_key` means the `api_key` field is missing for the selected provider. Set a valid key in `config.json`.
+- **OpenAI-compatible endpoint unreachable** — when using `openai-compatible`, confirm the server at `base_url` is running and serves an OpenAI-compatible API (e.g. Ollama at `http://localhost:11434/v1`), and that it is reachable from the machine running the agent.
+
 ---
 
 ## Example Workflows
@@ -176,8 +255,9 @@ Skills are stored in `./skills/` and can be extended by the agent at runtime.
 | `charm.land/bubbletea/v2`                | TUI framework                         |
 | `charm.land/bubbles/v2`                  | TUI components (text input, viewport) |
 | `charm.land/lipgloss/v2`                 | Terminal styling                      |
-| `google.golang.org/adk`                  | Google Agent Development Kit          |
+| `google.golang.org/adk/v2`               | Google Agent Development Kit (v2; was v1) |
 | `google.golang.org/genai`                | Gemini AI client                      |
+| `github.com/openai/openai-go/v3`         | OpenAI API client                     |
 | `github.com/modelcontextprotocol/go-sdk` | MCP client for browser automation     |
 
 ---

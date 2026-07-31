@@ -2,6 +2,9 @@
   "provider": "gemini",
   "model_name": "gemini-3.6-flash",
   "api_key": "your_api_key",
+  "base_url": "",
   "instruction": "You are a web automation agent harness. Use the available web browsing tools to complete user requests.",
-  "mcp_server_url": "http://localhost:9223/mcp"
+  "mcp_server_url": "http://localhost:9223/mcp",
+  "fallback_providers": [],
+  "provider_options": {}
 }

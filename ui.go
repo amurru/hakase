@@ -9,8 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/runner"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/runner"
 	"google.golang.org/genai"
 )
 
@@ -41,7 +41,7 @@ type StatusLogMsg struct {
 	Text string
 }
 
-type model struct {
+type appModel struct {
 	chatViewport viewport.Model
 	logViewport  viewport.Model
 	input        textinput.Model
@@ -57,23 +57,23 @@ type model struct {
 	isProcessing bool
 }
 
-func newModel(ctx context.Context, r *runner.Runner) model {
+func newModel(ctx context.Context, r *runner.Runner) appModel {
 	ti := textinput.New()
 	ti.Placeholder = "Ask me anything and I will do it..."
 	ti.Focus()
 
-	return model{
+	return appModel{
 		input: ti,
 		r:     r,
 		ctx:   ctx,
 	}
 }
 
-func (m *model) Init() tea.Cmd {
+func (m *appModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -165,7 +165,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // Change return type to tea.View
-func (m *model) View() tea.View {
+func (m *appModel) View() tea.View {
 	if !m.ready {
 		return tea.NewView("Initializing TUI...")
 	}

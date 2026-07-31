@@ -14,16 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/agent/llmagent"
-	"google.golang.org/adk/model/gemini"
-	"google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
-	"google.golang.org/adk/tool/mcptoolset"
-	"google.golang.org/genai"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
+	"google.golang.org/adk/v2/tool/mcptoolset"
 )
 
 const HermesSystemInstruction = `You are a high-autonomy, general-purpose research and navigation agent modeled after the Hermes Agent framework.
@@ -114,8 +111,8 @@ func getVenvPython(log LogFunc) (string, error) {
 
 // createPythonTool returns an ADK tool that executes Python code in a temporary directory.
 func createPythonTool(log LogFunc) (tool.Tool, error) {
-	// Function tool handler signature takes agent.ToolContext
-	execHandler := func(ctx agent.ToolContext, input PythonExecInput) (PythonExecOutput, error) {
+	// Function tool handler signature takes agent.Context
+	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		pyBin, err := getVenvPython(log)
 		if err != nil {
 			return PythonExecOutput{}, err
@@ -208,7 +205,7 @@ type FileDownloadOutput struct {
 }
 
 func createDownloadTool() (tool.Tool, error) {
-	execHandler := func(ctx agent.ToolContext, input FileDownloadInput) (FileDownloadOutput, error) {
+	execHandler := func(ctx agent.Context, input FileDownloadInput) (FileDownloadOutput, error) {
 		req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
 		if err != nil {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create request: %w", err)
@@ -296,7 +293,7 @@ type SaveSkillOutput struct {
 
 // createSaveSkillTool creates a tool to save tested Python code into ./skills/
 func createSaveSkillTool() (tool.Tool, error) {
-	execHandler := func(ctx agent.ToolContext, input SaveSkillInput) (SaveSkillOutput, error) {
+	execHandler := func(ctx agent.Context, input SaveSkillInput) (SaveSkillOutput, error) {
 		skillsDir := "./skills"
 		if err := os.MkdirAll(skillsDir, 0755); err != nil {
 			return SaveSkillOutput{}, fmt.Errorf("failed to create skills directory: %w", err)
@@ -372,7 +369,7 @@ type ListSkillsOutput struct {
 
 // createListSkillsTool allows agents to inspect all previously learned skills
 func createListSkillsTool() (tool.Tool, error) {
-	execHandler := func(ctx agent.ToolContext, _ ListSkillsInput) (ListSkillsOutput, error) {
+	execHandler := func(ctx agent.Context, _ ListSkillsInput) (ListSkillsOutput, error) {
 		registryPath := filepath.Join("./skills", "skills.json")
 		data, err := os.ReadFile(registryPath)
 		if err != nil {
@@ -423,17 +420,24 @@ func getSkillsPrompt() string {
 }
 
 func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner, error) {
-	model, err := gemini.NewModel(ctx, cfg.ModelName, &genai.ClientConfig{
-		APIKey: cfg.APIKey,
-	})
+	provider, err := ProviderFactory(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create provider: %w", err)
+	}
+	if err := provider.ValidateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	modelName := cfg.ModelName
+	if modelName == "" {
+		modelName = provider.GetDefaultModel()
+	}
+	model, err := provider.CreateModel(ctx, modelName, cfg.APIKey)
 	if err != nil {
 		return nil, err
 	}
 
 	mcpToolset, err := mcptoolset.New(mcptoolset.Config{
-		Transport: &mcp.StreamableClientTransport{
-			Endpoint: cfg.MCPServerURL,
-		},
+		Endpoint: cfg.MCPServerURL,
 	})
 	if err != nil {
 		return nil, err
