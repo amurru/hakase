@@ -46,18 +46,40 @@ const HermesSystemInstruction = `You are a high-autonomy, general-purpose resear
 - Keep tool responses focused on facts without leaking raw internal state clutter unless specifically requested.
 `
 
-const CodeInterpreterSystemInstruction = `You are a specialized Code Interpreter and Data Analyst agent.
+const CodeInterpreterSystemInstruction = `You are a specialized Code Interpreter, Data Analyst, and Self-Evolving Skill Developer agent.
 
 ### RESPONSIBILITIES:
-1. CODE EXECUTION: Write and execute clean, self-contained Python scripts or shell commands to solve computational problems.
-2. DATA ANALYSIS: Parse, filter, aggregate, and analyze data payloads (CSV, JSON, XML, or unstructured text) provided by the user or other agents.
-3. STATISTICAL SYNTHESIS: Provide clear quantitative summaries, data tables, and key insights derived from executed code outputs.
+1. CODE EXECUTION: Write and execute clean, self-contained Python scripts to solve computational, data transformation, image/rendering, and file manipulation tasks.
+2. DATA ANALYSIS & VISUALIZATION: Parse, filter, aggregate, and analyze data payloads (CSV, JSON, XML, PDFs, text) and generate charts or visual deliverables.
+3. STATISTICAL SYNTHESIS: Provide clean quantitative summaries, formatted Markdown tables, and clear insights alongside code execution outputs.
+4. SKILL EVOLUTION & PERSISTENCE: Continually expand your capabilities by creating, testing, and saving modular Python skills for future reuse.
 
 ### OPERATIONAL RULES:
-- Write robust, self-contained code with proper error handling and explicit print/log statements so execution output is readable.
-- If code execution returns an error, analyze the trace, fix the issue, and re-run.
-- Always output clean Markdown tables or formatted summaries alongside code execution results.
+- Write robust, self-contained Python code with proper error handling and explicit print/log statements so execution output is readable.
+- SELF-CORRECTION: If code execution returns an error (or missing module trace), analyze the output, fix the code, and re-run until successful.
+- LIBRARIES & VENV: You run inside an isolated Python virtual environment (.venv) with automatic dependency installation. Use third-party libraries freely.
+- FILE CONVENTIONS: Read raw downloaded files from './downloads/' and write generated files/artifacts to './outputs/'.
+
+### SKILL DESIGN & GENERALISATION STANDARD (IMPORTANT):
+When writing code intended to be saved as a skill via 'save_skill':
+1. PARAMETERISE EVERYTHING: Do NOT hardcode specific numbers, query terms, or file paths inside function bodies. Pass them as arguments with default fallbacks.
+2. SELF-DOCUMENTING DOCSTRINGS: Every function MUST include a comprehensive docstring containing:
+   - Function description and purpose.
+   - Parameter definitions (with types).
+   - Expected return type/structure.
+   - A clear 'Usage:' section demonstrating how to import and call the function.
+3. DUAL EXECUTION MODE: Include an 'if __name__ == "__main__":' block at the bottom with sample mock data so the script can be tested independently.
+
+### SKILL REUSE & EVOLUTION MANDATE:
+1. REUSE FIRST: Check the "AVAILABLE PRE-LEARNED SKILLS" list in your instructions before writing code from scratch. If a skill exists that can solve or assist in the task, import and use it (e.g., 'from skills.<skill_name> import ...').
+2. MANDATORY SKILL PERSISTENCE: Whenever you construct a script that solves a novel task, complex workflow, or custom rendering task (e.g., HTML-to-PNG cards, PDF extraction, custom API parsing, or statistics generation):
+   - Step A: Verify execution using 'python_interpreter'.
+   - Step B: Once execution is verified with valid output, you MUST immediately call 'save_skill' to store it in ./skills/!
+3. NO DUPLICATION: Do not save a new skill if an identical capability is already present in your installed skills list.
 `
+
+// LogFunc is a thread-safe callback function to send status logs to the TUI
+type LogFunc func(msg string)
 
 type PythonExecInput struct {
 	Code string `json:"code" doc:"Python code snippet to execute"`
@@ -69,7 +91,7 @@ type PythonExecOutput struct {
 }
 
 // getVenvPython returns the executable path to the virtualenv python binary, creating .venv if missing.
-func getVenvPython() (string, error) {
+func getVenvPython(log LogFunc) (string, error) {
 	venvDir := "./.venv"
 	pyBin := filepath.Join(venvDir, "bin", "python3")
 	if runtime.GOOS == "windows" {
@@ -78,7 +100,9 @@ func getVenvPython() (string, error) {
 
 	// Create .venv if it does not exist
 	if _, err := os.Stat(pyBin); os.IsNotExist(err) {
-		fmt.Println("📦 Creating local Python virtual environment in ./.venv ...")
+		if log != nil {
+			log("📦 [sys] Initializing local Python virtual environment in ./.venv ...")
+		}
 		cmd := exec.Command("python3", "-m", "venv", venvDir)
 		if err := cmd.Run(); err != nil {
 			return "", fmt.Errorf("failed to create virtual environment: %w", err)
@@ -89,10 +113,10 @@ func getVenvPython() (string, error) {
 }
 
 // createPythonTool returns an ADK tool that executes Python code in a temporary directory.
-func createPythonTool() (tool.Tool, error) {
+func createPythonTool(log LogFunc) (tool.Tool, error) {
 	// Function tool handler signature takes agent.ToolContext
 	execHandler := func(ctx agent.ToolContext, input PythonExecInput) (PythonExecOutput, error) {
-		pyBin, err := getVenvPython()
+		pyBin, err := getVenvPython(log)
 		if err != nil {
 			return PythonExecOutput{}, err
 		}
@@ -134,12 +158,26 @@ func createPythonTool() (tool.Tool, error) {
 					pipBin = filepath.Join("./.venv", "Scripts", "pip.exe")
 				}
 
-				fmt.Printf(
-					"⚡ Missing package '%s' detected. Auto-installing into .venv...\n",
-					missingPkg,
-				)
+				// 📡 Log progress directly to the side pane!
+				if log != nil {
+					log(
+						fmt.Sprintf(
+							"⚡ [code_interpreter] Missing package '%s' detected. Auto-installing into .venv...",
+							missingPkg,
+						),
+					)
+				}
 				installCmd := exec.CommandContext(ctx, pipBin, "install", missingPkg)
 				_ = installCmd.Run()
+
+				if log != nil {
+					log(
+						fmt.Sprintf(
+							"✅ [code_interpreter] Package '%s' installed successfully.",
+							missingPkg,
+						),
+					)
+				}
 
 				// Retry running the script after package installation
 				stdout, stderr = runScript()
@@ -246,9 +284,9 @@ type SkillRegistry struct {
 }
 
 type SaveSkillInput struct {
-	Name        string `json:"name"        doc:"Unique identifier for the skill (e.g. pdf_table_extractor, stock_growth_calculator)"`
-	Description string `json:"description" doc:"Detailed explanation of what the script does, its inputs, and how to use/import it"`
-	Code        string `json:"code"        doc:"The complete, verified Python script code"`
+	Name        string `json:"name"        doc:"Unique snake_case identifier for the skill (e.g. render_weather_card, extract_pdf_tables)"`
+	Description string `json:"description" doc:"High-level summary of what the skill does, input arguments, output artifacts, and import usage example"`
+	Code        string `json:"code"        doc:"The complete, parameterised, self-documented Python script with docstrings and a usage example in the docstring"`
 }
 
 type SaveSkillOutput struct {
@@ -384,7 +422,7 @@ func getSkillsPrompt() string {
 	return sb.String()
 }
 
-func setupRunner(ctx context.Context, cfg *Config) (*runner.Runner, error) {
+func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner, error) {
 	model, err := gemini.NewModel(ctx, cfg.ModelName, &genai.ClientConfig{
 		APIKey: cfg.APIKey,
 	})
@@ -416,7 +454,7 @@ func setupRunner(ctx context.Context, cfg *Config) (*runner.Runner, error) {
 	})
 
 	// Code Inpterpreter agent/ data analyst
-	pythonTool, err := createPythonTool()
+	pythonTool, err := createPythonTool(log)
 	if err != nil {
 		return nil, err
 	}

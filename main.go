@@ -15,13 +15,22 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	r, err := setupRunner(ctx, cfg)
+	var p *tea.Program
+
+	// Define thread-safe logger function
+	logToUI := func(msg string) {
+		if p != nil {
+			p.Send(StatusLogMsg{Text: msg})
+		}
+	}
+
+	r, err := setupRunner(ctx, cfg, logToUI)
 	if err != nil {
 		log.Fatalf("Failed to setup agent runner: %v", err)
 	}
 
 	m := newModel(ctx, r)
-	p := tea.NewProgram(&m)
+	p = tea.NewProgram(&m)
 	m.program = p
 
 	if _, err := p.Run(); err != nil {

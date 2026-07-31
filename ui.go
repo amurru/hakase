@@ -36,6 +36,11 @@ type agentTextMsg string
 type agentLogMsg string
 type agentDoneMsg struct{}
 
+// StatusLogMsg represents a background status message sent to the side pane
+type StatusLogMsg struct {
+	Text string
+}
+
 type model struct {
 	chatViewport viewport.Model
 	logViewport  viewport.Model
@@ -136,6 +141,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logViewport.SetContent(m.logViewport.View() + "\n" + string(msg))
 		m.logViewport.GotoBottom()
 
+	case StatusLogMsg:
+		m.logViewport.SetContent(m.logViewport.View() + "\n" + string(msg.Text))
+		m.logViewport.GotoBottom()
 	case agentDoneMsg:
 		m.isProcessing = false
 	}
