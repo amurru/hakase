@@ -108,7 +108,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		leftWidth := m.width - rightWidth - 4
 
 		if !m.ready {
-			// ✅ Use functional options or parameterless New() with SetWidth/SetHeight
 			m.chatViewport = viewport.New(
 				viewport.WithWidth(leftWidth),
 				viewport.WithHeight(m.height-5),
@@ -127,7 +126,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(leftWidth - 3)
 
 	case agentTextMsg:
-		m.chatViewport.SetContent(m.chatViewport.View() + string(msg))
+		// soft-wrap incoming text to fit inside the viewport
+		wrapStyle := lipgloss.NewStyle().Width(m.chatViewport.Width())
+		wrappedText := wrapStyle.Render(string(msg))
+		m.chatViewport.SetContent(m.chatViewport.View() + wrappedText)
 		m.chatViewport.GotoBottom()
 
 	case agentLogMsg:
@@ -136,6 +138,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentDoneMsg:
 		m.isProcessing = false
+	}
+
+	var vpCmd tea.Cmd
+	if m.focus == chatFocus {
+		m.chatViewport, vpCmd = m.chatViewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	} else if m.focus == logFocus {
+		m.logViewport, vpCmd = m.logViewport.Update(msg)
+		cmds = append(cmds, vpCmd)
 	}
 
 	var tiCmd tea.Cmd
