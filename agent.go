@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/agent"
@@ -96,6 +100,80 @@ func createPythonTool() (tool.Tool, error) {
 	}, execHandler)
 }
 
+type FileDownloadInput struct {
+	URL      string `json:"url"                doc:"The HTTP/HTTPS URL of the file, PDF, or image to download"`
+	Filename string `json:"filename,omitempty" doc:"Optional custom filename to save as. If empty, derived from URL."`
+}
+
+type FileDownloadOutput struct {
+	SavedPath       string `json:"saved_path"       doc:"The local file path where the file was saved"`
+	BytesDownloaded int64  `json:"bytes_downloaded" doc:"Size of the downloaded file in bytes"`
+	ContentType     string `json:"content_type"     doc:"HTTP Content-Type header of the downloaded resource"`
+}
+
+func createDownloadTool() (tool.Tool, error) {
+	execHandler := func(ctx agent.ToolContext, input FileDownloadInput) (FileDownloadOutput, error) {
+		req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
+		if err != nil {
+			return FileDownloadOutput{}, fmt.Errorf("failed to create request: %w", err)
+		}
+		// Modern User-Agent header to avoid basic scraping blocks
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HermesAgent/1.0")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return FileDownloadOutput{}, fmt.Errorf("download request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return FileDownloadOutput{}, fmt.Errorf(
+				"server returned HTTP %d: %s",
+				resp.StatusCode,
+				resp.Status,
+			)
+		}
+
+		// Ensure local ./downloads directory exists
+		outDir := "./downloads"
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			return FileDownloadOutput{}, fmt.Errorf("failed to create downloads folder: %w", err)
+		}
+
+		// Resolve default filename if not provided
+		filename := input.Filename
+		if filename == "" {
+			filename = filepath.Base(req.URL.Path)
+			if filename == "" || filename == "." || filename == "/" {
+				filename = fmt.Sprintf("file_%d", time.Now().Unix())
+			}
+		}
+
+		filePath := filepath.Join(outDir, filename)
+		out, err := os.Create(filePath)
+		if err != nil {
+			return FileDownloadOutput{}, fmt.Errorf("failed to create destination file: %w", err)
+		}
+		defer out.Close()
+
+		bytesWritten, err := io.Copy(out, resp.Body)
+		if err != nil {
+			return FileDownloadOutput{}, fmt.Errorf("failed to save file contents: %w", err)
+		}
+
+		return FileDownloadOutput{
+			SavedPath:       filePath,
+			BytesDownloaded: bytesWritten,
+			ContentType:     resp.Header.Get("Content-Type"),
+		}, nil
+	}
+
+	return functiontool.New(functiontool.Config{
+		Name:        "download_file",
+		Description: "Downloads PDFs, images, dataset binaries, or documents from a web URL and saves them to the ./downloads directory.",
+	}, execHandler)
+}
+
 func setupRunner(ctx context.Context, cfg *Config) (*runner.Runner, error) {
 	model, err := gemini.NewModel(ctx, cfg.ModelName, &genai.ClientConfig{
 		APIKey: cfg.APIKey,
@@ -113,11 +191,17 @@ func setupRunner(ctx context.Context, cfg *Config) (*runner.Runner, error) {
 		return nil, err
 	}
 	// Researcher agent
+	downloadTool, err := createDownloadTool()
+	if err != nil {
+		return nil, err
+	}
+
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
-		Description: "Specialist in searching the web, browsing pages, and extracting content.",
+		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
 		Instruction: HermesSystemInstruction,
 		Model:       model,
+		Tools:       []tool.Tool{downloadTool},
 		Toolsets:    []tool.Toolset{mcpToolset},
 	})
 
