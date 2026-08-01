@@ -514,14 +514,22 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// Host system execution tools (arbitrary command/executable execution).
+	systemExecTools, err := createSystemExecTools(log)
+	if err != nil {
+		return nil, err
+	}
+
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
 		Instruction: `You are an AI research & analysis coordinator.
 - Use 'web_researcher' when real-time browser navigation or web search is required.
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
+- Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
 - Synthesize responses from both specialists into a final markdown output.` + "\n\n" + buildTimeReminder(),
 		Model: model,
+		Tools: systemExecTools,
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,
