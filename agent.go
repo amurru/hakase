@@ -43,6 +43,26 @@ const HermesSystemInstruction = `You are a high-autonomy, general-purpose resear
 - Keep tool responses focused on facts without leaking raw internal state clutter unless specifically requested.
 `
 
+// buildTimeReminder returns a system-prompt block that grounds the agent in
+// the current wall-clock time on the user's machine. LLM training cutoffs go
+// stale, so injecting "now" tells the model to reason about recency correctly
+// and to prefer live search results over outdated training data.
+func buildTimeReminder() string {
+	now := time.Now()
+	zoneName, _ := now.Zone()
+	return fmt.Sprintf(`
+### SYSTEM REMINDER - CURRENT DATE & TIME:
+The current date and time on the user's machine is %s (%s, UTC offset %s).
+
+- Treat this as "now" for ALL temporal reasoning: news recency, "latest" / "today" / "yesterday", current events, ages, seasons, holidays, and deadlines.
+- Your training data was frozen at your knowledge cutoff and is likely outdated. Whenever a fact, price, version, event, or statistic can change over time, do NOT answer from memory alone - use your search and browsing tools to fetch current, verifiable information.
+- When searching, prefer the most recent results and verify publication dates before asserting something is "current", "latest", or "breaking". If freshly retrieved sources conflict with your training data, trust the fresh sources.`,
+		now.Format("Monday, 02 January 2006 at 15:04:05"),
+		zoneName,
+		now.Format("-07:00"),
+	)
+}
+
 const CodeInterpreterSystemInstruction = `You are a specialized Code Interpreter, Data Analyst, and Self-Evolving Skill Developer agent.
 
 ### RESPONSIBILITIES:
@@ -451,7 +471,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
 		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction: HermesSystemInstruction,
+		Instruction: HermesSystemInstruction + "\n\n" + buildTimeReminder(),
 		Model:       model,
 		Tools:       []tool.Tool{downloadTool},
 		Toolsets:    []tool.Toolset{mcpToolset},
@@ -482,7 +502,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 ### SKILL REUSE & EVOLUTION RULES:
 1. REUSE FIRST: Check the "AVAILABLE PRE-LEARNED SKILLS" list above before writing code. If a skill exists that can solve or assist in the task, write a Python script that imports and calls it!
 2. SAVE NOVEL SKILLS: If you solve a new problem with fresh code, test it with python_interpreter, then call save_skill to store it for future reuse.
-3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.`,
+3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.` + "\n\n" + buildTimeReminder(),
 		Model: model,
 		Tools: []tool.Tool{
 			pythonTool,
@@ -500,7 +520,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		Instruction: `You are an AI research & analysis coordinator.
 - Use 'web_researcher' when real-time browser navigation or web search is required.
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
-- Synthesize responses from both specialists into a final markdown output.`,
+- Synthesize responses from both specialists into a final markdown output.` + "\n\n" + buildTimeReminder(),
 		Model: model,
 		SubAgents: []agent.Agent{
 			researcherAgent,
