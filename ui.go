@@ -44,16 +44,20 @@ type agentTextMsg string
 type agentLogMsg string
 type agentDoneMsg struct{}
 
+type agentStreamMsg struct {
+	Content  string
+	Thinking string
+}
+
 // StatusLogMsg represents a background status message sent to the side pane
 type StatusLogMsg struct {
 	Text string
 }
 
 type ChatMessage struct {
-	Role        string
-	Content     string
-	Thinking    string
-	ShowThinking bool
+	Role     string
+	Content  string
+	Thinking string
 }
 
 type appModel struct {
@@ -61,11 +65,14 @@ type appModel struct {
 	logViewport  viewport.Model
 	input        textinput.Model
 
-	focus           focusedPane
-	chatBufferSize  int
+	focus          focusedPane
+	chatBufferSize int
 
-	chatHistory     []ChatMessage
+	chatHistory      []ChatMessage
 	chatScrollOffset int
+	renderedLines    []string // cached, fully rendered chat lines (styled + wrapped)
+	lastMsgStart     int      // index into renderedLines where the last chatHistory message starts
+	logLines         []string // cached log pane lines
 
 	r            *runner.Runner
 	ctx          context.Context
@@ -93,6 +100,7 @@ func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int, showThi
 		ctx:            ctx,
 		chatBufferSize: chatBufferSize,
 		chatHistory:    make([]ChatMessage, 0),
+		logLines:       make([]string, 0),
 		showThinking:   showThinking,
 	}
 }
@@ -111,6 +119,7 @@ case tea.KeyPressMsg:
 				return m, tea.Quit
 			case "ctrl+t":
 				m.showThinking = !m.showThinking
+				m.rebuildRenderedLines()
 				m.renderChatViewport()
 			case "enter":
 			if m.input.Value() != "" && !m.isProcessing {
@@ -122,6 +131,7 @@ case tea.KeyPressMsg:
 					Role:    "user",
 					Content: prompt,
 				})
+				m.rebuildRenderedLines()
 				m.chatScrollOffset = m.maxChatScrollOffset()
 				m.renderChatViewport()
 
@@ -138,28 +148,28 @@ case tea.KeyPressMsg:
 			}
 		case "up", "k":
 			if m.focus == chatFocus {
-				m.scrollChatUp(1)
+				m.scrollChatDown(1)
 			}
 		case "down", "j":
 			if m.focus == chatFocus {
-				m.scrollChatDown(1)
+				m.scrollChatUp(1)
 			}
 		case "pgup":
 			if m.focus == chatFocus {
-				m.scrollChatUp(m.chatViewport.Height())
+				m.scrollChatDown(m.chatViewport.Height())
 			}
 		case "pgdown":
 			if m.focus == chatFocus {
-				m.scrollChatDown(m.chatViewport.Height())
+				m.scrollChatUp(m.chatViewport.Height())
 			}
 		case "home":
 			if m.focus == chatFocus {
-				m.chatScrollOffset = m.maxChatScrollOffset()
+				m.chatScrollOffset = 0
 				m.renderChatViewport()
 			}
 		case "end":
 			if m.focus == chatFocus {
-				m.chatScrollOffset = 0
+				m.chatScrollOffset = m.maxChatScrollOffset()
 				m.renderChatViewport()
 			}
 		}
@@ -212,20 +222,46 @@ case tea.KeyPressMsg:
 	case agentTextMsg:
 		content, thinking := extractThinking(string(msg))
 		m.chatHistory = append(m.chatHistory, ChatMessage{
-			Role:         "agent",
-			Content:      content,
-			Thinking:     thinking,
-			ShowThinking: m.showThinking,
+			Role:     "agent",
+			Content:  content,
+			Thinking: thinking,
 		})
+		m.rebuildRenderedLines()
 		m.chatScrollOffset = m.maxChatScrollOffset()
 		m.renderChatViewport()
 
+	case agentStreamMsg:
+		if msg.Content == "" && msg.Thinking == "" {
+			m.renderChatViewport()
+			break
+		}
+		wasAtBottom := m.atBottom()
+		if len(m.chatHistory) > 0 && m.chatHistory[len(m.chatHistory)-1].Role == "agent" {
+			last := &m.chatHistory[len(m.chatHistory)-1]
+			last.Content += msg.Content
+			last.Thinking += msg.Thinking
+		} else {
+			m.chatHistory = append(m.chatHistory, ChatMessage{
+				Role:     "agent",
+				Content:  msg.Content,
+				Thinking: msg.Thinking,
+			})
+			m.lastMsgStart = len(m.renderedLines)
+		}
+		m.refreshLastMessage()
+		if wasAtBottom {
+			m.chatScrollOffset = m.maxChatScrollOffset()
+		}
+		m.renderChatViewport()
+
 	case agentLogMsg:
-		m.logViewport.SetContent(m.logViewport.View() + "\n" + string(msg))
+		m.logLines = append(m.logLines, string(msg))
+		m.logViewport.SetContentLines(m.logLines)
 		m.logViewport.GotoBottom()
 
 	case StatusLogMsg:
-		m.logViewport.SetContent(m.logViewport.View() + "\n" + string(msg.Text))
+		m.logLines = append(m.logLines, msg.Text)
+		m.logViewport.SetContentLines(m.logLines)
 		m.logViewport.GotoBottom()
 	case agentDoneMsg:
 		m.isProcessing = false
@@ -260,43 +296,95 @@ func extractThinking(content string) (string, string) {
 }
 
 func (m *appModel) maxChatScrollOffset() int {
-	if len(m.chatHistory) == 0 {
+	if len(m.renderedLines) == 0 {
 		return 0
 	}
-	totalLines := m.totalChatLines()
 	viewportHeight := m.chatViewport.Height()
+	if viewportHeight <= 0 {
+		viewportHeight = 1
+	}
+	totalLines := len(m.renderedLines)
 	if totalLines <= viewportHeight {
 		return 0
 	}
 	return totalLines - viewportHeight
 }
 
-// totalChatLines calculates the total number of wrapped lines in chat history
-func (m *appModel) totalChatLines() int {
-	if len(m.chatHistory) == 0 {
-		return 0
+// atBottom reports whether the chat view is currently pinned to the newest
+// lines. Streaming only auto-scrolls when the user is already at the bottom so
+// reading earlier history is not disrupted.
+func (m *appModel) atBottom() bool {
+	return m.chatScrollOffset >= m.maxChatScrollOffset()
+}
+
+// renderMsgLines renders a single chat message into styled, width-wrapped
+// lines. The thinking text is rendered as ONE bordered block so empty interior
+// lines (paragraph breaks) do not show up as separate empty boxes.
+func (m *appModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
+	prefix := "🤖 Agent: "
+	if msg.Role == "user" {
+		prefix = "👤 User: "
 	}
 
+	var lines []string
+
+	if m.showThinking && strings.TrimSpace(msg.Thinking) != "" {
+		block := thinkingStyle.Width(wrapWidth).Render("💭 " + strings.TrimSpace(msg.Thinking))
+		lines = append(lines, strings.Split(block, "\n")...)
+		lines = append(lines, "")
+	}
+
+	if strings.TrimSpace(msg.Content) != "" {
+		contentLines := strings.Split(msg.Content, "\n")
+		for i, line := range contentLines {
+			var wrapped string
+			if i == 0 {
+				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
+			} else {
+				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(line)
+			}
+			lines = append(lines, strings.Split(wrapped, "\n")...)
+		}
+		lines = append(lines, "")
+	}
+
+	return lines
+}
+
+// rebuildRenderedLines re-renders the entire chat history. Only needed for
+// rare events: window resize, thinking toggle, and new user messages.
+func (m *appModel) rebuildRenderedLines() {
 	wrapWidth := m.chatViewport.Width()
 	if wrapWidth <= 0 {
 		wrapWidth = 80
 	}
 
-	total := 0
+	m.renderedLines = m.renderedLines[:0]
+	lastCount := 0
 	for _, msg := range m.chatHistory {
-		prefix := "🤖 Agent: "
-		if msg.Role == "user" {
-			prefix = "👤 User: "
-		}
-		lines := strings.Split(msg.Content, "\n")
-		for _, line := range lines {
-			wrapped := lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
-			total += strings.Count(wrapped, "\n") + 1
-			prefix = ""
-		}
-		total += 1
+		msgLines := m.renderMsgLines(msg, wrapWidth)
+		lastCount = len(msgLines)
+		m.renderedLines = append(m.renderedLines, msgLines...)
 	}
-	return total
+	m.lastMsgStart = len(m.renderedLines) - lastCount
+}
+
+// refreshLastMessage re-renders only the last chat message in place. This is
+// the hot path: it runs for every streamed chunk and must stay O(chunk), not
+// O(history), to keep the UI responsive.
+func (m *appModel) refreshLastMessage() {
+	if len(m.chatHistory) == 0 {
+		m.renderedLines = m.renderedLines[:0]
+		m.lastMsgStart = 0
+		return
+	}
+	wrapWidth := m.chatViewport.Width()
+	if wrapWidth <= 0 {
+		wrapWidth = 80
+	}
+	msgLines := m.renderMsgLines(m.chatHistory[len(m.chatHistory)-1], wrapWidth)
+	m.renderedLines = append(m.renderedLines[:m.lastMsgStart], msgLines...)
+	m.lastMsgStart = len(m.renderedLines) - len(msgLines)
 }
 
 func (m *appModel) scrollChatUp(lines int) {
@@ -316,73 +404,30 @@ func (m *appModel) scrollChatDown(lines int) {
 	m.renderChatViewport()
 }
 
-// renderChatViewport renders the visible portion of chat history
 func (m *appModel) renderChatViewport() {
-	if !m.ready || len(m.chatHistory) == 0 {
+	if !m.ready || len(m.renderedLines) == 0 {
 		m.chatViewport.SetContent("")
+		m.chatScrollOffset = 0
 		return
 	}
 
-	wrapWidth := m.chatViewport.Width()
-	if wrapWidth <= 0 {
-		wrapWidth = 80
-	}
-
-	var allLines []string
-	for _, msg := range m.chatHistory {
-		prefix := "🤖 Agent: "
-		if msg.Role == "user" {
-			prefix = "👤 User: "
-		}
-
-		if msg.ShowThinking && msg.Thinking != "" {
-			thinkingLines := strings.Split(msg.Thinking, "\n")
-			for i, line := range thinkingLines {
-				var wrapped string
-				if i == 0 {
-					wrapped = thinkingStyle.Width(wrapWidth).Render("💭 " + line)
-				} else {
-					wrapped = thinkingStyle.Width(wrapWidth).Render(line)
-				}
-				allLines = append(allLines, strings.Split(wrapped, "\n")...)
-			}
-			allLines = append(allLines, "")
-		}
-
-		lines := strings.Split(msg.Content, "\n")
-		for i, line := range lines {
-			var wrapped string
-			if i == 0 {
-				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
-			} else {
-				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(line)
-			}
-			allLines = append(allLines, strings.Split(wrapped, "\n")...)
-		}
-		allLines = append(allLines, "")
-	}
-
-	if len(allLines) > 0 && allLines[len(allLines)-1] == "" {
-		allLines = allLines[:len(allLines)-1]
-	}
-
 	viewportHeight := m.chatViewport.Height()
-	start := m.chatScrollOffset
-	end := start + viewportHeight
-	if end > len(allLines) {
-		end = len(allLines)
+	if viewportHeight <= 0 {
+		viewportHeight = 1
 	}
-	if start > len(allLines) {
-		start = len(allLines)
+	if m.chatScrollOffset > m.maxChatScrollOffset() {
+		m.chatScrollOffset = m.maxChatScrollOffset()
 	}
-
-	var visibleLines []string
-	if start < len(allLines) {
-		visibleLines = allLines[start:end]
+	if m.chatScrollOffset < 0 {
+		m.chatScrollOffset = 0
 	}
 
-	content := strings.Join(visibleLines, "\n")
-	m.chatViewport.SetContent(content)
+	end := m.chatScrollOffset + viewportHeight
+	if end > len(m.renderedLines) {
+		end = len(m.renderedLines)
+	}
+
+	m.chatViewport.SetContent(strings.Join(m.renderedLines[m.chatScrollOffset:end], "\n"))
 }
 
 // Change return type to tea.View
@@ -425,9 +470,6 @@ func (m *appModel) View() tea.View {
 func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string) {
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
-	var thinkingBuffer strings.Builder
-	var contentBuffer strings.Builder
-
 	for ev, err := range r.Run(ctx, "user-1", "session-1", msg, agent.RunConfig{}) {
 		if err != nil {
 			if p != nil {
@@ -439,9 +481,12 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 			for _, part := range ev.Content.Parts {
 				if part.Text != "" && p != nil {
 					if part.Thought {
-						thinkingBuffer.WriteString(part.Text)
+						trimmed := strings.TrimSpace(part.Text)
+						if trimmed != "" {
+							p.Send(agentStreamMsg{Thinking: trimmed})
+						}
 					} else {
-						contentBuffer.WriteString(part.Text)
+						p.Send(agentStreamMsg{Content: part.Text})
 					}
 				}
 				if part.FunctionCall != nil && p != nil {
@@ -463,11 +508,7 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 	}
 
 	if p != nil {
-		thinking := strings.TrimSpace(thinkingBuffer.String())
-		content := strings.TrimSpace(contentBuffer.String())
-		if thinking != "" || content != "" {
-			p.Send(agentTextMsg(content + "\n__THINKING_SEPARATOR__" + thinking))
-		}
+		p.Send(agentStreamMsg{})
 		p.Send(agentDoneMsg{})
 	}
 }
