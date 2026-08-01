@@ -55,3 +55,7 @@ go.work
 
 # Configurations
 config.json
+
+# agentic
+.omc
+.omo
