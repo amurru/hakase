@@ -29,7 +29,7 @@ func main() {
 		log.Fatalf("Failed to setup agent runner: %v", err)
 	}
 
-	m := newModel(ctx, r)
+	m := newModel(ctx, r, cfg.ChatBufferSize)
 	p = tea.NewProgram(&m)
 	m.program = p
 

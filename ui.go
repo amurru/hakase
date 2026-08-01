@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -41,12 +42,21 @@ type StatusLogMsg struct {
 	Text string
 }
 
+type ChatMessage struct {
+	Role    string
+	Content string
+}
+
 type appModel struct {
 	chatViewport viewport.Model
 	logViewport  viewport.Model
 	input        textinput.Model
 
-	focus focusedPane
+	focus           focusedPane
+	chatBufferSize  int
+
+	chatHistory     []ChatMessage
+	chatScrollOffset int
 
 	r            *runner.Runner
 	ctx          context.Context
@@ -57,15 +67,22 @@ type appModel struct {
 	isProcessing bool
 }
 
-func newModel(ctx context.Context, r *runner.Runner) appModel {
+func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int) appModel {
 	ti := textinput.New()
 	ti.Placeholder = "Ask me anything and I will do it..."
 	ti.Focus()
 
+	// Default to 1000 lines if not configured
+	if chatBufferSize <= 0 {
+		chatBufferSize = 1000
+	}
+
 	return appModel{
-		input: ti,
-		r:     r,
-		ctx:   ctx,
+		input:          ti,
+		r:              r,
+		ctx:            ctx,
+		chatBufferSize: chatBufferSize,
+		chatHistory:    make([]ChatMessage, 0),
 	}
 }
 
@@ -87,10 +104,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.Reset()
 				m.isProcessing = true
 
-				m.chatViewport.SetContent(
-					m.chatViewport.View() + fmt.Sprintf("\n\n👤 User: %s\n🤖 Agent: ", prompt),
-				)
-				m.chatViewport.GotoBottom()
+				m.chatHistory = append(m.chatHistory, ChatMessage{
+					Role:    "user",
+					Content: prompt,
+				})
+				m.chatScrollOffset = m.maxChatScrollOffset()
+				m.renderChatViewport()
 
 				go runAgentTask(m.ctx, m.r, m.program, prompt)
 			}
@@ -102,6 +121,44 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.Focus()
 			} else {
 				m.input.Blur()
+			}
+		case "up", "k":
+			if m.focus == chatFocus {
+				m.scrollChatUp(1)
+			}
+		case "down", "j":
+			if m.focus == chatFocus {
+				m.scrollChatDown(1)
+			}
+		case "pgup":
+			if m.focus == chatFocus {
+				m.scrollChatUp(m.chatViewport.Height())
+			}
+		case "pgdown":
+			if m.focus == chatFocus {
+				m.scrollChatDown(m.chatViewport.Height())
+			}
+		case "home":
+			if m.focus == chatFocus {
+				m.chatScrollOffset = m.maxChatScrollOffset()
+				m.renderChatViewport()
+			}
+		case "end":
+			if m.focus == chatFocus {
+				m.chatScrollOffset = 0
+				m.renderChatViewport()
+			}
+		}
+
+	case tea.MouseWheelMsg:
+		if m.focus == chatFocus {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				// Terminal mouse wheel UP = scroll viewport UP = see content at higher Y = newer messages
+				m.scrollChatDown(m.chatViewport.MouseWheelDelta)
+			case tea.MouseWheelDown:
+				// Terminal mouse wheel DOWN = scroll viewport DOWN = see content at lower Y = older messages
+				m.scrollChatUp(m.chatViewport.MouseWheelDelta)
 			}
 		}
 
@@ -121,6 +178,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				viewport.WithWidth(rightWidth),
 				viewport.WithHeight(m.height-2),
 			)
+
+			// Disable viewport's built-in mouse wheel - we handle it manually
+			m.chatViewport.MouseWheelEnabled = false
+			m.logViewport.MouseWheelEnabled = false
+
 			m.ready = true
 		} else {
 			m.chatViewport.SetWidth(leftWidth)
@@ -128,14 +190,18 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewport.SetWidth(rightWidth)
 			m.logViewport.SetHeight(m.height - 2)
 		}
+
 		m.input.SetWidth(leftWidth - 3)
+		// Re-render chat viewport on resize
+		m.renderChatViewport()
 
 	case agentTextMsg:
-		// soft-wrap incoming text to fit inside the viewport
-		wrapStyle := lipgloss.NewStyle().Width(m.chatViewport.Width())
-		wrappedText := wrapStyle.Render(string(msg))
-		m.chatViewport.SetContent(m.chatViewport.View() + wrappedText)
-		m.chatViewport.GotoBottom()
+		m.chatHistory = append(m.chatHistory, ChatMessage{
+			Role:    "agent",
+			Content: string(msg),
+		})
+		m.chatScrollOffset = m.maxChatScrollOffset()
+		m.renderChatViewport()
 
 	case agentLogMsg:
 		m.logViewport.SetContent(m.logViewport.View() + "\n" + string(msg))
@@ -162,6 +228,117 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, tiCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *appModel) maxChatScrollOffset() int {
+	if len(m.chatHistory) == 0 {
+		return 0
+	}
+	totalLines := m.totalChatLines()
+	viewportHeight := m.chatViewport.Height()
+	if totalLines <= viewportHeight {
+		return 0
+	}
+	return totalLines - viewportHeight
+}
+
+// totalChatLines calculates the total number of wrapped lines in chat history
+func (m *appModel) totalChatLines() int {
+	if len(m.chatHistory) == 0 {
+		return 0
+	}
+
+	wrapWidth := m.chatViewport.Width()
+	if wrapWidth <= 0 {
+		wrapWidth = 80
+	}
+
+	total := 0
+	for _, msg := range m.chatHistory {
+		prefix := "🤖 Agent: "
+		if msg.Role == "user" {
+			prefix = "👤 User: "
+		}
+		lines := strings.Split(msg.Content, "\n")
+		for _, line := range lines {
+			wrapped := lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
+			total += strings.Count(wrapped, "\n") + 1
+			prefix = ""
+		}
+		total += 1
+	}
+	return total
+}
+
+func (m *appModel) scrollChatUp(lines int) {
+	maxOffset := m.maxChatScrollOffset()
+	m.chatScrollOffset += lines
+	if m.chatScrollOffset > maxOffset {
+		m.chatScrollOffset = maxOffset
+	}
+	m.renderChatViewport()
+}
+
+func (m *appModel) scrollChatDown(lines int) {
+	m.chatScrollOffset -= lines
+	if m.chatScrollOffset < 0 {
+		m.chatScrollOffset = 0
+	}
+	m.renderChatViewport()
+}
+
+// renderChatViewport renders the visible portion of chat history
+func (m *appModel) renderChatViewport() {
+	if !m.ready || len(m.chatHistory) == 0 {
+		m.chatViewport.SetContent("")
+		return
+	}
+
+	wrapWidth := m.chatViewport.Width()
+	if wrapWidth <= 0 {
+		wrapWidth = 80
+	}
+
+	var allLines []string
+	for _, msg := range m.chatHistory {
+		prefix := "🤖 Agent: "
+		if msg.Role == "user" {
+			prefix = "👤 User: "
+		}
+		lines := strings.Split(msg.Content, "\n")
+		for i, line := range lines {
+			var wrapped string
+			if i == 0 {
+				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
+			} else {
+				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(line)
+			}
+			allLines = append(allLines, strings.Split(wrapped, "\n")...)
+		}
+		allLines = append(allLines, "")
+	}
+
+	if len(allLines) > 0 && allLines[len(allLines)-1] == "" {
+		allLines = allLines[:len(allLines)-1]
+	}
+
+	viewportHeight := m.chatViewport.Height()
+	start := m.chatScrollOffset
+	end := start + viewportHeight
+	if end > len(allLines) {
+		end = len(allLines)
+	}
+	if start > len(allLines) {
+		start = len(allLines)
+	}
+
+	var visibleLines []string
+	if start < len(allLines) {
+		visibleLines = allLines[start:end]
+	}
+
+	content := strings.Join(visibleLines, "\n")
+	m.chatViewport.SetContent(content)
 }
 
 // Change return type to tea.View
@@ -195,8 +372,9 @@ func (m *appModel) View() tea.View {
 		logStyle.Render(m.logViewport.View()),
 	)
 
-	// Return a tea.View object
-	return tea.NewView(content)
+	v := tea.NewView(content)
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string) {
