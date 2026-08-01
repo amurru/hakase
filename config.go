@@ -15,6 +15,7 @@ type Config struct {
 	FallbackProviders []string               `json:"fallback_providers,omitempty"`
 	ProviderOptions   map[string]interface{} `json:"provider_options,omitempty"`
 	ChatBufferSize    int                    `json:"chat_buffer_size,omitempty"`
+	ShowThinking      bool                   `json:"show_thinking,omitempty"`
 }
 
 // envConfigSet reports whether any HERMES_* environment override is present.

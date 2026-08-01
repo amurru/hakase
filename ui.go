@@ -23,6 +23,13 @@ var (
 	activeBorder = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("63"))
+
+	thinkingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Italic(true).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1)
 )
 
 type focusedPane int
@@ -43,8 +50,10 @@ type StatusLogMsg struct {
 }
 
 type ChatMessage struct {
-	Role    string
-	Content string
+	Role        string
+	Content     string
+	Thinking    string
+	ShowThinking bool
 }
 
 type appModel struct {
@@ -65,9 +74,10 @@ type appModel struct {
 	height       int
 	ready        bool
 	isProcessing bool
+	showThinking bool
 }
 
-func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int) appModel {
+func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int, showThinking bool) appModel {
 	ti := textinput.New()
 	ti.Placeholder = "Ask me anything and I will do it..."
 	ti.Focus()
@@ -83,6 +93,7 @@ func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int) appMode
 		ctx:            ctx,
 		chatBufferSize: chatBufferSize,
 		chatHistory:    make([]ChatMessage, 0),
+		showThinking:   showThinking,
 	}
 }
 
@@ -94,11 +105,14 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
-			return m, tea.Quit
-		case "enter":
+case tea.KeyPressMsg:
+			switch msg.String() {
+			case "ctrl+c", "esc":
+				return m, tea.Quit
+			case "ctrl+t":
+				m.showThinking = !m.showThinking
+				m.renderChatViewport()
+			case "enter":
 			if m.input.Value() != "" && !m.isProcessing {
 				prompt := m.input.Value()
 				m.input.Reset()
@@ -196,9 +210,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderChatViewport()
 
 	case agentTextMsg:
+		content, thinking := extractThinking(string(msg))
 		m.chatHistory = append(m.chatHistory, ChatMessage{
-			Role:    "agent",
-			Content: string(msg),
+			Role:         "agent",
+			Content:      content,
+			Thinking:     thinking,
+			ShowThinking: m.showThinking,
 		})
 		m.chatScrollOffset = m.maxChatScrollOffset()
 		m.renderChatViewport()
@@ -228,6 +245,18 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, tiCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+var thinkingSeparator = "__THINKING_SEPARATOR__"
+
+func extractThinking(content string) (string, string) {
+	idx := strings.Index(content, thinkingSeparator)
+	if idx >= 0 {
+		cleanContent := strings.TrimSpace(content[:idx])
+		thinking := strings.TrimSpace(content[idx+len(thinkingSeparator):])
+		return cleanContent, thinking
+	}
+	return content, ""
 }
 
 func (m *appModel) maxChatScrollOffset() int {
@@ -305,6 +334,21 @@ func (m *appModel) renderChatViewport() {
 		if msg.Role == "user" {
 			prefix = "👤 User: "
 		}
+
+		if msg.ShowThinking && msg.Thinking != "" {
+			thinkingLines := strings.Split(msg.Thinking, "\n")
+			for i, line := range thinkingLines {
+				var wrapped string
+				if i == 0 {
+					wrapped = thinkingStyle.Width(wrapWidth).Render("💭 " + line)
+				} else {
+					wrapped = thinkingStyle.Width(wrapWidth).Render(line)
+				}
+				allLines = append(allLines, strings.Split(wrapped, "\n")...)
+			}
+			allLines = append(allLines, "")
+		}
+
 		lines := strings.Split(msg.Content, "\n")
 		for i, line := range lines {
 			var wrapped string
@@ -381,6 +425,9 @@ func (m *appModel) View() tea.View {
 func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string) {
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
+	var thinkingBuffer strings.Builder
+	var contentBuffer strings.Builder
+
 	for ev, err := range r.Run(ctx, "user-1", "session-1", msg, agent.RunConfig{}) {
 		if err != nil {
 			if p != nil {
@@ -391,7 +438,11 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 		if ev != nil && ev.Content != nil {
 			for _, part := range ev.Content.Parts {
 				if part.Text != "" && p != nil {
-					p.Send(agentTextMsg(part.Text))
+					if part.Thought {
+						thinkingBuffer.WriteString(part.Text)
+					} else {
+						contentBuffer.WriteString(part.Text)
+					}
 				}
 				if part.FunctionCall != nil && p != nil {
 					p.Send(
@@ -412,6 +463,11 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 	}
 
 	if p != nil {
+		thinking := strings.TrimSpace(thinkingBuffer.String())
+		content := strings.TrimSpace(contentBuffer.String())
+		if thinking != "" || content != "" {
+			p.Send(agentTextMsg(content + "\n__THINKING_SEPARATOR__" + thinking))
+		}
 		p.Send(agentDoneMsg{})
 	}
 }
