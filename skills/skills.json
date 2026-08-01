@@ -1,0 +1,28 @@
+{
+  "skills": [
+    {
+      "name": "draw_mandelbrot_png",
+      "description": "Draws the Mandelbrot set (Mandelbrot Groups) fractal and saves it to a PNG file. Parameterized by resolution, viewport bounds, max iterations, and colormap. Uses numpy for computation and Pillow for rendering, with optional matplotlib colormap support and a built-in HSV fallback.",
+      "file_name": "draw_mandelbrot_png.py",
+      "saved_at": "2026-08-01T04:17:53+03:00"
+    },
+    {
+      "name": "create_strange_attractors",
+      "description": "Generate and save strange mathematical attractor visualizations as PNG images using numpy and matplotlib",
+      "file_name": "create_strange_attractors.py",
+      "saved_at": "2026-08-01T04:46:13+03:00"
+    },
+    {
+      "name": "crypto_price_chart",
+      "description": "Fetches BTC, ETH (and other crypto) daily price data from the CoinGecko API and generates annotated price charts saved as a PNG file using matplotlib. Parameterized by coin symbols, number of days, output path, and chart styling.",
+      "file_name": "crypto_price_chart.py",
+      "saved_at": "2026-08-01T19:22:47+03:00"
+    },
+    {
+      "name": "pdf_report_generator",
+      "description": "Creates comprehensive, data-rich PDF reports from research findings using WeasyPrint. Generates charts with matplotlib and converts styled Markdown content to professional PDF documents with tables, images, and formatted text. Parameterized by report content, output path, and chart data.",
+      "file_name": "pdf_report_generator.py",
+      "saved_at": "2026-08-01T21:16:56+03:00"
+    }
+  ]
+}
