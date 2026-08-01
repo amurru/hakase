@@ -6,6 +6,7 @@
   "instruction": "You are a web automation agent harness. Use the available web browsing tools to complete user requests.",
   "mcp_server_url": "http://localhost:9223/mcp",
   "fallback_providers": [],
+  "skill_dirs": [],
   "provider_options": {},
   "chat_buffer_size": 1000
 }

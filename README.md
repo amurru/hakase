@@ -34,6 +34,8 @@ hakase/
 ├── config.json.example      # Example config template
 ├── go.mod / go.sum          # Go module dependencies
 ├── skills/                  # Persisted Python skill library
+├── .agents/skills/          # Portable markdown skills (SKILL.md)
+├── skill_cli.go             # hakase skill CLI (create/list/validate)
 ├── downloads/               # Downloaded files (PDFs, images, datasets)
 ├── outputs/                 # Generated artifacts (HTML files, charts, reports)
 └── .venv/                   # Python virtual environment (auto-created)
@@ -244,7 +246,49 @@ The agent downloads the file, runs Python with pandas/matplotlib in `.venv`, and
 
 ## Skills
 
-Skills are stored in `./skills/` and can be extended by the agent at runtime.
+### Markdown Skills
+
+hakase supports markdown-based skills in addition to Python skills. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter and a progressive-disclosure body.
+
+#### The `hakase skill` CLI
+
+The `hakase skill` command manages markdown skills:
+
+- `hakase skill create <name> [--dir <path>] [--description <text>] [--template python] [--force]` - Scaffolds `<dir>/<name>/SKILL.md` with valid frontmatter (`name`, `description`, `license: MIT`, `metadata: author/version`) plus `scripts/` and `references/` subdirectories. The `<name>` must match `^[a-z0-9]+(-[a-z0-9]+)*$`. The default directory is the git project root's `.agents/skills/`. The description falls back to a non-empty placeholder so the skill passes validation immediately. The `--template python` flag also writes `scripts/<name>.py`. Fails on an existing directory unless `--force` is used.
+- `hakase skill list` - Prints discovered skills (Python from `./skills/skills.json` plus markdown from project and user directories) with source paths.
+- `hakase skill validate <dir>` - Parses and validates a single skill; exits non-zero on failure (CI-friendly).
+
+#### Markdown Skill Format
+
+Each skill directory contains:
+
+- `SKILL.md` - Required. YAML frontmatter (`name` and `description` are required; `license`, `compatibility`, `metadata`, and `allowed-tools` are optional) followed by a progressive-disclosure body.
+- `scripts/` - Optional executable code files.
+- `references/` - Optional deeper documentation (loaded on demand).
+
+#### Discovery Locations
+
+Skills are discovered from these locations, in priority order (project first, deduped by name, first match wins):
+
+- **Project level** (walk from cwd up to the git root): `.agents/skills/`, `.claude/skills/`, `.opencode/skills/`, `.gemini/skills/`
+- **Project library**: `./skills` (existing Python skill library dir; `SKILL.md` files are also scanned here)
+- **Custom dirs**: `skill_dirs` from `config.json` (resolved against the project root when relative)
+- **User level**: `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, `~/.config/opencode/skills/` (honoring `XDG_CONFIG_HOME`)
+
+Skills are indexed by name and description in the agent prompt. The full body is loaded on demand via the `load_markdown_skill` tool. Invalid skills are skipped with a warning.
+
+#### Interoperability
+
+Skills authored to this format (e.g. from Claude Code, Codex CLI, Gemini CLI, or OpenCode - the agentskills.io spec) work in hakase by dropping them into `.agents/skills/`.
+
+#### Coexistence with Python Skills
+
+Python skills (`skills.json` + `.py` files) are unchanged. On a name collision, the markdown skill wins in the prompt and the Python entry is omitted with a logged warning (the `.py` file remains importable).
+
+#### Operational Notes
+
+- Skills added mid-session require a restart to be discovered.
+- `.agents/skills/` is meant to be committed to the repository.
 
 ---
 

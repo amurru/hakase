@@ -384,11 +384,12 @@ func createSaveSkillTool() (tool.Tool, error) {
 type ListSkillsInput struct{}
 
 type ListSkillsOutput struct {
-	Skills []SkillMeta `json:"skills" doc:"List of all saved skills currently available in the registry"`
+	Skills          []SkillMeta         `json:"skills" doc:"List of all saved skills currently available in the registry"`
+	MarkdownSkills []MarkdownSkillMeta `json:"markdown_skills" doc:"List of discovered markdown skills"`
 }
 
 // createListSkillsTool allows agents to inspect all previously learned skills
-func createListSkillsTool() (tool.Tool, error) {
+func createListSkillsTool(cwd string, extraDirs []string, log LogFunc) (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, _ ListSkillsInput) (ListSkillsOutput, error) {
 		registryPath := filepath.Join("./skills", "skills.json")
 		data, err := os.ReadFile(registryPath)
@@ -401,31 +402,65 @@ func createListSkillsTool() (tool.Tool, error) {
 			return ListSkillsOutput{}, err
 		}
 
-		return ListSkillsOutput{Skills: registry.Skills}, nil
+		mdSkills := DiscoverMarkdownSkills(cwd, extraDirs, log)
+		mdMeta := make([]MarkdownSkillMeta, 0, len(mdSkills))
+		for _, s := range mdSkills {
+			mdMeta = append(mdMeta, MarkdownSkillMeta{
+				Name:        s.Frontmatter.Name,
+				Description: s.Frontmatter.Description,
+				Path:        s.Path,
+			})
+		}
+
+		return ListSkillsOutput{Skills: registry.Skills, MarkdownSkills: mdMeta}, nil
 	}
 
 	return functiontool.New(functiontool.Config{
 		Name:        "list_skills",
-		Description: "Lists all previously saved Python skills and their descriptions from the ./skills library.",
+		Description: "Lists all previously saved Python skills and discovered markdown skills (SKILL.md) with their descriptions.",
 	}, execHandler)
 }
 
-// getSkillsPrompt Reads skills.json and builds a string for the system prompt
-func getSkillsPrompt() string {
+// getSkillsPrompt reads skills.json and builds a string for the system prompt.
+// Python entries are rendered in the original format; markdown skills are
+// appended under the same "AVAILABLE PRE-LEARNED SKILLS:" header. On a
+// name collision the markdown skill wins: the Python entry is omitted and a
+// warning is logged.
+func getSkillsPrompt(mdSkills []MarkdownSkill, log LogFunc) string {
 	registryPath := filepath.Join("./skills", "skills.json")
 	data, err := os.ReadFile(registryPath)
-	if err != nil {
-		return "No pre-existing skills currently saved."
+	var registry SkillRegistry
+	if err == nil {
+		if jerr := json.Unmarshal(data, &registry); jerr != nil {
+			registry = SkillRegistry{}
+		}
 	}
 
-	var registry SkillRegistry
-	if err := json.Unmarshal(data, &registry); err != nil || len(registry.Skills) == 0 {
+	// Markdown skill names take precedence; colliding Python entries are
+	// omitted from the prompt (the .py file remains on disk and importable).
+	mdNames := make(map[string]bool, len(mdSkills))
+	for _, s := range mdSkills {
+		mdNames[s.Frontmatter.Name] = true
+	}
+
+	pythonSkills := make([]SkillMeta, 0, len(registry.Skills))
+	for _, s := range registry.Skills {
+		if mdNames[s.Name] {
+			if log != nil {
+				log(fmt.Sprintf("[skills] Skipping Python skill '%s' in prompt: collides with markdown skill", s.Name))
+			}
+			continue
+		}
+		pythonSkills = append(pythonSkills, s)
+	}
+
+	if len(pythonSkills) == 0 && len(mdSkills) == 0 {
 		return "No pre-existing skills currently saved."
 	}
 
 	var sb strings.Builder
 	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
-	for _, s := range registry.Skills {
+	for _, s := range pythonSkills {
 		sb.WriteString(
 			fmt.Sprintf(
 				"- Skill: '%s'\n  Description: %s\n  Import Usage: `from skills.%s import ...` or `import %s`\n\n",
@@ -436,7 +471,91 @@ func getSkillsPrompt() string {
 			),
 		)
 	}
+	for _, s := range mdSkills {
+		sb.WriteString(
+			fmt.Sprintf(
+				"- Skill: '%s' (markdown)\n  Description: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
+				s.Frontmatter.Name,
+				s.Frontmatter.Description,
+				s.Frontmatter.Name,
+			),
+		)
+	}
 	return sb.String()
+}
+
+// LoadMarkdownSkillInput is the input for the load_markdown_skill tool.
+type LoadMarkdownSkillInput struct {
+	Name string `json:"name" doc:"Name of the markdown skill to load"`
+}
+
+// LoadMarkdownSkillOutput is the output of the load_markdown_skill tool.
+type LoadMarkdownSkillOutput struct {
+	Name        string   `json:"name"        doc:"Name of the markdown skill"`
+	Description string   `json:"description" doc:"Short description of the skill from its SKILL.md frontmatter"`
+	Content     string   `json:"content"     doc:"Full instructions (SKILL.md body) of the skill"`
+	Location    string   `json:"location"    doc:"Absolute path to the skill's SKILL.md file"`
+	Scripts     []string `json:"scripts"     doc:"Files under the skill's scripts/ directory, relative to the skill directory"`
+}
+
+// createLoadMarkdownSkillTool creates a tool that loads the full instructions
+// and scripts of a markdown skill (SKILL.md) by name. The passed skills are
+// indexed at construction time; an unknown name triggers one fresh
+// re-discovery scan before failing.
+func createLoadMarkdownSkillTool(skills []MarkdownSkill, cwd string, extraDirs []string, log LogFunc) (tool.Tool, error) {
+	index := make(map[string]MarkdownSkill, len(skills))
+	for _, s := range skills {
+		index[s.Frontmatter.Name] = s
+	}
+
+	execHandler := func(ctx agent.Context, input LoadMarkdownSkillInput) (LoadMarkdownSkillOutput, error) {
+		skill, ok := index[input.Name]
+		if !ok {
+			// The skill may have been created after startup; re-scan the
+			// skill dirs once for freshness before giving up.
+			fresh := DiscoverMarkdownSkills(cwd, extraDirs, log)
+			index = make(map[string]MarkdownSkill, len(fresh))
+			for _, s := range fresh {
+				index[s.Frontmatter.Name] = s
+			}
+			skill, ok = index[input.Name]
+		}
+		if !ok {
+			return LoadMarkdownSkillOutput{}, fmt.Errorf("skill not found: %s", input.Name)
+		}
+		if log != nil {
+			log(fmt.Sprintf("[skills] Loaded markdown skill '%s'", input.Name))
+		}
+		return LoadMarkdownSkillOutput{
+			Name:        skill.Frontmatter.Name,
+			Description: skill.Frontmatter.Description,
+			Content:     skill.Body,
+			Location:    skill.Path,
+			Scripts:     skill.Scripts,
+		}, nil
+	}
+
+	return functiontool.New(functiontool.Config{
+		Name:        "load_markdown_skill",
+		Description: "Loads the full instructions and scripts of a markdown skill (SKILL.md) by name. Use this when the AVAILABLE PRE-LEARNED SKILLS list references a markdown skill.",
+	}, execHandler)
+}
+
+// buildOrchestratorInstruction returns the system instruction for the root
+// orchestrator agent, including the list of available skills so skill
+// discovery happens at the orchestrator level, not only after delegation to
+// the code_interpreter sub-agent.
+func buildOrchestratorInstruction(installedSkills string) string {
+	return `You are an AI research & analysis coordinator.
+- Use 'web_researcher' when real-time browser navigation or web search is required.
+- Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
+- Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
+- Synthesize responses from the specialists into a final markdown output.
+
+### SKILL REUSE:
+Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
+
+` + installedSkills + "\n\n" + buildTimeReminder()
 }
 
 func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner, error) {
@@ -487,13 +606,22 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	if err != nil {
 		return nil, err
 	}
-	listSkillsTool, err := createListSkillsTool()
+
+	// Discover markdown skills BEFORE building the prompt and the load tool
+	// so the prompt lists them and the tool index is fresh at startup.
+	cwd, _ := os.Getwd()
+	mdSkills := DiscoverMarkdownSkills(cwd, cfg.SkillDirs, log)
+	loadMarkdownSkillTool, err := createLoadMarkdownSkillTool(mdSkills, cwd, cfg.SkillDirs, log)
+	if err != nil {
+		return nil, err
+	}
+	listSkillsTool, err := createListSkillsTool(cwd, cfg.SkillDirs, log)
 	if err != nil {
 		return nil, err
 	}
 
 	// Load currently saved skills from disk
-	installedSkills := getSkillsPrompt()
+	installedSkills := getSkillsPrompt(mdSkills, log)
 
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
@@ -508,6 +636,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 			pythonTool,
 			saveSkillTool,
 			listSkillsTool,
+			loadMarkdownSkillTool,
 		}, // 👈 Attached skill tools here!
 	})
 	if err != nil {
@@ -523,13 +652,12 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction: `You are an AI research & analysis coordinator.
-- Use 'web_researcher' when real-time browser navigation or web search is required.
-- Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
-- Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
-- Synthesize responses from the specialists into a final markdown output.` + "\n\n" + buildTimeReminder(),
-		Model: model,
-		Tools: systemExecTools,
+		Instruction: buildOrchestratorInstruction(installedSkills),
+		Model:       model,
+		Tools: append([]tool.Tool{
+			listSkillsTool,
+			loadMarkdownSkillTool,
+		}, systemExecTools...),
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,

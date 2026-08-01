@@ -6,9 +6,9 @@ require (
 	charm.land/bubbles/v2 v2.1.1
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.5
-	google.golang.org/adk v1.5.1
 	google.golang.org/adk/v2 v2.1.0
 	google.golang.org/genai v1.63.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

@@ -62,6 +62,30 @@ func TestLoadConfigFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfigSkillDirs(t *testing.T) {
+	path := writeTempConfig(t, `{
+		"provider": "openai",
+		"model_name": "gpt-4o-mini",
+		"api_key": "file-key",
+		"skill_dirs": ["./custom-skills", "/abs/path"]
+	}`)
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: unexpected error: %v", err)
+	}
+
+	if len(cfg.SkillDirs) != 2 {
+		t.Fatalf("SkillDirs: expected 2 entries, got %v", cfg.SkillDirs)
+	}
+	if cfg.SkillDirs[0] != "./custom-skills" {
+		t.Errorf("SkillDirs[0]: expected %q, got %q", "./custom-skills", cfg.SkillDirs[0])
+	}
+	if cfg.SkillDirs[1] != "/abs/path" {
+		t.Errorf("SkillDirs[1]: expected %q, got %q", "/abs/path", cfg.SkillDirs[1])
+	}
+}
+
 func TestLoadConfigEnvOverride(t *testing.T) {
 	path := writeTempConfig(t, `{
 		"provider": "gemini",

@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	tea "charm.land/bubbletea/v2"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "skill" {
+		os.Exit(runSkillCLI(os.Args[2:]))
+	}
+
 	ctx := context.Background()
 
 	cfg, err := loadConfig("config.json")
