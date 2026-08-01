@@ -527,7 +527,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 - Use 'web_researcher' when real-time browser navigation or web search is required.
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
-- Synthesize responses from both specialists into a final markdown output.` + "\n\n" + buildTimeReminder(),
+- Synthesize responses from the specialists into a final markdown output.` + "\n\n" + buildTimeReminder(),
 		Model: model,
 		Tools: systemExecTools,
 		SubAgents: []agent.Agent{
