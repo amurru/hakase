@@ -23,7 +23,7 @@ import (
 	"google.golang.org/adk/v2/tool/mcptoolset"
 )
 
-const HermesSystemInstruction = `You are a high-autonomy, general-purpose research and navigation agent modeled after the Hermes Agent framework.
+const HakaseSystemInstruction = `You are a high-autonomy, general-purpose research and navigation agent modeled after the Hermes Agent framework.
 
 ### CORE OPERATIONAL PRINCIPLES:
 1. THINK BEFORE YOU ACT: Use internal reasoning before taking actions. Always analyze what information you have, what is missing, and what tool best bridges the gap.
@@ -231,7 +231,7 @@ func createDownloadTool() (tool.Tool, error) {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create request: %w", err)
 		}
 		// Modern User-Agent header to avoid basic scraping blocks
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HermesAgent/1.0")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HakaseAgent/1.0")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -471,7 +471,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
 		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction: HermesSystemInstruction + "\n\n" + buildTimeReminder(),
+		Instruction: HakaseSystemInstruction + "\n\n" + buildTimeReminder(),
 		Model:       model,
 		Tools:       []tool.Tool{downloadTool},
 		Toolsets:    []tool.Toolset{mcpToolset},
@@ -540,7 +540,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	}
 
 	return runner.New(runner.Config{
-		AppName:           "hermes_harness",
+		AppName:           "hakase_harness",
 		Agent:             rootAgent,
 		SessionService:    session.InMemoryService(),
 		AutoCreateSession: true,

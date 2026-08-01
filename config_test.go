@@ -70,10 +70,10 @@ func TestLoadConfigEnvOverride(t *testing.T) {
 		"base_url": "https://file.example.com/v1"
 	}`)
 
-	t.Setenv("HERMES_API_KEY", "env-key")
-	t.Setenv("HERMES_PROVIDER", "openai")
-	t.Setenv("HERMES_MODEL", "gpt-4o-mini")
-	t.Setenv("HERMES_BASE_URL", "https://env.example.com/v1")
+	t.Setenv("HAKASE_API_KEY", "env-key")
+	t.Setenv("HAKASE_PROVIDER", "openai")
+	t.Setenv("HAKASE_MODEL", "gpt-4o-mini")
+	t.Setenv("HAKASE_BASE_URL", "https://env.example.com/v1")
 
 	cfg, err := loadConfig(path)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestLoadConfigEnvOverridePartial(t *testing.T) {
 		"api_key": "file-key"
 	}`)
 
-	t.Setenv("HERMES_PROVIDER", "openai")
+	t.Setenv("HAKASE_PROVIDER", "openai")
 
 	cfg, err := loadConfig(path)
 	if err != nil {
@@ -120,10 +120,10 @@ func TestLoadConfigEnvOverridePartial(t *testing.T) {
 }
 
 func TestLoadConfigMissingFile(t *testing.T) {
-	t.Setenv("HERMES_API_KEY", "")
-	t.Setenv("HERMES_PROVIDER", "")
-	t.Setenv("HERMES_MODEL", "")
-	t.Setenv("HERMES_BASE_URL", "")
+	t.Setenv("HAKASE_API_KEY", "")
+	t.Setenv("HAKASE_PROVIDER", "")
+	t.Setenv("HAKASE_MODEL", "")
+	t.Setenv("HAKASE_BASE_URL", "")
 
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
 	if _, err := loadConfig(path); err == nil {
@@ -132,8 +132,8 @@ func TestLoadConfigMissingFile(t *testing.T) {
 }
 
 func TestLoadConfigEnvOnly(t *testing.T) {
-	t.Setenv("HERMES_API_KEY", "env-key")
-	t.Setenv("HERMES_PROVIDER", "openai")
+	t.Setenv("HAKASE_API_KEY", "env-key")
+	t.Setenv("HAKASE_PROVIDER", "openai")
 
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
 	cfg, err := loadConfig(path)

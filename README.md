@@ -1,4 +1,4 @@
-# hermes-go-agent
+# Hakase
 
 A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI, Google ADK orchestration with Gemini, MCP server integration, a Python code interpreter, and a self-evolving skill library.
 
@@ -9,7 +9,7 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
 
 ## Overview
 
-**hermes-go-agent** is a terminal-based AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents — a **Web Researcher** and a **Code Interpreter** — through a Google ADK root orchestrator, powered by Gemini models. The entire interaction happens inside a simple split-pane TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+**hakase** is a terminal-based AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents — a **Web Researcher** and a **Code Interpreter** — through a Google ADK root orchestrator, powered by Gemini models. The entire interaction happens inside a simple split-pane TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
 The agent can:
 
@@ -25,7 +25,7 @@ The agent can:
 ## Project Structure
 
 ```
-hermes-go-agent/
+hakase/
 ├── main.go                  # Entry point — loads config, boots the TUI and agent runner
 ├── agent.go                 # Core agent logic: ADK setup, sub-agents, tools (Python interpreter, downloader, skill manager)
 ├── ui.go                    # Bubble Tea TUI — split-pane layout with chat, log, and input views
@@ -123,7 +123,7 @@ The TUI will launch. Type your question and press `Enter`. The agent will resear
 
 ### Development Platform
 
-hermes-go-agent is currently being developed and tested on **Linux**.
+hakase is currently being developed and tested on **Linux**.
 
 ### Configuration
 
@@ -141,13 +141,13 @@ Edit `config.json`:
 
 ### Providers
 
-hermes-go-agent supports multiple LLM providers, selected via the `provider` field in `config.json`. An empty or missing `provider` value defaults to `gemini`, preserving previous behavior.
+hakase supports multiple LLM providers, selected via the `provider` field in `config.json`. An empty or missing `provider` value defaults to `gemini`, preserving previous behavior.
 
-| Provider             | Description                                        | Default Model      |
-| -------------------- | -------------------------------------------------- | ------------------ |
-| `gemini`             | Google Gemini                                      | `gemini-2.5-flash` |
-| `openai`             | OpenAI API                                         | `gpt-4o-mini`      |
-| `openai-compatible`  | OpenAI-compatible endpoints (Ollama, vLLM, etc.)    | `gpt-4o-mini`      |
+| Provider            | Description                                      | Default Model      |
+| ------------------- | ------------------------------------------------ | ------------------ |
+| `gemini`            | Google Gemini                                    | `gemini-2.5-flash` |
+| `openai`            | OpenAI API                                       | `gpt-4o-mini`      |
+| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | `gpt-4o-mini`      |
 
 When `model_name` is empty, the provider's default model is used.
 
@@ -203,14 +203,14 @@ Environment variable support is planned and has not landed yet. When implemented
 
 | Variable          | Overrides    |
 | ----------------- | ------------ |
-| `HERMES_API_KEY`  | `api_key`    |
-| `HERMES_PROVIDER` | `provider`   |
-| `HERMES_MODEL`    | `model_name` |
-| `HERMES_BASE_URL` | `base_url`   |
+| `HAKASE_API_KEY`  | `api_key`    |
+| `HAKASE_PROVIDER` | `provider`   |
+| `HAKASE_MODEL`    | `model_name` |
+| `HAKASE_BASE_URL` | `base_url`   |
 
 #### Migration note
 
-hermes-go-agent migrated from the ADK v1 stack to the ADK v2 stack (`google.golang.org/adk/v2`). The configuration format is unchanged, so existing `config.json` files continue to work without modification (backward compatible). An empty `provider` field still selects Gemini, matching the previous single-provider behavior.
+hakase migrated from the ADK v1 stack to the ADK v2 stack (`google.golang.org/adk/v2`). The configuration format is unchanged, so existing `config.json` files continue to work without modification (backward compatible). An empty `provider` field still selects Gemini, matching the previous single-provider behavior.
 
 #### Troubleshooting
 
@@ -250,15 +250,15 @@ Skills are stored in `./skills/` and can be extended by the agent at runtime.
 
 ## Dependencies
 
-| Package                                  | Purpose                               |
-| ---------------------------------------- | ------------------------------------- |
-| `charm.land/bubbletea/v2`                | TUI framework                         |
-| `charm.land/bubbles/v2`                  | TUI components (text input, viewport) |
-| `charm.land/lipgloss/v2`                 | Terminal styling                      |
+| Package                                  | Purpose                                   |
+| ---------------------------------------- | ----------------------------------------- |
+| `charm.land/bubbletea/v2`                | TUI framework                             |
+| `charm.land/bubbles/v2`                  | TUI components (text input, viewport)     |
+| `charm.land/lipgloss/v2`                 | Terminal styling                          |
 | `google.golang.org/adk/v2`               | Google Agent Development Kit (v2; was v1) |
-| `google.golang.org/genai`                | Gemini AI client                      |
-| `github.com/openai/openai-go/v3`         | OpenAI API client                     |
-| `github.com/modelcontextprotocol/go-sdk` | MCP client for browser automation     |
+| `google.golang.org/genai`                | Gemini AI client                          |
+| `github.com/openai/openai-go/v3`         | OpenAI API client                         |
+| `github.com/modelcontextprotocol/go-sdk` | MCP client for browser automation         |
 
 ---
 

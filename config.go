@@ -18,17 +18,17 @@ type Config struct {
 	ShowThinking      bool                   `json:"show_thinking,omitempty"`
 }
 
-// envConfigSet reports whether any HERMES_* environment override is present.
+// envConfigSet reports whether any HAKASE_* environment override is present.
 // loadConfig uses it to build a config purely from the environment when the
 // config file is missing.
 func envConfigSet() bool {
-	return os.Getenv("HERMES_API_KEY") != "" ||
-		os.Getenv("HERMES_PROVIDER") != "" ||
-		os.Getenv("HERMES_MODEL") != "" ||
-		os.Getenv("HERMES_BASE_URL") != ""
+	return os.Getenv("HAKASE_API_KEY") != "" ||
+		os.Getenv("HAKASE_PROVIDER") != "" ||
+		os.Getenv("HAKASE_MODEL") != "" ||
+		os.Getenv("HAKASE_BASE_URL") != ""
 }
 
-// loadConfig reads the JSON config file and applies HERMES_* environment
+// loadConfig reads the JSON config file and applies HAKASE_* environment
 // overrides on top. Environment variables win over file values. When the file
 // is missing, config can still come entirely from the environment; only when
 // neither a file nor any env var is present is the file error returned.
@@ -46,16 +46,16 @@ func loadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 
-	if v := os.Getenv("HERMES_API_KEY"); v != "" {
+	if v := os.Getenv("HAKASE_API_KEY"); v != "" {
 		cfg.APIKey = v
 	}
-	if v := os.Getenv("HERMES_PROVIDER"); v != "" {
+	if v := os.Getenv("HAKASE_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
-	if v := os.Getenv("HERMES_MODEL"); v != "" {
+	if v := os.Getenv("HAKASE_MODEL"); v != "" {
 		cfg.ModelName = v
 	}
-	if v := os.Getenv("HERMES_BASE_URL"); v != "" {
+	if v := os.Getenv("HAKASE_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
 

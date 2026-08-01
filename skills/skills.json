@@ -23,6 +23,12 @@
       "description": "Creates comprehensive, data-rich PDF reports from research findings using WeasyPrint. Generates charts with matplotlib and converts styled Markdown content to professional PDF documents with tables, images, and formatted text. Parameterized by report content, output path, and chart data.",
       "file_name": "pdf_report_generator.py",
       "saved_at": "2026-08-01T21:16:56+03:00"
+    },
+    {
+      "name": "create_stylish_todo_list",
+      "description": "Creates a beautiful, multi-page, printable to-do list PDF template with elegant minimalist design. Inspired by modern online design trends from sources like Canva, Pinterest, Adobe, and Vertex42. Includes daily tasks, weekly planning with Eisenhower Box, general project tasks, goal setting and reflection sections, and a monthly habit tracker. Parameterized by output path, page size, color scheme, and section inclusion options.",
+      "file_name": "create_stylish_todo_list.py",
+      "saved_at": "2026-08-02T00:17:00+03:00"
     }
   ]
 }

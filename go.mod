@@ -1,4 +1,4 @@
-module hermes-go-agent
+module amurru/hakase
 
 go 1.26.5
 
