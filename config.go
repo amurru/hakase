@@ -18,6 +18,9 @@ type Config struct {
 	ChatBufferSize    int                    `json:"chat_buffer_size,omitempty"`
 	ShowThinking      bool                   `json:"show_thinking,omitempty"`
 	TaskCheckpoint    bool                   `json:"task_checkpoint,omitempty"`
+	// ThinkingLevel is passed through to the provider as the thinking depth
+	// ("off", "low", "medium", "high", "maximum", "xhigh"); empty = provider default.
+	ThinkingLevel string `json:"thinking_level,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.

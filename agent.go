@@ -23,6 +23,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/mcptoolset"
+	"google.golang.org/genai"
 )
 
 const HakaseSystemInstruction = `You are a high-autonomy, general-purpose research and navigation agent modeled after the Hermes Agent framework.
@@ -1200,6 +1201,26 @@ Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches 
 ` + installedSkills + "\n\n" + buildTimeReminder()
 }
 
+// buildGenerationConfig maps the configured thinking level to a
+// GenerateContentConfig. "off" disables thoughts; a named level ("low",
+// "high", "maximum", "xhigh", ...) is passed through verbatim to the
+// provider. An empty level returns nil so the provider default applies.
+func buildGenerationConfig(level string) *genai.GenerateContentConfig {
+	if level == "" {
+		return nil
+	}
+	tc := &genai.ThinkingConfig{IncludeThoughts: true}
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "off":
+		tc.IncludeThoughts = false
+	case "on", "default":
+		// Provider default level; only IncludeThoughts is set.
+	default:
+		tc.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(strings.TrimSpace(level)))
+	}
+	return &genai.GenerateContentConfig{ThinkingConfig: tc}
+}
+
 func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner, error) {
 	provider, err := ProviderFactory(cfg)
 	if err != nil {
@@ -1229,13 +1250,17 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// Apply the configured thinking level to every agent sharing this model.
+	genCfg := buildGenerationConfig(cfg.ThinkingLevel)
+
 	researcherAgent, _ := llmagent.New(llmagent.Config{
-		Name:        "web_researcher",
-		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction: HakaseSystemInstruction + "\n\n" + buildTimeReminder(),
-		Model:       model,
-		Tools:       []tool.Tool{downloadTool},
-		Toolsets:    []tool.Toolset{mcpToolset},
+		Name:                  "web_researcher",
+		Description:           "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
+		Instruction:           HakaseSystemInstruction + "\n\n" + buildTimeReminder(),
+		Model:                 model,
+		Tools:                 []tool.Tool{downloadTool},
+		Toolsets:              []tool.Toolset{mcpToolset},
+		GenerateContentConfig: genCfg,
 	})
 
 	// Code Inpterpreter agent/ data analyst
@@ -1283,6 +1308,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 			listSkillsTool,
 			loadMarkdownSkillTool,
 		}, // 👈 Attached skill tools here!
+		GenerateContentConfig: genCfg,
 	})
 	if err != nil {
 		return nil, err
@@ -1296,11 +1322,12 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	}
 
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
-		Name:        "general_purpose",
-		Description: "General-purpose agent for file operations: reading, writing, editing, and searching files in the workspace.",
-		Instruction: GeneralPurposeSystemInstruction + "\n\n" + buildTimeReminder(),
-		Model:       model,
-		Tools:       fileOpsTools,
+		Name:                  "general_purpose",
+		Description:           "General-purpose agent for file operations: reading, writing, editing, and searching files in the workspace.",
+		Instruction:           GeneralPurposeSystemInstruction + "\n\n" + buildTimeReminder(),
+		Model:                 model,
+		Tools:                 fileOpsTools,
+		GenerateContentConfig: genCfg,
 	})
 	if err != nil {
 		return nil, err
@@ -1340,10 +1367,11 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	}
 
 	rootAgent, err := llmagent.New(llmagent.Config{
-		Name:        "orchestrator",
-		Description: "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction: buildOrchestratorInstruction(installedSkills),
-		Model:       model,
+		Name:                  "orchestrator",
+		Description:           "Main orchestrator agent that delegates research and analysis tasks.",
+		Instruction:           buildOrchestratorInstruction(installedSkills),
+		Model:                 model,
+		GenerateContentConfig: genCfg,
 		Tools: append([]tool.Tool{
 			listSkillsTool,
 			loadMarkdownSkillTool,

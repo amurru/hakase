@@ -32,6 +32,10 @@ func (s *stubProvider) ValidateConfig(cfg *Config) error { return nil }
 
 func (s *stubProvider) GetDefaultModel() string { return "stub-model" }
 
+func (s *stubProvider) GetModelInfo(ctx context.Context, cfg *Config, modelName string) (*ModelInfo, error) {
+	return &ModelInfo{Name: modelName, ContextWindow: 128000}, nil
+}
+
 func (s *stubProvider) Name() string { return s.name }
 
 func (s *stubProvider) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {

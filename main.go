@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 
@@ -45,9 +46,22 @@ func main() {
 		log.Fatalf("Failed to setup agent runner: %v", err)
 	}
 
-	m := newModel(ctx, r, cfg.ChatBufferSize, cfg.ShowThinking)
+	m := newModel(ctx, r, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
 	p = tea.NewProgram(&m)
 	m.program = p
+
+	// Fetch model capabilities (context window, thinking support) in the
+	// background so the status bar can show them once available.
+	go func() {
+		info, err := FetchModelInfo(ctx, cfg)
+		if err != nil {
+			logToUI(fmt.Sprintf("⚠️ model info unavailable: %v", err))
+			return
+		}
+		if p != nil {
+			p.Send(ModelInfoMsg{Info: info})
+		}
+	}()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)

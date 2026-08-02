@@ -39,6 +39,10 @@ var (
 			Foreground(lipgloss.Color("245")).
 			Padding(0, 1)
 
+	statusBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Padding(0, 1)
+
 	helpBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("63")).
@@ -81,6 +85,17 @@ type agentDoneMsg struct{}
 type agentStreamMsg struct {
 	Content  string
 	Thinking string
+}
+
+// ModelInfoMsg carries the provider-reported model capabilities once the
+// async model-info fetch completes.
+type ModelInfoMsg struct {
+	Info *ModelInfo
+}
+
+// UsageUpdateMsg carries the token usage of the most recent completed turn.
+type UsageUpdateMsg struct {
+	Usage *genai.GenerateContentResponseUsageMetadata
 }
 
 // StatusLogMsg represents a background status message sent to the side pane
@@ -130,6 +145,11 @@ type appModel struct {
 	isProcessing bool
 	showThinking bool
 	showHelp     bool
+
+	modelInfo     *ModelInfo
+	modelName     string
+	thinkingLevel string
+	usage         *genai.GenerateContentResponseUsageMetadata
 }
 
 func newModel(
@@ -137,6 +157,8 @@ func newModel(
 	r *runner.Runner,
 	chatBufferSize int,
 	showThinking bool,
+	modelName string,
+	thinkingLevel string,
 ) appModel {
 	ti := textinput.New()
 	ti.Placeholder = "Ask me anything and I will do it..."
@@ -156,6 +178,8 @@ func newModel(
 		logLines:       make([]string, 0),
 		taskLines:      make([]string, 0),
 		showThinking:   showThinking,
+		modelName:      modelName,
+		thinkingLevel:  thinkingLevel,
 	}
 }
 
@@ -330,15 +354,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.ready {
 			m.chatViewport = viewport.New(
 				viewport.WithWidth(leftWidth),
-				viewport.WithHeight(m.height-6),
+				viewport.WithHeight(m.height-7),
 			)
 			m.logViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight((m.height-6)*2/3),
+				viewport.WithHeight((m.height-7)*2/3),
 			)
 			m.taskViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight((m.height-6)/3+2),
+				viewport.WithHeight((m.height-7)/3+1),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
@@ -349,11 +373,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 		} else {
 			m.chatViewport.SetWidth(leftWidth)
-			m.chatViewport.SetHeight(m.height - 6)
+			m.chatViewport.SetHeight(m.height - 7)
 			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight((m.height - 6) * 2 / 3)
+			m.logViewport.SetHeight((m.height - 7) * 2 / 3)
 			m.taskViewport.SetWidth(rightWidth)
-			m.taskViewport.SetHeight((m.height-6)/3 + 1)
+			m.taskViewport.SetHeight((m.height-7)/3 + 1)
 		}
 
 		m.input.SetWidth(leftWidth - 3)
@@ -407,6 +431,20 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTaskBoard()
 	case agentDoneMsg:
 		m.isProcessing = false
+	case ModelInfoMsg:
+		if msg.Info != nil {
+			m.modelInfo = msg.Info
+			if msg.Info.Name != "" {
+				m.modelName = msg.Info.Name
+			}
+			if msg.Info.ThinkingLevel != "" {
+				m.thinkingLevel = msg.Info.ThinkingLevel
+			}
+		}
+	case UsageUpdateMsg:
+		if msg.Usage != nil {
+			m.usage = msg.Usage
+		}
 	}
 
 	var vpCmd tea.Cmd
@@ -715,7 +753,7 @@ func (m *appModel) View() tea.View {
 		rightCol,
 	)
 
-	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, content, m.hintBar()))
+	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), content, m.hintBar()))
 	v.MouseMode = tea.MouseModeCellMotion
 	v.AltScreen = true
 	return v
@@ -734,6 +772,86 @@ func (m *appModel) hintBar() string {
 	}
 	hints := "ctrl+/ help · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
 	return hintBarStyle.Render(status + "  │  " + hints)
+}
+
+// statusBar renders the header line: model name, context window, usage, thinking level.
+func (m *appModel) statusBar() string {
+	parts := []string{"🧠 " + m.modelName}
+
+	limit := int64(0)
+	if m.modelInfo != nil {
+		limit = m.modelInfo.ContextWindow
+	}
+	if limit > 0 {
+		parts = append(parts, "ctx "+formatTokens(limit))
+		pct, used := m.usagePercent()
+		if used > 0 {
+			parts = append(parts, fmt.Sprintf("%d%% %s", pct, usageBar(pct)))
+		}
+	}
+	parts = append(parts, "thinking "+m.thinkingStatus())
+
+	return statusBarStyle.Render(strings.Join(parts, "  │  "))
+}
+
+// usagePercent returns the context-window usage percentage and used tokens,
+// falling back to prompt+candidates when the total is unavailable.
+func (m *appModel) usagePercent() (int, int64) {
+	limit := int64(0)
+	if m.modelInfo != nil {
+		limit = m.modelInfo.ContextWindow
+	}
+	if limit <= 0 || m.usage == nil {
+		return 0, 0
+	}
+	used := int64(m.usage.TotalTokenCount)
+	if used <= 0 {
+		used = int64(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
+	}
+	pct := int(used * 100 / limit)
+	if pct > 100 {
+		pct = 100
+	}
+	return pct, used
+}
+
+// thinkingStatus renders the thinking level as reported by the provider.
+func (m *appModel) thinkingStatus() string {
+	level := m.thinkingLevel
+	if m.modelInfo != nil && m.modelInfo.ThinkingLevel != "" {
+		level = m.modelInfo.ThinkingLevel
+	}
+	if m.modelInfo != nil && !m.modelInfo.ThinkingEnabled && level == "" {
+		return "off"
+	}
+	switch {
+	case level == "" || strings.EqualFold(level, "on"):
+		return "on"
+	case strings.EqualFold(level, "off"):
+		return "off"
+	default:
+		return strings.ToLower(level)
+	}
+}
+
+func formatTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dK", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+func usageBar(pct int) string {
+	const cells = 10
+	filled := pct * cells / 100
+	if filled > cells {
+		filled = cells
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", cells-filled)
 }
 
 // helpView renders the full-screen keyboard shortcut overlay.
@@ -801,6 +919,7 @@ type helpBinding struct {
 func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string) {
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
+	var lastUsage *genai.GenerateContentResponseUsageMetadata
 	for ev, err := range r.Run(ctx, "user-1", "session-1", msg, agent.RunConfig{}) {
 		if err != nil {
 			if p != nil {
@@ -808,7 +927,13 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 			}
 			break
 		}
-		if ev != nil && ev.Content != nil {
+		if ev == nil {
+			continue
+		}
+		if ev.UsageMetadata != nil {
+			lastUsage = ev.UsageMetadata
+		}
+		if ev.Content != nil {
 			for _, part := range ev.Content.Parts {
 				if part.Text != "" && p != nil {
 					if part.Thought {
@@ -840,6 +965,9 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 
 	if p != nil {
 		p.Send(agentStreamMsg{})
+		if lastUsage != nil {
+			p.Send(UsageUpdateMsg{Usage: lastUsage})
+		}
 		p.Send(agentDoneMsg{})
 	}
 }

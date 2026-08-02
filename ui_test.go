@@ -7,11 +7,13 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"google.golang.org/genai"
 )
 
 func newTestModel(t *testing.T) *appModel {
 	t.Helper()
-	m := newModel(context.Background(), nil, 100, true)
+	m := newModel(context.Background(), nil, 100, true, "test-model", "")
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return model.(*appModel)
 }
@@ -339,5 +341,133 @@ func TestLogDoesNotYankWhenScrolledAway(t *testing.T) {
 	mm = model.(*appModel)
 	if got := mm.logViewport.YOffset(); got != before {
 		t.Fatalf("new log line must not yank the view while reading history (was %d, got %d)", before, got)
+	}
+}
+
+func TestStatusBarShowsModelName(t *testing.T) {
+	m := newTestModel(t)
+	m.modelName = "poolside/laguna-s-2.1:free"
+	view := m.statusBar()
+	if !strings.Contains(view, "poolside/laguna-s-2.1:free") {
+		t.Fatalf("status bar missing model name:\n%s", view)
+	}
+}
+
+func TestStatusBarShowsContextAndUsage(t *testing.T) {
+	m := newTestModel(t)
+	m.modelName = "test-model"
+	m.modelInfo = &ModelInfo{Name: "test-model", ContextWindow: 200_000}
+	m.usage = &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     84_000,
+		CandidatesTokenCount: 16_000,
+		TotalTokenCount:      100_000,
+	}
+	view := m.statusBar()
+	for _, want := range []string{"ctx 200K", "50%"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("status bar missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestStatusBarShowsThinkingLevel(t *testing.T) {
+	m := newTestModel(t)
+	m.modelName = "test-model"
+	m.thinkingLevel = "maximum"
+	view := m.statusBar()
+	if !strings.Contains(view, "thinking maximum") {
+		t.Fatalf("status bar missing thinking level:\n%s", view)
+	}
+}
+
+func TestStatusBarFitsWithinTerminalWidth(t *testing.T) {
+	m := newTestModel(t)
+	m.modelName = "poolside/laguna-s-2.1:free"
+	m.modelInfo = &ModelInfo{Name: "poolside/laguna-s-2.1:free", ContextWindow: 240_000, ThinkingLevel: "xhigh"}
+	m.usage = &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     50_000,
+		CandidatesTokenCount: 50_000,
+		TotalTokenCount:      100_000,
+	}
+	view := m.statusBar()
+	if n := strings.Count(view, "\n"); n > 0 {
+		t.Fatalf("status bar must be a single line, got %d newlines:\n%s", n, view)
+	}
+}
+
+func TestFormatTokens(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{999, "999"},
+		{1_000, "1K"},
+		{131_072, "131K"},
+		{1_000_000, "1.0M"},
+	}
+	for _, c := range cases {
+		if got := formatTokens(c.in); got != c.want {
+			t.Fatalf("formatTokens(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestUsagePercent(t *testing.T) {
+	m := newTestModel(t)
+	m.modelInfo = &ModelInfo{Name: "m", ContextWindow: 100_000}
+	m.usage = &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     30_000,
+		CandidatesTokenCount: 20_000,
+		TotalTokenCount:      50_000,
+	}
+	pct, used := m.usagePercent()
+	if pct != 50 || used != 50_000 {
+		t.Fatalf("usagePercent() = (%d, %d), want (50, 50000)", pct, used)
+	}
+
+	m.usage = &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     70_000,
+		CandidatesTokenCount: 50_000,
+	}
+	pct, used = m.usagePercent()
+	if pct != 100 || used != 120_000 {
+		t.Fatalf("usagePercent fallback = (%d, %d), want (100, 120000)", pct, used)
+	}
+
+	m.usage = nil
+	pct, used = m.usagePercent()
+	if pct != 0 || used != 0 {
+		t.Fatalf("usagePercent without usage = (%d, %d), want (0, 0)", pct, used)
+	}
+}
+
+func TestThinkingStatus(t *testing.T) {
+	m := newTestModel(t)
+
+	m.thinkingLevel = ""
+	if got := m.thinkingStatus(); got != "on" {
+		t.Fatalf("empty level = %q, want on", got)
+	}
+
+	m.thinkingLevel = "off"
+	if got := m.thinkingStatus(); got != "off" {
+		t.Fatalf("off level = %q, want off", got)
+	}
+
+	m.thinkingLevel = "maximum"
+	if got := m.thinkingStatus(); got != "maximum" {
+		t.Fatalf("provider level = %q, want maximum", got)
+	}
+
+	m.modelInfo = &ModelInfo{Name: "m", ThinkingEnabled: false, ThinkingLevel: ""}
+	m.thinkingLevel = ""
+	if got := m.thinkingStatus(); got != "off" {
+		t.Fatalf("model without thinking = %q, want off", got)
+	}
+
+	m.modelInfo = &ModelInfo{Name: "m", ThinkingEnabled: true, ThinkingLevel: "HIGH"}
+	m.thinkingLevel = ""
+	if got := m.thinkingStatus(); got != "high" {
+		t.Fatalf("model thinking level = %q, want high", got)
 	}
 }
