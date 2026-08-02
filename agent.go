@@ -1211,7 +1211,7 @@ func buildOrchestratorInstruction(installedSkills string) string {
 	return `You are an AI research & analysis coordinator.
 - Use 'web_researcher' when real-time browser navigation or web search is required.
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
-- Use 'general_purpose' when file operations are required: reading files, writing files, making targeted edits, or searching file contents.
+- Use 'general_purpose' for complex file operations or workspace tasks that benefit from an isolated sub-agent context. You can also perform file operations directly using your own read_file, write_file, patch, and search_files tools.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
 - Use 'delegate_task' to spawn an isolated sub-agent with its own task-scoped session and restricted toolset. This is useful when a task requires a different specialist agent or when you want to run work in an isolated context. The sub-agent cannot call delegate_task, clarify, memory, send_message, or cronjob.
 - Synthesize responses from the specialists into a final markdown output.
@@ -1340,8 +1340,8 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
-	// File operation tools (read/write/patch/search), attached to a
-	// general-purpose sub-agent so the orchestrator can delegate file tasks.
+	// File operation tools (read/write/patch/search), shared between
+	// the orchestrator (direct use) and the general-purpose sub-agent (delegation).
 	fileOpsTools, err := createFileOpsTools(log, nil, "")
 	if err != nil {
 		return nil, err
@@ -1349,7 +1349,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "general_purpose",
-		Description:           "General-purpose agent for file operations: reading, writing, editing, and searching files in the workspace.",
+		Description:           "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
 		Instruction:           GeneralPurposeSystemInstruction + "\n\n" + buildTimeReminder(),
 		Model:                 model,
 		Tools:                 fileOpsTools,
@@ -1414,7 +1414,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 			deleteTaskT,
 			archiveTaskT,
 			delegateTaskT,
-		}, systemExecTools...),
+		}, append(fileOpsTools, systemExecTools...)...),
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,
