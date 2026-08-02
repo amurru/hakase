@@ -18,6 +18,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
@@ -149,7 +150,10 @@ func getVenvPython(log LogFunc) (string, error) {
 }
 
 // createPythonTool returns an ADK tool that executes Python code in a temporary directory.
-func createPythonTool(log LogFunc) (tool.Tool, error) {
+// If parentEnv is non-nil, it is used as the environment for subprocess execution
+// instead of os.Environ(). This ensures the sub-agent can find Python even when
+// the ADK runner strips environment variables.
+func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	// Function tool handler signature takes agent.Context
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		pyBin, err := getVenvPython(log)
@@ -171,6 +175,12 @@ func createPythonTool(log LogFunc) (tool.Tool, error) {
 		runScript := func() (string, string) {
 			cmd := exec.CommandContext(ctx, pyBin, scriptPath)
 			cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
+			// If a parent environment was captured at delegation time,
+			// merge it on top so the sub-agent inherits the parent's
+			// environment even if the ADK runner strips env vars.
+			if len(parentEnv) > 0 && parentEnv[0] != nil {
+				cmd.Env = append(parentEnv[0], cmd.Env...)
+			}
 			out, errOut := cmd.CombinedOutput()
 			errStr := ""
 			if errOut != nil {
@@ -204,6 +214,10 @@ func createPythonTool(log LogFunc) (tool.Tool, error) {
 					)
 				}
 				installCmd := exec.CommandContext(ctx, pipBin, "install", missingPkg)
+				// Merge parent env into the pip install command too
+				if len(parentEnv) > 0 && parentEnv[0] != nil {
+					installCmd.Env = append(parentEnv[0], installCmd.Env...)
+				}
 				_ = installCmd.Run()
 
 				if log != nil {
@@ -310,6 +324,15 @@ func createDownloadTool() (tool.Tool, error) {
 
 // currentConfig holds the loaded configuration for checkpoint access
 var currentConfig *Config
+
+// currentModel holds the provider model instance for sub-agent delegation.
+// Set during setupRunner so delegate_task can create sub-agents with the
+// same model without needing to re-create the provider.
+var currentModel model.LLM
+
+// currentMCPToolset holds the MCP toolset for sub-agent delegation.
+// Set during setupRunner so delegate_task can pass it to sub-agents.
+var currentMCPToolset tool.Toolset
 
 // taskBoardNotify is set by main and pushes TaskUpdateMsg to the TUI on task mutations.
 var taskBoardNotify func(action string, task TaskMeta)
@@ -1190,6 +1213,7 @@ func buildOrchestratorInstruction(installedSkills string) string {
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
 - Use 'general_purpose' when file operations are required: reading files, writing files, making targeted edits, or searching file contents.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
+- Use 'delegate_task' to spawn an isolated sub-agent with its own task-scoped session and restricted toolset. This is useful when a task requires a different specialist agent or when you want to run work in an isolated context. The sub-agent cannot call delegate_task, clarify, memory, send_message, or cronjob.
 - Synthesize responses from the specialists into a final markdown output.
 
 ### TASK BOARD:
@@ -1237,6 +1261,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	if err != nil {
 		return nil, err
 	}
+	currentModel = model
 
 	mcpToolset, err := mcptoolset.New(mcptoolset.Config{
 		Endpoint: cfg.MCPServerURL,
@@ -1244,6 +1269,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	if err != nil {
 		return nil, err
 	}
+	currentMCPToolset = mcpToolset
 	// Researcher agent
 	downloadTool, err := createDownloadTool()
 	if err != nil {
@@ -1316,7 +1342,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 
 	// File operation tools (read/write/patch/search), attached to a
 	// general-purpose sub-agent so the orchestrator can delegate file tasks.
-	fileOpsTools, err := createFileOpsTools(log)
+	fileOpsTools, err := createFileOpsTools(log, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1334,7 +1360,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	}
 
 	// Host system execution tools (arbitrary command/executable execution).
-	systemExecTools, err := createSystemExecTools(log)
+	systemExecTools, err := createSystemExecTools(log, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1366,6 +1392,12 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// delegate_task tool for isolated sub-agent execution.
+	delegateTaskT, err := registerDelegateTaskTool(log)
+	if err != nil {
+		return nil, err
+	}
+
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "orchestrator",
 		Description:           "Main orchestrator agent that delegates research and analysis tasks.",
@@ -1381,6 +1413,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 			getTaskT,
 			deleteTaskT,
 			archiveTaskT,
+			delegateTaskT,
 		}, systemExecTools...),
 		SubAgents: []agent.Agent{
 			researcherAgent,

@@ -40,7 +40,7 @@ func propDescription(t *testing.T, tl declarer, name string) string {
 // with a doc:"..." tag in the file-ops input structs appears as a property
 // description in the tool declaration sent to the model.
 func TestNewDocToolInjectsDescriptions(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

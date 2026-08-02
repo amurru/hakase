@@ -92,14 +92,24 @@ type SearchFilesOutput struct {
 
 // createFileOpsTools builds the four-tool file operations toolset shared by
 // the general-purpose agent. All tools operate on absolute or
-// working-directory-relative paths.
-func createFileOpsTools(log LogFunc) ([]tool.Tool, error) {
+// working-directory-relative paths. When a sessionManager and taskID are
+// provided, file operations are scoped to the per-task sandbox root.
+func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID string) ([]tool.Tool, error) {
+	// Determine the sandbox root for this task, if a session
+	// manager and task ID are available.
+	sandboxRoot := ""
+	if sessionManager != nil && taskID != "" {
+		fos := sessionManager.GetFileOps(taskID, "")
+		if fos != nil {
+			sandboxRoot = fos.RootDir
+		}
+	}
 	// read_file: read whole files or a line range.
 	readTool, err := newDocTool(functiontool.Config{
 		Name:        "read_file",
 		Description: "Reads the contents of a file, optionally restricted to a line range (offset/limit) for large files.",
 	}, func(ctx agent.Context, input ReadFileInput) (ReadFileOutput, error) {
-		path, err := resolvePath(input.Path)
+		path, err := resolveTaskPath(input.Path, sandboxRoot)
 		if err != nil {
 			return ReadFileOutput{}, err
 		}
@@ -150,7 +160,7 @@ func createFileOpsTools(log LogFunc) ([]tool.Tool, error) {
 		Name:        "write_file",
 		Description: "Creates a new file with the given content (creating parent directories as needed), or overwrites an existing file when overwrite=true.",
 	}, func(ctx agent.Context, input WriteFileInput) (WriteFileOutput, error) {
-		path, err := resolvePath(input.Path)
+		path, err := resolveTaskPath(input.Path, sandboxRoot)
 		if err != nil {
 			return WriteFileOutput{}, err
 		}
@@ -200,7 +210,7 @@ func createFileOpsTools(log LogFunc) ([]tool.Tool, error) {
 		if input.OldString == "" {
 			return PatchOutput{}, fmt.Errorf("old_string must not be empty")
 		}
-		path, err := resolvePath(input.Path)
+		path, err := resolveTaskPath(input.Path, sandboxRoot)
 		if err != nil {
 			return PatchOutput{}, err
 		}
@@ -252,7 +262,7 @@ func createFileOpsTools(log LogFunc) ([]tool.Tool, error) {
 		if root == "" {
 			root = "."
 		}
-		rootAbs, err := resolvePath(root)
+		rootAbs, err := resolveTaskPath(root, sandboxRoot)
 		if err != nil {
 			return SearchFilesOutput{}, err
 		}
@@ -316,6 +326,19 @@ func createFileOpsTools(log LogFunc) ([]tool.Tool, error) {
 	}
 
 	return []tool.Tool{readTool, writeTool, patchTool, searchTool}, nil
+}
+
+// resolveTaskPath scopes a path to the task sandbox root when set,
+// otherwise falls back to normal absolute resolution.
+func resolveTaskPath(path string, sandboxRoot string) (string, error) {
+	if sandboxRoot == "" {
+		return resolvePath(path)
+	}
+	abs, err := filepath.Abs(filepath.Join(sandboxRoot, path))
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path %q within sandbox %q: %w", path, sandboxRoot, err)
+	}
+	return abs, nil
 }
 
 // resolvePath converts a possibly-relative path into an absolute path.

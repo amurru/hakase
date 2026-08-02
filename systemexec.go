@@ -277,9 +277,21 @@ type SystemExecListOutput struct {
 // createSystemExecTools builds the five-tool host system execution toolset.
 // All tools share a single systemExecManager instance so background processes
 // started by system_exec_start can be polled, listed, and killed.
-func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
+// The sessionManager and taskID parameters enable task-scoped isolation:
+// terminal sessions are keyed by taskID and CWD is resolved per-task.
+func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID string) ([]tool.Tool, error) {
 	m := &systemExecManager{
 		procs: make(map[int64]*runningProcess),
+	}
+
+	// Resolve per-task CWD from session manager if available,
+	// otherwise fall back to the agent process working directory.
+	taskCWD := ""
+	if sessionManager != nil && taskID != "" {
+		taskCWD = sessionManager.GetCWD(taskID, "")
+	}
+	if taskCWD == "" {
+		taskCWD, _ = os.Getwd()
 	}
 
 	// system_exec: synchronous fire-and-wait execution.
@@ -289,7 +301,11 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
 		procID := m.allocateID()
-		cmd, err := buildExecCommand(ctx, input.Command, input.Args, input.WorkingDir, input.Env)
+		workingDir := input.WorkingDir
+		if workingDir == "" {
+			workingDir = taskCWD
+		}
+		cmd, err := buildExecCommand(ctx, input.Command, input.Args, workingDir, input.Env)
 		if err != nil {
 			return SystemExecOutput{ProcessID: procID}, err
 		}
@@ -371,7 +387,11 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 		Name:        "system_exec_start",
 		Description: "Starts a system command or executable on the host machine in the background, registers it in the process registry, and returns immediately with a process ID for later polling with system_exec_status, killing with system_exec_kill, or listing with system_exec_list.",
 	}, func(ctx agent.Context, input SystemExecStartInput) (SystemExecStartOutput, error) {
-		cmd, err := buildExecCommand(ctx, input.Command, input.Args, input.WorkingDir, input.Env)
+		workingDir := input.WorkingDir
+		if workingDir == "" {
+			workingDir = taskCWD
+		}
+		cmd, err := buildExecCommand(ctx, input.Command, input.Args, workingDir, input.Env)
 		if err != nil {
 			return SystemExecStartOutput{Started: false, Message: err.Error()}, err
 		}

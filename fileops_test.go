@@ -38,7 +38,7 @@ func writeTempFile(t *testing.T, dir, name, content string) string {
 }
 
 func TestReadFileToolFull(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestReadFileToolFull(t *testing.T) {
 }
 
 func TestReadFileToolRange(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestReadFileToolRange(t *testing.T) {
 }
 
 func TestReadFileToolMissing(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestReadFileToolMissing(t *testing.T) {
 }
 
 func TestWriteFileToolCreates(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestWriteFileToolCreates(t *testing.T) {
 }
 
 func TestWriteFileToolOverwriteGuard(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestWriteFileToolOverwriteGuard(t *testing.T) {
 }
 
 func TestPatchToolReplaceFirst(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestPatchToolReplaceFirst(t *testing.T) {
 }
 
 func TestPatchToolReplaceAll(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestPatchToolReplaceAll(t *testing.T) {
 }
 
 func TestPatchToolNotFound(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -238,7 +238,7 @@ func buildSearchSandbox(t *testing.T) string {
 }
 
 func TestSearchFilesToolContent(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestSearchFilesToolContent(t *testing.T) {
 }
 
 func TestSearchFilesToolFilesWithMatches(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestSearchFilesToolFilesWithMatches(t *testing.T) {
 }
 
 func TestSearchFilesToolCount(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestSearchFilesToolCount(t *testing.T) {
 }
 
 func TestSearchFilesToolIncludeFilter(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestSearchFilesToolIncludeFilter(t *testing.T) {
 }
 
 func TestSearchFilesToolHeadLimit(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestSearchFilesToolHeadLimit(t *testing.T) {
 }
 
 func TestSearchFilesToolErrors(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestSearchFilesToolErrors(t *testing.T) {
 }
 
 func TestFileOpsToolsetNames(t *testing.T) {
-	tools, err := createFileOpsTools(nil)
+	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatalf("createFileOpsTools: %v", err)
 	}

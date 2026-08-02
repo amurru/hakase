@@ -5,6 +5,14 @@ import (
 	"os"
 )
 
+type EnvOverrideConfig struct {
+	DockerImage   string `json:"docker_image,omitempty"`
+	ModalImage    string `json:"modal_image,omitempty"`
+	EnvType       string `json:"env_type,omitempty"`       // "local", "docker", "ssh"
+	CPULimit      int    `json:"cpu_limit,omitempty"`
+	MemoryLimitMB int    `json:"memory_limit_mb,omitempty"`
+}
+
 type Config struct {
 	Provider          string                 `json:"provider"`
 	ModelName         string                 `json:"model_name"`
@@ -21,6 +29,9 @@ type Config struct {
 	// ThinkingLevel is passed through to the provider as the thinking depth
 	// ("off", "low", "medium", "high", "maximum", "xhigh"); empty = provider default.
 	ThinkingLevel string `json:"thinking_level,omitempty"`
+	// EnvOverrides maps task IDs or agent names to environment
+	// isolation configurations for delegated sub-agents.
+	EnvOverrides map[string]EnvOverrideConfig `json:"env_overrides,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.

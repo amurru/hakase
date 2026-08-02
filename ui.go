@@ -109,6 +109,15 @@ type TaskUpdateMsg struct {
 	Action string // "created", "updated", "completed", "failed", "claimed"
 }
 
+// DelegationProgressMsg represents a delegation task progress update
+// sent from a sub-agent to the orchestrator TUI.
+type DelegationProgressMsg struct {
+	TaskID  string
+	Agent   string
+	Status  string // "started", "completed", "failed"
+	Message string
+}
+
 // TaskBoardMsg represents a full task board refresh
 type TaskBoardMsg struct {
 	Tasks []TaskMeta
@@ -268,7 +277,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatScrollOffset = m.maxChatScrollOffset()
 				m.renderChatViewport()
 
-				go runAgentTask(m.ctx, m.r, m.program, prompt)
+				go runAgentTask(m.ctx, m.r, m.program, prompt, GenerateTaskID())
 			}
 		case "up", "k":
 			if m.focus == chatFocus {
@@ -425,6 +434,8 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StatusLogMsg:
 		m.appendLog(msg.Text)
+	case DelegationProgressMsg:
+		m.appendLog(fmt.Sprintf("🔀 [delegate %s] %s: %s", msg.TaskID, msg.Agent, msg.Message))
 	case TaskUpdateMsg:
 		m.refreshTaskBoard()
 	case TaskBoardMsg:
@@ -916,11 +927,11 @@ type helpBinding struct {
 	desc string
 }
 
-func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string) {
+func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string, taskID string) {
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
-	for ev, err := range r.Run(ctx, "user-1", "session-1", msg, agent.RunConfig{}) {
+	for ev, err := range r.Run(ctx, "user-1", taskID, msg, agent.RunConfig{}) {
 		if err != nil {
 			if p != nil {
 				p.Send(agentLogMsg(fmt.Sprintf("❌ Error: %v", err)))
