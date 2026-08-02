@@ -159,6 +159,14 @@ type appModel struct {
 	modelName     string
 	thinkingLevel string
 	usage         *genai.GenerateContentResponseUsageMetadata
+
+	// Session management
+	sessionService       *SessionService
+	showSessionList      bool
+	sessionListIndex     int
+	sessionListFilter    string
+	sessionListSessions  []SessionSummary
+	sessionListFiltered  []SessionSummary
 }
 
 func newModel(
@@ -189,7 +197,22 @@ func newModel(
 		showThinking:   showThinking,
 		modelName:      modelName,
 		thinkingLevel:  thinkingLevel,
+		sessionService: initSessionService(),
 	}
+}
+
+// initSessionService initializes the session service and attempts
+// to restore the most recently updated non-archived session.
+func initSessionService() *SessionService {
+	store, err := NewSessionStore(sessionsDir)
+	if err != nil {
+		return nil
+	}
+	svc, err := NewSessionService(store)
+	if err != nil {
+		return nil
+	}
+	return svc
 }
 
 func (m *appModel) Init() tea.Cmd {
@@ -326,7 +349,17 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case taskFocus:
 				m.taskViewport.GotoBottom()
 			}
+		// Session management keybindings.
+		case "ctrl+n":
+			return m, m.newSession()
+		case "ctrl+s":
+			return m, m.toggleSessionList()
 		}
+
+	// Handle session list modal keybindings when the modal is open.
+	if m.showSessionList {
+		return m, m.handleSessionListKey(key)
+	}
 
 	case tea.MouseWheelMsg:
 		switch m.focus {
@@ -442,6 +475,13 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTaskBoard()
 	case agentDoneMsg:
 		m.isProcessing = false
+		// Save the final agent message to the session.
+		if m.sessionService != nil && len(m.chatHistory) > 0 {
+			last := m.chatHistory[len(m.chatHistory)-1]
+			if last.Role == "agent" {
+				_ = m.sessionService.AddMessage("agent", last.Content, last.Thinking)
+			}
+		}
 	case ModelInfoMsg:
 		if msg.Info != nil {
 			m.modelInfo = msg.Info
@@ -767,6 +807,12 @@ func (m *appModel) View() tea.View {
 	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), content, m.hintBar()))
 	v.MouseMode = tea.MouseModeCellMotion
 	v.AltScreen = true
+
+	// Render session list modal on top if open.
+	if m.showSessionList {
+		return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), content, m.sessionListView(), m.hintBar()))
+	}
+
 	return v
 }
 
@@ -981,4 +1027,266 @@ func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt 
 		}
 		p.Send(agentDoneMsg{})
 	}
+}
+
+// newSession clears the active session and starts fresh.
+func (m *appModel) newSession() tea.Cmd {
+	if m.sessionService == nil {
+		return nil
+	}
+	m.sessionService.ClearActiveSession()
+	m.chatHistory = make([]ChatMessage, 0)
+	m.rebuildRenderedLines()
+	m.chatScrollOffset = 0
+	m.renderChatViewport()
+	m.appendLog("New session started")
+	return nil
+}
+
+// toggleSessionList opens or closes the session list modal.
+func (m *appModel) toggleSessionList() tea.Cmd {
+	if m.showSessionList {
+		m.showSessionList = false
+		m.sessionListFilter = ""
+		return nil
+	}
+	m.showSessionList = true
+	m.sessionListIndex = 0
+	m.sessionListFilter = ""
+	if m.sessionService != nil {
+		summaries, err := m.sessionService.ListSessions()
+		if err == nil {
+			m.sessionListSessions = summaries
+		}
+	}
+	m.filterSessionList()
+	return nil
+}
+
+// filterSessionList filters the session list by the current filter text.
+func (m *appModel) filterSessionList() {
+	filter := strings.ToLower(m.sessionListFilter)
+	var filtered []SessionSummary
+	for _, s := range m.sessionListSessions {
+		if filter == "" || strings.Contains(strings.ToLower(s.Title), filter) {
+			filtered = append(filtered, s)
+		}
+	}
+	m.sessionListFiltered = filtered
+	if m.sessionListIndex >= len(filtered) {
+		m.sessionListIndex = len(filtered) - 1
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
+		}
+	}
+}
+
+// handleSessionListKey handles key presses within the session list modal.
+func (m *appModel) handleSessionListKey(key string) tea.Cmd {
+	switch key {
+	case "esc", "q":
+		m.showSessionList = false
+		m.sessionListFilter = ""
+		return nil
+	case "enter":
+		if len(m.sessionListFiltered) > 0 && m.sessionListIndex < len(m.sessionListFiltered) {
+			id := m.sessionListFiltered[m.sessionListIndex].ID
+			m.showSessionList = false
+			m.sessionListFilter = ""
+			return m.switchToSession(id)
+		}
+		return nil
+	case "up", "k":
+		if m.sessionListIndex > 0 {
+			m.sessionListIndex--
+		}
+		return nil
+	case "down", "j":
+		if m.sessionListIndex < len(m.sessionListFiltered)-1 {
+			m.sessionListIndex++
+		}
+		return nil
+	case "d":
+		if len(m.sessionListFiltered) > 0 && m.sessionListIndex < len(m.sessionListFiltered) {
+			id := m.sessionListFiltered[m.sessionListIndex].ID
+			m.showSessionList = false
+			m.sessionListFilter = ""
+			return m.deleteSessionConfirm(id)
+		}
+		return nil
+	case "a":
+		if len(m.sessionListFiltered) > 0 && m.sessionListIndex < len(m.sessionListFiltered) {
+			id := m.sessionListFiltered[m.sessionListIndex].ID
+			m.showSessionList = false
+			m.sessionListFilter = ""
+			return m.archiveSessionToggle(id)
+		}
+		return nil
+	}
+	if len(key) == 1 && !strings.HasPrefix(key, "ctrl+") {
+		m.sessionListFilter += key
+		m.sessionListIndex = 0
+		m.filterSessionList()
+		return nil
+	}
+	if key == "backspace" || key == "ctrl+h" {
+		if len(m.sessionListFilter) > 0 {
+			m.sessionListFilter = m.sessionListFilter[:len(m.sessionListFilter)-1]
+			m.sessionListIndex = 0
+			m.filterSessionList()
+		}
+		return nil
+	}
+	return nil
+}
+
+// switchToSession switches the active session to the one with the given ID.
+func (m *appModel) switchToSession(id string) tea.Cmd {
+	if m.sessionService == nil {
+		return nil
+	}
+	if err := m.sessionService.SetActiveSession(id); err != nil {
+		m.appendLog("Error switching session: " + err.Error())
+		return nil
+	}
+	session, err := m.sessionService.GetActiveSession()
+	if err != nil {
+		m.appendLog("Error loading session: " + err.Error())
+		return nil
+	}
+	if session == nil {
+		return nil
+	}
+	m.chatHistory = make([]ChatMessage, 0, len(session.Messages))
+	for _, msg := range session.Messages {
+		m.chatHistory = append(m.chatHistory, ChatMessage{
+			Role:     msg.Role,
+			Content:  msg.Content,
+			Thinking: msg.Thinking,
+		})
+	}
+	m.rebuildRenderedLines()
+	m.chatScrollOffset = m.maxChatScrollOffset()
+	m.renderChatViewport()
+	m.appendLog("Resumed session: " + session.Title)
+	return nil
+}
+
+// deleteSessionConfirm deletes a session by ID.
+func (m *appModel) deleteSessionConfirm(id string) tea.Cmd {
+	if m.sessionService == nil {
+		return nil
+	}
+	summaries, err := m.sessionService.ListSessions()
+	if err == nil {
+		for _, s := range summaries {
+			if s.ID == id {
+				if err := m.sessionService.DeleteSession(id); err != nil {
+					m.appendLog("Error deleting session: " + err.Error())
+				} else {
+					m.appendLog("Deleted session: " + s.Title)
+					m.refreshSessionList()
+				}
+				return nil
+			}
+		}
+	}
+	m.appendLog("Session not found for deletion.")
+	return nil
+}
+
+// archiveSessionToggle archives or unarchives a session.
+func (m *appModel) archiveSessionToggle(id string) tea.Cmd {
+	if m.sessionService == nil {
+		return nil
+	}
+	summaries, err := m.sessionService.ListSessions()
+	if err == nil {
+		for _, s := range summaries {
+			if s.ID == id {
+				if err := m.sessionService.ArchiveSession(id); err != nil {
+					m.appendLog("Error archiving session: " + err.Error())
+				} else {
+					m.appendLog("Archived session: " + s.Title)
+					m.refreshSessionList()
+				}
+				return nil
+			}
+		}
+	}
+	archived, err := m.sessionService.ListArchivedSessions()
+	if err == nil {
+		for _, s := range archived {
+			if s.ID == id {
+				if err := m.sessionService.UnarchiveSession(id); err != nil {
+					m.appendLog("Error unarchiving session: " + err.Error())
+				} else {
+					m.appendLog("Unarchived session: " + s.Title)
+					m.refreshSessionList()
+				}
+				return nil
+			}
+		}
+	}
+	m.appendLog("Session not found for archive toggle.")
+	return nil
+}
+
+// refreshSessionList reloads the session list from the store.
+func (m *appModel) refreshSessionList() {
+	if m.sessionService == nil {
+		return
+	}
+	summaries, err := m.sessionService.ListSessions()
+	if err == nil {
+		m.sessionListSessions = summaries
+		m.filterSessionList()
+	}
+}
+
+// sessionListView renders the session list modal as an overlay.
+func (m *appModel) sessionListView() string {
+	if len(m.sessionListFiltered) == 0 {
+		return lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Padding(1, 2).
+			Render("  (no sessions)  ")
+	}
+
+	var b strings.Builder
+	b.WriteString("┌─ Sessions ──────────────────────────────────────────┐\n")
+	b.WriteString("│ Esc/q: close  │ Enter: open  │ d: delete  │ a: archive │\n")
+	b.WriteString("│ Type to filter by title                              │\n")
+	b.WriteString("├──────────────────────────────────────────────────────┤\n")
+
+	maxLines := m.chatViewport.Height() - 6
+	if maxLines < 1 {
+		maxLines = 1
+	}
+
+	for i, s := range m.sessionListFiltered {
+		if i >= maxLines {
+			b.WriteString("│  ... (more)                                          │\n")
+			break
+		}
+		indicator := " "
+		if s.ID == m.sessionService.activeSessionID {
+			indicator = ">"
+		}
+		archivedMark := ""
+		if s.Archived {
+			archivedMark = " [archived]"
+		}
+		line := fmt.Sprintf("│ %s %s%s", indicator, s.Title, archivedMark)
+		// Pad to fill the box width
+		for len(line) < 58 {
+			line += " "
+		}
+		line += "│"
+		b.WriteString(line + "\n")
+	}
+
+	b.WriteString("└──────────────────────────────────────────────────────┘")
+	return b.String()
 }

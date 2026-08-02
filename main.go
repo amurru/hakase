@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -16,6 +17,10 @@ func main() {
 
 	if len(os.Args) > 1 && os.Args[1] == "task" {
 		os.Exit(runTaskCLI(os.Args[2:]))
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "session" {
+		os.Exit(runSessionCLI(os.Args[2:]))
 	}
 
 	ctx := context.Background()
@@ -49,6 +54,30 @@ func main() {
 	m := newModel(ctx, r, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
 	p = tea.NewProgram(&m)
 	m.program = p
+
+	// Run stale session cleanup on startup.
+	go func() {
+		if m.sessionService != nil {
+			removed, err := m.sessionService.CleanupStale(30 * 24 * time.Hour)
+			if err == nil && removed > 0 {
+				logToUI(fmt.Sprintf("🧹 Cleaned up %d stale session(s)", removed))
+			}
+		}
+	}()
+
+	// Run periodic stale session cleanup every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if m.sessionService != nil {
+				removed, err := m.sessionService.CleanupStale(30 * 24 * time.Hour)
+				if err == nil && removed > 0 {
+					logToUI(fmt.Sprintf("🧹 Cleaned up %d stale session(s)", removed))
+				}
+			}
+		}
+	}()
 
 	// Fetch model capabilities (context window, thinking support) in the
 	// background so the status bar can show them once available.
