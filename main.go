@@ -13,6 +13,10 @@ func main() {
 		os.Exit(runSkillCLI(os.Args[2:]))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "task" {
+		os.Exit(runTaskCLI(os.Args[2:]))
+	}
+
 	ctx := context.Background()
 
 	cfg, err := loadConfig("config.json")
@@ -26,6 +30,13 @@ func main() {
 	logToUI := func(msg string) {
 		if p != nil {
 			p.Send(StatusLogMsg{Text: msg})
+		}
+	}
+
+	// Push task board refreshes to the TUI whenever an agent tool mutates tasks
+	taskBoardNotify = func(action string, task TaskMeta) {
+		if p != nil {
+			p.Send(TaskUpdateMsg{Task: task, Action: action})
 		}
 	}
 

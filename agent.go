@@ -12,8 +12,10 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/runner"
@@ -289,6 +291,18 @@ func createDownloadTool() (tool.Tool, error) {
 
 // Skills and auto-learning
 
+// currentConfig holds the loaded configuration for checkpoint access
+var currentConfig *Config
+
+// taskBoardNotify is set by main and pushes TaskUpdateMsg to the TUI on task mutations.
+var taskBoardNotify func(action string, task TaskMeta)
+
+func notifyTaskBoard(action string, task TaskMeta) {
+	if taskBoardNotify != nil {
+		taskBoardNotify(action, task)
+	}
+}
+
 type SkillMeta struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -298,6 +312,126 @@ type SkillMeta struct {
 
 type SkillRegistry struct {
 	Skills []SkillMeta `json:"skills"`
+}
+
+// Task management types
+
+type TaskStatus string
+
+const (
+	TaskStatusPending    TaskStatus = "pending"
+	TaskStatusInProgress TaskStatus = "in_progress"
+	TaskStatusCompleted  TaskStatus = "completed"
+	TaskStatusFailed     TaskStatus = "failed"
+	TaskStatusCancelled  TaskStatus = "cancelled"
+	TaskStatusSkipped    TaskStatus = "skipped"
+	TaskStatusBlocked    TaskStatus = "blocked"
+)
+
+var ValidTransitions = map[TaskStatus][]TaskStatus{
+	TaskStatusPending:    {TaskStatusInProgress, TaskStatusCancelled, TaskStatusSkipped},
+	TaskStatusInProgress: {TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled, TaskStatusBlocked},
+	TaskStatusBlocked:    {TaskStatusInProgress, TaskStatusCancelled},
+	TaskStatusCompleted:  {},
+	TaskStatusFailed:     {},
+	TaskStatusCancelled:  {},
+	TaskStatusSkipped:    {},
+}
+
+type TaskPriority string
+
+const (
+	TaskPriorityCritical TaskPriority = "critical"
+	TaskPriorityHigh     TaskPriority = "high"
+	TaskPriorityMedium   TaskPriority = "medium"
+	TaskPriorityLow      TaskPriority = "low"
+)
+
+type TaskMeta struct {
+	ID           string                 `json:"id"`
+	Version      int                    `json:"version"`
+	Title        string                 `json:"title"`
+	Description  string                 `json:"description,omitempty"`
+	Status       TaskStatus             `json:"status"`
+	Priority     TaskPriority           `json:"priority"`
+	Owner        string                 `json:"owner,omitempty"`
+	Assignee     string                 `json:"assignee,omitempty"`
+	Dependencies []string               `json:"dependencies,omitempty"`
+	BlockedBy    []string               `json:"blocked_by,omitempty"`
+	CreatedAt    time.Time              `json:"created_at"`
+	UpdatedAt    time.Time              `json:"updated_at"`
+	StartedAt    *time.Time             `json:"started_at,omitempty"`
+	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+	DueAt        *time.Time             `json:"due_at,omitempty"`
+	Attempts     int                    `json:"attempts"`
+	MaxAttempts  int                    `json:"max_attempts"`
+	LastError    string                 `json:"last_error,omitempty"`
+	Result       interface{}            `json:"result,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	ParentID     string                 `json:"parent_id,omitempty"`
+	Tags         []string               `json:"tags,omitempty"`
+}
+
+type TaskRegistry struct {
+	Tasks []TaskMeta `json:"tasks"`
+}
+
+// Task tool input/output types
+
+type CreateTaskInput struct {
+	Title        string       `json:"title" doc:"Task title"`
+	Description  string       `json:"description,omitempty" doc:"Task description"`
+	Priority     TaskPriority `json:"priority,omitempty" doc:"Task priority"`
+	Dependencies []string     `json:"dependencies,omitempty" doc:"Task IDs that must complete first"`
+	Assignee     string       `json:"assignee,omitempty" doc:"Agent to assign"`
+	ParentID     string       `json:"parent_id,omitempty" doc:"Parent task ID for hierarchy"`
+	Tags         []string     `json:"tags,omitempty" doc:"Task tags"`
+}
+
+type CreateTaskOutput struct {
+	Task TaskMeta `json:"task" doc:"Created task"`
+}
+
+type UpdateTaskInput struct {
+	ID          string       `json:"id" doc:"Task ID"`
+	Title       string       `json:"title,omitempty" doc:"New title"`
+	Description string       `json:"description,omitempty" doc:"New description"`
+	Status      TaskStatus   `json:"status,omitempty" doc:"New status (transition validated)"`
+	Priority    TaskPriority `json:"priority,omitempty" doc:"New priority"`
+	Assignee    string       `json:"assignee,omitempty" doc:"New assignee"`
+	Result      interface{}  `json:"result,omitempty" doc:"Execution result"`
+	Error       string       `json:"error,omitempty" doc:"Error message if failed"`
+}
+
+type UpdateTaskOutput struct {
+	Task TaskMeta `json:"task" doc:"Updated task"`
+}
+
+type ListTasksInput struct {
+	Status   []TaskStatus `json:"status,omitempty" doc:"Filter by status"`
+	Assignee string       `json:"assignee,omitempty" doc:"Filter by assignee"`
+	Tags     []string     `json:"tags,omitempty" doc:"Filter by tags"`
+	ParentID string       `json:"parent_id,omitempty" doc:"Filter by parent"`
+}
+
+type ListTasksOutput struct {
+	Tasks []TaskMeta `json:"tasks" doc:"Matching tasks"`
+}
+
+type GetTaskInput struct {
+	ID string `json:"id" doc:"Task ID"`
+}
+
+type GetTaskOutput struct {
+	Task *TaskMeta `json:"task" doc:"Task or null if not found"`
+}
+
+type DeleteTaskInput struct {
+	ID string `json:"id" doc:"Task ID"`
+}
+
+type DeleteTaskOutput struct {
+	Success bool `json:"success" doc:"Whether deletion succeeded"`
 }
 
 type SaveSkillInput struct {
@@ -384,7 +518,7 @@ func createSaveSkillTool() (tool.Tool, error) {
 type ListSkillsInput struct{}
 
 type ListSkillsOutput struct {
-	Skills          []SkillMeta         `json:"skills" doc:"List of all saved skills currently available in the registry"`
+	Skills         []SkillMeta         `json:"skills" doc:"List of all saved skills currently available in the registry"`
 	MarkdownSkills []MarkdownSkillMeta `json:"markdown_skills" doc:"List of discovered markdown skills"`
 }
 
@@ -541,6 +675,436 @@ func createLoadMarkdownSkillTool(skills []MarkdownSkill, cwd string, extraDirs [
 	}, execHandler)
 }
 
+// Task persistence functions
+
+const tasksFile = "./tasks.json"
+
+// taskRegistryMu serializes in-process access to tasks.json. Multiple task
+// tool calls can run in the same turn (e.g. several create_task calls), and
+// without this lock concurrent read-modify-write cycles corrupt the file.
+var taskRegistryMu sync.Mutex
+
+func loadTaskRegistryLocked() (TaskRegistry, error) {
+	var registry TaskRegistry
+	data, err := os.ReadFile(tasksFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return TaskRegistry{Tasks: []TaskMeta{}}, nil
+		}
+		return TaskRegistry{}, err
+	}
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return TaskRegistry{}, err
+	}
+	return registry, nil
+}
+
+func loadTaskRegistry() (TaskRegistry, error) {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+	return loadTaskRegistryLocked()
+}
+
+func saveTaskRegistryLocked(registry TaskRegistry) error {
+	registryBytes, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Write to a temp file and rename so readers never observe a torn file.
+	tmp := tasksFile + ".tmp"
+	if err := os.WriteFile(tmp, registryBytes, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, tasksFile)
+}
+
+func saveTaskRegistry(registry TaskRegistry) error {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+	return saveTaskRegistryLocked(registry)
+}
+
+func findTaskIndex(registry TaskRegistry, id string) int {
+	for i, task := range registry.Tasks {
+		if task.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func taskExists(registry TaskRegistry, id string) bool {
+	return findTaskIndex(registry, id) != -1
+}
+
+func isValidTransition(from, to TaskStatus) bool {
+	validNext, ok := ValidTransitions[from]
+	if !ok {
+		return false
+	}
+	for _, v := range validNext {
+		if v == to {
+			return true
+		}
+	}
+	return false
+}
+
+func createTask(input CreateTaskInput) (TaskMeta, error) {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+
+	registry, err := loadTaskRegistryLocked()
+	if err != nil {
+		return TaskMeta{}, err
+	}
+
+	now := time.Now().UTC()
+
+	// Check which dependencies are already completed
+	blockedBy := []string{}
+	for _, depID := range input.Dependencies {
+		if taskExists(registry, depID) {
+			depIdx := findTaskIndex(registry, depID)
+			if depIdx != -1 && registry.Tasks[depIdx].Status != TaskStatusCompleted {
+				blockedBy = append(blockedBy, depID)
+			}
+		}
+	}
+
+	status := TaskStatusPending
+	if len(blockedBy) > 0 {
+		status = TaskStatusBlocked
+	}
+
+	task := TaskMeta{
+		ID:           ulid.Make().String(),
+		Version:      1,
+		Title:        input.Title,
+		Description:  input.Description,
+		Status:       status,
+		Priority:     input.Priority,
+		Owner:        "",
+		Assignee:     input.Assignee,
+		Dependencies: input.Dependencies,
+		BlockedBy:    blockedBy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Attempts:     0,
+		MaxAttempts:  3,
+		ParentID:     input.ParentID,
+		Tags:         input.Tags,
+		Metadata:     make(map[string]interface{}),
+	}
+
+	for _, depID := range input.Dependencies {
+		if !taskExists(registry, depID) {
+			return TaskMeta{}, fmt.Errorf("dependency task %s does not exist", depID)
+		}
+	}
+
+	registry.Tasks = append(registry.Tasks, task)
+	if err := saveTaskRegistryLocked(registry); err != nil {
+		return TaskMeta{}, err
+	}
+	_ = writeTaskCheckpoint(&registry)
+	return task, nil
+}
+
+func updateTask(input UpdateTaskInput) (TaskMeta, error) {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+
+	registry, err := loadTaskRegistryLocked()
+	if err != nil {
+		return TaskMeta{}, err
+	}
+
+	idx := findTaskIndex(registry, input.ID)
+	if idx == -1 {
+		return TaskMeta{}, fmt.Errorf("task not found: %s", input.ID)
+	}
+
+	task := registry.Tasks[idx]
+
+	if input.Status != "" && !isValidTransition(task.Status, input.Status) {
+		return TaskMeta{}, fmt.Errorf("invalid transition: %s -> %s", task.Status, input.Status)
+	}
+
+	if input.Title != "" {
+		task.Title = input.Title
+	}
+	if input.Description != "" {
+		task.Description = input.Description
+	}
+	if input.Status != "" {
+		task.Status = input.Status
+		now := time.Now().UTC()
+		switch input.Status {
+		case TaskStatusInProgress:
+			task.StartedAt = &now
+			task.Attempts++
+		case TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled:
+			task.CompletedAt = &now
+		}
+	}
+	if input.Priority != "" {
+		task.Priority = input.Priority
+	}
+	if input.Assignee != "" {
+		task.Assignee = input.Assignee
+	}
+	if input.Result != nil {
+		task.Result = input.Result
+	}
+	if input.Error != "" {
+		task.LastError = input.Error
+	}
+
+	task.UpdatedAt = time.Now().UTC()
+	registry.Tasks[idx] = task
+
+	if task.Status == TaskStatusCompleted {
+		unblockDependentTasks(&registry, task.ID)
+	}
+
+	if err := saveTaskRegistryLocked(registry); err != nil {
+		return TaskMeta{}, err
+	}
+	_ = writeTaskCheckpoint(&registry)
+	return task, nil
+}
+
+func listTasks(input ListTasksInput) ([]TaskMeta, error) {
+	registry, err := loadTaskRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []TaskMeta
+	for _, task := range registry.Tasks {
+		match := true
+
+		if len(input.Status) > 0 {
+			match = false
+			for _, s := range input.Status {
+				if task.Status == s {
+					match = true
+					break
+				}
+			}
+		}
+
+		if match && input.Assignee != "" {
+			match = task.Assignee == input.Assignee
+		}
+
+		if match && len(input.Tags) > 0 {
+			match = false
+			for _, tag := range input.Tags {
+				for _, ttag := range task.Tags {
+					if tag == ttag {
+						match = true
+						break
+					}
+				}
+				if !match {
+					break
+				}
+			}
+		}
+
+		if match && input.ParentID != "" {
+			match = task.ParentID == input.ParentID
+		}
+
+		if match {
+			result = append(result, task)
+		}
+	}
+
+	return result, nil
+}
+
+func getTask(id string) (*TaskMeta, error) {
+	registry, err := loadTaskRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	idx := findTaskIndex(registry, id)
+	if idx == -1 {
+		return nil, nil
+	}
+
+	return &registry.Tasks[idx], nil
+}
+
+func deleteTask(id string) (bool, error) {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+
+	registry, err := loadTaskRegistryLocked()
+	if err != nil {
+		return false, err
+	}
+
+	idx := findTaskIndex(registry, id)
+	if idx == -1 {
+		return false, nil
+	}
+
+	registry.Tasks = append(registry.Tasks[:idx], registry.Tasks[idx+1:]...)
+
+	for i := range registry.Tasks {
+		newBlocked := registry.Tasks[i].BlockedBy[:0]
+		for _, bid := range registry.Tasks[i].BlockedBy {
+			if bid != id {
+				newBlocked = append(newBlocked, bid)
+			}
+		}
+		registry.Tasks[i].BlockedBy = newBlocked
+	}
+
+	if err := saveTaskRegistryLocked(registry); err != nil {
+		return false, err
+	}
+	_ = writeTaskCheckpoint(&registry)
+	return true, nil
+}
+
+func unblockDependentTasks(registry *TaskRegistry, completedID string) {
+	now := time.Now().UTC()
+	for i := range registry.Tasks {
+		task := &registry.Tasks[i]
+		newBlocked := task.BlockedBy[:0]
+		for _, bid := range task.BlockedBy {
+			if bid != completedID {
+				newBlocked = append(newBlocked, bid)
+			}
+		}
+		task.BlockedBy = newBlocked
+
+		if task.Status == TaskStatusBlocked && len(task.BlockedBy) == 0 {
+			task.Status = TaskStatusPending
+			task.UpdatedAt = now
+		}
+	}
+}
+
+func writeTaskCheckpoint(registry *TaskRegistry) error {
+	// Only write checkpoints if explicitly enabled in config
+	if currentConfig == nil || !currentConfig.TaskCheckpoint {
+		return nil
+	}
+
+	summary := map[string]int{
+		"pending":     0,
+		"in_progress": 0,
+		"completed":   0,
+		"failed":      0,
+		"cancelled":   0,
+		"skipped":     0,
+		"blocked":     0,
+	}
+
+	for _, task := range registry.Tasks {
+		summary[string(task.Status)]++
+	}
+
+	checkpointDir := "./.checkpoints"
+	if err := os.MkdirAll(checkpointDir, 0755); err != nil {
+		return err
+	}
+
+	checkpoint := map[string]interface{}{
+		"timestamp":    time.Now().Format(time.RFC3339),
+		"task_summary": summary,
+		"total_tasks":  len(registry.Tasks),
+	}
+
+	checkpointBytes, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	checkpointFile := filepath.Join(checkpointDir, fmt.Sprintf("checkpoint-%s.json", time.Now().Format("2006-01-02T15-04-05.000Z")))
+	return os.WriteFile(checkpointFile, checkpointBytes, 0644)
+}
+
+// Task management tools
+
+func createTaskTool(log LogFunc) (tool.Tool, error) {
+	return functiontool.New(functiontool.Config{
+		Name:        "create_task",
+		Description: "Create a new task in the task board",
+	}, func(ctx agent.Context, input CreateTaskInput) (CreateTaskOutput, error) {
+		task, err := createTask(input)
+		if err != nil {
+			return CreateTaskOutput{}, err
+		}
+		if log != nil {
+			log(fmt.Sprintf("📋 [tasks] Created task %s: %s", task.ID, task.Title))
+		}
+		notifyTaskBoard("created", task)
+		return CreateTaskOutput{Task: task}, nil
+	})
+}
+
+func updateTaskTool(log LogFunc) (tool.Tool, error) {
+	return functiontool.New(functiontool.Config{
+		Name:        "update_task",
+		Description: "Update task status, assignee, or result",
+	}, func(ctx agent.Context, input UpdateTaskInput) (UpdateTaskOutput, error) {
+		task, err := updateTask(input)
+		if err != nil {
+			return UpdateTaskOutput{}, err
+		}
+		if log != nil {
+			log(fmt.Sprintf("📋 [tasks] Updated task %s: %s (status: %s)", task.ID, task.Title, task.Status))
+		}
+		notifyTaskBoard("updated", task)
+		return UpdateTaskOutput{Task: task}, nil
+	})
+}
+
+func listTasksTool(log LogFunc) (tool.Tool, error) {
+	return functiontool.New(functiontool.Config{
+		Name:        "list_tasks",
+		Description: "List tasks with optional filters",
+	}, func(ctx agent.Context, input ListTasksInput) (ListTasksOutput, error) {
+		tasks, err := listTasks(input)
+		return ListTasksOutput{Tasks: tasks}, err
+	})
+}
+
+func getTaskTool(log LogFunc) (tool.Tool, error) {
+	return functiontool.New(functiontool.Config{
+		Name:        "get_task",
+		Description: "Get task details by ID",
+	}, func(ctx agent.Context, input GetTaskInput) (GetTaskOutput, error) {
+		task, err := getTask(input.ID)
+		return GetTaskOutput{Task: task}, err
+	})
+}
+
+func deleteTaskTool(log LogFunc) (tool.Tool, error) {
+	return functiontool.New(functiontool.Config{
+		Name:        "delete_task",
+		Description: "Delete a task by ID",
+	}, func(ctx agent.Context, input DeleteTaskInput) (DeleteTaskOutput, error) {
+		success, err := deleteTask(input.ID)
+		if err != nil {
+			return DeleteTaskOutput{}, err
+		}
+		if success && log != nil {
+			log(fmt.Sprintf("📋 [tasks] Deleted task %s", input.ID))
+		}
+		notifyTaskBoard("deleted", TaskMeta{ID: input.ID})
+		return DeleteTaskOutput{Success: success}, nil
+	})
+}
+
 // buildOrchestratorInstruction returns the system instruction for the root
 // orchestrator agent, including the list of available skills so skill
 // discovery happens at the orchestrator level, not only after delegation to
@@ -551,6 +1115,9 @@ func buildOrchestratorInstruction(installedSkills string) string {
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
 - Synthesize responses from the specialists into a final markdown output.
+
+### TASK BOARD:
+You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'delete_task' (remove). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
 
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
@@ -620,6 +1187,9 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// Set global config for checkpoint access
+	currentConfig = cfg
+
 	// Load currently saved skills from disk
 	installedSkills := getSkillsPrompt(mdSkills, log)
 
@@ -649,6 +1219,29 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// Task management tools, attached to the orchestrator so the root agent can
+	// plan and track multi-step work on the task board.
+	createTaskT, err := createTaskTool(log)
+	if err != nil {
+		return nil, err
+	}
+	updateTaskT, err := updateTaskTool(log)
+	if err != nil {
+		return nil, err
+	}
+	listTasksT, err := listTasksTool(log)
+	if err != nil {
+		return nil, err
+	}
+	getTaskT, err := getTaskTool(log)
+	if err != nil {
+		return nil, err
+	}
+	deleteTaskT, err := deleteTaskTool(log)
+	if err != nil {
+		return nil, err
+	}
+
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
@@ -657,6 +1250,11 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		Tools: append([]tool.Tool{
 			listSkillsTool,
 			loadMarkdownSkillTool,
+			createTaskT,
+			updateTaskT,
+			listTasksT,
+			getTaskT,
+			deleteTaskT,
 		}, systemExecTools...),
 		SubAgents: []agent.Agent{
 			researcherAgent,

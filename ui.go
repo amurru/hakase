@@ -42,6 +42,7 @@ const (
 	inputFocus focusedPane = iota
 	chatFocus
 	logFocus
+	taskFocus
 )
 
 type agentTextMsg string
@@ -58,6 +59,17 @@ type StatusLogMsg struct {
 	Text string
 }
 
+// TaskUpdateMsg represents a task board update
+type TaskUpdateMsg struct {
+	Task   TaskMeta
+	Action string // "created", "updated", "completed", "failed", "claimed"
+}
+
+// TaskBoardMsg represents a full task board refresh
+type TaskBoardMsg struct {
+	Tasks []TaskMeta
+}
+
 type ChatMessage struct {
 	Role     string
 	Content  string
@@ -67,6 +79,7 @@ type ChatMessage struct {
 type appModel struct {
 	chatViewport viewport.Model
 	logViewport  viewport.Model
+	taskViewport viewport.Model
 	input        textinput.Model
 
 	focus          focusedPane
@@ -77,6 +90,7 @@ type appModel struct {
 	renderedLines    []string // cached, fully rendered chat lines (styled + wrapped)
 	lastMsgStart     int      // index into renderedLines where the last chatHistory message starts
 	logLines         []string // cached log pane lines
+	taskLines        []string // cached task board lines
 
 	r            *runner.Runner
 	ctx          context.Context
@@ -88,7 +102,12 @@ type appModel struct {
 	showThinking bool
 }
 
-func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int, showThinking bool) appModel {
+func newModel(
+	ctx context.Context,
+	r *runner.Runner,
+	chatBufferSize int,
+	showThinking bool,
+) appModel {
 	ti := textinput.New()
 	ti.Placeholder = "Ask me anything and I will do it..."
 	ti.Focus()
@@ -105,6 +124,7 @@ func newModel(ctx context.Context, r *runner.Runner, chatBufferSize int, showThi
 		chatBufferSize: chatBufferSize,
 		chatHistory:    make([]ChatMessage, 0),
 		logLines:       make([]string, 0),
+		taskLines:      make([]string, 0),
 		showThinking:   showThinking,
 	}
 }
@@ -117,15 +137,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-case tea.KeyPressMsg:
-			switch msg.String() {
-			case "ctrl+c", "esc":
-				return m, tea.Quit
-			case "ctrl+t":
-				m.showThinking = !m.showThinking
-				m.rebuildRenderedLines()
-				m.renderChatViewport()
-			case "enter":
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			return m, tea.Quit
+		case "ctrl+t":
+			m.showThinking = !m.showThinking
+			m.rebuildRenderedLines()
+			m.renderChatViewport()
+		case "enter":
 			if m.input.Value() != "" && !m.isProcessing {
 				prompt := m.input.Value()
 				m.input.Reset()
@@ -142,8 +162,8 @@ case tea.KeyPressMsg:
 				go runAgentTask(m.ctx, m.r, m.program, prompt)
 			}
 		case "tab":
-			// 🔄 Cycle through: inputFocus (0) -> chatFocus (1) -> logFocus (2) -> inputFocus (0)
-			m.focus = (m.focus + 1) % 3
+			// 🔄 Cycle through: inputFocus (0) -> chatFocus (1) -> logFocus (2) -> taskFocus (3) -> inputFocus (0)
+			m.focus = (m.focus + 1) % 4
 
 			if m.focus == inputFocus {
 				m.input.Focus()
@@ -204,24 +224,32 @@ case tea.KeyPressMsg:
 			)
 			m.logViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(m.height-2),
+				viewport.WithHeight((m.height-4)*2/3),
+			)
+			m.taskViewport = viewport.New(
+				viewport.WithWidth(rightWidth),
+				viewport.WithHeight((m.height-4)/3+1),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
 			m.chatViewport.MouseWheelEnabled = false
 			m.logViewport.MouseWheelEnabled = false
+			m.taskViewport.MouseWheelEnabled = false
 
 			m.ready = true
 		} else {
 			m.chatViewport.SetWidth(leftWidth)
 			m.chatViewport.SetHeight(m.height - 5)
 			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight(m.height - 2)
+			m.logViewport.SetHeight((m.height - 4) * 2 / 3)
+			m.taskViewport.SetWidth(rightWidth)
+			m.taskViewport.SetHeight((m.height - 4) / 3)
 		}
 
 		m.input.SetWidth(leftWidth - 3)
 		// Re-render chat viewport on resize
 		m.renderChatViewport()
+		m.refreshTaskBoard()
 
 	case agentTextMsg:
 		content, thinking := extractThinking(string(msg))
@@ -267,6 +295,10 @@ case tea.KeyPressMsg:
 		m.logLines = append(m.logLines, msg.Text)
 		m.logViewport.SetContentLines(m.logLines)
 		m.logViewport.GotoBottom()
+	case TaskUpdateMsg:
+		m.refreshTaskBoard()
+	case TaskBoardMsg:
+		m.refreshTaskBoard()
 	case agentDoneMsg:
 		m.isProcessing = false
 	}
@@ -277,6 +309,9 @@ case tea.KeyPressMsg:
 		cmds = append(cmds, vpCmd)
 	} else if m.focus == logFocus {
 		m.logViewport, vpCmd = m.logViewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	} else if m.focus == taskFocus {
+		m.taskViewport, vpCmd = m.taskViewport.Update(msg)
 		cmds = append(cmds, vpCmd)
 	}
 
@@ -440,6 +475,89 @@ func (m *appModel) renderChatViewport() {
 	m.chatViewport.SetContent(strings.Join(m.renderedLines[m.chatScrollOffset:end], "\n"))
 }
 
+func (m *appModel) refreshTaskBoard() {
+	registry, err := loadTaskRegistry()
+	if err != nil {
+		m.taskLines = []string{"Error loading tasks: " + err.Error()}
+		m.renderTaskViewport()
+		return
+	}
+
+	var lines []string
+	lines = append(lines, "📋 Task Board")
+	lines = append(lines, strings.Repeat("─", 30))
+
+	statusOrder := []TaskStatus{
+		TaskStatusPending,
+		TaskStatusInProgress,
+		TaskStatusCompleted,
+		TaskStatusFailed,
+		TaskStatusCancelled,
+		TaskStatusSkipped,
+		TaskStatusBlocked,
+	}
+	statusSymbols := map[TaskStatus]string{
+		TaskStatusPending:    "⏳",
+		TaskStatusInProgress: "▶️",
+		TaskStatusCompleted:  "✅",
+		TaskStatusFailed:     "❌",
+		TaskStatusCancelled:  "🚫",
+		TaskStatusSkipped:    "⏭️",
+		TaskStatusBlocked:    "🔒",
+	}
+	prioritySymbols := map[TaskPriority]string{
+		TaskPriorityCritical: "🔴",
+		TaskPriorityHigh:     "🟠",
+		TaskPriorityMedium:   "🟡",
+		TaskPriorityLow:      "🟢",
+	}
+
+	for _, status := range statusOrder {
+		var statusTasks []TaskMeta
+		for _, task := range registry.Tasks {
+			if task.Status == status {
+				statusTasks = append(statusTasks, task)
+			}
+		}
+
+		if len(statusTasks) == 0 {
+			continue
+		}
+
+		symbol := statusSymbols[status]
+		lines = append(lines, fmt.Sprintf("%s %s (%d)", symbol, status, len(statusTasks)))
+
+		for _, task := range statusTasks {
+			priSymbol := prioritySymbols[task.Priority]
+			depsStr := ""
+			if len(task.BlockedBy) > 0 {
+				depsStr = fmt.Sprintf(" 🔗%d", len(task.BlockedBy))
+			}
+			assigneeStr := ""
+			if task.Assignee != "" {
+				assigneeStr = fmt.Sprintf(" @%s", task.Assignee)
+			}
+			lines = append(
+				lines,
+				fmt.Sprintf("  %s %s%s%s", priSymbol, task.Title, depsStr, assigneeStr),
+			)
+		}
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, fmt.Sprintf("Total: %d tasks", len(registry.Tasks)))
+
+	m.taskLines = lines
+	m.renderTaskViewport()
+}
+
+func (m *appModel) renderTaskViewport() {
+	if !m.ready {
+		return
+	}
+	m.taskViewport.SetContent(strings.Join(m.taskLines, "\n"))
+}
+
 // Change return type to tea.View
 func (m *appModel) View() tea.View {
 	if !m.ready {
@@ -458,6 +576,10 @@ func (m *appModel) View() tea.View {
 	if m.focus == logFocus {
 		logStyle = activeBorder
 	}
+	taskStyle := inactiveBorder
+	if m.focus == taskFocus {
+		taskStyle = activeBorder
+	}
 
 	leftCol := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -465,10 +587,16 @@ func (m *appModel) View() tea.View {
 		inputStyle.Render(m.input.View()),
 	)
 
+	rightCol := lipgloss.JoinVertical(
+		lipgloss.Left,
+		logStyle.Render(m.logViewport.View()),
+		taskStyle.Render(m.taskViewport.View()),
+	)
+
 	content := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		leftCol,
-		logStyle.Render(m.logViewport.View()),
+		rightCol,
 	)
 
 	v := tea.NewView(content)

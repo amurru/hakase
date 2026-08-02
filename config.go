@@ -17,6 +17,7 @@ type Config struct {
 	ProviderOptions   map[string]interface{} `json:"provider_options,omitempty"`
 	ChatBufferSize    int                    `json:"chat_buffer_size,omitempty"`
 	ShowThinking      bool                   `json:"show_thinking,omitempty"`
+	TaskCheckpoint    bool                   `json:"task_checkpoint,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.
