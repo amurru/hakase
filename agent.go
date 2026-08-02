@@ -65,6 +65,22 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 	)
 }
 
+const GeneralPurposeSystemInstruction = `You are a general-purpose agent with file operations capabilities.
+
+### RESPONSIBILITIES:
+1. FILE READING: Use 'read_file' to inspect file contents. For large files, read in ranges with 'offset' (starting line) and 'limit' (number of lines).
+2. FILE WRITING: Use 'write_file' to create new files with full content, or overwrite existing files (overwrite=true).
+3. TARGETED EDITS: Use 'patch' to make precise string replacements in existing files without rewriting the whole file.
+4. SEARCH: Use 'search_files' to find files and lines matching a regular expression across a directory tree.
+
+### OPERATIONAL RULES:
+- ALWAYS read a file before patching it: 'old_string' must match the file content byte-for-byte, including whitespace and newlines.
+- Prefer 'search_files' to locate code, definitions, or references before editing.
+- Prefer 'write_file' for new files; prefer 'patch' for small, precise changes to existing files.
+- Do not modify binary files. Verify your edits by reading the file back after patching.
+- Report absolute file paths and line numbers in your final answer so the orchestrator can verify your work.
+`
+
 const CodeInterpreterSystemInstruction = `You are a specialized Code Interpreter, Data Analyst, and Self-Evolving Skill Developer agent.
 
 ### RESPONSIBILITIES:
@@ -209,7 +225,7 @@ func createPythonTool(log LogFunc) (tool.Tool, error) {
 		}, nil
 	}
 
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "python_interpreter",
 		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution.",
 	}, execHandler)
@@ -283,7 +299,7 @@ func createDownloadTool() (tool.Tool, error) {
 		}, nil
 	}
 
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "download_file",
 		Description: "Downloads PDFs, images, dataset binaries, or documents from a web URL and saves them to the ./downloads directory.",
 	}, execHandler)
@@ -509,7 +525,7 @@ func createSaveSkillTool() (tool.Tool, error) {
 		}, nil
 	}
 
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "save_skill",
 		Description: "Persists a tested, working Python script into the local ./skills library for future reuse.",
 	}, execHandler)
@@ -549,7 +565,7 @@ func createListSkillsTool(cwd string, extraDirs []string, log LogFunc) (tool.Too
 		return ListSkillsOutput{Skills: registry.Skills, MarkdownSkills: mdMeta}, nil
 	}
 
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "list_skills",
 		Description: "Lists all previously saved Python skills and discovered markdown skills (SKILL.md) with their descriptions.",
 	}, execHandler)
@@ -669,7 +685,7 @@ func createLoadMarkdownSkillTool(skills []MarkdownSkill, cwd string, extraDirs [
 		}, nil
 	}
 
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "load_markdown_skill",
 		Description: "Loads the full instructions and scripts of a markdown skill (SKILL.md) by name. Use this when the AVAILABLE PRE-LEARNED SKILLS list references a markdown skill.",
 	}, execHandler)
@@ -1035,7 +1051,7 @@ func writeTaskCheckpoint(registry *TaskRegistry) error {
 // Task management tools
 
 func createTaskTool(log LogFunc) (tool.Tool, error) {
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "create_task",
 		Description: "Create a new task in the task board",
 	}, func(ctx agent.Context, input CreateTaskInput) (CreateTaskOutput, error) {
@@ -1052,7 +1068,7 @@ func createTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func updateTaskTool(log LogFunc) (tool.Tool, error) {
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "update_task",
 		Description: "Update task status, assignee, or result",
 	}, func(ctx agent.Context, input UpdateTaskInput) (UpdateTaskOutput, error) {
@@ -1069,7 +1085,7 @@ func updateTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func listTasksTool(log LogFunc) (tool.Tool, error) {
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "list_tasks",
 		Description: "List tasks with optional filters",
 	}, func(ctx agent.Context, input ListTasksInput) (ListTasksOutput, error) {
@@ -1079,7 +1095,7 @@ func listTasksTool(log LogFunc) (tool.Tool, error) {
 }
 
 func getTaskTool(log LogFunc) (tool.Tool, error) {
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "get_task",
 		Description: "Get task details by ID",
 	}, func(ctx agent.Context, input GetTaskInput) (GetTaskOutput, error) {
@@ -1089,7 +1105,7 @@ func getTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func deleteTaskTool(log LogFunc) (tool.Tool, error) {
-	return functiontool.New(functiontool.Config{
+	return newDocTool(functiontool.Config{
 		Name:        "delete_task",
 		Description: "Delete a task by ID",
 	}, func(ctx agent.Context, input DeleteTaskInput) (DeleteTaskOutput, error) {
@@ -1113,6 +1129,7 @@ func buildOrchestratorInstruction(installedSkills string) string {
 	return `You are an AI research & analysis coordinator.
 - Use 'web_researcher' when real-time browser navigation or web search is required.
 - Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
+- Use 'general_purpose' when file operations are required: reading files, writing files, making targeted edits, or searching file contents.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
 - Synthesize responses from the specialists into a final markdown output.
 
@@ -1213,6 +1230,24 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// File operation tools (read/write/patch/search), attached to a
+	// general-purpose sub-agent so the orchestrator can delegate file tasks.
+	fileOpsTools, err := createFileOpsTools(log)
+	if err != nil {
+		return nil, err
+	}
+
+	generalPurposeAgent, err := llmagent.New(llmagent.Config{
+		Name:        "general_purpose",
+		Description: "General-purpose agent for file operations: reading, writing, editing, and searching files in the workspace.",
+		Instruction: GeneralPurposeSystemInstruction + "\n\n" + buildTimeReminder(),
+		Model:       model,
+		Tools:       fileOpsTools,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	// Host system execution tools (arbitrary command/executable execution).
 	systemExecTools, err := createSystemExecTools(log)
 	if err != nil {
@@ -1259,6 +1294,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,
+			generalPurposeAgent,
 		}, // Or exposed via agent tool wrappers
 	})
 	if err != nil {

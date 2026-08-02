@@ -63,6 +63,7 @@ Powered by [Google ADK](https://github.com/google/adk):
 | **orchestrator**     | Root agent that delegates tasks to sub-agents based on intent        |
 | **web_researcher**   | Searches the web, navigates pages, downloads files, extracts content |
 | **code_interpreter** | Executes Python, performs data analysis, manages the skill library   |
+| **general_purpose**  | Reads, writes, edits, and searches files in the workspace            |
 
 ### 🐍 Python Code Interpreter
 
@@ -84,6 +85,15 @@ The agent can save tested Python scripts as reusable skills:
 - Downloads files from any HTTP/HTTPS URL
 - Saves to `./downloads/` with automatic filename resolution
 - Supports PDFs, images, datasets, and binary blobs
+
+### 📁 File Operations
+
+The `general_purpose` agent provides workspace file tools:
+
+- **`read_file`** — read file contents, optionally restricted to a line range (`offset`/`limit`)
+- **`write_file`** — create new files (or overwrite existing ones with `overwrite=true`)
+- **`patch`** — targeted string replacement inside an existing file
+- **`search_files`** — recursive regex search over file contents with `content` / `files_with_matches` / `count` output modes
 
 ### 🔌 MCP Integration
 

@@ -283,7 +283,7 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 	}
 
 	// system_exec: synchronous fire-and-wait execution.
-	execTool, err := functiontool.New(functiontool.Config{
+	execTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec",
 		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out. Not routed through the Python interpreter.",
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
@@ -367,7 +367,7 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 	}
 
 	// system_exec_start: detached background execution registered in the registry.
-	startTool, err := functiontool.New(functiontool.Config{
+	startTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec_start",
 		Description: "Starts a system command or executable on the host machine in the background, registers it in the process registry, and returns immediately with a process ID for later polling with system_exec_status, killing with system_exec_kill, or listing with system_exec_list.",
 	}, func(ctx agent.Context, input SystemExecStartInput) (SystemExecStartOutput, error) {
@@ -422,7 +422,7 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 	}
 
 	// system_exec_status: poll the live state of a background process.
-	statusTool, err := functiontool.New(functiontool.Config{
+	statusTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec_status",
 		Description: "Returns the current live state (running, exit code, combined output collected so far, duration) of a background process previously started with system_exec_start.",
 	}, func(ctx agent.Context, input SystemExecStatusInput) (SystemExecStatusOutput, error) {
@@ -445,7 +445,7 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 	}
 
 	// system_exec_kill: terminate and reap a background process.
-	killTool, err := functiontool.New(functiontool.Config{
+	killTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec_kill",
 		Description: "Terminates a background process previously started with system_exec_start (SIGKILL), reaps it, and removes it from the process registry.",
 	}, func(ctx agent.Context, input SystemExecKillInput) (SystemExecKillOutput, error) {
@@ -483,7 +483,7 @@ func createSystemExecTools(log LogFunc) ([]tool.Tool, error) {
 	}
 
 	// system_exec_list: list all registered background processes.
-	listTool, err := functiontool.New(functiontool.Config{
+	listTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec_list",
 		Description: "Lists all registered background system processes started by system_exec_start and their live state (running, exit code, duration).",
 	}, func(ctx agent.Context, _ SystemExecListInput) (SystemExecListOutput, error) {
