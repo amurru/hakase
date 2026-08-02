@@ -545,7 +545,13 @@ func (m *appModel) refreshTaskBoard() {
 		lines = append(lines, "")
 	}
 
-	lines = append(lines, fmt.Sprintf("Total: %d tasks", len(registry.Tasks)))
+	activeCount := 0
+	for _, task := range registry.Tasks {
+		if task.Status != TaskStatusArchived {
+			activeCount++
+		}
+	}
+	lines = append(lines, fmt.Sprintf("Total: %d tasks", activeCount))
 
 	m.taskLines = lines
 	m.renderTaskViewport()

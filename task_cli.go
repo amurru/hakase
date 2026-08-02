@@ -28,6 +28,8 @@ func runTaskCLI(args []string) int {
 		return runTaskUpdate(args[1:])
 	case "delete":
 		return runTaskDelete(args[1:])
+	case "archive":
+		return runTaskArchive(args[1:])
 	case "claim":
 		return runTaskClaim(args[1:])
 	case "complete":
@@ -54,6 +56,7 @@ func taskCLIUsage() {
 	fmt.Fprintln(os.Stderr, "  get        get task details by ID")
 	fmt.Fprintln(os.Stderr, "  update     update task fields")
 	fmt.Fprintln(os.Stderr, "  delete     delete a task")
+	fmt.Fprintln(os.Stderr, "  archive    archive a completed task")
 	fmt.Fprintln(os.Stderr, "  claim      claim a task for execution")
 	fmt.Fprintln(os.Stderr, "  complete   mark a task as completed")
 	fmt.Fprintln(os.Stderr, "  fail       mark a task as failed")
@@ -232,7 +235,7 @@ func runTaskList(args []string) int {
 	var tagsFlag string
 	var parentFlag string
 
-	fs.StringVar(&statusFlag, "status", "", "filter by status (comma-separated: pending,in_progress,completed,failed,cancelled,skipped,blocked)")
+	fs.StringVar(&statusFlag, "status", "", "filter by status (comma-separated: pending,in_progress,completed,failed,cancelled,skipped,blocked,archived)")
 	fs.StringVar(&assigneeFlag, "assignee", "", "filter by assignee")
 	fs.StringVar(&tagsFlag, "tags", "", "filter by tags (comma-separated)")
 	fs.StringVar(&parentFlag, "parent", "", "filter by parent task ID")
@@ -358,7 +361,7 @@ func runTaskUpdate(args []string) int {
 		return 2
 	}
 
-	validStatuses := map[string]bool{"pending": true, "in_progress": true, "completed": true, "failed": true, "cancelled": true, "skipped": true, "blocked": true}
+	validStatuses := map[string]bool{"pending": true, "in_progress": true, "completed": true, "failed": true, "cancelled": true, "skipped": true, "blocked": true, "archived": true}
 	if statusFlag != "" && !validStatuses[statusFlag] {
 		fmt.Fprintf(os.Stderr, "invalid status %q\n", statusFlag)
 		return 2
@@ -431,6 +434,22 @@ func runTaskDelete(args []string) int {
 	}
 
 	fmt.Printf("Deleted task %s\n", args[0])
+	return 0
+}
+
+func runTaskArchive(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: hakase task archive <id>")
+		return 2
+	}
+
+	task, err := archiveTask(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to archive task: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Archived task %s: %s\n", task.ID, task.Title)
 	return 0
 }
 
@@ -594,6 +613,7 @@ func runTaskSummary(args []string) int {
 		TaskStatusCancelled:   0,
 		TaskStatusSkipped:     0,
 		TaskStatusBlocked:     0,
+		TaskStatusArchived:    0,
 	}
 
 	for _, task := range registry.Tasks {
@@ -602,7 +622,7 @@ func runTaskSummary(args []string) int {
 
 	fmt.Println("Task Board Summary")
 	fmt.Println("==================")
-	statusOrder := []TaskStatus{TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled, TaskStatusSkipped, TaskStatusBlocked}
+	statusOrder := []TaskStatus{TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled, TaskStatusSkipped, TaskStatusBlocked, TaskStatusArchived}
 	for _, status := range statusOrder {
 		count := summary[status]
 		symbol := statusSymbol(status)
@@ -685,6 +705,8 @@ func statusSymbol(s TaskStatus) string {
 		return "⏭️"
 	case TaskStatusBlocked:
 		return "🔒"
+	case TaskStatusArchived:
+		return "🗄️"
 	default:
 		return "❓"
 	}

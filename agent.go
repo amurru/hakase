@@ -342,16 +342,18 @@ const (
 	TaskStatusCancelled  TaskStatus = "cancelled"
 	TaskStatusSkipped    TaskStatus = "skipped"
 	TaskStatusBlocked    TaskStatus = "blocked"
+	TaskStatusArchived   TaskStatus = "archived"
 )
 
 var ValidTransitions = map[TaskStatus][]TaskStatus{
 	TaskStatusPending:    {TaskStatusInProgress, TaskStatusCancelled, TaskStatusSkipped},
 	TaskStatusInProgress: {TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled, TaskStatusBlocked},
 	TaskStatusBlocked:    {TaskStatusInProgress, TaskStatusCancelled},
-	TaskStatusCompleted:  {},
+	TaskStatusCompleted:  {TaskStatusArchived},
 	TaskStatusFailed:     {},
 	TaskStatusCancelled:  {},
 	TaskStatusSkipped:    {},
+	TaskStatusArchived:   {},
 }
 
 type TaskPriority string
@@ -448,6 +450,14 @@ type DeleteTaskInput struct {
 
 type DeleteTaskOutput struct {
 	Success bool `json:"success" doc:"Whether deletion succeeded"`
+}
+
+type ArchiveTaskInput struct {
+	ID string `json:"id" doc:"Task ID"`
+}
+
+type ArchiveTaskOutput struct {
+	Task TaskMeta `json:"task" doc:"Archived task"`
 }
 
 type SaveSkillInput struct {
@@ -989,6 +999,36 @@ func deleteTask(id string) (bool, error) {
 	return true, nil
 }
 
+func archiveTask(id string) (TaskMeta, error) {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+
+	registry, err := loadTaskRegistryLocked()
+	if err != nil {
+		return TaskMeta{}, err
+	}
+
+	idx := findTaskIndex(registry, id)
+	if idx == -1 {
+		return TaskMeta{}, fmt.Errorf("task not found: %s", id)
+	}
+
+	task := registry.Tasks[idx]
+	if task.Status != TaskStatusCompleted {
+		return TaskMeta{}, fmt.Errorf("only completed tasks can be archived (status: %s)", task.Status)
+	}
+
+	task.Status = TaskStatusArchived
+	task.UpdatedAt = time.Now().UTC()
+	registry.Tasks[idx] = task
+
+	if err := saveTaskRegistryLocked(registry); err != nil {
+		return TaskMeta{}, err
+	}
+	_ = writeTaskCheckpoint(&registry)
+	return task, nil
+}
+
 func unblockDependentTasks(registry *TaskRegistry, completedID string) {
 	now := time.Now().UTC()
 	for i := range registry.Tasks {
@@ -1022,6 +1062,7 @@ func writeTaskCheckpoint(registry *TaskRegistry) error {
 		"cancelled":   0,
 		"skipped":     0,
 		"blocked":     0,
+		"archived":    0,
 	}
 
 	for _, task := range registry.Tasks {
@@ -1107,7 +1148,7 @@ func getTaskTool(log LogFunc) (tool.Tool, error) {
 func deleteTaskTool(log LogFunc) (tool.Tool, error) {
 	return newDocTool(functiontool.Config{
 		Name:        "delete_task",
-		Description: "Delete a task by ID",
+		Description: "Delete a task by ID. Any task can be deleted, including completed or archived tasks, upon user request.",
 	}, func(ctx agent.Context, input DeleteTaskInput) (DeleteTaskOutput, error) {
 		success, err := deleteTask(input.ID)
 		if err != nil {
@@ -1118,6 +1159,23 @@ func deleteTaskTool(log LogFunc) (tool.Tool, error) {
 		}
 		notifyTaskBoard("deleted", TaskMeta{ID: input.ID})
 		return DeleteTaskOutput{Success: success}, nil
+	})
+}
+
+func archiveTaskTool(log LogFunc) (tool.Tool, error) {
+	return newDocTool(functiontool.Config{
+		Name:        "archive_task",
+		Description: "Archive a completed task to keep it for reference and remove it from the active board. Only completed tasks can be archived.",
+	}, func(ctx agent.Context, input ArchiveTaskInput) (ArchiveTaskOutput, error) {
+		task, err := archiveTask(input.ID)
+		if err != nil {
+			return ArchiveTaskOutput{}, err
+		}
+		if log != nil {
+			log(fmt.Sprintf("📋 [tasks] Archived task %s: %s", task.ID, task.Title))
+		}
+		notifyTaskBoard("archived", task)
+		return ArchiveTaskOutput{Task: task}, nil
 	})
 }
 
@@ -1134,7 +1192,7 @@ func buildOrchestratorInstruction(installedSkills string) string {
 - Synthesize responses from the specialists into a final markdown output.
 
 ### TASK BOARD:
-You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'delete_task' (remove). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
+You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'archive_task' (archive completed tasks to keep them for reference and remove them from the active board), 'delete_task' (remove any task permanently, including completed or archived tasks, upon user request). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
 
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
@@ -1276,6 +1334,10 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 	if err != nil {
 		return nil, err
 	}
+	archiveTaskT, err := archiveTaskTool(log)
+	if err != nil {
+		return nil, err
+	}
 
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
@@ -1290,6 +1352,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 			listTasksT,
 			getTaskT,
 			deleteTaskT,
+			archiveTaskT,
 		}, systemExecTools...),
 		SubAgents: []agent.Agent{
 			researcherAgent,
