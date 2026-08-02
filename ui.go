@@ -30,6 +30,10 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("238")).
 			Padding(0, 1)
+
+	agentLabelStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("63"))
 )
 
 type focusedPane int
@@ -335,15 +339,21 @@ func (m *appModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	}
 
 	if strings.TrimSpace(msg.Content) != "" {
-		contentLines := strings.Split(msg.Content, "\n")
-		for i, line := range contentLines {
-			var wrapped string
-			if i == 0 {
-				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
-			} else {
-				wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(line)
+		if msg.Role == "agent" {
+			lines = append(lines, agentLabelStyle.Render(prefix))
+			mdLines := strings.Split(renderMarkdown(msg.Content, wrapWidth), "\n")
+			lines = append(lines, mdLines...)
+		} else {
+			contentLines := strings.Split(msg.Content, "\n")
+			for i, line := range contentLines {
+				var wrapped string
+				if i == 0 {
+					wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
+				} else {
+					wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(line)
+				}
+				lines = append(lines, strings.Split(wrapped, "\n")...)
 			}
-			lines = append(lines, strings.Split(wrapped, "\n")...)
 		}
 		lines = append(lines, "")
 	}
