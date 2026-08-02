@@ -347,7 +347,7 @@ const (
 )
 
 var ValidTransitions = map[TaskStatus][]TaskStatus{
-	TaskStatusPending:    {TaskStatusInProgress, TaskStatusCancelled, TaskStatusSkipped},
+	TaskStatusPending:    {TaskStatusInProgress, TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled, TaskStatusSkipped},
 	TaskStatusInProgress: {TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled, TaskStatusBlocked},
 	TaskStatusBlocked:    {TaskStatusInProgress, TaskStatusCancelled},
 	TaskStatusCompleted:  {TaskStatusArchived},
@@ -1112,7 +1112,7 @@ func createTaskTool(log LogFunc) (tool.Tool, error) {
 func updateTaskTool(log LogFunc) (tool.Tool, error) {
 	return newDocTool(functiontool.Config{
 		Name:        "update_task",
-		Description: "Update task status, assignee, or result",
+		Description: "Update task status, assignee, or result. Status is transition-validated; a newly created (pending) task may be marked completed or failed directly, or moved to in_progress first.",
 	}, func(ctx agent.Context, input UpdateTaskInput) (UpdateTaskOutput, error) {
 		task, err := updateTask(input)
 		if err != nil {
