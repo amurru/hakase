@@ -51,8 +51,28 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 
 - **Left panel** — Chat viewport displaying agent responses and tool call logs
 - **Right panel** — Real-time status and execution logs
-- **Bottom** — Text input with focus cycling (`Tab` to switch panes)
-- Keyboard shortcuts: `Ctrl+C` / `Esc` to quit, `Enter` to submit
+- **Bottom** — Text input with focus cycling (`Tab` to switch panes) and a hint bar showing the most used shortcuts
+- **Help overlay** — Press `Ctrl+/` (`?` when not typing) for a full keyboard shortcut reference
+
+### Keyboard Shortcuts
+
+| Shortcut               | Action                                          |
+| ---------------------- | ----------------------------------------------- |
+| `Ctrl+C`               | Quit the application                            |
+| `Esc`                  | Close the help overlay (never quits)            |
+| `Ctrl+/` or `?`        | Toggle the help overlay                         |
+| `Tab` / `Shift+Tab`    | Cycle focus: input → chat → log → task          |
+| `Ctrl+T`               | Toggle the thinking display                     |
+| `Enter`                | Send the message                                |
+| `↑`/`k`, `↓`/`j`       | Scroll the focused pane (older/newer content)   |
+| `PgUp`/`b`, `PgDn`/`f` | Page up / down in the focused pane              |
+| `u` / `d`              | Half page up / down in the focused pane         |
+| `Home`/`g`, `End`/`G`  | Jump to top / bottom of the focused pane        |
+| `Ctrl+A` / `Ctrl+E`    | Jump to line start / end in the input           |
+| `Ctrl+U`               | Clear the input                                 |
+
+Mouse wheel scrolling works on whichever pane is focused. The log pane stays
+pinned to the bottom unless you scroll up to read history.
 
 ### 🤖 Multi-Agent Orchestration
 

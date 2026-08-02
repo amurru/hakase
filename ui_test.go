@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -168,5 +169,175 @@ func TestLogLinesAppendIncrementally(t *testing.T) {
 	}
 	if mm.logLines[0] != "first" || mm.logLines[1] != "second" {
 		t.Fatalf("log lines mismatch: %v", mm.logLines)
+	}
+}
+
+// keyMsg builds a KeyPressMsg whose String() reports the given key.
+func keyMsg(key string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Text: key}
+}
+
+func TestHelpToggleWithCtrlSlash(t *testing.T) {
+	m := newTestModel(t)
+	if m.showHelp {
+		t.Fatal("help should start closed")
+	}
+
+	for _, key := range []string{"ctrl+/", "ctrl+_", "ctrl+?"} {
+		m = newTestModel(t)
+		model, _ := m.Update(keyMsg(key))
+		if !model.(*appModel).showHelp {
+			t.Fatalf("%q should open the help overlay", key)
+		}
+		model, _ = model.Update(keyMsg(key))
+		if model.(*appModel).showHelp {
+			t.Fatalf("%q should toggle the help overlay closed", key)
+		}
+	}
+}
+
+func TestHelpOpensWithBareQuestionMarkOutsideInput(t *testing.T) {
+	m := newTestModel(t)
+	m.focus = chatFocus
+	model, _ := m.Update(keyMsg("?"))
+	if !model.(*appModel).showHelp {
+		t.Fatal("bare '?' with chat focused should open help")
+	}
+}
+
+func TestQuestionMarkTypesIntoInput(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("what")
+	m.input.CursorEnd()
+	model, _ := m.Update(keyMsg("?"))
+	mm := model.(*appModel)
+	if mm.showHelp {
+		t.Fatal("'?' must not open help while input is focused")
+	}
+	if mm.input.Value() != "what?" {
+		t.Fatalf("'?' should be typed into the input, got %q", mm.input.Value())
+	}
+}
+
+func TestEscOnlyClosesHelp(t *testing.T) {
+	m := newTestModel(t)
+	m.showHelp = true
+	model, cmd := m.Update(keyMsg("esc"))
+	if model.(*appModel).showHelp {
+		t.Fatal("esc should close the help overlay")
+	}
+	if cmd != nil {
+		t.Fatalf("esc with help open must not quit, got cmd %v", cmd)
+	}
+
+	// Esc with no modal open is a no-op - it must never quit.
+	model, cmd = model.Update(keyMsg("esc"))
+	if cmd != nil {
+		t.Fatal("esc with no modal open must not quit")
+	}
+	if model.(*appModel).showHelp {
+		t.Fatal("esc with no modal open must not open the help overlay")
+	}
+}
+
+func TestCtrlCQuitsEvenWithHelpOpen(t *testing.T) {
+	m := newTestModel(t)
+	m.showHelp = true
+	_, cmd := m.Update(keyMsg("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("ctrl+c should quit even while help is open")
+	}
+}
+
+func TestTabCyclesFocusForwardAndShiftTabBackward(t *testing.T) {
+	m := newTestModel(t)
+	expect := func(want focusedPane) {
+		t.Helper()
+		if m.focus != want {
+			t.Fatalf("focus = %d, want %d", m.focus, want)
+		}
+	}
+
+	expect(inputFocus)
+	var model tea.Model = m
+	for _, want := range []focusedPane{chatFocus, logFocus, taskFocus, inputFocus} {
+		model, _ = model.Update(keyMsg("tab"))
+		m = model.(*appModel)
+		expect(want)
+	}
+
+	model, _ = m.Update(keyMsg("shift+tab"))
+	m = model.(*appModel)
+	expect(taskFocus)
+}
+
+func TestHelpViewRendersShortcuts(t *testing.T) {
+	m := newTestModel(t)
+	m.showHelp = true
+	view := m.View().Content
+	for _, want := range []string{"Keyboard Shortcuts", "ctrl+/", "shift+tab", "ctrl+t", "ctrl+c"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("help view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestHintBarShowsShortcuts(t *testing.T) {
+	m := newTestModel(t)
+	view := m.View().Content
+	if !strings.Contains(view, "ctrl+/ help") {
+		t.Fatalf("hint bar missing help hint:\n%s", view)
+	}
+	if !strings.Contains(view, "tab focus") {
+		t.Fatalf("hint bar missing focus hint:\n%s", view)
+	}
+}
+
+func TestHintBarFitsWithinTerminalHeight(t *testing.T) {
+	m := newTestModel(t)
+	lines := strings.Split(m.View().Content, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("view renders %d lines for terminal height %d - panes or hint bar overflow", len(lines), m.height)
+	}
+	if got := lines[len(lines)-1]; !strings.Contains(got, "ctrl+/ help") {
+		t.Fatalf("hint bar must be the last visible line, got %q", got)
+	}
+}
+
+func TestLogStaysPinnedToBottomWhenAtBottom(t *testing.T) {
+	m := newTestModel(t)
+	var model tea.Model = m
+	for i := 0; i < 60; i++ {
+		model, _ = model.Update(StatusLogMsg{Text: fmt.Sprintf("line %d", i)})
+	}
+	mm := model.(*appModel)
+	if !mm.logViewport.AtBottom() {
+		t.Fatal("test setup: log should be at the bottom after appending")
+	}
+
+	model, _ = mm.Update(StatusLogMsg{Text: "new"})
+	mm = model.(*appModel)
+	if !mm.logViewport.AtBottom() {
+		t.Fatalf("log should stay pinned to the bottom, YOffset=%d", mm.logViewport.YOffset())
+	}
+}
+
+func TestLogDoesNotYankWhenScrolledAway(t *testing.T) {
+	m := newTestModel(t)
+	var model tea.Model = m
+	for i := 0; i < 60; i++ {
+		model, _ = model.Update(StatusLogMsg{Text: fmt.Sprintf("line %d", i)})
+	}
+	mm := model.(*appModel)
+	mm.logViewport.GotoTop()
+	if mm.logViewport.AtBottom() {
+		t.Fatal("test setup: log should be scrollable after GotoTop")
+	}
+	before := mm.logViewport.YOffset()
+
+	model, _ = mm.Update(StatusLogMsg{Text: "new"})
+	mm = model.(*appModel)
+	if got := mm.logViewport.YOffset(); got != before {
+		t.Fatalf("new log line must not yank the view while reading history (was %d, got %d)", before, got)
 	}
 }

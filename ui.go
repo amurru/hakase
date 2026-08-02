@@ -34,6 +34,35 @@ var (
 	agentLabelStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("63"))
+
+	hintBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Padding(0, 1)
+
+	helpBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Padding(1, 2)
+
+	helpTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("63"))
+
+	helpSectionStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("214"))
+
+	helpKeyStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("252")).
+			Width(22)
+
+	helpDescStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245"))
+
+	helpFooterStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Italic(true)
 )
 
 type focusedPane int
@@ -100,6 +129,7 @@ type appModel struct {
 	ready        bool
 	isProcessing bool
 	showThinking bool
+	showHelp     bool
 }
 
 func newModel(
@@ -133,18 +163,73 @@ func (m *appModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
+// cycleFocus moves focus by dir (+1 forward, -1 backward) through the panes:
+// input -> chat -> log -> task.
+func (m *appModel) cycleFocus(dir int) {
+	const paneCount = 4
+	m.focus = focusedPane((int(m.focus) + dir + paneCount) % paneCount)
+
+	if m.focus == inputFocus {
+		m.input.Focus()
+	} else {
+		m.input.Blur()
+	}
+}
+
+// appendLog appends a line to the log pane, keeping the view pinned to the
+// bottom only when the user is already there so reading earlier logs is not
+// disrupted by new entries.
+func (m *appModel) appendLog(line string) {
+	stick := m.logViewport.AtBottom()
+	m.logLines = append(m.logLines, line)
+	m.logViewport.SetContentLines(m.logLines)
+	if stick {
+		m.logViewport.GotoBottom()
+	}
+}
+
 func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
+		key := msg.String()
+
+		// While the help overlay is open, swallow all keys except close/quit.
+		if m.showHelp {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "ctrl+/", "ctrl+_", "ctrl+?", "?":
+				m.showHelp = false
+			}
+			return m, nil
+		}
+
+		switch key {
+		// Esc only closes the help overlay (guard above) and is otherwise a
+		// no-op: it never quits, and it is swallowed here so it cannot leak
+		// into the input or viewport handlers below.
+		case "esc":
+			return m, nil
+		case "ctrl+c":
 			return m, tea.Quit
+		// Ctrl+/ sends byte 0x1F, decoded as "ctrl+_" on standard terminals,
+		// "ctrl+/" via the kitty protocol, and "ctrl+?" on some emulators.
+		case "ctrl+/", "ctrl+_", "ctrl+?":
+			m.showHelp = true
+		case "?":
+			if m.focus != inputFocus {
+				m.showHelp = true
+			}
 		case "ctrl+t":
 			m.showThinking = !m.showThinking
 			m.rebuildRenderedLines()
 			m.renderChatViewport()
+		case "tab":
+			m.cycleFocus(1)
+		case "shift+tab":
+			m.cycleFocus(-1)
 		case "enter":
 			if m.input.Value() != "" && !m.isProcessing {
 				prompt := m.input.Value()
@@ -161,15 +246,6 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				go runAgentTask(m.ctx, m.r, m.program, prompt)
 			}
-		case "tab":
-			// 🔄 Cycle through: inputFocus (0) -> chatFocus (1) -> logFocus (2) -> taskFocus (3) -> inputFocus (0)
-			m.focus = (m.focus + 1) % 4
-
-			if m.focus == inputFocus {
-				m.input.Focus()
-			} else {
-				m.input.Blur()
-			}
 		case "up", "k":
 			if m.focus == chatFocus {
 				m.scrollChatDown(1)
@@ -178,35 +254,69 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == chatFocus {
 				m.scrollChatUp(1)
 			}
-		case "pgup":
+		case "pgup", "b":
 			if m.focus == chatFocus {
 				m.scrollChatDown(m.chatViewport.Height())
 			}
-		case "pgdown":
+		case "pgdown", "f":
 			if m.focus == chatFocus {
 				m.scrollChatUp(m.chatViewport.Height())
 			}
-		case "home":
+		case "u", "ctrl+u":
 			if m.focus == chatFocus {
+				m.scrollChatDown(m.chatViewport.Height() / 2)
+			}
+		case "d", "ctrl+d":
+			if m.focus == chatFocus {
+				m.scrollChatUp(m.chatViewport.Height() / 2)
+			}
+		// Home/end and g/G jump to the top/bottom of the focused pane.
+		// log/task viewports handle their own pager keys; only the jumps are
+		// routed here.
+		case "home", "g":
+			switch m.focus {
+			case chatFocus:
 				m.chatScrollOffset = 0
 				m.renderChatViewport()
+			case logFocus:
+				m.logViewport.GotoTop()
+			case taskFocus:
+				m.taskViewport.GotoTop()
 			}
-		case "end":
-			if m.focus == chatFocus {
+		case "end", "G":
+			switch m.focus {
+			case chatFocus:
 				m.chatScrollOffset = m.maxChatScrollOffset()
 				m.renderChatViewport()
+			case logFocus:
+				m.logViewport.GotoBottom()
+			case taskFocus:
+				m.taskViewport.GotoBottom()
 			}
 		}
 
 	case tea.MouseWheelMsg:
-		if m.focus == chatFocus {
+		switch m.focus {
+		case chatFocus:
 			switch msg.Button {
 			case tea.MouseWheelUp:
-				// Terminal mouse wheel UP = scroll viewport UP = see content at higher Y = newer messages
+				// Terminal mouse wheel UP = scroll toward older messages
 				m.scrollChatDown(m.chatViewport.MouseWheelDelta)
 			case tea.MouseWheelDown:
-				// Terminal mouse wheel DOWN = scroll viewport DOWN = see content at lower Y = older messages
+				// Terminal mouse wheel DOWN = scroll toward newer messages
 				m.scrollChatUp(m.chatViewport.MouseWheelDelta)
+			}
+		case logFocus:
+			if msg.Button == tea.MouseWheelUp {
+				m.logViewport.ScrollUp(m.logViewport.MouseWheelDelta)
+			} else if msg.Button == tea.MouseWheelDown {
+				m.logViewport.ScrollDown(m.logViewport.MouseWheelDelta)
+			}
+		case taskFocus:
+			if msg.Button == tea.MouseWheelUp {
+				m.taskViewport.ScrollUp(m.taskViewport.MouseWheelDelta)
+			} else if msg.Button == tea.MouseWheelDown {
+				m.taskViewport.ScrollDown(m.taskViewport.MouseWheelDelta)
 			}
 		}
 
@@ -220,15 +330,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.ready {
 			m.chatViewport = viewport.New(
 				viewport.WithWidth(leftWidth),
-				viewport.WithHeight(m.height-5),
+				viewport.WithHeight(m.height-6),
 			)
 			m.logViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight((m.height-4)*2/3),
+				viewport.WithHeight((m.height-6)*2/3),
 			)
 			m.taskViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight((m.height-4)/3+1),
+				viewport.WithHeight((m.height-6)/3+2),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
@@ -239,11 +349,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 		} else {
 			m.chatViewport.SetWidth(leftWidth)
-			m.chatViewport.SetHeight(m.height - 5)
+			m.chatViewport.SetHeight(m.height - 6)
 			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight((m.height - 4) * 2 / 3)
+			m.logViewport.SetHeight((m.height - 6) * 2 / 3)
 			m.taskViewport.SetWidth(rightWidth)
-			m.taskViewport.SetHeight((m.height - 4) / 3)
+			m.taskViewport.SetHeight((m.height-6)/3 + 1)
 		}
 
 		m.input.SetWidth(leftWidth - 3)
@@ -287,14 +397,10 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderChatViewport()
 
 	case agentLogMsg:
-		m.logLines = append(m.logLines, string(msg))
-		m.logViewport.SetContentLines(m.logLines)
-		m.logViewport.GotoBottom()
+		m.appendLog(string(msg))
 
 	case StatusLogMsg:
-		m.logLines = append(m.logLines, msg.Text)
-		m.logViewport.SetContentLines(m.logLines)
-		m.logViewport.GotoBottom()
+		m.appendLog(msg.Text)
 	case TaskUpdateMsg:
 		m.refreshTaskBoard()
 	case TaskBoardMsg:
@@ -570,6 +676,10 @@ func (m *appModel) View() tea.View {
 		return tea.NewView("Initializing TUI...")
 	}
 
+	if m.showHelp {
+		return m.helpView()
+	}
+
 	chatStyle := inactiveBorder
 	if m.focus == chatFocus {
 		chatStyle = activeBorder
@@ -605,10 +715,87 @@ func (m *appModel) View() tea.View {
 		rightCol,
 	)
 
-	v := tea.NewView(content)
+	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, content, m.hintBar()))
 	v.MouseMode = tea.MouseModeCellMotion
 	v.AltScreen = true
 	return v
+}
+
+// hintBar renders the single-line footer that surfaces the most commonly used
+// shortcuts together with the current focus and status.
+func (m *appModel) hintBar() string {
+	focusNames := [...]string{"input", "chat", "log", "task"}
+	status := "● " + focusNames[m.focus]
+	if m.isProcessing {
+		status += " ⏳ working"
+	}
+	if m.showThinking {
+		status += " 💭 thinking"
+	}
+	hints := "ctrl+/ help · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
+	return hintBarStyle.Render(status + "  │  " + hints)
+}
+
+// helpView renders the full-screen keyboard shortcut overlay.
+func (m *appModel) helpView() tea.View {
+	var b strings.Builder
+	b.WriteString(helpTitleStyle.Render("⌨️  Keyboard Shortcuts"))
+	b.WriteString("\n\n")
+
+	sections := []struct {
+		title   string
+		entries []helpBinding
+	}{
+		{"Global", []helpBinding{
+			{"ctrl+c", "Quit the application"},
+			{"esc", "Close the help overlay"},
+			{"ctrl+/", "Toggle this help screen"},
+			{"?", "Toggle help (when not typing)"},
+			{"tab / shift+tab", "Cycle focus between panes"},
+			{"ctrl+t", "Toggle thinking display"},
+		}},
+		{"Input", []helpBinding{
+			{"enter", "Send the message"},
+			{"ctrl+a / ctrl+e", "Jump to line start / end"},
+			{"left / right", "Move the cursor"},
+			{"ctrl+u", "Clear the input"},
+		}},
+		{"Panels (chat / log / task)", []helpBinding{
+			{"up / k", "Scroll toward older content"},
+			{"down / j", "Scroll toward newer content"},
+			{"pgup / b", "Page up"},
+			{"pgdown / f", "Page down"},
+			{"u / d", "Half page up / down"},
+			{"home / g", "Jump to top"},
+			{"end / G", "Jump to bottom"},
+			{"mouse wheel", "Scroll the focused pane"},
+		}},
+	}
+
+	for _, sec := range sections {
+		b.WriteString(helpSectionStyle.Render(sec.title))
+		b.WriteString("\n")
+		for _, e := range sec.entries {
+			b.WriteString("  ")
+			b.WriteString(helpKeyStyle.Render(e.keys))
+			b.WriteString(helpDescStyle.Render(e.desc))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString(helpFooterStyle.Render("Press ctrl+/ or esc to close"))
+
+	box := helpBoxStyle.Render(b.String())
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box))
+	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = true
+	return v
+}
+
+type helpBinding struct {
+	keys string
+	desc string
 }
 
 func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string) {
