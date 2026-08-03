@@ -51,7 +51,7 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 
 - **Left panel** — Chat viewport displaying agent responses and tool call logs
 - **Right panel** — Real-time status and execution logs
-- **Bottom** — Text input with focus cycling (`Tab` to switch panes) and a hint bar showing the most used shortcuts
+- **Bottom** — Multi-line text input (auto-grows up to 3 lines) with focus cycling (`Tab` to switch panes) and a hint bar showing the most used shortcuts
 - **Help overlay** — Press `Ctrl+/` (`?` when not typing) for a full keyboard shortcut reference
 
 ### Keyboard Shortcuts
@@ -64,6 +64,7 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 | `Tab` / `Shift+Tab`    | Cycle focus: input → chat → log → task          |
 | `Ctrl+T`               | Toggle the thinking display                     |
 | `Enter`                | Send the message                                |
+| `Shift+Enter` / `Ctrl+J` | Insert a newline in the input                 |
 | `↑`/`k`, `↓`/`j`       | Scroll the focused pane (older/newer content)   |
 | `PgUp`/`b`, `PgDn`/`f` | Page up / down in the focused pane              |
 | `u` / `d`              | Half page up / down in the focused pane         |

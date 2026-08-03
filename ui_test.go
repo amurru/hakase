@@ -484,7 +484,7 @@ func TestCompositorHitTestResolvesPanesByGeometry(t *testing.T) {
 	taskRender := inactiveBorder.Render(m.taskViewport.View())
 	comp := m.buildCompositor(chatRender, logRender, inputRender, taskRender)
 
-	// rightColStart = leftWidth + 2 = (120 - 30 - 4) + 2 = 88
+	// rightColStart = leftWidth + 2 = (120 - 24 - 4) + 2 = 94
 	cases := []struct {
 		name    string
 		x, y    int
@@ -493,9 +493,9 @@ func TestCompositorHitTestResolvesPanesByGeometry(t *testing.T) {
 	}{
 		{"status bar", 0, 0, paneStatus, true},
 		{"chat top-left area", 5, 3, paneChat, true},
-		{"chat near right edge of left col", 87, 20, paneChat, true},
+		{"chat near right edge of left col", 90, 20, paneChat, true},
 		{"log top of right col", 100, 3, paneLog, true},
-		{"log just past column boundary", 88, 5, paneLog, true},
+		{"log just past column boundary", 94, 5, paneLog, true},
 		{"input row", 5, 36, paneInput, true},
 		{"task below log on right", 100, 30, paneTask, true},
 		{"hint bar", 0, 39, paneHint, true},
@@ -547,7 +547,7 @@ func TestClickOnInputFocusesIt(t *testing.T) {
 	m.input.Blur()
 	_ = m.View() // populate m.compositor
 
-	// Input pane occupies rows 34..38 in the left column (120x40, padded input).
+	// Input pane occupies rows 34..38 in the left column (120x40, DynamicHeight at 1 line).
 	model, _ := m.Update(tea.MouseClickMsg{X: 5, Y: 36, Button: tea.MouseLeft})
 	mm := model.(*appModel)
 	if mm.focus != inputFocus {
@@ -557,7 +557,7 @@ func TestClickOnInputFocusesIt(t *testing.T) {
 
 // TestMouseYToContentLineGeometry locks in the border-aware coordinate map
 // from screen Y to content line for each pane. For a 120x40 terminal the
-// layout is: chatH=31, logH=20, taskH=11 (input padded).
+// layout is: chatH=31, logH=21, taskH=14 (input at min 1 line, DynamicHeight).
 func TestMouseYToContentLineGeometry(t *testing.T) {
 	m := newTestModel(t) // 120x40
 
@@ -589,26 +589,26 @@ func TestMouseYToContentLineGeometry(t *testing.T) {
 	}
 	m.chatScrollOffset = 0
 
-	// Log: content occupies screen rows 2..21 (logH=20 -> rows 0..19).
+	// Log: content occupies screen rows 2..20 (logH=21 -> rows 0..18).
 	m.selectionPane = logFocus
 	for _, c := range []struct{ y, want int }{
 		{1, -1},  // log top border
 		{2, 0},   // first log content line
-		{21, 19}, // last log content line
-		{22, 19}, // overshoot clamps
+		{20, 18}, // last log content line
+		{21, 18}, // overshoot clamps (bottom border)
 	} {
 		if got := m.mouseYToContentLine(c.y); got != c.want {
 			t.Fatalf("log y=%d: got %d, want %d", c.y, got, c.want)
 		}
 	}
 
-	// Task: content starts at row logH+4 = 24 (taskH=11 -> rows 0..10).
+	// Task: content starts at row logH+4 = 25 (taskH=14 -> rows 0..11).
 	m.selectionPane = taskFocus
 	for _, c := range []struct{ y, want int }{
-		{23, -1}, // task top border
-		{24, 0},  // first task content line
-		{34, 10}, // last task content line
-		{35, 10}, // overshoot clamps
+		{24, -1}, // task top border
+		{25, 0},  // first task content line
+		{36, 11}, // last task content line
+		{37, 11}, // overshoot clamps (bottom border)
 	} {
 		if got := m.mouseYToContentLine(c.y); got != c.want {
 			t.Fatalf("task y=%d: got %d, want %d", c.y, got, c.want)

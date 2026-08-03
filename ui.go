@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -18,8 +18,13 @@ import (
 
 // inputPadV is the vertical padding (rows) added inside the input pane border
 // to enlarge the prompt's click target. reservedRows must stay in sync:
-// status(1) + chat borders(2) + input(border 2 + 2*inputPadV + content 1) + hint(1).
+// status(1) + chat borders(2) + input(border 2 + 2*inputPadV + 1 line min) + hint(1).
+// The textarea uses DynamicHeight (1..inputLines), so reservedRows budgets for
+// the minimum; the chat viewport shrinks dynamically when the input grows.
 const inputPadV = 1
+
+// inputLines is the maximum number of visible text lines in the multi-line input.
+const inputLines = 3
 
 // reservedRows is the screen-row budget consumed by everything except the
 // chat / log / task viewports.
@@ -196,7 +201,7 @@ type appModel struct {
 	chatViewport viewport.Model
 	logViewport  viewport.Model
 	taskViewport viewport.Model
-	input        textinput.Model
+	input        textarea.Model
 
 	focus          focusedPane
 	chatBufferSize int
@@ -252,9 +257,17 @@ func newModel(
 	modelName string,
 	thinkingLevel string,
 ) appModel {
-	ti := textinput.New()
-	ti.Placeholder = "Ask me anything and I will do it..."
-	ti.Focus()
+	ta := textarea.New()
+	ta.Placeholder = "Ask me anything and I will do it..."
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	ta.MaxHeight = inputLines
+	ta.Focus()
+
+	// Enter sends the message; shift+enter / ctrl+j inserts a newline.
+	ta.KeyMap.InsertNewline.SetKeys("shift+enter", "ctrl+j")
 
 	// Default to 1000 lines if not configured
 	if chatBufferSize <= 0 {
@@ -262,7 +275,7 @@ func newModel(
 	}
 
 	return appModel{
-		input:          ti,
+		input:          ta,
 		r:              r,
 		ctx:            ctx,
 		chatBufferSize: chatBufferSize,
@@ -291,7 +304,7 @@ func initSessionService() *SessionService {
 }
 
 func (m *appModel) Init() tea.Cmd {
-	return textinput.Blink
+	return textarea.Blink
 }
 
 // cycleFocus moves focus by dir (+1 forward, -1 backward) through the panes:
@@ -505,9 +518,16 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		rightWidth := m.width / 4
+		rightWidth := m.width / 5
 		leftWidth := m.width - rightWidth - 4
 		avail := m.height - reservedRows
+
+		// Right column fills from status bar (Y=1) to just above hint bar
+		// (Y=m.height-2). The gap between log and task is 2 rows. Total
+		// viewport rows = m.height - 5 (accounting for lipgloss trailing newline).
+		rightAvail := m.height - 5
+		logH := rightAvail * 3 / 5
+		taskH := rightAvail - logH - 1 // remainder goes to task so they sum exactly
 
 		if !m.ready {
 			m.chatViewport = viewport.New(
@@ -516,11 +536,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 			m.logViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(avail*2/3),
+				viewport.WithHeight(logH),
 			)
 			m.taskViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(avail/3+1),
+				viewport.WithHeight(taskH),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
@@ -533,12 +553,13 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatViewport.SetWidth(leftWidth)
 			m.chatViewport.SetHeight(avail)
 			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight(avail * 2 / 3)
+			m.logViewport.SetHeight(logH)
 			m.taskViewport.SetWidth(rightWidth)
-			m.taskViewport.SetHeight(avail/3 + 1)
+			m.taskViewport.SetHeight(taskH)
 		}
 
-		m.input.SetWidth(leftWidth - 3)
+		// Input pane extends to the right column boundary (X=rightColStart-2).
+		m.input.SetWidth(leftWidth)
 		// Re-render chat viewport on resize
 		m.renderChatViewport()
 		m.refreshTaskBoard()
@@ -784,7 +805,9 @@ func (m *appModel) renderChatViewport() {
 	}
 
 	visibleLines := m.renderedLines[m.chatScrollOffset:end]
-	m.chatViewport.SetContent(strings.Join(m.highlightLines(visibleLines, m.chatScrollOffset), "\n"))
+	m.chatViewport.SetContent(
+		strings.Join(m.highlightLines(visibleLines, m.chatScrollOffset), "\n"),
+	)
 }
 
 func (m *appModel) refreshTaskBoard() {
@@ -876,6 +899,21 @@ func (m *appModel) renderTaskViewport() {
 	m.taskViewport.SetContent(strings.Join(m.highlightLines(m.taskLines, 0), "\n"))
 }
 
+// inputHeight returns the current number of content lines rendered by the
+// textarea, clamped between 1 and inputLines. Used to shrink the chat
+// viewport when the multi-line input grows so the layout never overflows.
+func (m *appModel) inputHeight() int {
+	v := m.input.View()
+	h := strings.Count(v, "\n") + 1
+	if h < 1 {
+		h = 1
+	}
+	if h > inputLines {
+		h = inputLines
+	}
+	return h
+}
+
 // Change return type to tea.View
 func (m *appModel) View() tea.View {
 	if !m.ready {
@@ -885,6 +923,17 @@ func (m *appModel) View() tea.View {
 	if m.showHelp {
 		return m.helpView()
 	}
+
+	// The textarea uses DynamicHeight (1..inputLines). When it grows beyond
+	// 1 line, shrink the chat viewport by the extra rows so the input pane
+	// never overlaps the hint bar. reservedRows budgets for the minimum.
+	actualInputH := m.inputHeight()
+	avail := m.height - reservedRows
+	adjustedChatH := avail - max(0, actualInputH-1)
+	if adjustedChatH < 1 {
+		adjustedChatH = 1
+	}
+	m.chatViewport.SetHeight(adjustedChatH)
 
 	chatStyle := inactiveBorder
 	if m.focus == chatFocus {
@@ -914,7 +963,15 @@ func (m *appModel) View() tea.View {
 		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
 		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
 		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
-		return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), content, m.sessionListView(), m.hintBar()))
+		return tea.NewView(
+			lipgloss.JoinVertical(
+				lipgloss.Left,
+				m.statusBar(),
+				content,
+				m.sessionListView(),
+				m.hintBar(),
+			),
+		)
 	}
 
 	// Main layout: each pane is a named Layer positioned at its exact screen
@@ -933,8 +990,10 @@ func (m *appModel) View() tea.View {
 // pane and returns a Compositor that both renders the screen and answers
 // mouse hit-tests by layer ID. Extracted from View so the geometry can be
 // exercised directly in tests.
-func (m *appModel) buildCompositor(chatRender, logRender, inputRender, taskRender string) *lipgloss.Compositor {
-	rightWidth := m.width / 4
+func (m *appModel) buildCompositor(
+	chatRender, logRender, inputRender, taskRender string,
+) *lipgloss.Compositor {
+	rightWidth := m.width / 5
 	leftWidth := m.width - rightWidth - 4
 	rightColStart := leftWidth + 2 // chat pane width including its border
 
@@ -1068,6 +1127,7 @@ func (m *appModel) helpView() tea.View {
 		}},
 		{"Input", []helpBinding{
 			{"enter", "Send the message"},
+			{"shift+enter / ctrl+j", "Insert a newline"},
 			{"ctrl+a / ctrl+e", "Jump to line start / end"},
 			{"left / right", "Move the cursor"},
 			{"ctrl+u", "Clear the input"},
@@ -1111,7 +1171,13 @@ type helpBinding struct {
 	desc string
 }
 
-func runAgentTask(ctx context.Context, r *runner.Runner, p *tea.Program, prompt string, taskID string) {
+func runAgentTask(
+	ctx context.Context,
+	r *runner.Runner,
+	p *tea.Program,
+	prompt string,
+	taskID string,
+) {
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
@@ -1498,8 +1564,13 @@ func (m *appModel) mouseYToContentLine(y int) int {
 		if row < 0 {
 			return -1
 		}
-		if row >= m.logViewport.Height() {
-			row = m.logViewport.Height() - 1
+		// Subtract 2 for top/bottom borders to get content rows.
+		contentH := m.logViewport.Height() - 2
+		if contentH < 0 {
+			contentH = 0
+		}
+		if row >= contentH {
+			row = contentH - 1
 		}
 		return clampLine(row, len(m.logLines))
 	case taskFocus:
@@ -1508,8 +1579,13 @@ func (m *appModel) mouseYToContentLine(y int) int {
 		if row < 0 {
 			return -1
 		}
-		if row >= m.taskViewport.Height() {
-			row = m.taskViewport.Height() - 1
+		// Subtract 2 for top/bottom borders to get content rows.
+		contentH := m.taskViewport.Height() - 2
+		if contentH < 0 {
+			contentH = 0
+		}
+		if row >= contentH {
+			row = contentH - 1
 		}
 		return clampLine(row, len(m.taskLines))
 	default:
