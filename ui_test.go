@@ -471,3 +471,185 @@ func TestThinkingStatus(t *testing.T) {
 		t.Fatalf("model thinking level = %q, want high", got)
 	}
 }
+
+// TestCompositorHitTestResolvesPanesByGeometry builds the same layer tree the
+// View uses and verifies that clicks inside each pane region resolve to the
+// correct layer ID by absolute screen coordinate, with no manual thresholds.
+func TestCompositorHitTestResolvesPanesByGeometry(t *testing.T) {
+	m := newTestModel(t) // 120x40
+
+	chatRender := inactiveBorder.Render(m.chatViewport.View())
+	logRender := inactiveBorder.Render(m.logViewport.View())
+	inputRender := inactiveBorder.Render(m.input.View())
+	taskRender := inactiveBorder.Render(m.taskViewport.View())
+	comp := m.buildCompositor(chatRender, logRender, inputRender, taskRender)
+
+	// rightColStart = leftWidth + 2 = (120 - 30 - 4) + 2 = 88
+	cases := []struct {
+		name    string
+		x, y    int
+		wantID  string
+		wantHit bool
+	}{
+		{"status bar", 0, 0, paneStatus, true},
+		{"chat top-left area", 5, 3, paneChat, true},
+		{"chat near right edge of left col", 87, 20, paneChat, true},
+		{"log top of right col", 100, 3, paneLog, true},
+		{"log just past column boundary", 88, 5, paneLog, true},
+		{"input row", 5, 36, paneInput, true},
+		{"task below log on right", 100, 30, paneTask, true},
+		{"hint bar", 0, 39, paneHint, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hit := comp.Hit(c.x, c.y)
+			if c.wantHit && hit.Empty() {
+				t.Fatalf("Hit(%d,%d) returned empty, want layer %q", c.x, c.y, c.wantID)
+			}
+			if got := hit.ID(); got != c.wantID {
+				t.Fatalf("Hit(%d,%d).ID() = %q, want %q", c.x, c.y, got, c.wantID)
+			}
+		})
+	}
+}
+
+// TestClickFocusesClickedPane verifies that a left-click resolved by the
+// compositor moves focus to the clicked pane.
+func TestClickFocusesClickedPane(t *testing.T) {
+	m := newTestModel(t)
+	m.focus = chatFocus
+	_ = m.View() // populate m.compositor with the current layout
+
+	// 120x40 layout: chat x<88 top, log x>=88 top, task x>=88 lower-right.
+	clicks := []struct {
+		name string
+		x, y int
+		want focusedPane
+	}{
+		{"log", 100, 3, logFocus},
+		{"task", 100, 30, taskFocus},
+		{"chat", 5, 3, chatFocus},
+	}
+	for _, c := range clicks {
+		model, _ := m.Update(tea.MouseClickMsg{X: c.x, Y: c.y, Button: tea.MouseLeft})
+		mm := model.(*appModel)
+		if mm.focus != c.want {
+			t.Fatalf("click on %s at (%d,%d): focus = %d, want %d", c.name, c.x, c.y, mm.focus, c.want)
+		}
+	}
+}
+
+// TestClickOnInputFocusesIt verifies that clicking the input pane moves focus
+// to it so the user can click back into the prompt after focusing another pane.
+func TestClickOnInputFocusesIt(t *testing.T) {
+	m := newTestModel(t)
+	m.focus = logFocus
+	m.input.Blur()
+	_ = m.View() // populate m.compositor
+
+	// Input pane occupies rows 34..38 in the left column (120x40, padded input).
+	model, _ := m.Update(tea.MouseClickMsg{X: 5, Y: 36, Button: tea.MouseLeft})
+	mm := model.(*appModel)
+	if mm.focus != inputFocus {
+		t.Fatalf("click on input: focus = %d, want %d (inputFocus)", mm.focus, inputFocus)
+	}
+}
+
+// TestMouseYToContentLineGeometry locks in the border-aware coordinate map
+// from screen Y to content line for each pane. For a 120x40 terminal the
+// layout is: chatH=31, logH=20, taskH=11 (input padded).
+func TestMouseYToContentLineGeometry(t *testing.T) {
+	m := newTestModel(t) // 120x40
+
+	// Provide enough content that clamping to the last line is meaningful.
+	m.renderedLines = make([]string, 40)
+	m.logLines = make([]string, 25)
+	m.taskLines = make([]string, 15)
+	m.chatScrollOffset = 0
+
+	// Chat: content occupies screen rows 2..32 (chatH=31 -> rows 0..30).
+	m.selectionPane = chatFocus
+	for _, c := range []struct{ y, want int }{
+		{0, -1}, // status bar
+		{1, -1}, // chat top border
+		{2, 0},  // first content line
+		{3, 1},
+		{32, 30}, // last content line
+		{33, 30}, // overshoot clamps to last line
+	} {
+		if got := m.mouseYToContentLine(c.y); got != c.want {
+			t.Fatalf("chat y=%d: got %d, want %d", c.y, got, c.want)
+		}
+	}
+
+	// Chat respects scroll offset.
+	m.chatScrollOffset = 10
+	if got := m.mouseYToContentLine(2); got != 10 {
+		t.Fatalf("chat y=2 with offset 10: got %d, want 10", got)
+	}
+	m.chatScrollOffset = 0
+
+	// Log: content occupies screen rows 2..21 (logH=20 -> rows 0..19).
+	m.selectionPane = logFocus
+	for _, c := range []struct{ y, want int }{
+		{1, -1},  // log top border
+		{2, 0},   // first log content line
+		{21, 19}, // last log content line
+		{22, 19}, // overshoot clamps
+	} {
+		if got := m.mouseYToContentLine(c.y); got != c.want {
+			t.Fatalf("log y=%d: got %d, want %d", c.y, got, c.want)
+		}
+	}
+
+	// Task: content starts at row logH+4 = 24 (taskH=11 -> rows 0..10).
+	m.selectionPane = taskFocus
+	for _, c := range []struct{ y, want int }{
+		{23, -1}, // task top border
+		{24, 0},  // first task content line
+		{34, 10}, // last task content line
+		{35, 10}, // overshoot clamps
+	} {
+		if got := m.mouseYToContentLine(c.y); got != c.want {
+			t.Fatalf("task y=%d: got %d, want %d", c.y, got, c.want)
+		}
+	}
+}
+
+// TestSelectionDragUpdatesEndLineAndHighlight verifies that a click followed
+// by a drag motion updates the selection end line and that the chat viewport
+// content reflects the highlighted range.
+func TestSelectionDragUpdatesEndLineAndHighlight(t *testing.T) {
+	m := newTestModel(t)
+	m.focus = chatFocus
+	m.input.Blur()
+	// Twenty plain chat lines so a multi-line selection exists.
+	m.renderedLines = make([]string, 20)
+	for i := range m.renderedLines {
+		m.renderedLines[i] = fmt.Sprintf("line %d", i)
+	}
+	m.chatScrollOffset = 0
+	m.renderChatViewport()
+	_ = m.View() // populate m.compositor so clicks resolve to the chat pane
+
+	click := func(y int) {
+		_, _ = m.Update(tea.MouseClickMsg{X: 5, Y: y, Button: tea.MouseLeft})
+	}
+	drag := func(y int) {
+		_, _ = m.Update(tea.MouseMotionMsg{X: 5, Y: y})
+	}
+
+	click(2) // first content line -> start line 0
+	if m.selectionStartLine != 0 || !m.selectionActive {
+		t.Fatalf("after click: start=%d active=%v, want start=0 active=true", m.selectionStartLine, m.selectionActive)
+	}
+	drag(6) // drag to fifth content line -> end line 4
+	if m.selectionEndLine != 4 {
+		t.Fatalf("after drag: end=%d, want 4", m.selectionEndLine)
+	}
+	// The viewport should now show a highlight on the selected range.
+	view := m.chatViewport.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("expected highlight (ANSI styling) in chat viewport after drag, got:\n%s", view)
+	}
+}

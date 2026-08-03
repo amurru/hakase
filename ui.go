@@ -9,11 +9,21 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/genai"
 )
+
+// inputPadV is the vertical padding (rows) added inside the input pane border
+// to enlarge the prompt's click target. reservedRows must stay in sync:
+// status(1) + chat borders(2) + input(border 2 + 2*inputPadV + content 1) + hint(1).
+const inputPadV = 1
+
+// reservedRows is the screen-row budget consumed by everything except the
+// chat / log / task viewports.
+const reservedRows = 1 + 2 + (2 + 2*inputPadV + 1) + 1
 
 var (
 	inactiveBorder = lipgloss.NewStyle().
@@ -23,6 +33,16 @@ var (
 	activeBorder = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("63"))
+
+	// Input pane uses extra vertical padding so the prompt is a larger, easier
+	// click target and visually roomier than the single-line editor alone.
+	inputInactive = inactiveBorder.Padding(inputPadV, 0)
+	inputActive   = activeBorder.Padding(inputPadV, 0)
+
+	// highlightStyle is the background color applied to selected lines
+	// in output panes so the user can visually distinguish the selection.
+	highlightStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("238"))
 
 	thinkingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
@@ -77,6 +97,49 @@ const (
 	logFocus
 	taskFocus
 )
+
+// Pane layer identifiers used by the lipgloss Compositor for mouse
+// hit-testing. Each on-screen pane is rendered as a Layer carrying one of
+// these IDs; clicks are resolved via compositor.Hit(x,y).ID() instead of
+// hand-computed coordinate thresholds.
+const (
+	paneStatus = "status"
+	paneChat   = "chat"
+	paneLog    = "log"
+	paneInput  = "input"
+	paneTask   = "task"
+	paneHint   = "hint"
+)
+
+// paneIDToFocus maps a hit-tested pane layer ID to its focus value.
+// ok is false for the status/hint bars and for clicks outside any pane.
+func paneIDToFocus(id string) (focusedPane, bool) {
+	switch id {
+	case paneChat:
+		return chatFocus, true
+	case paneLog:
+		return logFocus, true
+	case paneTask:
+		return taskFocus, true
+	case paneInput:
+		return inputFocus, true
+	}
+	return 0, false
+}
+
+// mousePane resolves the layer ID of the pane under the given screen
+// coordinate using the compositor from the last View() render. Returns ""
+// when no pane is hit (or before the first render).
+func (m *appModel) mousePane(x, y int) string {
+	if m.compositor == nil {
+		return ""
+	}
+	hit := m.compositor.Hit(x, y)
+	if hit.Empty() {
+		return ""
+	}
+	return hit.ID()
+}
 
 type agentTextMsg string
 type agentLogMsg string
@@ -145,6 +208,12 @@ type appModel struct {
 	logLines         []string // cached log pane lines
 	taskLines        []string // cached task board lines
 
+	// Text selection state for auto-copy on selection end.
+	selectionStartLine int
+	selectionEndLine   int
+	selectionActive    bool
+	selectionPane      focusedPane
+
 	r            *runner.Runner
 	ctx          context.Context
 	program      *tea.Program
@@ -155,18 +224,24 @@ type appModel struct {
 	showThinking bool
 	showHelp     bool
 
+	// compositor holds the layer tree from the most recent View() render,
+	// used to resolve mouse clicks to a pane by layer ID. Kept on the model
+	// so Update can hit-test synchronously instead of routing through the
+	// async OnMouse path (which made drag-selection lag the pointer).
+	compositor *lipgloss.Compositor
+
 	modelInfo     *ModelInfo
 	modelName     string
 	thinkingLevel string
 	usage         *genai.GenerateContentResponseUsageMetadata
 
 	// Session management
-	sessionService       *SessionService
-	showSessionList      bool
-	sessionListIndex     int
-	sessionListFilter    string
-	sessionListSessions  []SessionSummary
-	sessionListFiltered  []SessionSummary
+	sessionService      *SessionService
+	showSessionList     bool
+	sessionListIndex    int
+	sessionListFilter   string
+	sessionListSessions []SessionSummary
+	sessionListFiltered []SessionSummary
 }
 
 func newModel(
@@ -238,7 +313,7 @@ func (m *appModel) cycleFocus(dir int) {
 func (m *appModel) appendLog(line string) {
 	stick := m.logViewport.AtBottom()
 	m.logLines = append(m.logLines, line)
-	m.logViewport.SetContentLines(m.logLines)
+	m.logViewport.SetContentLines(m.highlightLines(m.logLines, 0))
 	if stick {
 		m.logViewport.GotoBottom()
 	}
@@ -278,6 +353,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus != inputFocus {
 				m.showHelp = true
 			}
+		// Ctrl+Shift+C copies the focused pane's content to clipboard.
+		case "ctrl+shift+c":
+			m.copyFocusedPaneContent()
+
+		// Ctrl+T toggles thinking display.
 		case "ctrl+t":
 			m.showThinking = !m.showThinking
 			m.rebuildRenderedLines()
@@ -356,20 +436,55 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.toggleSessionList()
 		}
 
-	// Handle session list modal keybindings when the modal is open.
-	if m.showSessionList {
-		return m, m.handleSessionListKey(key)
-	}
+		// Handle session list modal keybindings when the modal is open.
+		if m.showSessionList {
+			return m, m.handleSessionListKey(key)
+		}
+
+	case tea.MouseClickMsg:
+		if msg.Button != tea.MouseLeft {
+			break
+		}
+		// Clicking a pane moves focus to it (like Tab), including the input
+		// pane so the user can click back into the prompt.
+		if fp, ok := paneIDToFocus(m.mousePane(msg.X, msg.Y)); ok {
+			m.focus = fp
+			if fp == inputFocus {
+				m.input.Focus()
+			} else {
+				m.input.Blur()
+			}
+		}
+		m.selectionActive = true
+		m.selectionPane = m.focus
+		m.selectionStartLine = m.mouseYToContentLine(msg.Y)
+		m.selectionEndLine = m.selectionStartLine
+		m.renderSelectionPane()
+
+	case tea.MouseMotionMsg:
+		// CellMotion mode only reports motion while a button is held, so
+		// selectionActive alone is a reliable guard for an active drag.
+		if m.selectionActive {
+			m.selectionEndLine = m.mouseYToContentLine(msg.Y)
+			m.renderSelectionPane()
+		}
+
+	case tea.MouseReleaseMsg:
+		if m.selectionActive {
+			m.selectionEndLine = m.mouseYToContentLine(msg.Y)
+			m.copySelection()
+			m.selectionActive = false
+			m.renderSelectionPane()
+		}
 
 	case tea.MouseWheelMsg:
+		// Wheel scrolls the focused pane (preserves prior behaviour).
 		switch m.focus {
 		case chatFocus:
 			switch msg.Button {
 			case tea.MouseWheelUp:
-				// Terminal mouse wheel UP = scroll toward older messages
 				m.scrollChatDown(m.chatViewport.MouseWheelDelta)
 			case tea.MouseWheelDown:
-				// Terminal mouse wheel DOWN = scroll toward newer messages
 				m.scrollChatUp(m.chatViewport.MouseWheelDelta)
 			}
 		case logFocus:
@@ -392,19 +507,20 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		rightWidth := m.width / 4
 		leftWidth := m.width - rightWidth - 4
+		avail := m.height - reservedRows
 
 		if !m.ready {
 			m.chatViewport = viewport.New(
 				viewport.WithWidth(leftWidth),
-				viewport.WithHeight(m.height-7),
+				viewport.WithHeight(avail),
 			)
 			m.logViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight((m.height-7)*2/3),
+				viewport.WithHeight(avail*2/3),
 			)
 			m.taskViewport = viewport.New(
 				viewport.WithWidth(rightWidth),
-				viewport.WithHeight((m.height-7)/3+1),
+				viewport.WithHeight(avail/3+1),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
@@ -415,11 +531,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 		} else {
 			m.chatViewport.SetWidth(leftWidth)
-			m.chatViewport.SetHeight(m.height - 7)
+			m.chatViewport.SetHeight(avail)
 			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight((m.height - 7) * 2 / 3)
+			m.logViewport.SetHeight(avail * 2 / 3)
 			m.taskViewport.SetWidth(rightWidth)
-			m.taskViewport.SetHeight((m.height-7)/3 + 1)
+			m.taskViewport.SetHeight(avail/3 + 1)
 		}
 
 		m.input.SetWidth(leftWidth - 3)
@@ -667,7 +783,8 @@ func (m *appModel) renderChatViewport() {
 		end = len(m.renderedLines)
 	}
 
-	m.chatViewport.SetContent(strings.Join(m.renderedLines[m.chatScrollOffset:end], "\n"))
+	visibleLines := m.renderedLines[m.chatScrollOffset:end]
+	m.chatViewport.SetContent(strings.Join(m.highlightLines(visibleLines, m.chatScrollOffset), "\n"))
 }
 
 func (m *appModel) refreshTaskBoard() {
@@ -756,7 +873,7 @@ func (m *appModel) renderTaskViewport() {
 	if !m.ready {
 		return
 	}
-	m.taskViewport.SetContent(strings.Join(m.taskLines, "\n"))
+	m.taskViewport.SetContent(strings.Join(m.highlightLines(m.taskLines, 0), "\n"))
 }
 
 // Change return type to tea.View
@@ -773,9 +890,9 @@ func (m *appModel) View() tea.View {
 	if m.focus == chatFocus {
 		chatStyle = activeBorder
 	}
-	inputStyle := inactiveBorder
+	inputStyle := inputInactive
 	if m.focus == inputFocus {
-		inputStyle = activeBorder
+		inputStyle = inputActive
 	}
 	logStyle := inactiveBorder
 	if m.focus == logFocus {
@@ -786,34 +903,53 @@ func (m *appModel) View() tea.View {
 		taskStyle = activeBorder
 	}
 
-	leftCol := lipgloss.JoinVertical(
-		lipgloss.Left,
-		chatStyle.Render(m.chatViewport.View()),
-		inputStyle.Render(m.input.View()),
-	)
+	chatRender := chatStyle.Render(m.chatViewport.View())
+	inputRender := inputStyle.Render(m.input.View())
+	logRender := logStyle.Render(m.logViewport.View())
+	taskRender := taskStyle.Render(m.taskViewport.View())
 
-	rightCol := lipgloss.JoinVertical(
-		lipgloss.Left,
-		logStyle.Render(m.logViewport.View()),
-		taskStyle.Render(m.taskViewport.View()),
-	)
-
-	content := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		leftCol,
-		rightCol,
-	)
-
-	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), content, m.hintBar()))
-	v.MouseMode = tea.MouseModeCellMotion
-	v.AltScreen = true
-
-	// Render session list modal on top if open.
+	// Session-list modal is keyboard-driven, so compositor click-focusing is
+	// intentionally inactive while it is open.
 	if m.showSessionList {
+		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
+		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
+		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
 		return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), content, m.sessionListView(), m.hintBar()))
 	}
 
+	// Main layout: each pane is a named Layer positioned at its exact screen
+	// coordinates. The Compositor renders the whole screen and resolves mouse
+	// clicks by layer ID, so hit-zones always match the drawn panes (borders
+	// and gaps included) without any manual coordinate thresholds.
+	m.compositor = m.buildCompositor(chatRender, logRender, inputRender, taskRender)
+
+	v := tea.NewView(m.compositor.Render())
+	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = true
 	return v
+}
+
+// buildCompositor assembles the named, positioned Layers for every on-screen
+// pane and returns a Compositor that both renders the screen and answers
+// mouse hit-tests by layer ID. Extracted from View so the geometry can be
+// exercised directly in tests.
+func (m *appModel) buildCompositor(chatRender, logRender, inputRender, taskRender string) *lipgloss.Compositor {
+	rightWidth := m.width / 4
+	leftWidth := m.width - rightWidth - 4
+	rightColStart := leftWidth + 2 // chat pane width including its border
+
+	chatH := m.chatViewport.Height()
+	logH := m.logViewport.Height()
+
+	layers := []*lipgloss.Layer{
+		lipgloss.NewLayer(m.statusBar()).ID(paneStatus).X(0).Y(0),
+		lipgloss.NewLayer(chatRender).ID(paneChat).X(0).Y(1),
+		lipgloss.NewLayer(logRender).ID(paneLog).X(rightColStart).Y(1),
+		lipgloss.NewLayer(inputRender).ID(paneInput).X(0).Y(1 + chatH + 2),
+		lipgloss.NewLayer(taskRender).ID(paneTask).X(rightColStart).Y(1 + logH + 2),
+		lipgloss.NewLayer(m.hintBar()).ID(paneHint).X(0).Y(m.height - 1),
+	}
+	return lipgloss.NewCompositor(layers...)
 }
 
 // hintBar renders the single-line footer that surfaces the most commonly used
@@ -827,7 +963,7 @@ func (m *appModel) hintBar() string {
 	if m.showThinking {
 		status += " 💭 thinking"
 	}
-	hints := "ctrl+/ help · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
+	hints := "ctrl+/ help · click pane to focus · tab focus · ctrl+t thinking · enter send · ctrl+shift+c copy · ctrl+c quit"
 	return hintBarStyle.Render(status + "  │  " + hints)
 }
 
@@ -926,6 +1062,7 @@ func (m *appModel) helpView() tea.View {
 			{"esc", "Close the help overlay"},
 			{"ctrl+/", "Toggle this help screen"},
 			{"?", "Toggle help (when not typing)"},
+			{"click pane", "Focus a pane (chat / log / task)"},
 			{"tab / shift+tab", "Cycle focus between panes"},
 			{"ctrl+t", "Toggle thinking display"},
 		}},
@@ -944,6 +1081,7 @@ func (m *appModel) helpView() tea.View {
 			{"home / g", "Jump to top"},
 			{"end / G", "Jump to bottom"},
 			{"mouse wheel", "Scroll the focused pane"},
+			{"ctrl+shift+c", "Copy focused pane to clipboard"},
 		}},
 	}
 
@@ -1289,4 +1427,168 @@ func (m *appModel) sessionListView() string {
 
 	b.WriteString("└──────────────────────────────────────────────────────┘")
 	return b.String()
+}
+
+// renderSelectionPane re-renders the currently selected pane so the selection
+// highlight reflects the latest start/end lines. Called on click, drag, and
+// release to keep the highlight live and to clear it once copying is done.
+func (m *appModel) renderSelectionPane() {
+	switch m.selectionPane {
+	case chatFocus:
+		m.renderChatViewport()
+	case logFocus:
+		m.logViewport.SetContentLines(m.highlightLines(m.logLines, 0))
+	case taskFocus:
+		m.taskViewport.SetContent(strings.Join(m.highlightLines(m.taskLines, 0), "\n"))
+	}
+}
+
+// highlightLines wraps lines within the active selection range with
+// a highlight background style. The visibleStart parameter is the
+// content index of the first visible line so the method can map
+// viewport-relative indices to content indices.
+func (m *appModel) highlightLines(lines []string, visibleStart int) []string {
+	if !m.selectionActive || m.selectionStartLine == m.selectionEndLine {
+		return lines
+	}
+
+	start, end := m.selectionStartLine, m.selectionEndLine
+	if start > end {
+		start, end = end, start
+	}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		contentIdx := visibleStart + i
+		if contentIdx >= start && contentIdx <= end {
+			result[i] = highlightStyle.Render(line)
+		} else {
+			result[i] = line
+		}
+	}
+	return result
+}
+
+// mouseYToContentLine maps a screen Y coordinate to a line index within the
+// selected pane's content. Returns -1 if the coordinate is above the pane.
+// Dragging past the bottom edge clamps to the last line so a drag-to-select
+// that overshoots still selects through the end.
+//
+// Screen layout (rows, 0-indexed):
+//
+//	0            status bar
+//	1            chat/log top border
+//	2 ..         chat/log content
+//	logH+2       log bottom border
+//	logH+3       task top border
+//	logH+4 ..    task content
+func (m *appModel) mouseYToContentLine(y int) int {
+	switch m.selectionPane {
+	case chatFocus:
+		row := y - 2 // skip status bar + chat top border
+		if row < 0 {
+			return -1
+		}
+		if row >= m.chatViewport.Height() {
+			row = m.chatViewport.Height() - 1
+		}
+		return clampLine(row+m.chatScrollOffset, len(m.renderedLines))
+	case logFocus:
+		row := y - 2
+		if row < 0 {
+			return -1
+		}
+		if row >= m.logViewport.Height() {
+			row = m.logViewport.Height() - 1
+		}
+		return clampLine(row, len(m.logLines))
+	case taskFocus:
+		taskContentStart := m.logViewport.Height() + 4 // status + log pane + task top border
+		row := y - taskContentStart
+		if row < 0 {
+			return -1
+		}
+		if row >= m.taskViewport.Height() {
+			row = m.taskViewport.Height() - 1
+		}
+		return clampLine(row, len(m.taskLines))
+	default:
+		return -1
+	}
+}
+
+// clampLine clamps idx into [0, n-1], returning -1 when there is no content.
+func clampLine(idx, n int) int {
+	if n <= 0 {
+		return -1
+	}
+	if idx < 0 {
+		return 0
+	}
+	if idx >= n {
+		return n - 1
+	}
+	return idx
+}
+
+// copySelection copies the currently selected lines in the focused pane
+// to the system clipboard, stripping ANSI escape sequences.
+func (m *appModel) copySelection() {
+	if m.selectionStartLine < 0 || m.selectionEndLine < 0 {
+		return
+	}
+	if m.selectionStartLine == m.selectionEndLine {
+		return
+	}
+
+	start, end := m.selectionStartLine, m.selectionEndLine
+	if start > end {
+		start, end = end, start
+	}
+
+	var lines []string
+	switch m.selectionPane {
+	case chatFocus:
+		if start < 0 {
+			start = 0
+		}
+		if end >= len(m.renderedLines) {
+			end = len(m.renderedLines) - 1
+		}
+		if start > end {
+			return
+		}
+		lines = m.renderedLines[start : end+1]
+	case logFocus:
+		if start < 0 {
+			start = 0
+		}
+		if end >= len(m.logLines) {
+			end = len(m.logLines) - 1
+		}
+		if start > end {
+			return
+		}
+		lines = m.logLines[start : end+1]
+	case taskFocus:
+		if start < 0 {
+			start = 0
+		}
+		if end >= len(m.taskLines) {
+			end = len(m.taskLines) - 1
+		}
+		if start > end {
+			return
+		}
+		lines = m.taskLines[start : end+1]
+	default:
+		return
+	}
+
+	text := strings.Join(lines, "\n")
+	text = ansi.Strip(text)
+	if text == "" {
+		return
+	}
+	_ = copyToClipboard(text)
 }
