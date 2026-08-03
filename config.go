@@ -22,6 +22,7 @@ type Config struct {
 	MCPServerURL      string                 `json:"mcp_server_url"`
 	FallbackProviders []string               `json:"fallback_providers,omitempty"`
 	SkillDirs         []string               `json:"skill_dirs,omitempty"`
+	KnowledgeDir      string                 `json:"knowledge_dir,omitempty"`
 	ProviderOptions   map[string]interface{} `json:"provider_options,omitempty"`
 	ChatBufferSize    int                    `json:"chat_buffer_size,omitempty"`
 	ShowThinking      bool                   `json:"show_thinking,omitempty"`

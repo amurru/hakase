@@ -7,6 +7,7 @@
   "mcp_server_url": "http://localhost:9223/mcp",
   "fallback_providers": [],
   "skill_dirs": [],
+  "knowledge_dir": "",
   "provider_options": {},
   "chat_buffer_size": 1000,
   "task_checkpoint": false

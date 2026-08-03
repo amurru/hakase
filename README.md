@@ -18,6 +18,7 @@ The agent can:
 - 🐍 **Execute Python** code in an isolated virtual environment with auto-dependency resolution
 - 📊 **Analyze data**, generate charts, and produce visual artifacts
 - 🧠 **Learn & persist skills** — novel Python workflows are automatically saved to a local skill library for future reuse
+- 📚 **Manage a persistent knowledge base** — wiki-style markdown notes with YAML frontmatter and [[wikilinks]] for durable facts the agent learns, with tools to save, recall, search, update, link, cite, and lint
 - 📂 **Manage outputs** — generated HTML files, data artifacts, and more are saved to `./outputs/`
 
 ---
@@ -34,6 +35,7 @@ hakase/
 ├── config.json.example      # Example config template
 ├── go.mod / go.sum          # Go module dependencies
 ├── skills/                  # Persisted Python skill library
+├── knowledge/               # Persistent knowledge base (markdown notes with YAML frontmatter + [[wikilinks]])
 ├── .agents/skills/          # Portable markdown skills (SKILL.md)
 ├── skill_cli.go             # hakase skill CLI (create/list/validate)
 ├── downloads/               # Downloaded files (PDFs, images, datasets)
@@ -100,6 +102,45 @@ The agent can save tested Python scripts as reusable skills:
 2. The agent calls `save_skill` to persist the script to `./skills/`
 3. Skills are registered in `skills/skills.json` with name, description, and import usage
 4. On subsequent runs, the agent loads all saved skills and can reuse them via `from skills.<name> import ...`
+
+### 📚 Knowledge Base
+
+The agent maintains a persistent, wiki-style knowledge base for durable facts it learns. Notes are markdown files with YAML frontmatter and `[[wikilinks]]`, stored in a workspace folder (default `./knowledge/`, configurable via `knowledge_dir` in `config.json`):
+
+```
+knowledge/
+├── index.md    # auto-maintained catalog of all notes (regenerated on every change)
+├── log.md      # append-only operation log ("## [date] action | Title")
+├── notes/      # optional subdirectory (preferred when a slug exists in both places)
+└── raw/        # optional immutable raw sources (excluded from the index)
+```
+
+Each note is markdown with YAML frontmatter: `title`, `aliases`, `tags`, `created`, `updated`, `status` (`draft` / `permanent` / `archived`), `confidence` (`high` / `medium` / `low`), `sources` (URLs or `raw/` paths), `summary`, and `related`. The body contains `[[wikilinks]]` to related notes.
+
+The orchestrator agent exposes eight knowledge tools:
+
+- **`save_knowledge`** - save a new note; unresolved `[[wikilinks]]` are reported as dangling
+- **`recall_knowledge`** - load a note by slug, basename, or alias, with backlinks
+- **`search_knowledge`** - keyword/tag search across notes
+- **`update_knowledge`** - correct or extend an existing note
+- **`link_knowledge`** - create `[[wikilinks]]` between notes
+- **`cite_knowledge`** - footnote-style citation of a note with its source URL
+- **`list_knowledge`** - list all notes
+- **`lint_knowledge`** - health check: orphans, dangling links, broken index
+
+Wiki links support `[[target]]`, `[[target|label]]`, and `[[target#heading]]`. Resolution is case-insensitive (slug -> unique basename -> alias). Links to notes that do not exist yet are reported as dangling links; the agent surfaces them to the user and offers to create them, creating only after user confirmation.
+
+Retrieval is keyword/tag/grep only - no embeddings, no vector database, no extra dependencies.
+
+The `hakase knowledge` CLI manages the knowledge base:
+
+- `hakase knowledge list|read|search|lint|create|link` - with a `--dir` flag to override the knowledge directory
+
+```bash
+hakase knowledge create "Quantum Computing" --tags physics --content "See [[Superposition]]."
+hakase knowledge read quantum-computing
+hakase knowledge lint
+```
 
 ### 📥 File Download
 
@@ -168,7 +209,8 @@ Edit `config.json`:
   "model_name": "gemini-3.5-flash-lite",
   "api_key": "your-gemini-api-key",
   "instruction": "You are a web automation agent harness.",
-  "mcp_server_url": "http://localhost:9223/mcp"
+  "mcp_server_url": "http://localhost:9223/mcp",
+  "knowledge_dir": ""
 }
 ```
 
@@ -229,6 +271,7 @@ When `model_name` is empty, the provider's default model is used.
 - `base_url` — Base URL for OpenAI-compatible endpoints (e.g. `http://localhost:11434/v1` for Ollama). Ignored when empty; used only by the `openai` / `openai-compatible` providers.
 - `fallback_providers` — Optional ordered list of provider names to try if the primary provider fails (e.g. `["openai"]`). Empty by default.
 - `provider_options` — Optional map of provider-specific settings. Reserved for future use.
+- `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`).
 
 #### Environment variables
 

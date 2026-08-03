@@ -19,6 +19,10 @@ func main() {
 		os.Exit(runTaskCLI(os.Args[2:]))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "knowledge" {
+		os.Exit(runKnowledgeCLI(os.Args[2:]))
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "session" {
 		os.Exit(runSessionCLI(os.Args[2:]))
 	}
