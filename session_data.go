@@ -7,30 +7,45 @@ import (
 )
 
 const (
-	sessionsDir      = "./sessions"
-	sessionsFileExt  = ".json"
+	sessionsDir     = "./sessions"
+	sessionsFileExt = ".json"
+)
+
+// MessageKind values for the Message.Kind field. Tool transcripts are
+// flagged trimmable so the compaction cascade can evict them first, and
+// summaries are flagged for re-injection at the front of history.
+const (
+	MessageKindText       = "text"
+	MessageKindToolCall   = "tool_call"
+	MessageKindToolResult = "tool_result"
+	MessageKindSummary    = "summary"
 )
 
 // Session represents a user chat session — a persistent conversation
 // container that holds messages and optional task references.
 // Sessions are stored as individual JSON files in ./sessions/.
 type Session struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description,omitempty"`
-	TaskRefs    []TaskRef `json:"task_refs,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	Archived    bool      `json:"archived"`
-	Messages    []Message `json:"messages"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	Description      string    `json:"description,omitempty"`
+	TaskRefs         []TaskRef `json:"task_refs,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	Archived         bool      `json:"archived"`
+	Messages         []Message `json:"messages"`
+	SummaryMessageID string    `json:"summary_message_id,omitempty"` // sequence of the running summary message
 }
 
 // Message represents a single turn in a chat session.
 type Message struct {
-	Role      string    `json:"role"`       // "user" or "agent"
-	Content   string    `json:"content"`    // Main message text
+	Role      string    `json:"role"`               // "user" or "agent"
+	Content   string    `json:"content"`            // Main message text
 	Thinking  string    `json:"thinking,omitempty"` // Optional reasoning text
 	Timestamp time.Time `json:"timestamp"`
+	Tokens    int       `json:"tokens,omitempty"`   // provider-reported or estimated at write time
+	Sequence  int64     `json:"sequence,omitempty"` // monotonic cursor for pagination (letta pattern)
+	InContext bool      `json:"in_context"`         // whether the message is currently in the model window
+	Kind      string    `json:"kind,omitempty"`     // "text" | "tool_call" | "tool_result" | "summary"
 }
 
 // TaskRef is an embedded snapshot of task metadata stored directly
@@ -68,18 +83,25 @@ func NewSession(title string) *Session {
 	}
 }
 
-// FilePath returns the full path to the session's JSON file on disk.
-func (s *Session) FilePath() string {
-	return sessionsDir + "/" + s.ID + sessionsFileExt
+// AddMessage appends a plain text message to the session and updates the
+// timestamp. Sequence and InContext are maintained for context management.
+func (s *Session) AddMessage(role, content, thinking string) {
+	s.AddMessageWithMeta(role, content, thinking, 0, MessageKindText)
 }
 
-// AddMessage appends a message to the session and updates the timestamp.
-func (s *Session) AddMessage(role, content, thinking string) {
+// AddMessageWithMeta appends a message with token count and kind metadata.
+// Sequence is the current message count (messages are append-only, so the
+// count is a monotonic cursor), and new messages are in-context by default.
+func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int, kind string) {
 	s.Messages = append(s.Messages, Message{
 		Role:      role,
 		Content:   content,
 		Thinking:  thinking,
 		Timestamp: time.Now().UTC(),
+		Tokens:    tokens,
+		Sequence:  int64(len(s.Messages)),
+		InContext: true,
+		Kind:      kind,
 	})
 	s.UpdatedAt = time.Now().UTC()
 }

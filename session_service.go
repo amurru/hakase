@@ -82,6 +82,70 @@ func (s *SessionService) AddMessage(role, content, thinking string) error {
 	return s.store.Save(session)
 }
 
+// GetMessages returns the full message list for the session with the
+// given ID. Returns an empty slice (nil, nil) when the ID is empty.
+func (s *SessionService) GetMessages(id string) ([]Message, error) {
+	if id == "" {
+		return nil, nil
+	}
+	session, err := s.store.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	return session.Messages, nil
+}
+
+// ActiveSessionID returns the ID of the currently active session, or ""
+// when no session is active.
+func (s *SessionService) ActiveSessionID() string {
+	return s.activeSessionID
+}
+
+// RecordUsage appends a message with a token count to the active session.
+// Like AddMessage, it creates a new session when none is active. The token
+// count is the provider-reported usage when known, or an estimate.
+func (s *SessionService) RecordUsage(role, content, thinking string, tokens int) error {
+	session, err := s.ensureActiveSession(role, content)
+	if err != nil {
+		return err
+	}
+	session.AddMessageWithMeta(role, content, thinking, tokens, MessageKindText)
+	return s.store.Save(session)
+}
+
+// SetSummary persists the SummaryMessageID on the session. The ID is the
+// sequence of the summary message that the summarizer appended.
+func (s *SessionService) SetSummary(id, summaryMessageID string) error {
+	if id == "" {
+		return fmt.Errorf("no session id")
+	}
+	session, err := s.store.Load(id)
+	if err != nil {
+		return err
+	}
+	session.SummaryMessageID = summaryMessageID
+	session.UpdatedAt = time.Now().UTC()
+	return s.store.Save(session)
+}
+
+// AppendSummary appends a kind==summary message to the given session and
+// updates its SummaryMessageID to point at the new message's sequence.
+// This is the persistence path used by the async summarizer.
+func (s *SessionService) AppendSummary(id, content string) error {
+	if id == "" {
+		return fmt.Errorf("no session id")
+	}
+	session, err := s.store.Load(id)
+	if err != nil {
+		return err
+	}
+	session.AddMessageWithMeta("agent", content, "", 0, MessageKindSummary)
+	seq := session.Messages[len(session.Messages)-1].Sequence
+	session.SummaryMessageID = fmt.Sprintf("%d", seq)
+	session.UpdatedAt = time.Now().UTC()
+	return s.store.Save(session)
+}
+
 // AddTaskRef associates a task with the active session.
 func (s *SessionService) AddTaskRef(ref TaskRef) error {
 	session, err := s.GetActiveSession()

@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -45,6 +46,12 @@ const HakaseSystemInstruction = `You are a high-autonomy, general-purpose resear
 ### OUTPUT FORMAT:
 - Present final synthesized answers in clean, well-formatted Markdown with headers, bullet points, and citations where applicable.
 - Keep tool responses focused on facts without leaking raw internal state clutter unless specifically requested.
+
+### RESEARCH QUALITY:
+- Every factual claim must carry a source URL and the retrieval date.
+- Prefer sources published within the last 12 months; when citing older data, say so explicitly.
+- Never assert unverifiable claims as fact - mark uncertain claims as unverified.
+- If search results are truncated, note it and re-search with narrower queries.
 `
 
 // buildTimeReminder returns a system-prompt block that grounds the agent in
@@ -161,13 +168,31 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			return PythonExecOutput{}, err
 		}
 
-		tmpDir, err := os.MkdirTemp("", "agent_python_*")
-		if err != nil {
-			return PythonExecOutput{}, err
+		// Sandbox-aware temp directory: when the sandbox is active, write
+		// script.py under the workspace root's .hakase-tmp/ so the script
+		// and any relative file accesses stay inside the approved workspace.
+		// Otherwise fall back to the OS temp dir (legacy behavior).
+		var scriptPath string
+		var tmpDir string
+		var tmpIsSandbox bool
+		if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
+			root := currentSandbox.workspaceRoot()
+			if root != "" {
+				tmpDir = filepath.Join(root, ".hakase-tmp")
+				if err := os.MkdirAll(tmpDir, 0755); err != nil {
+					return PythonExecOutput{}, fmt.Errorf("failed to create sandbox temp dir: %w", err)
+				}
+				tmpIsSandbox = true
+			}
 		}
-		defer os.RemoveAll(tmpDir)
-
-		scriptPath := filepath.Join(tmpDir, "script.py")
+		if !tmpIsSandbox {
+			tmpDir, err = os.MkdirTemp("", "agent_python_*")
+			if err != nil {
+				return PythonExecOutput{}, err
+			}
+			defer os.RemoveAll(tmpDir)
+		}
+		scriptPath = filepath.Join(tmpDir, "script.py")
 		if err := os.WriteFile(scriptPath, []byte(input.Code), 0600); err != nil {
 			return PythonExecOutput{}, err
 		}
@@ -181,6 +206,25 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			if len(parentEnv) > 0 && parentEnv[0] != nil {
 				cmd.Env = append(parentEnv[0], cmd.Env...)
 			}
+			// Sandbox: pin cmd.Dir to the workspace root so the script
+			// runs inside the approved workspace.
+			if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
+				if root := currentSandbox.workspaceRoot(); root != "" {
+					cmd.Dir = root
+				}
+			}
+			// Process hardening: new process group + death signal so
+			// children (and grandchildren) die if the agent crashes.
+			// Linux-only fields (project is Linux-only per README).
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				Setpgid:   true,
+				Pdeathsig: syscall.SIGKILL,
+			}
+			// Pdeathsig fires on the OS thread that calls Start; lock it
+			// so the runtime does not recycle it before CombinedOutput
+			// reaps the child (golang/go#27505).
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
 			out, errOut := cmd.CombinedOutput()
 			errStr := ""
 			if errOut != nil {
@@ -218,7 +262,20 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 				if len(parentEnv) > 0 && parentEnv[0] != nil {
 					installCmd.Env = append(parentEnv[0], installCmd.Env...)
 				}
+				// Sandbox: pin pip's working dir to the workspace root.
+				if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
+					if root := currentSandbox.workspaceRoot(); root != "" {
+						installCmd.Dir = root
+					}
+				}
+				// Same process hardening as the script-run command.
+				installCmd.SysProcAttr = &syscall.SysProcAttr{
+					Setpgid:   true,
+					Pdeathsig: syscall.SIGKILL,
+				}
+				runtime.LockOSThread()
 				_ = installCmd.Run()
+				runtime.UnlockOSThread()
 
 				if log != nil {
 					log(
@@ -286,16 +343,38 @@ func createDownloadTool() (tool.Tool, error) {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create downloads folder: %w", err)
 		}
 
-		// Resolve default filename if not provided
+		// Resolve default filename if not provided. When a custom filename
+		// is supplied, strip it to its base component to prevent ../
+		// traversal attacks (e.g. input.Filename = "../../etc/passwd").
 		filename := input.Filename
-		if filename == "" {
+		if filename != "" {
+			filename = filepath.Base(filename)
+		} else {
 			filename = filepath.Base(req.URL.Path)
 			if filename == "" || filename == "." || filename == "/" {
 				filename = fmt.Sprintf("file_%d", time.Now().Unix())
 			}
 		}
 
-		filePath := filepath.Join(outDir, filename)
+		// Sandbox-aware path resolution: when the sandbox is active,
+		// resolve the output path through resolveScopedPath so the
+		// download is confined to the approved workspace. The error
+		// propagates to the model, which can correct its request.
+		var filePath string
+		if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
+			resolved, err := currentSandbox.resolveScopedPath(filepath.Join("./downloads", filename), true)
+			if err != nil {
+				return FileDownloadOutput{}, fmt.Errorf("download path outside approved workspace: %w", err)
+			}
+			filePath = resolved
+			// Ensure the resolved downloads directory exists.
+			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+				return FileDownloadOutput{}, fmt.Errorf("failed to create downloads folder: %w", err)
+			}
+		} else {
+			filePath = filepath.Join(outDir, filename)
+		}
+
 		out, err := os.Create(filePath)
 		if err != nil {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create destination file: %w", err)
@@ -333,6 +412,11 @@ var currentModel model.LLM
 // currentMCPToolset holds the MCP toolset for sub-agent delegation.
 // Set during setupRunner so delegate_task can pass it to sub-agents.
 var currentMCPToolset tool.Toolset
+
+// currentHistoryBuilder holds the HistoryBuilder wired into the root
+// orchestrator. It is created in setupRunner with the SessionService and
+// receives ModelInfo updates from the async fetch in main.
+var currentHistoryBuilder *HistoryBuilder
 
 // taskBoardNotify is set by main and pushes TaskUpdateMsg to the TUI on task mutations.
 var taskBoardNotify func(action string, task TaskMeta)
@@ -1209,15 +1293,14 @@ func archiveTaskTool(log LogFunc) (tool.Tool, error) {
 // the code_interpreter sub-agent.
 func buildOrchestratorInstruction(installedSkills string) string {
 	return `You are an AI research & analysis coordinator.
-- Use 'web_researcher' when real-time browser navigation or web search is required.
-- Use 'code_interpreter' when data calculations, script execution, file parsing, or statistical analysis are required.
-- Use 'general_purpose' for complex file operations or workspace tasks that benefit from an isolated sub-agent context. You can also perform file operations directly using your own read_file, write_file, patch, and search_files tools.
+- web_researcher, code_interpreter, and general_purpose are SUB-AGENTS, NOT tools. To use one, call 'delegate_task' with 'agent_name' set to the sub-agent name (recommended: task tracking + isolated session), or 'transfer_to_agent' to hand control directly. The delegate_task schema takes 'goal' (required) and 'context' (optional) - there is no 'prompt' or 'task' field.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
 - Use 'delegate_task' to spawn an isolated sub-agent with its own task-scoped session and restricted toolset. This is useful when a task requires a different specialist agent or when you want to run work in an isolated context. The sub-agent cannot call delegate_task, clarify, memory, send_message, or cronjob.
 - Synthesize responses from the specialists into a final markdown output.
 
 ### TASK BOARD:
 You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'archive_task' (archive completed tasks to keep them for reference and remove them from the active board), 'delete_task' (remove any task permanently, including completed or archived tasks, upon user request). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
+ARTIFACT LOCATION: When asked where a file/artifact produced earlier is, FIRST call 'list_tasks'/'get_task' and 'search_knowledge'/'recall_knowledge' to find recorded paths BEFORE searching the filesystem with 'search_files' or 'system_exec'.
 
 ### KNOWLEDGE BASE:
 You have a persistent knowledge base (markdown notes with YAML frontmatter in the configured knowledge directory) for storing durable facts you learn. Available tools: 'save_knowledge' (create a new note when you learn something important and worth keeping), 'recall_knowledge' (load a note by name - call this before answering about a known topic so you ground your reply in what you already recorded), 'search_knowledge' (keyword/tag grep across all notes), 'update_knowledge' (correct or extend an existing note), 'link_knowledge' (create [[wikilinks]] between notes to model relationships), 'cite_knowledge' (produce a footnote citation of a note when you use its content in an answer), 'list_knowledge' (enumerate notes), 'lint_knowledge' (run a health check for orphan notes, broken cross-references, and oversized pages). Use save/recall/update proactively: when the user tells you a durable fact, a preference, or a decision, save it; before answering about a topic you have notes on, recall it first. CRITICAL - dangling links: when 'save_knowledge', 'recall_knowledge', 'update_knowledge', or 'link_knowledge' return dangling links (wikilink targets that do not exist yet), you MUST surface them to the user, list the missing notes, and offer to create them. Only create the missing notes after the user confirms. Cite notes in answers either via the 'cite_knowledge' tool output or by inlining [[wikilinks]] so the user can trace claims back to their source note.
@@ -1248,7 +1331,11 @@ func buildGenerationConfig(level string) *genai.GenerateContentConfig {
 	return &genai.GenerateContentConfig{ThinkingConfig: tc}
 }
 
-func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner, error) {
+func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *SessionService) (*runner.Runner, error) {
+	// Load sandbox config before any tool creation so createPythonTool,
+	// createDownloadTool, and buildExecCommand can consult it.
+	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
+
 	provider, err := ProviderFactory(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create provider: %w", err)
@@ -1265,6 +1352,16 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 	currentModel = model
+
+	// Cheap/weak model for context-compaction summarization, when configured.
+	// Reuses the same provider; falling back to the primary model in
+	// runSummarize when unset. A failed cheap-model creation is not fatal:
+	// summarization just uses the primary model.
+	if cfg.SummaryModel != "" && cfg.SummaryModel != modelName {
+		if sm, err := provider.CreateModel(ctx, cfg.SummaryModel, cfg.APIKey); err == nil {
+			summarizeModel = sm
+		}
+	}
 
 	mcpToolset, err := mcptoolset.New(mcptoolset.Config{
 		Endpoint: cfg.MCPServerURL,
@@ -1323,6 +1420,13 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 
 	// Set global config for checkpoint access
 	currentConfig = cfg
+
+	// Delegation timeout for stuck sub-agent protection. Configurable via
+	// delegate_timeout_seconds in config.json; defaults to 5 minutes.
+	delegateTimeout = 300 * time.Second
+	if cfg.DelegateTimeoutSeconds > 0 {
+		delegateTimeout = time.Duration(cfg.DelegateTimeoutSeconds) * time.Second
+	}
 
 	// Load currently saved skills from disk
 	installedSkills := getSkillsPrompt(mdSkills, log)
@@ -1406,12 +1510,23 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc) (*runner.Runner,
 		return nil, err
 	}
 
+	// Context management: build history for the root orchestrator only.
+	// Sub-agents keep isolated context by design (delegate.go untouched).
+	historyBuilder := NewHistoryBuilder(sessionSvc)
+	historyBuilder.SetLogFunc(func(format string, args ...any) {
+		log(fmt.Sprintf(format, args...))
+	})
+	currentHistoryBuilder = historyBuilder
+
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "orchestrator",
 		Description:           "Main orchestrator agent that delegates research and analysis tasks.",
 		Instruction:           buildOrchestratorInstruction(installedSkills),
 		Model:                 model,
 		GenerateContentConfig: genCfg,
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			historyBuilder.BeforeModelCallback,
+		},
 		Tools: append([]tool.Tool{
 			listSkillsTool,
 			loadMarkdownSkillTool,

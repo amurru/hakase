@@ -162,6 +162,46 @@ func TestDiscoverMarkdownSkillsDedupeUserLevel(t *testing.T) {
 	}
 }
 
+// TestDiscoverMarkdownSkillsDuplicateSummary verifies that overlapping skill
+// directories containing the same skill name produce exactly ONE summary log
+// line mentioning the skipped duplicates, and the result contains the skill
+// only once.
+func TestDiscoverMarkdownSkillsDuplicateSummary(t *testing.T) {
+	isolateHome(t)
+	root := t.TempDir()
+	makeGitDir(t, root)
+	writeSkillAt(t, filepath.Join(root, ".agents", "skills"), "dup-skill", "first version")
+	overlap := t.TempDir()
+	writeSkillAt(t, overlap, "dup-skill", "overlapping version")
+
+	var msgs []string
+	log := func(msg string) { msgs = append(msgs, msg) }
+
+	skills := DiscoverMarkdownSkills(root, []string{overlap}, log)
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill after dedupe, got %d", len(skills))
+	}
+	if skills[0].Frontmatter.Name != "dup-skill" {
+		t.Errorf("Name: expected %q, got %q", "dup-skill", skills[0].Frontmatter.Name)
+	}
+
+	var summaryCount int
+	for _, m := range msgs {
+		if strings.Contains(m, "[skills] Discovered") && strings.Contains(m, "skipped") && strings.Contains(m, "duplicate") {
+			summaryCount++
+			if !strings.Contains(m, "1 duplicate(s)") {
+				t.Errorf("summary line should report 1 duplicate, got %q", m)
+			}
+		}
+		if strings.Contains(m, "Skipping duplicate markdown skill") {
+			t.Errorf("per-duplicate log line should be removed, got %q", m)
+		}
+	}
+	if summaryCount != 1 {
+		t.Errorf("expected exactly 1 summary line, got %d (logs: %v)", summaryCount, msgs)
+	}
+}
+
 func TestDiscoverMarkdownSkillsNestedWalk(t *testing.T) {
 	isolateHome(t)
 	root := t.TempDir()

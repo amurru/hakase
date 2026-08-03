@@ -1,16 +1,25 @@
 // fileops.go - file operation tools for the general-purpose agent:
 // read_file, write_file, patch (targeted edits), and search_files.
+//
+// Workspace confinement: when the package-level currentSandbox is non-nil
+// and its Mode is not SandboxModeOff, all path resolution goes through
+// (*SandboxConfig).resolveScopedPath, which confines reads to read roots
+// and writes to workspace roots (deny roots always rejected). When
+// currentSandbox is nil (the default), paths resolve via the legacy
+// resolveTaskPath/resolvePath logic, preserving backward compatibility.
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -20,6 +29,19 @@ import (
 // maxSearchFileSize caps how large a file search_files will scan (5 MB).
 // Larger files are skipped to keep the walk fast and bounded.
 const maxSearchFileSize = 5 << 20
+
+// maxSearchEntries caps the total number of directory + file entries
+// search_files will visit in a single walk. When exhausted, the walk
+// stops and the result is marked Truncated. This bounds the worst-case
+// scan over huge or pathological directory trees (e.g. mounted drives
+// throwing I/O errors).
+const maxSearchEntries = 50000
+
+// searchTimeout is the per-call wall-clock deadline for search_files.
+// On expiry the walk stops gracefully and partial matches are returned
+// with Truncated: true (no error). It is a package var so tests can
+// inject a tiny deadline.
+var searchTimeout = 30 * time.Second
 
 // ReadFileInput is the input schema for the read_file tool.
 type ReadFileInput struct {
@@ -72,7 +94,7 @@ type SearchFilesInput struct {
 	Path       string   `json:"path,omitempty"       doc:"Directory to search recursively (defaults to the working directory)"`
 	Include    []string `json:"include,omitempty"    doc:"Optional glob patterns (Go filepath.Match syntax, e.g. *.go) to filter file names; when empty, all files are searched"`
 	OutputMode string   `json:"output_mode,omitempty" doc:"'content' (default) shows matching lines, 'files_with_matches' lists unique file paths, 'count' shows the number of matches per file"`
-	HeadLimit  int      `json:"head_limit,omitempty" doc:"Maximum number of results to return (0 means no limit)"`
+	HeadLimit  int      `json:"head_limit,omitempty" doc:"Maximum number of results to return (defaults to 100 when 0 or unset)"`
 }
 
 // SearchMatch describes a single search result.
@@ -109,7 +131,7 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 		Name:        "read_file",
 		Description: "Reads the contents of a file, optionally restricted to a line range (offset/limit) for large files.",
 	}, func(ctx agent.Context, input ReadFileInput) (ReadFileOutput, error) {
-		path, err := resolveTaskPath(input.Path, sandboxRoot)
+		path, err := taskResolve(input.Path, false, sandboxRoot)
 		if err != nil {
 			return ReadFileOutput{}, err
 		}
@@ -160,7 +182,7 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 		Name:        "write_file",
 		Description: "Creates a new file with the given content (creating parent directories as needed), or overwrites an existing file when overwrite=true.",
 	}, func(ctx agent.Context, input WriteFileInput) (WriteFileOutput, error) {
-		path, err := resolveTaskPath(input.Path, sandboxRoot)
+		path, err := taskResolve(input.Path, true, sandboxRoot)
 		if err != nil {
 			return WriteFileOutput{}, err
 		}
@@ -210,7 +232,7 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 		if input.OldString == "" {
 			return PatchOutput{}, fmt.Errorf("old_string must not be empty")
 		}
-		path, err := resolveTaskPath(input.Path, sandboxRoot)
+		path, err := taskResolve(input.Path, true, sandboxRoot)
 		if err != nil {
 			return PatchOutput{}, err
 		}
@@ -262,7 +284,7 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 		if root == "" {
 			root = "."
 		}
-		rootAbs, err := resolveTaskPath(root, sandboxRoot)
+		rootAbs, err := taskResolve(root, false, sandboxRoot)
 		if err != nil {
 			return SearchFilesOutput{}, err
 		}
@@ -287,12 +309,38 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 		var matches []SearchMatch
 		truncated := false
 
+		// Default head_limit to 100 when unset so unbounded searches
+		// (the common case when the model omits the field) are capped.
+		headLimit := input.HeadLimit
+		if headLimit <= 0 {
+			headLimit = 100
+		}
+
+		// Per-tool deadline: bound the walk even when the tree is
+		// pathologically large (e.g. mounted drives throwing I/O errors).
+		// On expiry we stop gracefully and return partial results.
+		// We derive from context.Background() rather than ctx because the
+		// ADK ContextMock used in tests panics on Deadline()/Done(); the
+		// walk deadline is a per-tool guardrail independent of the agent
+		// context's own cancellation.
+		walkCtx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+		defer cancel()
+
+		entriesVisited := 0
+
 		walkErr := filepath.WalkDir(rootAbs, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil // skip unreadable entries
 			}
-			if ctx.Err() != nil {
-				return ctx.Err()
+			// Scan budget: count every entry visited (dirs + files).
+			entriesVisited++
+			if entriesVisited >= maxSearchEntries {
+				truncated = true
+				return filepath.SkipAll
+			}
+			// Per-tool deadline check.
+			if walkCtx.Err() != nil {
+				return walkCtx.Err()
 			}
 			if d.IsDir() {
 				if path != rootAbs && (d.Name() == ".git" || d.Name() == ".venv" || d.Name() == "node_modules") {
@@ -309,15 +357,20 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 			}
 			matches = append(matches, searchFile(path, re, mode)...)
 
-			if input.HeadLimit > 0 && len(matches) >= input.HeadLimit {
-				matches = matches[:input.HeadLimit]
+			if len(matches) >= headLimit {
+				matches = matches[:headLimit]
 				truncated = true
 				return filepath.SkipAll
 			}
 			return nil
 		})
-		if walkErr != nil && walkErr != context.Canceled {
-			return SearchFilesOutput{}, fmt.Errorf("search walk failed: %w", walkErr)
+		if walkErr != nil {
+			// Deadline/cancel: return partial results, not an error.
+			if errors.Is(walkErr, context.DeadlineExceeded) || errors.Is(walkErr, context.Canceled) {
+				truncated = true
+			} else {
+				return SearchFilesOutput{}, fmt.Errorf("search walk failed: %w", walkErr)
+			}
 		}
 		return SearchFilesOutput{Matches: matches, Total: len(matches), Truncated: truncated}, nil
 	})
@@ -326,6 +379,19 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 	}
 
 	return []tool.Tool{readTool, writeTool, patchTool, searchTool}, nil
+}
+
+// taskResolve is the path-resolution entry point for all file-ops tools.
+// When the package-level currentSandbox is active (non-nil and not off),
+// it delegates to (*SandboxConfig).resolveScopedPath for workspace
+// confinement. Otherwise it falls back to the legacy resolveTaskPath
+// behavior (sandbox-root join or plain resolvePath). The write flag
+// selects write vs read containment in sandbox mode.
+func taskResolve(path string, write bool, sandboxRoot string) (string, error) {
+	if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
+		return currentSandbox.resolveScopedPath(path, write)
+	}
+	return resolveTaskPath(path, sandboxRoot)
 }
 
 // resolveTaskPath scopes a path to the task sandbox root when set,

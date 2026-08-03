@@ -13,7 +13,7 @@ import (
 
 func newTestModel(t *testing.T) *appModel {
 	t.Helper()
-	m := newModel(context.Background(), nil, 100, true, "test-model", "")
+	m := newModel(context.Background(), nil, nil, 100, true, "test-model", "")
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return model.(*appModel)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strings"
 )
 
 type EnvOverrideConfig struct {
@@ -30,9 +31,24 @@ type Config struct {
 	// ThinkingLevel is passed through to the provider as the thinking depth
 	// ("off", "low", "medium", "high", "maximum", "xhigh"); empty = provider default.
 	ThinkingLevel string `json:"thinking_level,omitempty"`
+	// SummaryModel optionally names a cheaper/weaker model used for context
+	// compaction summarization (the plan's "cheap/weak model if available").
+	// When empty, the primary model is used for summaries.
+	SummaryModel string `json:"summary_model,omitempty"`
 	// EnvOverrides maps task IDs or agent names to environment
 	// isolation configurations for delegated sub-agents.
 	EnvOverrides map[string]EnvOverrideConfig `json:"env_overrides,omitempty"`
+	// DelegateTimeoutSeconds bounds how long a delegated sub-agent may run
+	// before it is aborted as timed out. 0 uses the default (300s). Prevents
+	// stuck sub-agents from hanging the orchestrator indefinitely.
+	DelegateTimeoutSeconds int `json:"delegate_timeout_seconds,omitempty"`
+	// Debug enables dev-mode structured JSON logging of all system events to
+	// ./logs/ for development and troubleshooting. Off by default.
+	Debug bool `json:"debug,omitempty"`
+	// Sandbox optionally configures workspace path confinement and subprocess
+	// sandboxing. nil/absent = sandbox disabled (backward compatible). See
+	// sandbox.go for the full shape and defaults.
+	Sandbox *SandboxJSON `json:"sandbox,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.
@@ -42,7 +58,8 @@ func envConfigSet() bool {
 	return os.Getenv("HAKASE_API_KEY") != "" ||
 		os.Getenv("HAKASE_PROVIDER") != "" ||
 		os.Getenv("HAKASE_MODEL") != "" ||
-		os.Getenv("HAKASE_BASE_URL") != ""
+		os.Getenv("HAKASE_BASE_URL") != "" ||
+		os.Getenv("HAKASE_SUMMARY_MODEL") != ""
 }
 
 // loadConfig reads the JSON config file and applies HAKASE_* environment
@@ -74,6 +91,12 @@ func loadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	if v := os.Getenv("HAKASE_SUMMARY_MODEL"); v != "" {
+		cfg.SummaryModel = v
+	}
+	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
+		cfg.Debug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
 
 	return &cfg, nil

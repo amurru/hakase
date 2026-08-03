@@ -36,8 +36,15 @@ func main() {
 
 	var p *tea.Program
 
+	// Dev-mode structured JSON logging (feature flag from config or env).
+	if p := initDebugLogging(cfg.Debug); p != "" {
+		debugEvent("startup", "log_file", p, "debug", true)
+	}
+	defer closeDebugLogging()
+
 	// Define thread-safe logger function
 	logToUI := func(msg string) {
+		debugEvent("status_log", "msg", msg)
 		if p != nil {
 			p.Send(StatusLogMsg{Text: msg})
 		}
@@ -50,12 +57,28 @@ func main() {
 		}
 	}
 
-	r, err := setupRunner(ctx, cfg, logToUI)
+	// Stream delegated sub-agent progress (text, tool calls, status) to the TUI
+	delegationProgressNotify = func(status string, taskID, agent, message string) {
+		if p != nil {
+			p.Send(DelegationProgressMsg{TaskID: taskID, Agent: agent, Status: status, Message: message})
+		}
+	}
+
+	// Create the session service up front so the same instance backs both the
+	// TUI (persistence) and the runner's HistoryBuilder (history injection).
+	var sessionSvc *SessionService
+	if store, err := NewSessionStore(sessionsDir); err == nil {
+		if svc, err := NewSessionService(store); err == nil {
+			sessionSvc = svc
+		}
+	}
+
+	r, err := setupRunner(ctx, cfg, logToUI, sessionSvc)
 	if err != nil {
 		log.Fatalf("Failed to setup agent runner: %v", err)
 	}
 
-	m := newModel(ctx, r, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
+	m := newModel(ctx, r, sessionSvc, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
 	p = tea.NewProgram(&m)
 	m.program = p
 
@@ -91,6 +114,10 @@ func main() {
 			logToUI(fmt.Sprintf("⚠️ model info unavailable: %v", err))
 			return
 		}
+		// Feed the model capabilities to the HistoryBuilder for budget math.
+		if currentHistoryBuilder != nil {
+			currentHistoryBuilder.SetModelInfo(info)
+		}
 		if p != nil {
 			p.Send(ModelInfoMsg{Info: info})
 		}
@@ -99,4 +126,5 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
+	debugEvent("shutdown")
 }

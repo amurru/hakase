@@ -54,12 +54,11 @@ func DiscoverMarkdownSkills(cwd string, extraDirs []string, log LogFunc) []Markd
 
 	skills := make([]MarkdownSkill, 0)
 	seen := make(map[string]string)
+	duplicateCount := 0
 
 	add := func(s MarkdownSkill) {
 		if _, dup := seen[s.Frontmatter.Name]; dup {
-			if log != nil {
-				log(fmt.Sprintf("[skills] Skipping duplicate markdown skill '%s' at %s (already loaded)", s.Frontmatter.Name, s.Path))
-			}
+			duplicateCount++
 			return
 		}
 		if len(s.Body) > 100*1024 {
@@ -173,6 +172,10 @@ func DiscoverMarkdownSkills(cwd string, extraDirs []string, log LogFunc) []Markd
 			skill.Source = dir
 			add(*skill)
 		}
+	}
+
+	if duplicateCount > 0 && log != nil {
+		log(fmt.Sprintf("[skills] Discovered %d skills, skipped %d duplicate(s)", len(skills), duplicateCount))
 	}
 
 	sort.Slice(skills, func(i, j int) bool {

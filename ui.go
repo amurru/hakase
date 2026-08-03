@@ -182,7 +182,7 @@ type TaskUpdateMsg struct {
 type DelegationProgressMsg struct {
 	TaskID  string
 	Agent   string
-	Status  string // "started", "completed", "failed"
+	Status  string // "started", "running", "thinking", "tool_call", "tool_result", "log", "completed", "failed", "timed_out"
 	Message string
 }
 
@@ -252,6 +252,7 @@ type appModel struct {
 func newModel(
 	ctx context.Context,
 	r *runner.Runner,
+	sessionSvc *SessionService,
 	chatBufferSize int,
 	showThinking bool,
 	modelName string,
@@ -285,22 +286,8 @@ func newModel(
 		showThinking:   showThinking,
 		modelName:      modelName,
 		thinkingLevel:  thinkingLevel,
-		sessionService: initSessionService(),
+		sessionService: sessionSvc,
 	}
-}
-
-// initSessionService initializes the session service and attempts
-// to restore the most recently updated non-archived session.
-func initSessionService() *SessionService {
-	store, err := NewSessionStore(sessionsDir)
-	if err != nil {
-		return nil
-	}
-	svc, err := NewSessionService(store)
-	if err != nil {
-		return nil
-	}
-	return svc
 }
 
 func (m *appModel) Init() tea.Cmd {
@@ -329,6 +316,30 @@ func (m *appModel) appendLog(line string) {
 	m.logViewport.SetContentLines(m.highlightLines(m.logLines, 0))
 	if stick {
 		m.logViewport.GotoBottom()
+	}
+}
+
+// formatDelegationProgress renders a delegation progress event for the log
+// pane with a status-specific marker.
+func formatDelegationProgress(msg DelegationProgressMsg) string {
+	prefix := fmt.Sprintf("[delegate %s] %s", msg.TaskID, msg.Agent)
+	switch msg.Status {
+	case "started":
+		return fmt.Sprintf("🚀 %s started: %s", prefix, msg.Message)
+	case "completed":
+		return fmt.Sprintf("✅ %s completed", prefix)
+	case "failed":
+		return fmt.Sprintf("❌ %s failed: %s", prefix, msg.Message)
+	case "timed_out":
+		return fmt.Sprintf("⏰ %s timed out: %s", prefix, msg.Message)
+	case "thinking":
+		return fmt.Sprintf("💭 %s: %s", prefix, msg.Message)
+	case "tool_call":
+		return fmt.Sprintf("🛠️ %s: %s", prefix, msg.Message)
+	case "tool_result":
+		return fmt.Sprintf("📥 %s: %s", prefix, msg.Message)
+	default: // "running", "log"
+		return fmt.Sprintf("🔀 %s: %s", prefix, msg.Message)
 	}
 }
 
@@ -392,6 +403,19 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rebuildRenderedLines()
 				m.chatScrollOffset = m.maxChatScrollOffset()
 				m.renderChatViewport()
+
+				// Persist the user message before the run starts so it lands in
+				// the right session even if the agent never completes. This is
+				// also what creates the active session on the first send.
+				if m.sessionService != nil {
+					_ = m.sessionService.RecordUsage("user", prompt, "", EstimateTokens(prompt))
+				}
+
+				// Surface a context-fill warning before sending when the
+				// in-context history approaches the effective budget.
+				if pct, _ := m.sessionFillPercent(); pct >= 80 {
+					m.appendLog(fmt.Sprintf("⚠ context %d%% full (effective budget)", pct))
+				}
 
 				go runAgentTask(m.ctx, m.r, m.program, prompt, GenerateTaskID())
 			}
@@ -605,18 +629,27 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StatusLogMsg:
 		m.appendLog(msg.Text)
 	case DelegationProgressMsg:
-		m.appendLog(fmt.Sprintf("🔀 [delegate %s] %s: %s", msg.TaskID, msg.Agent, msg.Message))
+		m.appendLog(formatDelegationProgress(msg))
 	case TaskUpdateMsg:
 		m.refreshTaskBoard()
 	case TaskBoardMsg:
 		m.refreshTaskBoard()
 	case agentDoneMsg:
 		m.isProcessing = false
-		// Save the final agent message to the session.
+		// Save the final agent message to the session with the provider-
+		// reported token count (UsageUpdateMsg arrives before agentDoneMsg,
+		// so m.usage is current here).
 		if m.sessionService != nil && len(m.chatHistory) > 0 {
 			last := m.chatHistory[len(m.chatHistory)-1]
 			if last.Role == "agent" {
-				_ = m.sessionService.AddMessage("agent", last.Content, last.Thinking)
+				tokens := 0
+				if m.usage != nil {
+					tokens = int(m.usage.TotalTokenCount)
+					if tokens <= 0 {
+						tokens = int(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
+					}
+				}
+				_ = m.sessionService.RecordUsage("agent", last.Content, last.Thinking, tokens)
 			}
 		}
 	case ModelInfoMsg:
@@ -1038,6 +1071,11 @@ func (m *appModel) statusBar() string {
 		parts = append(parts, "ctx "+formatTokens(limit))
 		pct, used := m.usagePercent()
 		if used > 0 {
+			// Context-fill warning glyph at ~80% of the effective budget.
+			fillPct, _ := m.sessionFillPercent()
+			if fillPct >= 80 {
+				parts = append(parts, "⚠")
+			}
 			parts = append(parts, fmt.Sprintf("%d%% %s", pct, usageBar(pct)))
 		}
 	}
@@ -1059,6 +1097,31 @@ func (m *appModel) usagePercent() (int, int64) {
 	used := int64(m.usage.TotalTokenCount)
 	if used <= 0 {
 		used = int64(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
+	}
+	pct := int(used * 100 / limit)
+	if pct > 100 {
+		pct = 100
+	}
+	return pct, used
+}
+
+// sessionFillPercent reports how full the session's in-context history is
+// relative to the model's effective input budget (0.9 * window). This drives
+// the status-bar warning and the pre-send compaction notice.
+func (m *appModel) sessionFillPercent() (int, int64) {
+	limit := MaxInputTokens(m.modelInfo)
+	if limit <= 0 || m.sessionService == nil {
+		return 0, 0
+	}
+	session, err := m.sessionService.GetActiveSession()
+	if err != nil || session == nil {
+		return 0, 0
+	}
+	var used int64
+	for _, msg := range session.Messages {
+		if msg.InContext {
+			used += int64(msg.Tokens)
+		}
 	}
 	pct := int(used * 100 / limit)
 	if pct > 100 {
@@ -1179,56 +1242,83 @@ func runAgentTask(
 	taskID string,
 ) {
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
+	debugEvent("user_prompt", "task_id", taskID, "text", prompt)
 
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
-	for ev, err := range r.Run(ctx, "user-1", taskID, msg, agent.RunConfig{}) {
-		if err != nil {
-			if p != nil {
-				p.Send(agentLogMsg(fmt.Sprintf("❌ Error: %v", err)))
+outer:
+	for attempt := 0; ; attempt++ {
+		var parseErr error
+		for ev, err := range r.Run(ctx, "user-1", taskID, msg, agent.RunConfig{}) {
+			if err != nil {
+				if isToolCallJSONErr(err) && attempt < maxToolCallRepairAttempts {
+					parseErr = err
+					break
+				}
+				if p != nil {
+					p.Send(agentLogMsg(fmt.Sprintf("❌ Error: %v", err)))
+				}
+				debugError("agent_error", "error", fmt.Sprintf("%v", err))
+				break outer
 			}
-			break
-		}
-		if ev == nil {
-			continue
-		}
-		if ev.UsageMetadata != nil {
-			lastUsage = ev.UsageMetadata
-		}
-		if ev.Content != nil {
-			for _, part := range ev.Content.Parts {
-				if part.Text != "" && p != nil {
-					if part.Thought {
-						trimmed := strings.TrimSpace(part.Text)
-						if trimmed != "" {
-							p.Send(agentStreamMsg{Thinking: trimmed})
+			if ev == nil {
+				continue
+			}
+			if ev.UsageMetadata != nil {
+				lastUsage = ev.UsageMetadata
+			}
+			if ev.Content != nil {
+				for _, part := range ev.Content.Parts {
+					if part.Text != "" && p != nil {
+						if part.Thought {
+							trimmed := strings.TrimSpace(part.Text)
+							if trimmed != "" {
+								p.Send(agentStreamMsg{Thinking: trimmed})
+							}
+						} else {
+							p.Send(agentStreamMsg{Content: part.Text})
 						}
-					} else {
-						p.Send(agentStreamMsg{Content: part.Text})
+					}
+					if part.Text != "" {
+						debugEvent("agent_text", "thought", part.Thought, "text", part.Text)
+					}
+					if part.FunctionCall != nil && p != nil {
+						p.Send(
+							agentLogMsg(
+								fmt.Sprintf(
+									"🛠️ Call: %s(%v)",
+									part.FunctionCall.Name,
+									part.FunctionCall.Args,
+								),
+							),
+						)
+					}
+					if part.FunctionCall != nil {
+						debugEvent("agent_tool_call", "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
+					}
+					if part.FunctionResponse != nil && p != nil {
+						p.Send(agentLogMsg(fmt.Sprintf("📥 Response: %s", part.FunctionResponse.Name)))
+					}
+					if part.FunctionResponse != nil {
+						debugEvent("agent_tool_response", "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
 					}
 				}
-				if part.FunctionCall != nil && p != nil {
-					p.Send(
-						agentLogMsg(
-							fmt.Sprintf(
-								"🛠️ Call: %s(%v)",
-								part.FunctionCall.Name,
-								part.FunctionCall.Args,
-							),
-						),
-					)
-				}
-				if part.FunctionResponse != nil && p != nil {
-					p.Send(agentLogMsg(fmt.Sprintf("📥 Response: %s", part.FunctionResponse.Name)))
-				}
 			}
 		}
+		if parseErr != nil {
+			debugWarn("tool_call_repair", "task_id", taskID, "attempt", attempt+1, "error", parseErr)
+			msg = toolCallRepairMessage(parseErr, attempt)
+			continue
+		}
+		break
 	}
 
 	if p != nil {
 		p.Send(agentStreamMsg{})
 		if lastUsage != nil {
+			debugEvent("usage", "prompt_tokens", lastUsage.PromptTokenCount, "candidates_tokens", lastUsage.CandidatesTokenCount, "total_tokens", lastUsage.TotalTokenCount)
 			p.Send(UsageUpdateMsg{Usage: lastUsage})
 		}
+		debugEvent("agent_done", "task_id", taskID)
 		p.Send(agentDoneMsg{})
 	}
 }

@@ -2,19 +2,29 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 )
+
+// currentSandbox is the package-level sandbox configuration consulted by
+// buildExecCommand. It is nil when sandboxing is disabled (the default).
+// Other agents (agent.go / setupRunner) set it at startup; tests must set it
+// to nil to remain hermetic. Defined here because sandbox.go is intentionally
+// left untouched (see .omo/plans/hakase-debug-log-fixes.md, Sandbox Phase 1).
+var currentSandbox *SandboxConfig
 
 // runningProcess tracks the live state of a single spawned system process.
 // The output buffer and state fields are guarded by mu so they can be read
@@ -178,24 +188,134 @@ func (m *systemExecManager) snapshot() []*runningProcess {
 // buildExecCommand constructs an exec.Cmd for a system command. The spawned
 // process always inherits the agent process's environment (cmd.Env =
 // os.Environ()) and any input env map is merged on top (input overrides).
-func buildExecCommand(ctx agent.Context, command string, args []string, workingDir string, env map[string]string) (*exec.Cmd, error) {
+//
+// P0-1 shell routing: when args is empty the whole command line is passed to
+// "sh -c" so pipes, redirects, globs, &&/||, and compound commands work. When
+// args is non-empty the explicit (command, args...) form is used so callers
+// that pre-tokenize keep full control. This project is Linux-only (README);
+// Windows has no "sh" - the sh path would need a runtime.GOOS guard if this
+// code ever ports.
+//
+// Process hardening: every spawned process gets Setpgid:true (new process
+// group) and Pdeathsig:SIGKILL (kernel reaps the child if the agent dies).
+// Callers must wrap Start+Wait in runtime.LockOSThread/UnlockOSThread so the
+// Pdeathsig thread stays alive for the child's lifetime (golang/go#27505).
+//
+// Sandbox integration: when currentSandbox is non-nil and not off, cmd.Dir is
+// pinned to the workspace root (or verified against it when workingDir is
+// set), and sensitive env entries (HAKASE_*, AWS_*, GITHUB_*, OPENAI_*) are
+// scrubbed so they never leak into sandboxed subprocesses.
+func buildExecCommand(command string, args []string, workingDir string, env map[string]string) (*exec.Cmd, error) {
 	if strings.TrimSpace(command) == "" {
 		return nil, fmt.Errorf("command must not be empty")
 	}
-	cmd := exec.CommandContext(ctx, command, args...)
+
+	// P0-1: route through sh -c when no args are provided so the model's
+	// natural whole-command-line input (pipes, redirects, globs) works.
+	// When args are provided, use the explicit executable+args form.
+	ctx := context.Background()
+
+	// Phase 2: when bubblewrap mode is active, wrap the inner command in
+	// bwrap for kernel-enforced filesystem + network isolation. The inner
+	// argv (sh -c or direct) becomes the command bwrap executes.
+	if currentSandbox != nil && currentSandbox.Mode == SandboxModeBubblewrap {
+		var innerArgv []string
+		if len(args) == 0 {
+			innerArgv = []string{"sh", "-c", command}
+		} else {
+			innerArgv = append([]string{command}, args...)
+		}
+		wd := workingDir
+		if wd == "" {
+			wd = currentSandbox.workspaceRoot()
+		}
+		bwCmd, err := wrapBwrapCmd(currentSandbox, innerArgv, wd, currentSandbox.AllowNetwork, nil)
+		if err != nil {
+			// bwrap not available or config invalid: fall back to the
+			// non-sandbox exec path rather than failing the whole tool.
+			// The Phase-1 path checks still apply below.
+			debugWarn("sandbox_bwrap_fallback", "error", err)
+		} else {
+			bwCmd.Env = os.Environ()
+			for k, v := range env {
+				bwCmd.Env = append(bwCmd.Env, k+"="+v)
+			}
+			bwCmd.Env = scrubEnv(bwCmd.Env)
+			if wd != "" {
+				bwCmd.Dir = wd
+			}
+			bwCmd.SysProcAttr = &syscall.SysProcAttr{
+				Setpgid:   true,
+				Pdeathsig: syscall.SIGKILL,
+			}
+			return bwCmd, nil
+		}
+	}
+
+	var cmd *exec.Cmd
+	if len(args) == 0 {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, command, args...)
+	}
+
+	// Env merge: start from the agent process env, overlay caller overrides.
 	cmd.Env = os.Environ()
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	if workingDir != "" {
+
+	// Working directory: sandbox-aware resolution.
+	if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
+		// Scrub sensitive env prefixes so secrets never leak into
+		// sandboxed subprocesses.
+		cmd.Env = scrubEnv(cmd.Env)
+		if workingDir == "" {
+			if root := currentSandbox.workspaceRoot(); root != "" {
+				cmd.Dir = root
+			}
+		} else {
+			resolved, err := currentSandbox.resolveScopedPath(workingDir, false)
+			if err != nil {
+				return nil, fmt.Errorf("working_dir %q rejected by sandbox: %w", workingDir, err)
+			}
+			cmd.Dir = resolved
+		}
+	} else if workingDir != "" {
 		cmd.Dir = workingDir
 	}
+
+	// Process hardening: new process group + death signal so children
+	// (and grandchildren) die if the agent crashes. Linux-only fields.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:   true,
+		Pdeathsig: syscall.SIGKILL,
+	}
+
 	return cmd, nil
+}
+
+// scrubEnv returns env with entries whose key starts with any of the
+// sensitive prefixes removed. Used when the sandbox is active so secret
+// material does not leak into sandboxed subprocesses.
+func scrubEnv(env []string) []string {
+	scrubbed := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "HAKASE_") ||
+			strings.HasPrefix(key, "AWS_") ||
+			strings.HasPrefix(key, "GITHUB_") ||
+			strings.HasPrefix(key, "OPENAI_") {
+			continue
+		}
+		scrubbed = append(scrubbed, kv)
+	}
+	return scrubbed
 }
 
 // SystemExecInput is the input schema for the synchronous system_exec tool.
 type SystemExecInput struct {
-	Command        string            `json:"command"            doc:"The system command or executable to run on the host machine (must be non-empty)"`
+	Command        string            `json:"command"            doc:"Full command line (e.g. 'find /home -name \"*.pdf\" 2>/dev/null') when args is empty; executable name only when args is provided"`
 	Args           []string          `json:"args,omitempty"     doc:"Optional list of arguments passed to the command"`
 	WorkingDir     string            `json:"working_dir,omitempty" doc:"Optional working directory for the command; defaults to the agent process working directory"`
 	Env            map[string]string `json:"env,omitempty"      doc:"Optional environment variables merged over the agent process environment; these override inherited values"`
@@ -216,7 +336,7 @@ type SystemExecOutput struct {
 
 // SystemExecStartInput is the input schema for the asynchronous system_exec_start tool.
 type SystemExecStartInput struct {
-	Command    string            `json:"command"        doc:"The system command or executable to start in the background (must be non-empty)"`
+	Command    string            `json:"command"        doc:"Full command line (e.g. 'find /home -name \"*.pdf\" 2>/dev/null') when args is empty; executable name only when args is provided"`
 	Args       []string          `json:"args,omitempty" doc:"Optional list of arguments passed to the command"`
 	WorkingDir string            `json:"working_dir,omitempty" doc:"Optional working directory for the command; defaults to the agent process working directory"`
 	Env        map[string]string `json:"env,omitempty"  doc:"Optional environment variables merged over the agent process environment; these override inherited values"`
@@ -305,7 +425,7 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 		if workingDir == "" {
 			workingDir = taskCWD
 		}
-		cmd, err := buildExecCommand(ctx, input.Command, input.Args, workingDir, input.Env)
+		cmd, err := buildExecCommand(input.Command, input.Args, workingDir, input.Env)
 		if err != nil {
 			return SystemExecOutput{ProcessID: procID}, err
 		}
@@ -317,10 +437,17 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 		cmd.Stderr = io.MultiWriter(&stderrBuf, outWriter)
 
 		if log != nil {
-			log(fmt.Sprintf("⚡ [system_exec] Running: %s %s", input.Command, strings.Join(input.Args, " ")))
+			log(fmt.Sprintf("⚡ [system_exec] Running: %s", strings.Join(cmd.Args, " ")))
 		}
 
+		// Pdeathsig fires on the OS thread that called Start; lock it
+		// so the runtime does not recycle it before Wait reaps the child
+		// (golang/go#27505).
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
 		if err := cmd.Start(); err != nil {
+			debugError("system_exec_start_failed", "process_id", procID, "command", input.Command, "error", err.Error())
 			return SystemExecOutput{
 				ProcessID:  procID,
 				ExitCode:   -1,
@@ -335,8 +462,9 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 				time.Duration(input.TimeoutSeconds*float64(time.Second)),
 				func() {
 					rp.markTimedOut()
+					// Group-kill so grandchildren die too (Setpgid).
 					if cmd.Process != nil {
-						_ = cmd.Process.Kill()
+						_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 					}
 				},
 			)
@@ -353,6 +481,10 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 			DurationMs: time.Since(start).Milliseconds(),
 			Stdout:     stdoutBuf.String(),
 			Stderr:     stderrBuf.String(),
+		}
+
+		if out.TimedOut {
+			debugWarn("system_exec_timeout", "process_id", procID, "command", input.Command, "duration_ms", out.DurationMs)
 		}
 
 		var exitErr *exec.ExitError
@@ -391,7 +523,7 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 		if workingDir == "" {
 			workingDir = taskCWD
 		}
-		cmd, err := buildExecCommand(ctx, input.Command, input.Args, workingDir, input.Env)
+		cmd, err := buildExecCommand(input.Command, input.Args, workingDir, input.Env)
 		if err != nil {
 			return SystemExecStartOutput{Started: false, Message: err.Error()}, err
 		}
@@ -402,20 +534,25 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 		cmd.Stderr = outWriter
 
 		if log != nil {
-			log(fmt.Sprintf("🚀 [system_exec] Starting background process #%d: %s %s", rp.id, input.Command, strings.Join(input.Args, " ")))
+			log(fmt.Sprintf("🚀 [system_exec] Starting background process #%d: %s", rp.id, strings.Join(cmd.Args, " ")))
 		}
 
-		if err := cmd.Start(); err != nil {
-			m.remove(rp.id)
-			rp.setFinished(-1)
-			return SystemExecStartOutput{
-				ProcessID: rp.id,
-				Started:   false,
-				Message:   fmt.Sprintf("failed to start command: %v", err),
-			}, err
-		}
-
+		// Start+Wait must run on the same locked OS thread so Pdeathsig
+		// does not fire prematurely (golang/go#27505). We launch a
+		// goroutine that owns the thread for the child's lifetime; the
+		// handler blocks only until Start reports success/failure.
+		type startResult struct{ err error }
+		startCh := make(chan startResult, 1)
 		go func() {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+
+			if err := cmd.Start(); err != nil {
+				startCh <- startResult{err: err}
+				return
+			}
+			startCh <- startResult{err: nil}
+
 			exitCode := 0
 			if err := cmd.Wait(); err != nil {
 				var exitErr *exec.ExitError
@@ -430,6 +567,18 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 				log(fmt.Sprintf("✅ [system_exec] Background process #%d exited with code %d", rp.id, exitCode))
 			}
 		}()
+
+		res := <-startCh
+		if res.err != nil {
+			m.remove(rp.id)
+			rp.setFinished(-1)
+			debugError("system_exec_start_failed", "process_id", rp.id, "command", input.Command, "error", res.err.Error())
+			return SystemExecStartOutput{
+				ProcessID: rp.id,
+				Started:   false,
+				Message:   fmt.Sprintf("failed to start command: %v", res.err),
+			}, res.err
+		}
 
 		return SystemExecStartOutput{
 			ProcessID: rp.id,
@@ -476,8 +625,9 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 
 		_, _, _, alreadyFinished := rp.stateSnapshot()
 		rp.markCanceled()
+		// Group-kill (negative pid) so grandchildren die too (Setpgid).
 		if !alreadyFinished && rp.cmd.Process != nil {
-			_ = rp.cmd.Process.Kill()
+			_ = syscall.Kill(-rp.cmd.Process.Pid, syscall.SIGKILL)
 		}
 		rp.waitFinished()
 		m.remove(input.ProcessID)

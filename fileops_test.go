@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -401,5 +402,117 @@ func TestFileOpsToolsetNames(t *testing.T) {
 		if got := tools[i].Name(); got != w {
 			t.Errorf("tool[%d]: expected name %q, got %q", i, w, got)
 		}
+	}
+}
+
+// TestSearchFilesDefaultHeadLimit verifies that when head_limit is 0/unset,
+// the handler defaults to 100 and marks the result Truncated.
+func TestSearchFilesDefaultHeadLimit(t *testing.T) {
+	tools, err := createFileOpsTools(nil, nil, "")
+	if err != nil {
+		t.Fatalf("createFileOpsTools: %v", err)
+	}
+	dir := t.TempDir()
+	// Create 150 matching files - more than the default head_limit of 100.
+	for i := 0; i < 150; i++ {
+		writeTempFile(t, dir, fmt.Sprintf("f%03d.go", i), "func main() {}\n")
+	}
+
+	out, err := runTool(t, tools[3], map[string]any{"pattern": "main", "path": dir})
+	if err != nil {
+		t.Fatalf("search_files: %v", err)
+	}
+	matches, ok := out["matches"].([]any)
+	if !ok {
+		t.Fatalf("matches: expected []any, got %T", out["matches"])
+	}
+	if len(matches) > 100 {
+		t.Errorf("matches: expected at most 100 (default head_limit), got %d", len(matches))
+	}
+	if got := out["truncated"]; got != true {
+		t.Errorf("truncated: expected true, got %v", got)
+	}
+}
+
+// TestSearchFilesTimeout verifies that a tiny searchTimeout causes the walk
+// to stop gracefully, returning partial results with Truncated=true and no
+// error, even when the tree has many files.
+func TestSearchFilesTimeout(t *testing.T) {
+	tools, err := createFileOpsTools(nil, nil, "")
+	if err != nil {
+		t.Fatalf("createFileOpsTools: %v", err)
+	}
+	dir := t.TempDir()
+	// Create ~3000 small files so the walk takes long enough to hit a
+	// 1ms deadline. Each file matches the pattern.
+	for i := 0; i < 3000; i++ {
+		writeTempFile(t, dir, fmt.Sprintf("f%04d.go", i), "func main() {}\n")
+	}
+
+	// Inject a tiny deadline.
+	origTimeout := searchTimeout
+	searchTimeout = 1 * time.Millisecond
+	t.Cleanup(func() { searchTimeout = origTimeout })
+
+	out, err := runTool(t, tools[3], map[string]any{"pattern": "main", "path": dir})
+	if err != nil {
+		t.Fatalf("search_files: expected no error on timeout, got %v", err)
+	}
+	if got := out["truncated"]; got != true {
+		t.Errorf("truncated: expected true on timeout, got %v", got)
+	}
+	// matches may be nil or []any depending on how many files were
+	// processed before the deadline; both are valid partial results.
+	if matches, ok := out["matches"].([]any); ok {
+		if len(matches) > 3000 {
+			t.Errorf("matches: expected partial results, got %d (full set)", len(matches))
+		}
+	}
+	// If matches is nil (deadline fired before any file was visited),
+	// that's still a valid graceful partial result.
+}
+
+// TestSearchFilesSandboxConfinement verifies that when currentSandbox is
+// active with mode "paths", write_file to a path inside the workspace root
+// succeeds, write_file to /etc/passwd fails with "outside approved
+// workspace", and read_file of a file inside the root succeeds.
+func TestSearchFilesSandboxConfinement(t *testing.T) {
+	tools, err := createFileOpsTools(nil, nil, "")
+	if err != nil {
+		t.Fatalf("createFileOpsTools: %v", err)
+	}
+
+	// Activate sandbox confinement with a temp dir as the workspace root.
+	root := t.TempDir()
+	origSandbox := currentSandbox
+	currentSandbox = LoadSandboxConfig(&SandboxJSON{Mode: "paths", WorkspaceRoots: []string{root}})
+	t.Cleanup(func() { currentSandbox = origSandbox })
+
+	// write_file inside the root succeeds.
+	innerPath := filepath.Join(root, "hello.txt")
+	out, err := runTool(t, tools[1], map[string]any{"path": innerPath, "content": "hello"})
+	if err != nil {
+		t.Fatalf("write_file inside root: expected success, got %v", err)
+	}
+	if got := out["created"]; got != true {
+		t.Errorf("created: expected true, got %v", got)
+	}
+
+	// write_file to /etc/passwd fails with "outside approved workspace".
+	_, err = runTool(t, tools[1], map[string]any{"path": "/etc/passwd", "content": "evil"})
+	if err == nil {
+		t.Fatal("write_file to /etc/passwd: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "outside approved workspace") {
+		t.Errorf("write_file to /etc/passwd: expected error mentioning 'outside approved workspace', got %v", err)
+	}
+
+	// read_file of a file inside the root succeeds.
+	out, err = runTool(t, tools[0], map[string]any{"path": innerPath})
+	if err != nil {
+		t.Fatalf("read_file inside root: expected success, got %v", err)
+	}
+	if got := out["content"]; got != "hello" {
+		t.Errorf("content: expected %q, got %v", "hello", got)
 	}
 }

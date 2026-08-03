@@ -38,7 +38,7 @@ func (s *SessionStore) Save(session *Session) error {
 		return fmt.Errorf("failed to marshal session %s: %w", session.ID, err)
 	}
 
-	path := session.FilePath()
+	path := filepath.Join(s.sessionsDir, session.ID+sessionsFileExt)
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to save session %s: %w", session.ID, err)
 	}
@@ -194,7 +194,28 @@ func (s *SessionStore) loadUnlocked(id string) (*Session, error) {
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, fmt.Errorf("failed to parse session %s: %w", id, err)
 	}
+	normalizeLegacyMessages(&session)
 	return &session, nil
+}
+
+// normalizeLegacyMessages marks messages written by a pre-context-management
+// version of hakase as in-context. Older session files have no in_context
+// field, so every message unmarshals to false; without this pass those
+// sessions would silently lose all history on resume. Sessions written by the
+// context-management version always keep the tail in-context, so a session
+// where every message is out-of-context can only be a legacy file.
+func normalizeLegacyMessages(session *Session) {
+	if len(session.Messages) == 0 {
+		return
+	}
+	for _, msg := range session.Messages {
+		if msg.InContext {
+			return // already context-managed; leave as-is
+		}
+	}
+	for i := range session.Messages {
+		session.Messages[i].InContext = true
+	}
 }
 
 // saveUnlocked writes a session to disk without acquiring the lock.
@@ -205,7 +226,7 @@ func (s *SessionStore) saveUnlocked(session *Session) error {
 		return fmt.Errorf("failed to marshal session %s: %w", session.ID, err)
 	}
 
-	path := session.FilePath()
+	path := filepath.Join(s.sessionsDir, session.ID+sessionsFileExt)
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to save session %s: %w", session.ID, err)
 	}

@@ -60,6 +60,7 @@ func (p *GeminiProvider) GetModelInfo(ctx context.Context, cfg *Config, modelNam
 	return &ModelInfo{
 		Name:            modelName,
 		ContextWindow:   int64(m.InputTokenLimit),
+		MaxInputTokens:  int64(m.InputTokenLimit),
 		ThinkingEnabled: m.Thinking,
 		Source:          "gemini models.get",
 	}, nil
@@ -216,6 +217,7 @@ func (m *openAIModelInfo) toModelInfo(name string) *ModelInfo {
 	return &ModelInfo{
 		Name:            name,
 		ContextWindow:   limit,
+		MaxInputTokens:  m.InputTokenLimit,
 		ThinkingEnabled: m.reasoningSupported(),
 		ThinkingLevel:   m.thinkingLevel(),
 		Source:          "models endpoint",

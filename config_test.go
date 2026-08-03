@@ -143,6 +143,33 @@ func TestLoadConfigEnvOverridePartial(t *testing.T) {
 	}
 }
 
+func TestLoadConfigSummaryModel(t *testing.T) {
+	path := writeTempConfig(t, `{
+		"provider": "gemini",
+		"model_name": "gemini-2.5-flash",
+		"api_key": "file-key",
+		"summary_model": "gemini-2.5-flash-lite"
+	}`)
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: unexpected error: %v", err)
+	}
+	if cfg.SummaryModel != "gemini-2.5-flash-lite" {
+		t.Errorf("SummaryModel = %q, want %q", cfg.SummaryModel, "gemini-2.5-flash-lite")
+	}
+
+	// Env override wins over the file.
+	t.Setenv("HAKASE_SUMMARY_MODEL", "gpt-4o-mini")
+	cfg, err = loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: unexpected error: %v", err)
+	}
+	if cfg.SummaryModel != "gpt-4o-mini" {
+		t.Errorf("SummaryModel env override = %q, want %q", cfg.SummaryModel, "gpt-4o-mini")
+	}
+}
+
 func TestLoadConfigMissingFile(t *testing.T) {
 	t.Setenv("HAKASE_API_KEY", "")
 	t.Setenv("HAKASE_PROVIDER", "")

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
@@ -25,9 +27,167 @@ var blockedTools = map[string]bool{
 	"cronjob":       true,
 }
 
+// delegateTimeout bounds how long a delegated sub-agent may run before being
+// aborted. Set in setupRunner from config; 0 disables the timeout.
+var delegateTimeout time.Duration
+
+// delegationCacheTTL is how long a completed delegation result is reused to
+// answer identical (normalized) goals without re-spawning a sub-agent.
+var delegationCacheTTL = 10 * time.Minute
+
+// delegationCacheEntry stores a terminal delegation result and its timestamp.
+type delegationCacheEntry struct {
+	result DelegateTaskResult
+	ts     time.Time
+}
+
+// delegationCache deduplicates recent delegations by normalized goal so the
+// orchestrator does not re-spawn identical sub-agent work that already
+// completed (or timed out) within the TTL window.
+var delegationCache = struct {
+	mu sync.Mutex
+	m  map[string]delegationCacheEntry
+}{m: make(map[string]delegationCacheEntry)}
+
+// normalizeDelegationGoal canonicalizes a goal string for cache keying:
+// lowercase, collapse all whitespace runs to single spaces, truncate to
+// 200 runes.
+func normalizeDelegationGoal(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	joined := strings.Join(strings.Fields(s), " ")
+	r := []rune(joined)
+	if len(r) > 200 {
+		return string(r[:200])
+	}
+	return joined
+}
+
+// delegationCacheGet returns a cached, non-expired result for norm.
+func delegationCacheGet(norm string) (DelegateTaskResult, bool) {
+	delegationCache.mu.Lock()
+	defer delegationCache.mu.Unlock()
+	e, ok := delegationCache.m[norm]
+	if !ok {
+		return DelegateTaskResult{}, false
+	}
+	if time.Since(e.ts) > delegationCacheTTL {
+		delete(delegationCache.m, norm)
+		return DelegateTaskResult{}, false
+	}
+	return e.result, true
+}
+
+// delegationCachePut stores a terminal delegation result keyed by norm.
+func delegationCachePut(norm string, r DelegateTaskResult) {
+	delegationCache.mu.Lock()
+	defer delegationCache.mu.Unlock()
+	delegationCache.m[norm] = delegationCacheEntry{result: r, ts: time.Now()}
+}
+
+// delegationProgressNotify is set by main and streams DelegationProgressMsg
+// events from delegated sub-agents to the TUI. Status values: started,
+// running, thinking, tool_call, tool_result, log, completed, failed, timed_out.
+var delegationProgressNotify func(status string, taskID, agent, message string)
+
+func notifyDelegation(status string, taskID, agent, message string) {
+	debugEvent("delegation_progress", "task_id", taskID, "agent", agent, "status", status, "message", message)
+	if delegationProgressNotify != nil {
+		delegationProgressNotify(status, taskID, agent, message)
+	}
+}
+
+// delegationReporter buffers and streams sub-agent output to the TUI through
+// delegationProgressNotify, throttling high-frequency text chunks so the log
+// pane is not flooded with tiny model tokens.
+type delegationReporter struct {
+	taskID    string
+	agent     string
+	textBuf   strings.Builder
+	toolStart map[string]time.Time
+}
+
+func newDelegationReporter(taskID, agent string) *delegationReporter {
+	return &delegationReporter{taskID: taskID, agent: agent, toolStart: make(map[string]time.Time)}
+}
+
+// truncate caps s to n runes, appending an ellipsis when cut.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+func (r *delegationReporter) started(goal string) {
+	notifyDelegation("started", r.taskID, r.agent, truncate(goal, 200))
+}
+
+func (r *delegationReporter) log(msg string) {
+	notifyDelegation("log", r.taskID, r.agent, msg)
+}
+
+// flushText emits any buffered text as a single "running" event.
+func (r *delegationReporter) flushText() {
+	if r.textBuf.Len() == 0 {
+		return
+	}
+	msg := strings.TrimSpace(r.textBuf.String())
+	r.textBuf.Reset()
+	if msg != "" {
+		notifyDelegation("running", r.taskID, r.agent, msg)
+	}
+}
+
+// text buffers a model text chunk, flushing on newlines or when the buffer is
+// large enough to be readable.
+func (r *delegationReporter) text(chunk string) {
+	r.textBuf.WriteString(chunk)
+	if strings.Contains(chunk, "\n") || r.textBuf.Len() >= 240 {
+		r.flushText()
+	}
+}
+
+// thought streams a thinking chunk, truncated to keep the log pane usable.
+func (r *delegationReporter) thought(chunk string) {
+	trimmed := strings.TrimSpace(chunk)
+	if trimmed != "" {
+		notifyDelegation("thinking", r.taskID, r.agent, truncate(trimmed, 240))
+	}
+}
+
+// toolCall records the start of a tool call and reports it.
+func (r *delegationReporter) toolCall(name string, args map[string]interface{}) {
+	r.flushText()
+	r.toolStart[name] = time.Now()
+	notifyDelegation("tool_call", r.taskID, r.agent, fmt.Sprintf("%s(%v)", name, args))
+}
+
+// toolResult reports a completed tool call with its execution duration.
+func (r *delegationReporter) toolResult(name string) {
+	msg := name
+	if start, ok := r.toolStart[name]; ok {
+		msg = fmt.Sprintf("%s (%.1fs)", name, time.Since(start).Seconds())
+		delete(r.toolStart, name)
+	}
+	notifyDelegation("tool_result", r.taskID, r.agent, msg)
+}
+
+func (r *delegationReporter) finish(status string, err error, summary string) {
+	r.flushText()
+	switch status {
+	case "timed_out":
+		notifyDelegation("timed_out", r.taskID, r.agent, fmt.Sprintf("%v", err))
+	case "failed":
+		notifyDelegation("failed", r.taskID, r.agent, fmt.Sprintf("%v", err))
+	default:
+		notifyDelegation("completed", r.taskID, r.agent, truncate(summary, 240))
+	}
+}
+
 // DelegateTaskArgs is the input schema for the delegate_task tool.
 type DelegateTaskArgs struct {
-	Goal      string `json:"goal"                doc:"The objective the sub-agent should accomplish"`
+	Goal      string `json:"goal"                doc:"The objective the sub-agent should accomplish (required). Note: there is no 'prompt' field - put the objective in 'goal'."`
 	Context   string `json:"context,omitempty"   doc:"Additional context or background information for the sub-agent"`
 	AgentName string `json:"agent_name,omitempty" doc:"Target sub-agent type: code_interpreter, web_researcher, or general_purpose"`
 	TaskID    string `json:"task_id,omitempty"   doc:"Optional task ID for tracking; auto-generated if omitted"`
@@ -47,10 +207,22 @@ type DelegateTaskResult struct {
 // toolset. The sub-agent runs in an isolated runner with a fresh
 // InMemoryService.
 func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTaskResult, error) {
+	// Dedupe: if an equivalent goal completed recently, return the cached
+	// result without spawning a duplicate sub-agent.
+	normGoal := normalizeDelegationGoal(input.Goal)
+	if cached, ok := delegationCacheGet(normGoal); ok {
+		return cached, nil
+	}
+
 	// 1. Generate or resolve task_id
 	taskID := input.TaskID
 	if taskID == "" {
 		taskID = GenerateTaskID()
+	}
+
+	agentLabel := input.AgentName
+	if agentLabel == "" {
+		agentLabel = "default"
 	}
 
 	// Capture the parent process environment so the sub-agent
@@ -65,16 +237,20 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	sessionMgr.GetOrCreateSession(taskID, cwd)
 	sessionMgr.RecordCWD(taskID, cwd)
 
+	reporter := newDelegationReporter(taskID, agentLabel)
+	reporter.started(input.Goal)
+
 	// 3. Build a restricted sub-agent via llmagent.New() with
 	// blocked tools stripped from the toolset.
-	subAgentTools, subAgentToolsets := buildSubAgentTools(input.AgentName, parentEnv)
+	subAgentLogFunc := func(msg string) { reporter.log(msg) }
+	subAgentTools, subAgentToolsets := buildSubAgentTools(input.AgentName, parentEnv, subAgentLogFunc)
 	subAgentTools = filterBlockedTools(subAgentTools)
 
 	genCfg := buildGenerationConfig("")
 
 	subAgent, err := llmagent.New(llmagent.Config{
-		Name:                  fmt.Sprintf("delegate_%s", input.AgentName),
-		Description:           fmt.Sprintf("Delegated sub-agent for %s tasks", input.AgentName),
+		Name:                  fmt.Sprintf("delegate_%s", agentLabel),
+		Description:           fmt.Sprintf("Delegated sub-agent for %s tasks", agentLabel),
 		Instruction:           buildSubAgentInstruction(input.AgentName, input.Context),
 		Model:                 currentModel,
 		Tools:                 subAgentTools,
@@ -82,13 +258,15 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		GenerateContentConfig: genCfg,
 	})
 	if err != nil {
-		return DelegateTaskResult{
+		reporter.finish("failed", err, "")
+		result := DelegateTaskResult{
 			TaskID: taskID,
 			Status: "failed",
 			Error:  fmt.Sprintf("failed to create sub-agent: %v", err),
-		}, err
+		}
+		delegationCachePut(normGoal, result)
+		return result, err
 	}
-
 	// 4. Run the sub-agent in an isolated runner with fresh
 	// session.InMemoryService().
 	msg := genai.NewContentFromText(input.Goal, genai.RoleUser)
@@ -104,50 +282,142 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		AutoCreateSession: true,
 	})
 	if err != nil {
-		return DelegateTaskResult{
+		reporter.finish("failed", err, "")
+		result := DelegateTaskResult{
 			TaskID: taskID,
 			Status: "failed",
 			Error:  fmt.Sprintf("failed to create sub-agent runner: %v", err),
-		}, err
+		}
+		delegationCachePut(normGoal, result)
+		return result, err
 	}
 
-	for ev, runErr := range subRunner.Run(ctx, "delegator", taskID, msg, agent.RunConfig{}) {
-		if runErr != nil {
-			finalErr = runErr
-			break
-		}
-		if ev == nil {
-			continue
-		}
-		if ev.Content != nil {
-			for _, part := range ev.Content.Parts {
-				if part.Text != "" {
-					summary.WriteString(part.Text)
+	// Bound the sub-agent run so a stuck sub-agent fails loudly instead of
+	// hanging the orchestrator indefinitely. The watchdog cancels after
+	// delegateTimeout of inactivity; a hard ceiling of 3x delegateTimeout
+	// catches agents that emit events forever without finishing. When
+	// delegateTimeout <= 0 the watchdog is disabled (ctx stays as-is),
+	// preserving the prior no-timeout behavior.
+	var runCtx context.Context = ctx
+	var cancel context.CancelFunc
+	watchdogActive := delegateTimeout > 0
+	var lastActivityMu sync.Mutex
+	lastActivity := time.Now()
+	touchActivity := func() {
+		lastActivityMu.Lock()
+		lastActivity = time.Now()
+		lastActivityMu.Unlock()
+	}
+	done := make(chan struct{})
+	if watchdogActive {
+		runCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			ceiling := time.NewTimer(3 * delegateTimeout)
+			defer ceiling.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					lastActivityMu.Lock()
+					idle := time.Since(lastActivity)
+					lastActivityMu.Unlock()
+					if idle > delegateTimeout {
+						cancel()
+						return
+					}
+				case <-ceiling.C:
+					cancel()
+					return
 				}
-				if part.FunctionCall != nil {
-					if isFileOpTool(part.FunctionCall.Name) {
-						filesModified = append(filesModified, extractFilePath(part.FunctionCall.Args))
+			}
+		}()
+	}
+
+	// Run loop with tool-call JSON repair retry (P0-2). When the provider
+	// rejects a malformed tool-call argument payload, re-enter the runner
+	// with a corrective user message instead of aborting the delegation.
+	attempt := 0
+	for {
+		repaired := false
+		for ev, runErr := range subRunner.Run(runCtx, "delegator", taskID, msg, agent.RunConfig{}) {
+			if runErr != nil {
+				if isToolCallJSONErr(runErr) && attempt < maxToolCallRepairAttempts {
+					debugWarn("tool_call_repair", "agent", agentLabel, "attempt", attempt+1, "error", runErr)
+					msg = toolCallRepairMessage(runErr, attempt)
+					attempt++
+					repaired = true
+					break
+				}
+				finalErr = runErr
+				break
+			}
+			if ev == nil {
+				continue
+			}
+			touchActivity()
+			if ev.Content != nil {
+				for _, part := range ev.Content.Parts {
+					if part.Text != "" {
+						summary.WriteString(part.Text)
+						debugEvent("subagent_text", "task_id", taskID, "agent", agentLabel, "thought", part.Thought, "text", part.Text)
+						if part.Thought {
+							reporter.thought(part.Text)
+						} else {
+							reporter.text(part.Text)
+						}
+					}
+					if part.FunctionCall != nil {
+						if isFileOpTool(part.FunctionCall.Name) {
+							filesModified = append(filesModified, extractFilePath(part.FunctionCall.Args))
+						}
+						reporter.toolCall(part.FunctionCall.Name, part.FunctionCall.Args)
+						debugEvent("subagent_tool_call", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
+					}
+					if part.FunctionResponse != nil {
+						reporter.toolResult(part.FunctionResponse.Name)
+						debugEvent("subagent_tool_response", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
 					}
 				}
 			}
 		}
+		if !repaired {
+			break
+		}
 	}
+	close(done)
 
 	status := "completed"
-	if finalErr != nil {
+	if watchdogActive && runCtx.Err() != nil {
+		// Watchdog (inactivity or hard ceiling) canceled the run.
+		status = "timed_out"
+		finalErr = fmt.Errorf("sub-agent %s did not complete within %v", agentLabel, delegateTimeout)
+	} else if finalErr != nil {
 		status = "failed"
+	}
+	if status == "timed_out" {
+		debugWarn("delegation_timed_out", "task_id", taskID, "agent", agentLabel, "error", finalErr)
+	} else if status == "failed" {
+		debugError("delegation_failed", "task_id", taskID, "agent", agentLabel, "error", finalErr)
 	}
 
 	// 5. Clean up session entry
 	sessionMgr.CleanupInactive(0)
 
-	return DelegateTaskResult{
+	reporter.finish(status, finalErr, strings.TrimSpace(summary.String()))
+
+	result := DelegateTaskResult{
 		TaskID:        taskID,
 		Status:        status,
 		Summary:       strings.TrimSpace(summary.String()),
 		FilesModified: filesModified,
 		Error:         fmt.Sprintf("%v", finalErr),
-	}, nil
+	}
+	delegationCachePut(normGoal, result)
+	return result, nil
 }
 
 // filterBlockedTools removes blocked tools from a tool list.
@@ -189,19 +459,19 @@ func extractFilePath(args map[string]interface{}) string {
 // sub-agent type. parentEnv is the captured parent process environment passed
 // through so the sub-agent's tools can use it even if the ADK runner strips
 // env vars.
-func buildSubAgentTools(agentName string, parentEnv []string) ([]tool.Tool, []tool.Toolset) {
+func buildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]tool.Tool, []tool.Toolset) {
 	switch agentName {
 	case "code_interpreter":
-		pyTool, _ := createPythonTool(nil, parentEnv)
+		pyTool, _ := createPythonTool(log, parentEnv)
 		return []tool.Tool{pyTool}, nil
 	case "web_researcher":
 		dlTool, _ := createDownloadTool()
 		return []tool.Tool{dlTool}, []tool.Toolset{currentMCPToolset}
 	case "general_purpose":
-		fileTools, _ := createFileOpsTools(nil, nil, "")
+		fileTools, _ := createFileOpsTools(log, nil, "")
 		return fileTools, nil
 	default:
-		allTools, _ := createAllTools(nil, parentEnv)
+		allTools, _ := createAllTools(log, parentEnv)
 		return filterBlockedTools(allTools), []tool.Toolset{currentMCPToolset}
 	}
 }

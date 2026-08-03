@@ -10,5 +10,6 @@
   "knowledge_dir": "",
   "provider_options": {},
   "chat_buffer_size": 1000,
-  "task_checkpoint": false
+  "task_checkpoint": false,
+  "summary_model": ""
 }

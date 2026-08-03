@@ -19,6 +19,8 @@ The agent can:
 - 📊 **Analyze data**, generate charts, and produce visual artifacts
 - 🧠 **Learn & persist skills** — novel Python workflows are automatically saved to a local skill library for future reuse
 - 📚 **Manage a persistent knowledge base** — wiki-style markdown notes with YAML frontmatter and [[wikilinks]] for durable facts the agent learns, with tools to save, recall, search, update, link, cite, and lint
+- 🛡️ **Sandboxed execution** — subprocesses and file operations are confined to an approved workspace by default (path-confinement), with optional kernel-level bubblewrap isolation
+- 💻 **Run system commands** — execute shell commands, scripts, and executables directly on the host via a `system_exec` toolset
 - 📂 **Manage outputs** — generated HTML files, data artifacts, and more are saved to `./outputs/`
 
 ---
@@ -29,6 +31,14 @@ The agent can:
 hakase/
 ├── main.go                  # Entry point — loads config, boots the TUI and agent runner
 ├── agent.go                 # Core agent logic: ADK setup, sub-agents, tools (Python interpreter, downloader, skill manager)
+├── delegate.go              # Sub-agent delegation — execute_task, progress reporting, dedup cache, watchdog
+├── toolcall.go              # Malformed tool-call JSON repair and retry
+├── sandbox.go               # Workspace path confinement (root normalization, secure join, containment checks)
+├── sandboxexec.go           # bubblewrap (bwrap) subprocess isolation for sandboxed exec
+├── systemexec.go            # system_exec toolset — shell routing, process hardening, env scrubbing
+├── fileops.go               # File operation tools (read/write/patch/search) with sandbox-aware resolution
+├── debug_log.go             # Structured JSON debug logging (info/warn/error levels)
+├── skill_discovery.go       # Markdown & Python skill discovery/loading
 ├── ui.go                    # Bubble Tea TUI — split-pane layout with chat, log, and input views
 ├── config.go                # Config loader (reads config.json)
 ├── config.json              # Runtime configuration (API key, model, MCP server URL)
@@ -93,6 +103,8 @@ Powered by [Google ADK](https://github.com/google/adk):
 - Runs Python code in an isolated `.venv` virtual environment
 - **Auto-resolves missing dependencies** — detects `ModuleNotFoundError`, installs the package via pip, and retries
 - Sets `PYTHONPATH` to include `./skills` so persisted skills are importable
+- **Sandbox-aware** — when the sandbox is active, the script temp dir and working directory are pinned to the workspace root (`.hakase-tmp/`) so script writes stay inside the approved workspace
+- **Process hardening** — the interpreter runs in its own process group with a parent-death signal, so children (and grandchildren) are reaped if the agent crashes
 
 ### 🧠 Self-Evolving Skill Library
 
@@ -147,6 +159,8 @@ hakase knowledge lint
 - Downloads files from any HTTP/HTTPS URL
 - Saves to `./downloads/` with automatic filename resolution
 - Supports PDFs, images, datasets, and binary blobs
+- **Filename sanitized** — a supplied filename is stripped to its base component (`filepath.Base`) so `../` traversal attempts are neutralized
+- **Sandbox-aware** — when the sandbox is active, the download target is resolved through workspace confinement and rejected if it would land outside the approved workspace
 
 ### 📁 File Operations
 
@@ -156,6 +170,34 @@ The `general_purpose` agent provides workspace file tools:
 - **`write_file`** — create new files (or overwrite existing ones with `overwrite=true`)
 - **`patch`** — targeted string replacement inside an existing file
 - **`search_files`** — recursive regex search over file contents with `content` / `files_with_matches` / `count` output modes
+
+Search is hardened against pathological trees: `head_limit` defaults to `100` when unset, the walk visits at most `50,000` entries, and a per-call `30s` deadline gracefully returns partial matches (marked `truncated`) instead of hanging. When the sandbox is active, all four tools resolve paths through workspace confinement (reads confined to read roots, writes to workspace roots).
+
+### 💻 System Command Execution
+
+A `system_exec` toolset runs shell commands, scripts, and executables directly on the host machine, with several safety guarantees:
+
+- **Shell routing** — when no `args` are provided the whole command line is passed to `sh -c`, so pipes, redirects, globs, `&&`/`||`, and compound commands work naturally; explicit `(command, args...)` calls keep full control
+- **Process hardening** — spawned processes are placed in their own process group with a parent-death signal, so they and their children are reaped if the agent dies
+- **Sandbox integration** — under a `bubblewrap` sandbox the command is wrapped in `bwrap` with filesystem + network isolation; sensitive env vars (`HAKASE_*`, `AWS_*`, `GITHUB_*`, `OPENAI_*`) are scrubbed so they never leak into sandboxed subprocesses; the working directory is pinned to the workspace root
+
+### 🛡️ Sandboxing & Workspace Confinement
+
+hakase confines subprocesses and file operations to approved workspaces out of the box. The `sandbox` block in `config.json` selects a strategy:
+
+| Mode | Description |
+| ---- | ----------- |
+| `paths` (default) | Pure path confinement — all file ops (`read_file`/`write_file`/`patch`/`search_files`), downloads, and the Python interpreter resolve paths against approved read/work/deny roots. Symlink escapes are prevented via `securejoin` + `EvalSymlinks` re-verification. |
+| `bubblewrap` | Adds kernel-level subprocess isolation — `system_exec` and Python runs are wrapped in [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) with separate PID/IPC/UTS/user namespaces, dropped capabilities, minimal filesystems, read-only system dirs, and optional network unshare. |
+| `landlock` | Reserved for future in-process Landlock + seccomp confinement (Phase 3). |
+| `off` | Explicitly disables confinement (opt-in only). |
+
+Key properties:
+
+- **On by default** — an absent or unset `sandbox` block yields `paths` mode, so the agent cannot write outside approved workspaces without explicit configuration
+- **Roots** — `workspace_roots` (writable, default `["."]`), `read_roots` (readable, default = workspace roots), and `deny_roots` (always rejected, highest precedence); all are symlink-evaluated and de-duplicated
+- **Downloads** — the filename is basename-sanitized and the output path is confined to the workspace
+- **Current sandbox** — if `bwrap` is not installed, bubblewrap mode falls back to the safe path-confinement exec path and logs a warning
 
 ### 🔌 MCP Integration
 
@@ -210,7 +252,10 @@ Edit `config.json`:
   "api_key": "your-gemini-api-key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
-  "knowledge_dir": ""
+  "knowledge_dir": "",
+  "sandbox": {
+    "mode": "paths"
+  }
 }
 ```
 
@@ -272,6 +317,8 @@ When `model_name` is empty, the provider's default model is used.
 - `fallback_providers` — Optional ordered list of provider names to try if the primary provider fails (e.g. `["openai"]`). Empty by default.
 - `provider_options` — Optional map of provider-specific settings. Reserved for future use.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`).
+- `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
+- `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
 
 #### Environment variables
 
@@ -283,6 +330,7 @@ Environment variable support is planned and has not landed yet. When implemented
 | `HAKASE_PROVIDER` | `provider`   |
 | `HAKASE_MODEL`    | `model_name` |
 | `HAKASE_BASE_URL` | `base_url`   |
+| `HAKASE_SUMMARY_MODEL` | `summary_model` |
 
 #### Migration note
 
@@ -377,6 +425,7 @@ Python skills (`skills.json` + `.py` files) are unchanged. On a name collision, 
 | `google.golang.org/genai`                | Gemini AI client                          |
 | `github.com/openai/openai-go/v3`         | OpenAI API client                         |
 | `github.com/modelcontextprotocol/go-sdk` | MCP client for browser automation         |
+| `github.com/cyphar/filepath-securejoin` | Symlink-safe secure path joining for sandbox confinement |
 
 ---
 

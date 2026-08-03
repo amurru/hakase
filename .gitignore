@@ -62,7 +62,11 @@ config.json
 # runtime state (written by the app)
 tasks.json
 .checkpoints/
+sessions/
 
 # agentic
 .omc
 .omo
+
+# dev-mode structured debug logs
+logs/

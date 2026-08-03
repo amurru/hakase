@@ -9,9 +9,16 @@ import (
 // context window (input token limit), whether thinking is supported, and the
 // thinking level in use. ThinkingLevel is the raw provider string so values
 // like "maximum" or "xhigh" are shown exactly as reported.
+//
+// ContextWindow is the total context budget; MaxInputTokens is the model's
+// max input-token allowance (may differ from ContextWindow on some providers,
+// and is 0 when the provider does not report a separate input limit). The
+// effective budget used by context management is min(MaxInputTokens,
+// 0.9*ContextWindow), falling back to ContextWindow when MaxInputTokens is 0.
 type ModelInfo struct {
 	Name            string
 	ContextWindow   int64
+	MaxInputTokens  int64
 	ThinkingEnabled bool
 	ThinkingLevel   string
 	Source          string
