@@ -322,7 +322,7 @@ When `model_name` is empty, the provider's default model is used.
 
 #### Environment variables
 
-Environment variable support is planned and has not landed yet. When implemented, the following variables will override the matching `config.json` fields, with environment variables taking precedence over the file:
+Environment variables override the matching `config.json` fields, with environment variables taking precedence over the file. If `config.json` is missing but at least one of these is set, the config is built entirely from the environment:
 
 | Variable          | Overrides    |
 | ----------------- | ------------ |
@@ -331,6 +331,9 @@ Environment variable support is planned and has not landed yet. When implemented
 | `HAKASE_MODEL`    | `model_name` |
 | `HAKASE_BASE_URL` | `base_url`   |
 | `HAKASE_SUMMARY_MODEL` | `summary_model` |
+| `HAKASE_DEBUG`    | `debug`      |
+
+Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.
 
 #### Migration note
 
