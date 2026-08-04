@@ -1244,11 +1244,17 @@ func runAgentTask(
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 	debugEvent("user_prompt", "task_id", taskID, "text", prompt)
 
+	// Wrap the passed context so the degeneration watchdogs can abort the run.
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	guard := guardDefaults(currentGuard)
+
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
-		for ev, err := range r.Run(ctx, "user-1", taskID, msg, agent.RunConfig{}) {
+		for ev, err := range r.Run(runCtx, "user-1", taskID, msg, agent.RunConfig{}) {
 			if err != nil {
 				if isToolCallJSONErr(err) && attempt < maxToolCallRepairAttempts {
 					parseErr = err
@@ -1268,6 +1274,21 @@ outer:
 			}
 			if ev.Content != nil {
 				for _, part := range ev.Content.Parts {
+					if part.Text != "" {
+						// Degeneration watchdog: run on every non-thought text
+						// chunk independent of the TUI plumbing, so a headless
+						// run is guarded too.
+						if !part.Thought {
+							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
+								runCancel()
+								debugError("guard_abort", "reason", reason)
+								if p != nil {
+									p.Send(agentLogMsg(fmt.Sprintf("⚠ %s", guardReasonLog(reason))))
+								}
+								break outer
+							}
+						}
+					}
 					if part.Text != "" && p != nil {
 						if part.Thought {
 							trimmed := strings.TrimSpace(part.Text)

@@ -340,10 +340,15 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	// Run loop with tool-call JSON repair retry (P0-2). When the provider
 	// rejects a malformed tool-call argument payload, re-enter the runner
 	// with a corrective user message instead of aborting the delegation.
+	// The degeneration guard (repetition / text-only bloat) cancels the run
+	// when the sub-agent starts looping, independent of the watchdog.
+	guard := guardDefaults(currentGuard)
+	guardCtx, guardCancel := context.WithCancel(runCtx)
+	defer guardCancel()
 	attempt := 0
 	for {
 		repaired := false
-		for ev, runErr := range subRunner.Run(runCtx, "delegator", taskID, msg, agent.RunConfig{}) {
+		for ev, runErr := range subRunner.Run(guardCtx, "delegator", taskID, msg, agent.RunConfig{}) {
 			if runErr != nil {
 				if isToolCallJSONErr(runErr) && attempt < maxToolCallRepairAttempts {
 					debugWarn("tool_call_repair", "agent", agentLabel, "attempt", attempt+1, "error", runErr)
@@ -364,6 +369,14 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 					if part.Text != "" {
 						summary.WriteString(part.Text)
 						debugEvent("subagent_text", "task_id", taskID, "agent", agentLabel, "thought", part.Thought, "text", part.Text)
+						if !part.Thought {
+							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
+								guardCancel()
+								debugWarn("subagent_guard_abort", "task_id", taskID, "agent", agentLabel, "reason", reason, "error", guardReasonLog(reason))
+								finalErr = fmt.Errorf("sub-agent %s aborted: %s", agentLabel, reason)
+								break
+							}
+						}
 						if part.Thought {
 							reporter.thought(part.Text)
 						} else {

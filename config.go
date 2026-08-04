@@ -3,13 +3,32 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 )
+
+// LoopGuardConfig tunes the anti-degeneration guardrails that abort a run
+// that starts producing looped or text-only output. Zero values fall back to
+// the defaults in loopguard.go (defaultLoopGuard). These bounds prevent a
+// degenerate provider from burning the whole context/output window.
+type LoopGuardConfig struct {
+	// MaxOutputTokens caps the provider maxOutputTokens for every agent
+	// (root + delegated). 0 uses defaultMaxOutputTokens. Prevents a run from
+	// generating for minutes into a full output window.
+	MaxOutputTokens int32 `json:"max_output_tokens,omitempty"`
+	// RepetitionLimit aborts a run after this many consecutive identical
+	// non-thought text chunks. 0 uses defaultRepetitionLimit.
+	RepetitionLimit int `json:"repetition_limit,omitempty"`
+	// MaxTextWithoutTool aborts a run that streams this many runes of
+	// non-thought text with zero tool calls (a text-only bloat / refusal
+	// loop). 0 uses defaultMaxTextWithoutTool.
+	MaxTextWithoutTool int `json:"max_text_without_tool,omitempty"`
+}
 
 type EnvOverrideConfig struct {
 	DockerImage   string `json:"docker_image,omitempty"`
 	ModalImage    string `json:"modal_image,omitempty"`
-	EnvType       string `json:"env_type,omitempty"`       // "local", "docker", "ssh"
+	EnvType       string `json:"env_type,omitempty"` // "local", "docker", "ssh"
 	CPULimit      int    `json:"cpu_limit,omitempty"`
 	MemoryLimitMB int    `json:"memory_limit_mb,omitempty"`
 }
@@ -49,6 +68,9 @@ type Config struct {
 	// sandboxing. nil/absent = sandbox disabled (backward compatible). See
 	// sandbox.go for the full shape and defaults.
 	Sandbox *SandboxJSON `json:"sandbox,omitempty"`
+	// LoopGuard enables anti-degeneration guardrails (max output cap, repetition
+	// and no-tool-call watchdogs). Absent/zero values use loopguard.go defaults.
+	LoopGuard LoopGuardConfig `json:"loop_guard,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.
@@ -97,6 +119,11 @@ func loadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
 		cfg.Debug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	}
+	if v := os.Getenv("HAKASE_MAX_OUTPUT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.LoopGuard.MaxOutputTokens = int32(n)
+		}
 	}
 
 	return &cfg, nil

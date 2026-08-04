@@ -413,6 +413,11 @@ var currentModel model.LLM
 // Set during setupRunner so delegate_task can pass it to sub-agents.
 var currentMCPToolset tool.Toolset
 
+// currentGuard holds the effective anti-degeneration limit settings derived
+// from config at startup. buildGenerationConfig consults it to cap
+// maxOutputTokens; the run loops construct degenerationGuards from it.
+var currentGuard LoopGuardConfig
+
 // currentHistoryBuilder holds the HistoryBuilder wired into the root
 // orchestrator. It is created in setupRunner with the SessionService and
 // receives ModelInfo updates from the async fetch in main.
@@ -742,9 +747,10 @@ func getSkillsPrompt(mdSkills []MarkdownSkill, log LogFunc) string {
 	for _, s := range mdSkills {
 		sb.WriteString(
 			fmt.Sprintf(
-				"- Skill: '%s' (markdown)\n  Description: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
+				"- Skill: '%s' (markdown)\n  Description: %s\n  Location: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
 				s.Frontmatter.Name,
 				s.Frontmatter.Description,
+				s.Source,
 				s.Frontmatter.Name,
 			),
 		)
@@ -1308,6 +1314,9 @@ You have a persistent knowledge base (markdown notes with YAML frontmatter in th
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
 
+### CREATING NEW MARKDOWN SKILLS:
+When the user asks you to create a new markdown skill, prefer writing it to the project root's '.agents/skills/' directory (e.g. <projectRoot>/.agents/skills/<skill-name>/SKILL.md), which is the portable, agent-agnostic location that discovery always scans. Use 'system_exec' to create the files if 'write_file' is blocked by workspace restrictions. If writing to '.agents/skills/' fails for any reason (permissions, sandbox, existing directory, etc.), you may write to another valid discovery location instead, in priority order: the project's '.claude/skills/', '.opencode/skills/', or '.gemini/skills/', then the user-level '~/.agents/skills/', '~/.claude/skills/', '~/.gemini/skills/', or '~/.config/opencode/skills/' (honoring XDG_CONFIG_HOME). Do NOT create skills outside these discovery paths - a skill placed elsewhere will never be loaded. The skill directory name must match the 'name' in its SKILL.md frontmatter.
+
 ` + installedSkills + "\n\n" + buildTimeReminder()
 }
 
@@ -1316,8 +1325,11 @@ Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches 
 // "high", "maximum", "xhigh", ...) is passed through verbatim to the
 // provider. An empty level returns nil so the provider default applies.
 func buildGenerationConfig(level string) *genai.GenerateContentConfig {
+	gc := &genai.GenerateContentConfig{
+		MaxOutputTokens: loopGuardConfig(currentGuard).MaxOutputTokens,
+	}
 	if level == "" {
-		return nil
+		return gc
 	}
 	tc := &genai.ThinkingConfig{IncludeThoughts: true}
 	switch strings.ToLower(strings.TrimSpace(level)) {
@@ -1328,13 +1340,15 @@ func buildGenerationConfig(level string) *genai.GenerateContentConfig {
 	default:
 		tc.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(strings.TrimSpace(level)))
 	}
-	return &genai.GenerateContentConfig{ThinkingConfig: tc}
+	gc.ThinkingConfig = tc
+	return gc
 }
 
 func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *SessionService) (*runner.Runner, error) {
 	// Load sandbox config before any tool creation so createPythonTool,
 	// createDownloadTool, and buildExecCommand can consult it.
 	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
+	currentGuard = loopGuardConfig(cfg.LoopGuard)
 
 	provider, err := ProviderFactory(cfg)
 	if err != nil {

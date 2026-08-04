@@ -11,5 +11,18 @@
   "provider_options": {},
   "chat_buffer_size": 1000,
   "task_checkpoint": false,
-  "summary_model": ""
+  "summary_model": "",
+  "sandbox": {
+    "mode": "paths",
+    "workspace_roots": ["."],
+    "read_roots": [],
+    "deny_roots": [],
+    "allow_network": false,
+    "allow_pip_install": true
+  },
+  "loop_guard": {
+    "max_output_tokens": 8192,
+    "repetition_limit": 8,
+    "max_text_without_tool": 20000
+  }
 }

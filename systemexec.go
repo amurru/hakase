@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -25,6 +26,14 @@ import (
 // to nil to remain hermetic. Defined here because sandbox.go is intentionally
 // left untouched (see .omo/plans/hakase-debug-log-fixes.md, Sandbox Phase 1).
 var currentSandbox *SandboxConfig
+
+// defaultSystemExecTimeout is applied to a synchronous system_exec run when
+// the caller omits timeout_seconds. It exists so no command can block the
+// agent indefinitely - the failure mode where a whole-filesystem scan (e.g.
+// "find / -type d -name skills") hangs the session with no UI or log updates.
+// Long-running work should use system_exec_start (background) instead, or
+// pass an explicit timeout_seconds to override this default.
+const defaultSystemExecTimeout = 120 * time.Second
 
 // runningProcess tracks the live state of a single spawned system process.
 // The output buffer and state fields are guarded by mu so they can be read
@@ -210,6 +219,13 @@ func buildExecCommand(command string, args []string, workingDir string, env map[
 		return nil, fmt.Errorf("command must not be empty")
 	}
 
+	// Sandbox confinement: reject commands that reference paths outside the
+	// sandbox's trusted folders (read roots + system dirs). Applies to both
+	// the sync and background tools since both go through here.
+	if err := auditSystemCommandPaths(currentSandbox, command, args); err != nil {
+		return nil, err
+	}
+
 	// P0-1: route through sh -c when no args are provided so the model's
 	// natural whole-command-line input (pipes, redirects, globs) works.
 	// When args are provided, use the explicit executable+args form.
@@ -313,13 +329,134 @@ func scrubEnv(env []string) []string {
 	return scrubbed
 }
 
+// trustedExecDirs are host paths a system_exec command may reference without
+// requiring an explicit read root. They mirror the read-only system bindings
+// bubblewrap provides (sandboxexec.go: systemROBindDirs) plus the minimal
+// virtual/scratch filesystems bwrap mounts (/proc, /dev, /tmp, /run) and
+// /sys, which common diagnostic commands read. Everything else must live
+// under a sandbox read root.
+var trustedExecDirs = []string{
+	"/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/nix",
+	"/proc", "/dev", "/sys", "/tmp", "/run",
+}
+
+// auditSystemCommandPaths is the confinement guard for system_exec. When the
+// sandbox is active (mode != off), every absolute path token in the command
+// line must resolve under a sandbox read root or a trusted system directory;
+// deny roots are always rejected. This closes the gap where system_exec -
+// unlike the file-ops tools - could reach arbitrary host paths (e.g. "find /
+// -type d -name skills" scanning the entire filesystem).
+//
+// It is best-effort: the shell command line is tokenized, not parsed, so
+// variable/command-substituted paths (e.g. "$HOME/secret") are not caught.
+// Phase 2 (bubblewrap) provides the kernel-enforced guarantee; this guard is
+// defense-in-depth and gives an immediate, actionable error in the common
+// case.
+func auditSystemCommandPaths(sb *SandboxConfig, command string, args []string) error {
+	if sb == nil || sb.Mode == SandboxModeOff {
+		return nil
+	}
+	var tokens []string
+	if len(args) == 0 {
+		tokens = splitCommandTokens(command)
+	} else {
+		tokens = append(tokens, command)
+		tokens = append(tokens, args...)
+	}
+	for _, tok := range tokens {
+		if err := auditPathToken(sb, tok); err != nil {
+			debugWarn("system_exec_path_rejected", "command", command, "args", args, "error", err.Error())
+			return err
+		}
+	}
+	return nil
+}
+
+// auditPathToken checks a single command-line token. Non-path tokens and
+// relative paths pass (relative paths resolve against the confined working
+// directory). Absolute paths must be under a read root or a trusted system
+// dir, and never under a deny root.
+func auditPathToken(sb *SandboxConfig, tok string) error {
+	p := strings.TrimSpace(tok)
+	if p == "" {
+		return nil
+	}
+	expanded := expandHome(p)
+	if !filepath.IsAbs(expanded) {
+		return nil
+	}
+	for _, d := range sb.DenyRoots {
+		if within(d, expanded) {
+			return fmt.Errorf("command references %q which is in a denied sandbox root", tok)
+		}
+	}
+	if pathInAny(expanded, sb.ReadRoots) || pathInAny(expanded, trustedExecDirs) {
+		return nil
+	}
+	return fmt.Errorf("command references path %q outside the sandbox (not under a read root %v nor a trusted system dir); add it to sandbox.read_roots in config.json or narrow the command", tok, sb.ReadRoots)
+}
+
+// pathInAny reports whether path is contained under any of roots.
+func pathInAny(path string, roots []string) bool {
+	for _, r := range roots {
+		if within(r, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitCommandTokens splits a shell command line into whitespace-delimited
+// tokens, honoring single and double quotes so quoted paths (e.g.
+// '~/My Documents') stay intact. It is deliberately simple - enough for the
+// path audit, not a full shell parser.
+func splitCommandTokens(s string) []string {
+	var toks []string
+	var cur strings.Builder
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n':
+			if cur.Len() > 0 {
+				toks = append(toks, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		toks = append(toks, cur.String())
+	}
+	return toks
+}
+
+// effectiveExecTimeout returns the timeout to apply to a synchronous
+// system_exec run. A caller-supplied timeout_seconds wins; an absent or
+// non-positive value falls back to defaultSystemExecTimeout so no command
+// blocks the agent forever.
+func effectiveExecTimeout(seconds float64) time.Duration {
+	if seconds > 0 {
+		return time.Duration(seconds * float64(time.Second))
+	}
+	return defaultSystemExecTimeout
+}
+
 // SystemExecInput is the input schema for the synchronous system_exec tool.
 type SystemExecInput struct {
 	Command        string            `json:"command"            doc:"Full command line (e.g. 'find /home -name \"*.pdf\" 2>/dev/null') when args is empty; executable name only when args is provided"`
 	Args           []string          `json:"args,omitempty"     doc:"Optional list of arguments passed to the command"`
 	WorkingDir     string            `json:"working_dir,omitempty" doc:"Optional working directory for the command; defaults to the agent process working directory"`
 	Env            map[string]string `json:"env,omitempty"      doc:"Optional environment variables merged over the agent process environment; these override inherited values"`
-	TimeoutSeconds float64           `json:"timeout_seconds,omitempty" doc:"Optional timeout in seconds; the command is killed if it exceeds this duration"`
+	TimeoutSeconds float64           `json:"timeout_seconds,omitempty" doc:"Optional timeout in seconds; the command is killed if it exceeds this duration. Defaults to 120s when omitted (set 0 or negative to keep the default)."`
 	MergeOutput    *bool             `json:"merge_output,omitempty" doc:"Combine stdout and stderr into a single output string (defaults to true when omitted)"`
 }
 
@@ -417,7 +554,7 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 	// system_exec: synchronous fire-and-wait execution.
 	execTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec",
-		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out. Not routed through the Python interpreter.",
+		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter.",
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
 		procID := m.allocateID()
@@ -457,9 +594,9 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 		}
 
 		var timeoutTimer *time.Timer
-		if input.TimeoutSeconds > 0 {
+		if timeout := effectiveExecTimeout(input.TimeoutSeconds); timeout > 0 {
 			timeoutTimer = time.AfterFunc(
-				time.Duration(input.TimeoutSeconds*float64(time.Second)),
+				timeout,
 				func() {
 					rp.markTimedOut()
 					// Group-kill so grandchildren die too (Setpgid).

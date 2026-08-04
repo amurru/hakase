@@ -88,6 +88,7 @@ func TestGetSkillsPromptMixed(t *testing.T) {
 	for _, want := range []string{
 		"- Skill: 'data-cleaner' (markdown)",
 		"  Description: Cleans raw datasets",
+		"  Location: " + filepath.Join(sandbox, ".agents", "skills"),
 		"  Load: call 'load_markdown_skill' with name 'data-cleaner' to read full instructions",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -269,6 +270,11 @@ func TestBuildOrchestratorInstruction(t *testing.T) {
 		"web_researcher",
 		"code_interpreter",
 		"system_exec",
+		"### CREATING NEW MARKDOWN SKILLS:",
+		"prefer writing it to the project root's '.agents/skills/' directory",
+		"may write to another valid discovery location",
+		"a skill placed elsewhere will never be loaded",
+		"skill directory name must match the 'name' in its SKILL.md frontmatter",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Errorf("orchestrator instruction missing %q\ninstruction:\n%s", want, instruction)

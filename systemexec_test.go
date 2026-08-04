@@ -7,8 +7,10 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -21,6 +23,27 @@ func withNilSandbox(t *testing.T) {
 	t.Helper()
 	saved := currentSandbox
 	currentSandbox = nil
+	t.Cleanup(func() { currentSandbox = saved })
+}
+
+// withPathsSandbox installs a paths-mode sandbox rooted at dir (with the
+// given read roots, defaulting to the root itself) and restores the prior
+// value on cleanup.
+func withPathsSandbox(t *testing.T, dir string, readRoots []string) {
+	t.Helper()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("abs %q: %v", dir, err)
+	}
+	if len(readRoots) == 0 {
+		readRoots = []string{abs}
+	}
+	saved := currentSandbox
+	currentSandbox = &SandboxConfig{
+		Mode:           SandboxModePaths,
+		WorkspaceRoots: []string{abs},
+		ReadRoots:      readRoots,
+	}
 	t.Cleanup(func() { currentSandbox = saved })
 }
 
@@ -242,5 +265,126 @@ func TestSystemExecSyncNonexistent(t *testing.T) {
 	// ls writes to stderr on a missing path.
 	if out.Stderr == "" && out.Output == "" {
 		t.Errorf("expected stderr or output for failed ls, got empty")
+	}
+}
+
+// TestAuditSystemCommandPaths verifies the sandbox path audit that confines
+// system_exec to trusted folders: absolute path tokens must resolve under a
+// read root or a trusted system dir, and deny roots always win.
+func TestAuditSystemCommandPaths(t *testing.T) {
+	dir := t.TempDir()
+	withPathsSandbox(t, dir, nil)
+
+	cases := []struct {
+		name    string
+		cmd     string
+		args    []string
+		wantErr bool
+	}{
+		// The exact failure that hung a live session: a whole-filesystem scan.
+		{"whole-fs find", "find / -type d -name skills", nil, true},
+		{"relative find is fine", "find . -name '*.go'", nil, false},
+		{"system dir operand", "ls /usr/bin", nil, false},
+		{"system file operand", "cat /etc/os-release", nil, false},
+		{"absolute command binary", "/bin/true", nil, false},
+		{"tmp scratch", "cd /tmp && make", nil, false},
+		{"dev/null redirect operand", "sh -c 'echo hi > /dev/null'", nil, false},
+		{"home path outside roots", "cat ~/.config/app/config.toml", nil, true},
+		{"explicit args form allowed", "cat", []string{"/etc/passwd"}, false},
+		{"explicit args form rejected", "cat", []string{"/"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := auditSystemCommandPaths(currentSandbox, tc.cmd, tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("auditSystemCommandPaths(%q, %v) err = %v, wantErr %v", tc.cmd, tc.args, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestAuditSystemCommandPathsDenyRoot verifies deny roots take precedence
+// over both read roots and trusted system dirs.
+func TestAuditSystemCommandPathsDenyRoot(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	withPathsSandbox(t, dir, []string{dir, "/usr"})
+
+	// Add a deny root under the (otherwise allowed) workspace.
+	currentSandbox.DenyRoots = []string{secret}
+	t.Cleanup(func() { currentSandbox.DenyRoots = nil })
+
+	if err := auditSystemCommandPaths(currentSandbox, "cat "+secret, nil); err == nil {
+		t.Errorf("expected deny root rejection for %q, got nil", secret)
+	}
+	// A sibling path under the read root stays allowed.
+	if err := auditSystemCommandPaths(currentSandbox, "cat "+filepath.Join(dir, "other.txt"), nil); err != nil {
+		t.Errorf("expected sibling path to be allowed, got %v", err)
+	}
+}
+
+// TestAuditSystemCommandPathsDisabled verifies the audit is a no-op when the
+// sandbox is nil or explicitly off.
+func TestAuditSystemCommandPathsDisabled(t *testing.T) {
+	if err := auditSystemCommandPaths(nil, "find / -type d", nil); err != nil {
+		t.Errorf("nil sandbox: expected no error, got %v", err)
+	}
+	if err := auditSystemCommandPaths(&SandboxConfig{Mode: SandboxModeOff}, "find / -type d", nil); err != nil {
+		t.Errorf("sandbox off: expected no error, got %v", err)
+	}
+}
+
+// TestSplitCommandTokens verifies the tokenizer keeps quoted paths intact.
+func TestSplitCommandTokens(t *testing.T) {
+	got := splitCommandTokens(`find / -type d -name "my dir" -o -name 'x'`)
+	want := []string{"find", "/", "-type", "d", "-name", "my dir", "-o", "-name", "x"}
+	if len(got) != len(want) {
+		t.Fatalf("splitCommandTokens: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("token[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestEffectiveExecTimeout verifies the default timeout kicks in when the
+// caller omits or passes a non-positive timeout.
+func TestEffectiveExecTimeout(t *testing.T) {
+	if got := effectiveExecTimeout(0); got != defaultSystemExecTimeout {
+		t.Errorf("omitted: got %v, want %v", got, defaultSystemExecTimeout)
+	}
+	if got := effectiveExecTimeout(-5); got != defaultSystemExecTimeout {
+		t.Errorf("negative: got %v, want %v", got, defaultSystemExecTimeout)
+	}
+	if got := effectiveExecTimeout(30); got != 30*time.Second {
+		t.Errorf("explicit: got %v, want %v", got, 30*time.Second)
+	}
+}
+
+// TestBuildExecCommandSandboxAudit verifies buildExecCommand enforces the
+// path audit: whole-filesystem scans are rejected with an actionable error,
+// while relative commands still build.
+func TestBuildExecCommandSandboxAudit(t *testing.T) {
+	dir := t.TempDir()
+	withPathsSandbox(t, dir, nil)
+
+	_, err := buildExecCommand("find / -type d -name skills", nil, "", nil)
+	if err == nil {
+		t.Fatal("expected sandbox rejection for 'find /', got nil")
+	}
+	if !strings.Contains(err.Error(), "outside the sandbox") {
+		t.Errorf("expected actionable error mentioning the sandbox, got %v", err)
+	}
+
+	if _, err := buildExecCommand("find . -name '*.go'", nil, "", nil); err != nil {
+		t.Errorf("expected relative 'find .' to be allowed, got %v", err)
+	}
+
+	// Off/nil sandbox: no audit.
+	currentSandbox = &SandboxConfig{Mode: SandboxModeOff}
+	t.Cleanup(func() { currentSandbox = nil })
+	if _, err := buildExecCommand("find / -type d -name skills", nil, "", nil); err != nil {
+		t.Errorf("sandbox off: expected 'find /' to build, got %v", err)
 	}
 }

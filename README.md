@@ -179,6 +179,8 @@ A `system_exec` toolset runs shell commands, scripts, and executables directly o
 
 - **Shell routing** — when no `args` are provided the whole command line is passed to `sh -c`, so pipes, redirects, globs, `&&`/`||`, and compound commands work naturally; explicit `(command, args...)` calls keep full control
 - **Process hardening** — spawned processes are placed in their own process group with a parent-death signal, so they and their children are reaped if the agent dies
+- **Path confinement (all sandbox modes)** — when the sandbox is active, absolute path arguments in the command line are audited against the sandbox read roots and trusted system dirs (`/usr`, `/lib`, `/bin`, `/etc`, `/proc`, `/dev`, `/sys`, `/tmp`, `/run`); anything else is rejected with an actionable error. This stops whole-filesystem scans like `find / -type d -name skills` from escaping the workspace. Add directories to `sandbox.read_roots` in `config.json` to permit them.
+- **Default timeout** — synchronous `system_exec` kills the command after 120s when `timeout_seconds` is omitted, so a hung command can never block the agent indefinitely. Long-running work should use `system_exec_start` (background) or an explicit `timeout_seconds`.
 - **Sandbox integration** — under a `bubblewrap` sandbox the command is wrapped in `bwrap` with filesystem + network isolation; sensitive env vars (`HAKASE_*`, `AWS_*`, `GITHUB_*`, `OPENAI_*`) are scrubbed so they never leak into sandboxed subprocesses; the working directory is pinned to the workspace root
 
 ### 🛡️ Sandboxing & Workspace Confinement
@@ -187,7 +189,7 @@ hakase confines subprocesses and file operations to approved workspaces out of t
 
 | Mode | Description |
 | ---- | ----------- |
-| `paths` (default) | Pure path confinement — all file ops (`read_file`/`write_file`/`patch`/`search_files`), downloads, and the Python interpreter resolve paths against approved read/work/deny roots. Symlink escapes are prevented via `securejoin` + `EvalSymlinks` re-verification. |
+| `paths` (default) | Pure path confinement — all file ops (`read_file`/`write_file`/`patch`/`search_files`), downloads, and the Python interpreter resolve paths against approved read/work/deny roots. `system_exec` commands are audited so absolute path arguments must stay under the read roots or trusted system dirs. Symlink escapes are prevented via `securejoin` + `EvalSymlinks` re-verification. |
 | `bubblewrap` | Adds kernel-level subprocess isolation — `system_exec` and Python runs are wrapped in [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) with separate PID/IPC/UTS/user namespaces, dropped capabilities, minimal filesystems, read-only system dirs, and optional network unshare. |
 | `landlock` | Reserved for future in-process Landlock + seccomp confinement (Phase 3). |
 | `off` | Explicitly disables confinement (opt-in only). |
@@ -318,7 +320,8 @@ When `model_name` is empty, the provider's default model is used.
 - `provider_options` — Optional map of provider-specific settings. Reserved for future use.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`).
 - `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
-- `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
+ - `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
+ - `loop_guard` — Optional anti-degeneration guardrails that abort a run stuck in a repetition loop or text-only bloat instead of burning the whole context/output window. Zero values use the defaults. Fields: `max_output_tokens` (cap on provider `maxOutputTokens`, default `8192`), `repetition_limit` (abort after this many consecutive identical non-thought chunks, default `8`), `max_text_without_tool` (abort after this many runes of text with zero tool calls, default `20000`). Set `HAKASE_MAX_OUTPUT_TOKENS` to override the cap via environment.
 
 #### Environment variables
 
@@ -332,6 +335,7 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_BASE_URL` | `base_url`   |
 | `HAKASE_SUMMARY_MODEL` | `summary_model` |
 | `HAKASE_DEBUG`    | `debug`      |
+| `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
 
 Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.
 
@@ -400,7 +404,9 @@ Skills are discovered from these locations, in priority order (project first, de
 - **Custom dirs**: `skill_dirs` from `config.json` (resolved against the project root when relative)
 - **User level**: `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, `~/.config/opencode/skills/` (honoring `XDG_CONFIG_HOME`)
 
-Skills are indexed by name and description in the agent prompt. The full body is loaded on demand via the `load_markdown_skill` tool. Invalid skills are skipped with a warning.
+Skills are indexed by name and description in the agent prompt. The full body is loaded on demand via the `load_markdown_skill` tool. Invalid skills are skipped with a warning. Each markdown skill listing in the prompt includes its discovery source directory (e.g. `Location: <root>/.agents/skills`), so the agent knows where existing skills actually live.
+
+When the agent creates a new markdown skill, the prompt instructs it to prefer the project root's `.agents/skills/` (the portable, always-scanned location, and the default target of `hakase skill create`). If writing there fails, it may fall back to any other valid discovery location in priority order - the project's `.claude/skills/`, `.opencode/skills/`, or `.gemini/skills/`, then the user-level `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, or `~/.config/opencode/skills/`. Skills placed outside these discovery paths are never loaded, and the skill directory name must match the `name` in its SKILL.md frontmatter.
 
 #### Interoperability
 
