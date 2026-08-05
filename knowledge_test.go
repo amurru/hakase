@@ -201,6 +201,33 @@ func TestParseKnowledgeNoteTolerantFallback(t *testing.T) {
 	}
 }
 
+// ------------------- knowledgeDir ----------------------------------------------
+
+func TestKnowledgeDirDefault(t *testing.T) {
+	if got := knowledgeDir(""); got != "./knowledge" {
+		t.Errorf("knowledgeDir(\"\"): expected %q, got %q", "./knowledge", got)
+	}
+	if got := knowledgeDir("custom/dir"); got != "custom/dir" {
+		t.Errorf("knowledgeDir(custom): expected %q, got %q", "custom/dir", got)
+	}
+}
+
+func TestKnowledgeDirTildeExpansion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if got := knowledgeDir("~/notes"); got != filepath.Join(home, "notes") {
+		t.Errorf("knowledgeDir(~): expected %q, got %q", filepath.Join(home, "notes"), got)
+	}
+	if got := knowledgeDir("~"); got != home {
+		t.Errorf("knowledgeDir(~ alone): expected %q, got %q", home, got)
+	}
+	// Absolute paths are passed through untouched.
+	if got := knowledgeDir("/abs/path"); got != "/abs/path" {
+		t.Errorf("knowledgeDir(abs): expected %q, got %q", "/abs/path", got)
+	}
+}
+
 // ------------------- Slugify --------------------------------------------------
 
 func TestSlugify(t *testing.T) {

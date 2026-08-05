@@ -374,3 +374,74 @@ func TestDiscoverMarkdownSkillsSorted(t *testing.T) {
 		}
 	}
 }
+
+// TestDiscoverMarkdownSkillsHakaseHome verifies that the user-level
+// ~/.hakase/skills directory (or $HAKASE_HOME/skills) is scanned for markdown
+// skills, mirroring the Claude-style user home convention.
+func TestDiscoverMarkdownSkillsHakaseHome(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("HAKASE_HOME", "")
+	root := t.TempDir()
+	makeGitDir(t, root)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeSkillAt(t, filepath.Join(home, ".hakase", "skills"), "user-home-skill", "user home")
+
+	skills := DiscoverMarkdownSkills(root, nil, nil)
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill from ~/.hakase/skills, got %d", len(skills))
+	}
+	if skills[0].Frontmatter.Name != "user-home-skill" {
+		t.Errorf("Name: expected %q, got %q", "user-home-skill", skills[0].Frontmatter.Name)
+	}
+	if skills[0].Source != filepath.Join(home, ".hakase", "skills") {
+		t.Errorf("Source: expected %q, got %q", filepath.Join(home, ".hakase", "skills"), skills[0].Source)
+	}
+}
+
+// TestDiscoverMarkdownSkillsHakaseHomeEnv verifies that $HAKASE_HOME redirects
+// the user-level skill directory.
+func TestDiscoverMarkdownSkillsHakaseHomeEnv(t *testing.T) {
+	isolateHome(t)
+	root := t.TempDir()
+	makeGitDir(t, root)
+	override := t.TempDir()
+	t.Setenv("HAKASE_HOME", override)
+
+	writeSkillAt(t, filepath.Join(override, "skills"), "env-home-skill", "env home")
+
+	skills := DiscoverMarkdownSkills(root, nil, nil)
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill from $HAKASE_HOME/skills, got %d", len(skills))
+	}
+	if skills[0].Frontmatter.Name != "env-home-skill" {
+		t.Errorf("Name: expected %q, got %q", "env-home-skill", skills[0].Frontmatter.Name)
+	}
+	if skills[0].Source != filepath.Join(override, "skills") {
+		t.Errorf("Source: expected %q, got %q", filepath.Join(override, "skills"), skills[0].Source)
+	}
+}
+
+// TestDiscoverMarkdownSkillsProjectBeatsHakaseHome verifies that a
+// project-level skill wins over a same-named skill in ~/.hakase/skills (first
+// match wins, project scanned before user level).
+func TestDiscoverMarkdownSkillsProjectBeatsHakaseHome(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("HAKASE_HOME", "")
+	root := t.TempDir()
+	makeGitDir(t, root)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectSkill := writeSkillAt(t, filepath.Join(root, ".agents", "skills"), "dup-skill", "project version")
+	writeSkillAt(t, filepath.Join(home, ".hakase", "skills"), "dup-skill", "user version")
+
+	skills := DiscoverMarkdownSkills(root, nil, nil)
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill after dedupe, got %d", len(skills))
+	}
+	if skills[0].Path != filepath.Join(projectSkill, "SKILL.md") {
+		t.Errorf("Path: expected project one %q, got %q", filepath.Join(projectSkill, "SKILL.md"), skills[0].Path)
+	}
+}

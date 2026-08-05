@@ -83,10 +83,20 @@ var knowledgeMu sync.Mutex
 
 // ------------------- helpers ------------------------------------------------
 
-// knowledgeDir resolves an empty dir to the default "./knowledge".
+// knowledgeDir resolves an empty dir to the default "./knowledge". A leading
+// "~/" is expanded to the user's home directory, so a user-global knowledge
+// base can be configured as e.g. "~/.hakase/knowledge" (or "$HAKASE_HOME").
 func knowledgeDir(dir string) string {
 	if dir == "" {
 		return "./knowledge"
+	}
+	if strings.HasPrefix(dir, "~/") || dir == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			if dir == "~" {
+				return home
+			}
+			return filepath.Join(home, strings.TrimPrefix(dir, "~/"))
+		}
 	}
 	return dir
 }

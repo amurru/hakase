@@ -29,7 +29,7 @@ func main() {
 
 	ctx := context.Background()
 
-	cfg, err := loadConfig("config.json")
+	cfg, err := loadConfig(resolveConfigPath("config.json"))
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}

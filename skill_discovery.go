@@ -116,7 +116,12 @@ func DiscoverMarkdownSkills(cwd string, extraDirs []string, log LogFunc) []Markd
 		addCandidate(dir)
 	}
 
-	// d) User level.
+	// d) User level. hakase's own user home (~/.hakase/skills, or
+	// $HAKASE_HOME/skills) is checked first, then the cross-tool standard
+	// user dirs. Project-level locations above always win on name collision.
+	if home := hakaseHome(); home != "" {
+		addCandidate(filepath.Join(home, "skills"))
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		addCandidate(filepath.Join(home, ".agents", "skills"))
 		addCandidate(filepath.Join(home, ".claude", "skills"))

@@ -46,7 +46,7 @@ hakase/
 ├── go.mod / go.sum          # Go module dependencies
 ├── skills/                  # Persisted Python skill library
 ├── knowledge/               # Persistent knowledge base (markdown notes with YAML frontmatter + [[wikilinks]])
-├── .agents/skills/          # Portable markdown skills (SKILL.md)
+├── .agents/skills/          # Portable markdown skills (SKILL.md) - includes the hakase self-skill
 ├── skill_cli.go             # hakase skill CLI (create/list/validate)
 ├── downloads/               # Downloaded files (PDFs, images, datasets)
 ├── outputs/                 # Generated artifacts (HTML files, charts, reports)
@@ -318,7 +318,7 @@ When `model_name` is empty, the provider's default model is used.
 - `base_url` — Base URL for OpenAI-compatible endpoints (e.g. `http://localhost:11434/v1` for Ollama). Ignored when empty; used only by the `openai` / `openai-compatible` providers.
 - `fallback_providers` — Optional ordered list of provider names to try if the primary provider fails (e.g. `["openai"]`). Empty by default.
 - `provider_options` — Optional map of provider-specific settings. Reserved for future use.
-- `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`).
+- `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
  - `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
  - `loop_guard` — Optional anti-degeneration guardrails that abort a run stuck in a repetition loop or text-only bloat instead of burning the whole context/output window. Zero values use the defaults. Fields: `max_output_tokens` (cap on provider `maxOutputTokens`, default `8192`), `repetition_limit` (abort after this many consecutive identical non-thought chunks, default `8`), `max_text_without_tool` (abort after this many runes of text with zero tool calls, default `20000`). Set `HAKASE_MAX_OUTPUT_TOKENS` to override the cap via environment.
@@ -336,8 +336,17 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_SUMMARY_MODEL` | `summary_model` |
 | `HAKASE_DEBUG`    | `debug`      |
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
+| `HAKASE_HOME`     | user home directory (default `~/.hakase`) |
 
 Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.
+
+#### User home (`~/.hakase/`)
+
+User-level agent state lives under `~/.hakase/` (Claude-style; override with `$HAKASE_HOME`):
+
+- `~/.hakase/config.json` - user-level config fallback, used when no project `config.json` exists
+- `~/.hakase/skills/` - user-level markdown skills, discovered automatically
+- `~/.hakase/knowledge/` - optional user-global knowledge base (set `knowledge_dir: "~/.hakase/knowledge"`)
 
 #### Migration note
 
@@ -402,11 +411,15 @@ Skills are discovered from these locations, in priority order (project first, de
 - **Project level** (walk from cwd up to the git root): `.agents/skills/`, `.claude/skills/`, `.opencode/skills/`, `.gemini/skills/`
 - **Project library**: `./skills` (existing Python skill library dir; `SKILL.md` files are also scanned here)
 - **Custom dirs**: `skill_dirs` from `config.json` (resolved against the project root when relative)
-- **User level**: `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, `~/.config/opencode/skills/` (honoring `XDG_CONFIG_HOME`)
+- **User level**: `~/.hakase/skills/` (or `$HAKASE_HOME/skills/`), `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, `~/.config/opencode/skills/` (honoring `XDG_CONFIG_HOME`)
 
 Skills are indexed by name and description in the agent prompt. The full body is loaded on demand via the `load_markdown_skill` tool. Invalid skills are skipped with a warning. Each markdown skill listing in the prompt includes its discovery source directory (e.g. `Location: <root>/.agents/skills`), so the agent knows where existing skills actually live.
 
-When the agent creates a new markdown skill, the prompt instructs it to prefer the project root's `.agents/skills/` (the portable, always-scanned location, and the default target of `hakase skill create`). If writing there fails, it may fall back to any other valid discovery location in priority order - the project's `.claude/skills/`, `.opencode/skills/`, or `.gemini/skills/`, then the user-level `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, or `~/.config/opencode/skills/`. Skills placed outside these discovery paths are never loaded, and the skill directory name must match the `name` in its SKILL.md frontmatter.
+When the agent creates a new markdown skill, the prompt instructs it to prefer the project root's `.agents/skills/` (the portable, always-scanned location, and the default target of `hakase skill create`). If writing there fails, it may fall back to any other valid discovery location in priority order - the project's `.claude/skills/`, `.opencode/skills/`, or `.gemini/skills/`, then the user-level `~/.hakase/skills/`, `~/.agents/skills/`, `~/.claude/skills/`, `~/.gemini/skills/`, or `~/.config/opencode/skills/`. Skills placed outside these discovery paths are never loaded, and the skill directory name must match the `name` in its SKILL.md frontmatter.
+
+### The `hakase` Self-Skill
+
+The repository ships a self-knowledge skill at `.agents/skills/hakase/SKILL.md` that documents the agent itself: identity, architecture, sub-agents, tools, configuration, skills system, knowledge base, sandbox/safety model, user home (`~/.hakase`), CLI commands, and troubleshooting. The agent loads it whenever the user asks about hakase itself ("who are you", "what can you do", "how do I configure/extend hakase"). Deeper reference material lives in `.agents/skills/hakase/references/` (architecture, configuration, skills, knowledge-base, troubleshooting). Being committed to the repository, it ships with the agent and is versioned with it; for binary-only installs it can be fetched into any discovery location (e.g. project `.agents/skills/` or user `~/.hakase/skills/`) from the GitHub repo, following the cross-tool `gh skill install` convention.
 
 #### Interoperability
 

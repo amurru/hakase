@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -92,6 +93,39 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_MODEL") != "" ||
 		os.Getenv("HAKASE_BASE_URL") != "" ||
 		os.Getenv("HAKASE_SUMMARY_MODEL") != ""
+}
+
+// hakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
+// set (mirroring how other harnesses honor a config-dir override), otherwise
+// ~/.hakase (Claude-style user home). Returns "" when no home directory can
+// be determined. This is the canonical location for user-level hakase state:
+// config.json, skills/, and (optionally) a user-global knowledge base.
+func hakaseHome() string {
+	if h := os.Getenv("HAKASE_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".hakase")
+}
+
+// resolveConfigPath returns the config file to load: the local config.json in
+// the working directory when present (project wins), otherwise the user-level
+// <hakaseHome>/config.json when present, otherwise the local path unchanged
+// so loadConfig keeps its existing "missing file" error behavior.
+func resolveConfigPath(local string) string {
+	if _, err := os.Stat(local); err == nil {
+		return local
+	}
+	if home := hakaseHome(); home != "" {
+		userCfg := filepath.Join(home, "config.json")
+		if _, err := os.Stat(userCfg); err == nil {
+			return userCfg
+		}
+	}
+	return local
 }
 
 // loadConfig reads the JSON config file and applies HAKASE_* environment

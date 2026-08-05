@@ -198,3 +198,72 @@ func TestLoadConfigEnvOnly(t *testing.T) {
 		t.Errorf("Provider: expected %q, got %q", "openai", cfg.Provider)
 	}
 }
+
+func TestHakaseHome(t *testing.T) {
+	t.Setenv("HAKASE_HOME", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if got := hakaseHome(); got != filepath.Join(home, ".hakase") {
+		t.Errorf("hakaseHome: expected %q, got %q", filepath.Join(home, ".hakase"), got)
+	}
+
+	// $HAKASE_HOME overrides the default ~/.hakase.
+	override := t.TempDir()
+	t.Setenv("HAKASE_HOME", override)
+	if got := hakaseHome(); got != override {
+		t.Errorf("hakaseHome with HAKASE_HOME: expected %q, got %q", override, got)
+	}
+}
+
+func TestResolveConfigPath(t *testing.T) {
+	t.Setenv("HAKASE_HOME", "")
+
+	// Local config.json wins when present.
+	localDir := t.TempDir()
+	local := filepath.Join(localDir, "config.json")
+	if err := os.WriteFile(local, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+	if got := resolveConfigPath(local); got != local {
+		t.Errorf("resolveConfigPath with local present: expected %q, got %q", local, got)
+	}
+
+	// User-level ~/.hakase/config.json is used when the local file is missing.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userCfg := filepath.Join(home, ".hakase", "config.json")
+	if err := os.MkdirAll(filepath.Dir(userCfg), 0o755); err != nil {
+		t.Fatalf("mkdir ~/.hakase: %v", err)
+	}
+	if err := os.WriteFile(userCfg, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "config.json")
+	if got := resolveConfigPath(missing); got != userCfg {
+		t.Errorf("resolveConfigPath with user fallback: expected %q, got %q", userCfg, got)
+	}
+
+	// Neither exists: the local path is returned unchanged so loadConfig
+	// keeps its existing missing-file error behavior.
+	emptyHome := t.TempDir()
+	t.Setenv("HOME", emptyHome)
+	nowhere := filepath.Join(t.TempDir(), "nope.json")
+	if got := resolveConfigPath(nowhere); got != nowhere {
+		t.Errorf("resolveConfigPath with nothing present: expected %q, got %q", nowhere, got)
+	}
+}
+
+func TestResolveConfigPathEnvOverride(t *testing.T) {
+	// $HAKASE_HOME redirects the user-level fallback.
+	override := t.TempDir()
+	t.Setenv("HAKASE_HOME", override)
+	userCfg := filepath.Join(override, "config.json")
+	if err := os.WriteFile(userCfg, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "config.json")
+	if got := resolveConfigPath(missing); got != userCfg {
+		t.Errorf("resolveConfigPath with HAKASE_HOME: expected %q, got %q", userCfg, got)
+	}
+}
