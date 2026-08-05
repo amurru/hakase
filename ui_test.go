@@ -557,7 +557,7 @@ func TestClickOnInputFocusesIt(t *testing.T) {
 
 // TestMouseYToContentLineGeometry locks in the border-aware coordinate map
 // from screen Y to content line for each pane. For a 120x40 terminal the
-// layout is: chatH=31, logH=21, taskH=14 (input at min 1 line, DynamicHeight).
+// layout is: chatH=31, logH=21, taskH=13 (input at min 1 line, DynamicHeight).
 func TestMouseYToContentLineGeometry(t *testing.T) {
 	m := newTestModel(t) // 120x40
 
@@ -602,13 +602,13 @@ func TestMouseYToContentLineGeometry(t *testing.T) {
 		}
 	}
 
-	// Task: content starts at row logH+4 = 25 (taskH=14 -> rows 0..11).
+	// Task: content starts at row logH+4 = 25 (taskH=13 -> rows 0..10).
 	m.selectionPane = taskFocus
 	for _, c := range []struct{ y, want int }{
 		{24, -1}, // task top border
 		{25, 0},  // first task content line
-		{36, 11}, // last task content line
-		{37, 11}, // overshoot clamps (bottom border)
+		{35, 10}, // last task content line
+		{36, 10}, // overshoot clamps (bottom border)
 	} {
 		if got := m.mouseYToContentLine(c.y); got != c.want {
 			t.Fatalf("task y=%d: got %d, want %d", c.y, got, c.want)
