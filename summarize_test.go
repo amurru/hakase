@@ -11,7 +11,7 @@ func TestBuildSummarizePromptHasNineSections(t *testing.T) {
 		{Role: "user", Content: "q1", InContext: true, Kind: MessageKindText},
 		{Role: "agent", Content: "a1", InContext: true, Kind: MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs)
+	prompt := buildSummarizePrompt(msgs, "")
 	for _, section := range []string{
 		"1. PRIMARY INTENT",
 		"2. KEY DECISIONS",
@@ -41,7 +41,7 @@ func TestBuildSummarizePromptSkipsToolTranscripts(t *testing.T) {
 		{Role: "agent", Content: "huge tool output", InContext: true, Kind: MessageKindToolResult},
 		{Role: "user", Content: "keep me", InContext: true, Kind: MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs)
+	prompt := buildSummarizePrompt(msgs, "")
 	if strings.Contains(prompt, "huge tool output") {
 		t.Fatalf("tool output leaked into summary prompt")
 	}
@@ -55,7 +55,7 @@ func TestBuildSummarizePromptIncludesRunningSummary(t *testing.T) {
 		{Role: "agent", Content: "OLD RUNNING SUMMARY", InContext: true, Kind: MessageKindSummary},
 		{Role: "user", Content: "new question", InContext: true, Kind: MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs)
+	prompt := buildSummarizePrompt(msgs, "")
 	if !strings.Contains(prompt, "OLD RUNNING SUMMARY") {
 		t.Fatalf("running summary must be merged into the prompt")
 	}
@@ -75,12 +75,27 @@ func TestBuildSummarizePromptCapsAtTail(t *testing.T) {
 	// Make the last message distinct so we can check the tail is kept.
 	msgs[len(msgs)-1].Content = "TAIL MARKER"
 
-	prompt := buildSummarizePrompt(msgs)
+	prompt := buildSummarizePrompt(msgs, "")
 	if !strings.Contains(prompt, "TAIL MARKER") {
 		t.Fatalf("tail message must be kept in the prompt")
 	}
 	if len(prompt) > 90000 {
 		t.Fatalf("prompt too large: %d chars", len(prompt))
+	}
+}
+
+func TestBuildSummarizePromptIncludesFocusInstruction(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "q1", InContext: true, Kind: MessageKindText},
+		{Role: "agent", Content: "a1", InContext: true, Kind: MessageKindText},
+	}
+	prompt := buildSummarizePrompt(msgs, "prioritize the auth flow")
+	if !strings.Contains(prompt, "ADDITIONAL FOCUS: prioritize the auth flow") {
+		t.Fatalf("focus instruction missing from summary prompt")
+	}
+	// Empty focus must not add the marker.
+	if p := buildSummarizePrompt(msgs, "   "); strings.Contains(p, "ADDITIONAL FOCUS") {
+		t.Fatalf("blank focus must not add the marker")
 	}
 }
 
@@ -92,7 +107,7 @@ func TestScheduleSummarizeDedup(t *testing.T) {
 	id := svc.ActiveSessionID()
 
 	// First schedule marks in-flight.
-	b.scheduleSummarize(id)
+	b.scheduleSummarize(id, "")
 	summarizeMu.Lock()
 	inFlight := summarizing[id]
 	summarizeMu.Unlock()
@@ -101,7 +116,7 @@ func TestScheduleSummarizeDedup(t *testing.T) {
 	}
 
 	// Second schedule for the same session must be a no-op (dedup).
-	b.scheduleSummarize(id)
+	b.scheduleSummarize(id, "")
 	summarizeMu.Lock()
 	count := 0
 	for sid, active := range summarizing {
@@ -141,7 +156,7 @@ func TestFallbackCompactionRunsWithoutModel(t *testing.T) {
 
 	// No model available -> runSummarize errors and falls back to the
 	// deterministic snip; session must remain loadable and consistent.
-	if err := b.runSummarize(id); err == nil {
+	if err := b.runSummarize(id, ""); err == nil {
 		t.Fatal("runSummarize should error when no model is available")
 	}
 	msgs, err := svc.GetMessages(id)

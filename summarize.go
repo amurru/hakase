@@ -56,8 +56,9 @@ var (
 // background goroutine. It is safe to call from the callback's hot path: it
 // returns immediately and the summary is persisted asynchronously, to be
 // picked up on the next turn. Summarization is skipped when the same session
-// already has a summary in flight.
-func (h *HistoryBuilder) scheduleSummarize(sessionID string) {
+// already has a summary in flight. focus is an optional instruction threaded
+// into the summary prompt (used by the /compact [focus] command).
+func (h *HistoryBuilder) scheduleSummarize(sessionID, focus string) {
 	if sessionID == "" {
 		return
 	}
@@ -75,7 +76,7 @@ func (h *HistoryBuilder) scheduleSummarize(sessionID string) {
 			delete(summarizing, sessionID)
 			summarizeMu.Unlock()
 		}()
-		if err := h.runSummarize(sessionID); err != nil {
+		if err := h.runSummarize(sessionID, focus); err != nil {
 			h.logfSafe("⚠ summarization failed (falling back to deterministic compaction): %v", err)
 			// Fallback (cline's deterministic-behind-agentic pattern): the
 			// snip already ran in the callback; just re-ensure the tail is
@@ -86,7 +87,7 @@ func (h *HistoryBuilder) scheduleSummarize(sessionID string) {
 }
 
 // runSummarize performs the actual LLM summarization for a session.
-func (h *HistoryBuilder) runSummarize(sessionID string) error {
+func (h *HistoryBuilder) runSummarize(sessionID, focus string) error {
 	msgs, err := h.svc.GetMessages(sessionID)
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
@@ -96,7 +97,7 @@ func (h *HistoryBuilder) runSummarize(sessionID string) error {
 	}
 
 	// Build the prompt: existing running summary (if any) + transcript.
-	prompt := buildSummarizePrompt(msgs)
+	prompt := buildSummarizePrompt(msgs, focus)
 
 	// Prefer the configured cheap/weak summarization model; fall back to the
 	// primary model when none is configured.
@@ -156,9 +157,11 @@ func (h *HistoryBuilder) fallbackCompaction(sessionID string) {
 }
 
 // buildSummarizePrompt assembles the 9-section summarization prompt from the
-// session's messages. The transcript is capped so the summarization call
-// stays cheap; older content is dropped in favor of the tail.
-func buildSummarizePrompt(msgs []Message) string {
+// session's messages. focus is an optional user-supplied instruction (from
+// /compact [focus]) that steers what the summary prioritizes. The transcript
+// is capped so the summarization call stays cheap; older content is dropped
+// in favor of the tail.
+func buildSummarizePrompt(msgs []Message, focus string) string {
 	// Collect the relevant dialogue lines first (skip tool transcripts).
 	var lines []string
 	for _, msg := range msgs {
@@ -194,6 +197,9 @@ func buildSummarizePrompt(msgs []Message) string {
 
 	var b strings.Builder
 	b.WriteString(summaryTemplate)
+	if strings.TrimSpace(focus) != "" {
+		b.WriteString("\n\nADDITIONAL FOCUS: " + strings.TrimSpace(focus))
+	}
 	b.WriteString("\n\n=== CONVERSATION TRANSCRIPT ===\n")
 	for _, line := range kept {
 		b.WriteString(line)

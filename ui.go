@@ -134,6 +134,18 @@ var (
 				Foreground(lipgloss.Color("15")).
 				Bold(true).
 				Padding(0, 1)
+
+	// menuBoxStyle is the overlay box used by the slash command and @ file
+	// menus (rendered above the input pane).
+	menuBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Padding(0, 1)
+
+	// chipStyle renders attachment chips in the input pane.
+	chipStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
 )
 
 type focusedPane int
@@ -156,6 +168,7 @@ const (
 	paneInput  = "input"
 	paneTask   = "task"
 	paneHint   = "hint"
+	paneMenu   = "menu"
 )
 
 // paneIDToFocus maps a hit-tested pane layer ID to its focus value.
@@ -301,6 +314,18 @@ type appModel struct {
 	sessionListSessions []SessionSummary
 	sessionListFiltered []SessionSummary
 
+	// Slash command menu state (visibility is derived from the input value).
+	commandMenuIndex int
+
+	// @ file menu state.
+	mentionFiles     []string
+	mentionFiltered  []string
+	mentionMenuIndex int
+
+	// Attachments (files via @, images via paste) for the message being
+	// composed. Cleared on submit and on session switch.
+	attachments []attachment
+
 	// Approval modal state.
 	pendingApproval *approvalPromptMsg
 }
@@ -332,17 +357,19 @@ func newModel(
 	}
 
 	return appModel{
-		input:          ta,
-		r:              r,
-		ctx:            ctx,
-		chatBufferSize: chatBufferSize,
-		chatHistory:    make([]ChatMessage, 0),
-		logLines:       make([]string, 0),
-		taskLines:      make([]string, 0),
-		showThinking:   showThinking,
-		modelName:      modelName,
-		thinkingLevel:  thinkingLevel,
-		sessionService: sessionSvc,
+		input:           ta,
+		r:               r,
+		ctx:             ctx,
+		chatBufferSize:  chatBufferSize,
+		chatHistory:     make([]ChatMessage, 0),
+		logLines:        make([]string, 0),
+		taskLines:       make([]string, 0),
+		showThinking:    showThinking,
+		modelName:       modelName,
+		thinkingLevel:   thinkingLevel,
+		sessionService:  sessionSvc,
+		mentionFiltered: make([]string, 0),
+		attachments:     make([]attachment, 0),
 	}
 }
 
@@ -435,6 +462,25 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Slash command and @ file menus are input-focus interactions. They
+		// intercept navigation/selection keys (up/down/tab/enter/esc) before
+		// the main switch; character keys fall through to the textarea so the
+		// filter updates naturally. The session-list modal takes precedence
+		// (its own key handler owns the keys while open).
+		if m.focus == inputFocus && !m.isProcessing && !m.showSessionList {
+			if m.commandMenuOpen() {
+				if cmd, handled := m.handleCommandMenuKey(key); handled {
+					return m, cmd
+				}
+			}
+			if m.mentionMenuOpen() {
+				m.filterMentionCandidates()
+				if cmd, handled := m.handleMentionMenuKey(key); handled {
+					return m, cmd
+				}
+			}
+		}
+
 		switch key {
 		// Esc only closes the help overlay (guard above) and is otherwise a
 		// no-op: it never quits, and it is swallowed here so it cannot leak
@@ -455,6 +501,24 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+shift+c":
 			m.copyFocusedPaneContent()
 
+		// Ctrl+V: try to paste an image from the clipboard as an attachment
+		// chip. When the clipboard holds no image, fall through so the
+		// textarea handles text paste.
+		case "ctrl+v":
+			if m.focus == inputFocus && !m.isProcessing {
+				if data, mimeType, err := readImageFromClipboard(); err == nil && len(data) > 0 {
+					m.addImageAttachment(data, mimeType)
+					return m, nil
+				}
+			}
+
+		// Backspace on an empty input removes the last attachment chip.
+		case "backspace":
+			if m.focus == inputFocus && m.input.Value() == "" && len(m.attachments) > 0 {
+				m.removeLastAttachment()
+				return m, nil
+			}
+
 		// Ctrl+T toggles thinking display.
 		case "ctrl+t":
 			m.showThinking = !m.showThinking
@@ -465,14 +529,38 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.cycleFocus(-1)
 		case "enter":
-			if m.input.Value() != "" && !m.isProcessing {
+			// Enter sends when there is text or at least one attachment chip.
+			if m.input.Value() != "" || len(m.attachments) > 0 {
 				prompt := m.input.Value()
+
+				// Slash commands are handled locally and never reach the model.
+				if name, args, ok := parseSlashCommand(prompt); ok {
+					m.input.Reset()
+					cmd := runSlashCommand(m, name, args)
+					return m, cmd
+				}
+
+				if m.isProcessing {
+					return m, nil
+				}
+
 				m.input.Reset()
 				m.isProcessing = true
 
+				// Build the request content from the prompt text plus any
+				// attachment chips (files/images), then clear the chips.
+				content := genai.NewContentFromParts(buildMessageParts(prompt, m.attachments), genai.RoleUser)
+				attached := m.attachments
+				m.attachments = nil
+
+				display := prompt
+				if labels := attachmentLabels(attached); labels != "" {
+					display = prompt + "\n" + labels
+				}
+
 				m.chatHistory = append(m.chatHistory, ChatMessage{
 					Role:    "user",
-					Content: prompt,
+					Content: display,
 				})
 				m.rebuildRenderedLines()
 				m.chatScrollOffset = m.maxChatScrollOffset()
@@ -480,9 +568,22 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Persist the user message before the run starts so it lands in
 				// the right session even if the agent never completes. This is
-				// also what creates the active session on the first send.
+				// also what creates the active session on the first send. The
+				// prompt text is persisted raw; attachment content is rebuilt
+				// from Message.Attachments on resume and history rebuilds.
 				if m.sessionService != nil {
-					_ = m.sessionService.RecordUsage("user", prompt, "", EstimateTokens(prompt))
+					tokens := EstimateTokens(prompt)
+					refs := make([]AttachmentRef, 0, len(attached))
+					for _, a := range attached {
+						tokens += attachmentTokens(a)
+						refs = append(refs, AttachmentRef{
+							Name:  a.Name,
+							Path:  a.Path,
+							MIME:  a.MIME,
+							Label: a.Label,
+						})
+					}
+					_ = m.sessionService.RecordUsageWithAttachments("user", prompt, "", tokens, refs)
 				}
 
 				// Surface a context-fill warning before sending when the
@@ -491,7 +592,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.appendLog(fmt.Sprintf("⚠ context %d%% full (effective budget)", pct))
 				}
 
-				go runAgentTask(m.ctx, m.r, m.program, prompt, GenerateTaskID())
+				go runAgentTask(m.ctx, m.r, m.program, content, GenerateTaskID())
 			}
 		case "up", "k":
 			if m.focus == chatFocus {
@@ -1013,16 +1114,19 @@ func (m *appModel) renderTaskViewport() {
 }
 
 // inputHeight returns the current number of content lines rendered by the
-// textarea, clamped between 1 and inputLines. Used to shrink the chat
-// viewport when the multi-line input grows so the layout never overflows.
+// input area: the textarea plus one chip row when attachments are attached.
+// Clamped so the layout never overflows the hint bar.
 func (m *appModel) inputHeight() int {
 	v := m.input.View()
 	h := strings.Count(v, "\n") + 1
+	if len(m.attachments) > 0 {
+		h++
+	}
 	if h < 1 {
 		h = 1
 	}
-	if h > inputLines {
-		h = inputLines
+	if h > inputLines+1 {
+		h = inputLines + 1
 	}
 	return h
 }
@@ -1070,7 +1174,11 @@ func (m *appModel) View() tea.View {
 	}
 
 	chatRender := chatStyle.Render(m.chatViewport.View())
-	inputRender := inputStyle.Render(m.input.View())
+	inputInner := m.input.View()
+	if chips := m.chipRow(); chips != "" {
+		inputInner = chips + "\n" + inputInner
+	}
+	inputRender := inputStyle.Render(inputInner)
 	logRender := logStyle.Render(m.logViewport.View())
 	taskRender := taskStyle.Render(m.taskViewport.View())
 
@@ -1125,6 +1233,26 @@ func (m *appModel) buildCompositor(
 		lipgloss.NewLayer(taskRender).ID(paneTask).X(rightColStart).Y(1 + logH + 2),
 		lipgloss.NewLayer(m.hintBar()).ID(paneHint).X(0).Y(m.height - 1),
 	}
+
+	// Command / @-file menu overlay renders above the input pane (topmost so
+	// it covers the bottom of the chat pane while open).
+	inputY := 1 + chatH + 2
+	var menu string
+	switch {
+	case m.commandMenuOpen():
+		menu = m.commandMenuView()
+	case m.mentionMenuOpen():
+		menu = m.mentionMenuView()
+	}
+	if menu != "" {
+		menuH := strings.Count(menu, "\n") + 1
+		menuY := inputY - menuH
+		if menuY < 1 {
+			menuY = 1
+		}
+		layers = append(layers, lipgloss.NewLayer(menu).ID(paneMenu).X(0).Y(menuY))
+	}
+
 	return lipgloss.NewCompositor(layers...)
 }
 
@@ -1139,7 +1267,7 @@ func (m *appModel) hintBar() string {
 	if m.showThinking {
 		status += " 💭 thinking"
 	}
-	hints := "ctrl+/ help · click pane to focus · tab focus · ctrl+t thinking · enter send · ctrl+shift+c copy · ctrl+c quit"
+	hints := "ctrl+/ help · / commands · @ attach · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
 	return hintBarStyle.Render(status + "  │  " + hints)
 }
 
@@ -1324,6 +1452,16 @@ func (m *appModel) helpView() tea.View {
 			{"ctrl+a / ctrl+e", "Jump to line start / end"},
 			{"left / right", "Move the cursor"},
 			{"ctrl+u", "Clear the input"},
+			{"ctrl+v", "Paste text / attach an image from the clipboard"},
+			{"@name", "Attach a file (pick from the @ menu)"},
+		}},
+		{"Slash Commands", []helpBinding{
+			{"/compact [focus]", "Summarize the conversation to free context"},
+			{"/new", "Start a fresh session"},
+			{"/sessions", "Open the session chooser"},
+			{"/help", "Show this reference"},
+			{"/exit", "Exit hakase"},
+			{"/quit", "Exit hakase (alias)"},
 		}},
 		{"Panels (chat / log / task)", []helpBinding{
 			{"up / k", "Scroll toward older content"},
@@ -1368,11 +1506,11 @@ func runAgentTask(
 	ctx context.Context,
 	r *runner.Runner,
 	p *tea.Program,
-	prompt string,
+	content *genai.Content,
 	taskID string,
 ) {
-	msg := genai.NewContentFromText(prompt, genai.RoleUser)
-	debugEvent("user_prompt", "task_id", taskID, "text", prompt)
+	msg := content
+	debugEvent("user_prompt", "task_id", taskID, "text", contentText(content))
 
 	// Wrap the passed context so the degeneration watchdogs can abort the run.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -1481,10 +1619,44 @@ func (m *appModel) newSession() tea.Cmd {
 	}
 	m.sessionService.ClearActiveSession()
 	m.chatHistory = make([]ChatMessage, 0)
+	m.attachments = nil
 	m.rebuildRenderedLines()
 	m.chatScrollOffset = 0
 	m.renderChatViewport()
 	m.appendLog("New session started")
+	return nil
+}
+
+// compactSession manually compacts the active session's history: the
+// deterministic snip runs immediately (archives everything but the last 2
+// turns) and an async LLM summary condenses the surviving transcript,
+// optionally focused by the /compact [focus] args. Reports the in-context
+// fill percentage before and after the snip.
+func (m *appModel) compactSession(focus string) tea.Cmd {
+	if m.sessionService == nil || currentHistoryBuilder == nil {
+		m.appendLog("⚠ compaction unavailable")
+		return nil
+	}
+	session, err := m.sessionService.GetActiveSession()
+	if err != nil {
+		m.appendLog("⚠ compaction failed: " + err.Error())
+		return nil
+	}
+	if session == nil || len(session.Messages) == 0 {
+		m.appendLog("nothing to compact")
+		return nil
+	}
+	before, _ := m.sessionFillPercent()
+
+	// Deterministic snip: archive oldest messages, keep the last 2 turns.
+	currentHistoryBuilder.stageBSnip(session, nil, "", 0, 8000, 0)
+
+	// Async LLM summarization of the surviving transcript (falls back to the
+	// deterministic snip on failure).
+	currentHistoryBuilder.scheduleSummarize(session.ID, focus)
+
+	after, _ := m.sessionFillPercent()
+	m.appendLog(fmt.Sprintf("compacted: %d%% -> %d%% (summary generating)", before, after))
 	return nil
 }
 
@@ -1604,12 +1776,21 @@ func (m *appModel) switchToSession(id string) tea.Cmd {
 	}
 	m.chatHistory = make([]ChatMessage, 0, len(session.Messages))
 	for _, msg := range session.Messages {
-		m.chatHistory = append(m.chatHistory, ChatMessage{
-			Role:     msg.Role,
-			Content:  msg.Content,
-			Thinking: msg.Thinking,
-		})
+		cm := ChatMessage{Role: msg.Role, Content: msg.Content, Thinking: msg.Thinking}
+		if len(msg.Attachments) > 0 {
+			var labels []string
+			for _, att := range msg.Attachments {
+				if att.Label != "" {
+					labels = append(labels, att.Label)
+				}
+			}
+			if len(labels) > 0 {
+				cm.Content += "\n" + strings.Join(labels, " ")
+			}
+		}
+		m.chatHistory = append(m.chatHistory, cm)
 	}
+	m.attachments = nil
 	m.rebuildRenderedLines()
 	m.chatScrollOffset = m.maxChatScrollOffset()
 	m.renderChatViewport()

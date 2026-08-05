@@ -113,11 +113,16 @@ func (s *SessionService) ActiveSessionID() string {
 // Like AddMessage, it creates a new session when none is active. The token
 // count is the provider-reported usage when known, or an estimate.
 func (s *SessionService) RecordUsage(role, content, thinking string, tokens int) error {
+	return s.RecordUsageWithAttachments(role, content, thinking, tokens, nil)
+}
+
+// RecordUsageWithAttachments is RecordUsage plus a persisted attachment list.
+func (s *SessionService) RecordUsageWithAttachments(role, content, thinking string, tokens int, atts []AttachmentRef) error {
 	session, err := s.ensureActiveSession(role, content)
 	if err != nil {
 		return err
 	}
-	session.AddMessageWithMeta(role, content, thinking, tokens, MessageKindText)
+	session.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, MessageKindText, atts)
 	syncHintedPaths(session)
 	return s.store.Save(session)
 }

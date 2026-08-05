@@ -50,6 +50,20 @@ type Message struct {
 	Sequence  int64     `json:"sequence,omitempty"` // monotonic cursor for pagination (letta pattern)
 	InContext bool      `json:"in_context"`         // whether the message is currently in the model window
 	Kind      string    `json:"kind,omitempty"`     // "text" | "tool_call" | "tool_result" | "summary"
+	// Attachments are the files/images attached to this message. Only the
+	// path + MIME are persisted; content is re-read on resume so session
+	// files stay small.
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
+}
+
+// AttachmentRef is the persisted record of a file/image attached to a
+// message. Content is not stored; it is re-read from Path when the history is
+// rebuilt (messageToContent) and on resume.
+type AttachmentRef struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	MIME  string `json:"mime"`
+	Label string `json:"label,omitempty"` // chip text, e.g. "@file.go" or "[image 1]"
 }
 
 // TaskRef is an embedded snapshot of task metadata stored directly
@@ -97,15 +111,22 @@ func (s *Session) AddMessage(role, content, thinking string) {
 // Sequence is the current message count (messages are append-only, so the
 // count is a monotonic cursor), and new messages are in-context by default.
 func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int, kind string) {
+	s.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, kind, nil)
+}
+
+// AddMessageWithMetaAndAttachments is AddMessageWithMeta plus a persisted
+// attachment list.
+func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking string, tokens int, kind string, atts []AttachmentRef) {
 	s.Messages = append(s.Messages, Message{
-		Role:      role,
-		Content:   content,
-		Thinking:  thinking,
-		Timestamp: time.Now().UTC(),
-		Tokens:    tokens,
-		Sequence:  int64(len(s.Messages)),
-		InContext: true,
-		Kind:      kind,
+		Role:        role,
+		Content:     content,
+		Thinking:    thinking,
+		Timestamp:   time.Now().UTC(),
+		Tokens:      tokens,
+		Sequence:    int64(len(s.Messages)),
+		InContext:   true,
+		Kind:        kind,
+		Attachments: atts,
 	})
 	s.UpdatedAt = time.Now().UTC()
 }

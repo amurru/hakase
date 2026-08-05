@@ -89,6 +89,40 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 Mouse wheel scrolling works on whichever pane is focused. The log pane stays
 pinned to the bottom unless you scroll up to read history.
 
+### Slash Commands
+
+Type `/` in the input to see a filtered command menu (arrow keys navigate,
+`Tab` completes, `Enter` runs). Built-in commands:
+
+| Command                | Action                                                        |
+| ---------------------- | ------------------------------------------------------------- |
+| `/compact [focus]`     | Summarize the conversation to free context, continuing the same session; optional focus instructions steer the summary |
+| `/new`                 | Start a fresh session (previous sessions stay resumable)      |
+| `/sessions`            | Open the session chooser to switch or resume old sessions     |
+| `/help`                | Show the keyboard shortcut and slash command reference        |
+| `/exit` / `/quit`      | Exit hakase                                                   |
+
+`/compact` runs the deterministic history snip immediately (keeps the last
+two turns) and schedules an async LLM summary - the same compaction cascade
+used by automatic context management (`summary_model`), exposed manually.
+
+### File Attachments
+
+Attach files and images to a message without the agent having to find them:
+
+- **`@file`** - type `@` to open a workspace file picker; arrow keys
+  navigate, `Enter` attaches the highlighted file as a chip (`@name.go`).
+  Text files embed their content; images embed as multimodal input.
+- **Image paste** - copy an image (screenshot) and press `Ctrl+V`; it is
+  read from the clipboard and attached as a `[image 1]` chip. Text pastes
+  still work normally.
+- Chips render in a row above the input; `Backspace` on an empty input
+  removes the last chip. Attachments are sent alongside the prompt text and
+  are persisted with the session (re-attached on resume).
+
+Sandbox note: `@` paths resolve through the sandbox read roots - files
+outside the approved workspace are rejected with a hint.
+
 ### 🤖 Multi-Agent Orchestration
 
 Powered by [Google ADK](https://github.com/google/adk):

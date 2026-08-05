@@ -42,6 +42,47 @@ func copyToClipboard(text string) error {
 	return clipboard.WriteAll(text)
 }
 
+// readImageFromClipboard reads image bytes from the system clipboard,
+// preferring PNG. It probes the same backends as copyToClipboard: wl-paste
+// (Wayland), xclip (X11), xsel (X11). Returns the bytes and MIME type, or an
+// error when no supported image is available. Text-only clipboards return an
+// error so the caller can fall through to text paste.
+func readImageFromClipboard() ([]byte, string, error) {
+	// wl-paste (Wayland). --type image/png is the portable target; older
+	// wl-paste builds accept image/* and return the preferred type.
+	if _, err := exec.LookPath("wl-paste"); err == nil {
+		for _, t := range []string{"image/png", "image/*"} {
+			out, err := exec.Command("wl-paste", "--type", t).Output()
+			if err == nil && len(out) > 0 {
+				return out, "image/png", nil
+			}
+		}
+	}
+
+	// xclip (X11).
+	if _, err := exec.LookPath("xclip"); err == nil {
+		for _, t := range []string{"image/png", "image/jpeg", "image/gif", "image/webp"} {
+			out, err := exec.Command("xclip", "-selection", "clipboard", "-t", t, "-o").Output()
+			if err == nil && len(out) > 0 {
+				return out, t, nil
+			}
+		}
+	}
+
+	// xsel (X11 alternative) exposes only a single target per call; probe
+	// for the common image targets via --output.
+	if _, err := exec.LookPath("xsel"); err == nil {
+		for _, t := range []string{"image/png", "image/jpeg", "image/gif", "image/webp"} {
+			out, err := exec.Command("xsel", "--clipboard", "--output", "--target", t).Output()
+			if err == nil && len(out) > 0 {
+				return out, t, nil
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("no image in clipboard")
+}
+
 // copyPaneContent copies the visible content of the focused output pane
 // to the clipboard and returns a user-facing confirmation message.
 func (m *appModel) copyFocusedPaneContent() string {

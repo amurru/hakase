@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"sync"
 
@@ -117,7 +118,10 @@ func (h *HistoryBuilder) buildHistory(msgs []Message, currentText string) []*gen
 			continue
 		}
 		// Dedup: skip the current user message (persisted at send time).
-		if msg.Role == "user" && currentText != "" && msg.Content == currentText {
+		// Attachment-bearing messages persist only the bare prompt while the
+		// in-flight request also carries the attachment parts, so compare by
+		// prefix rather than plain equality.
+		if msg.Role == "user" && currentUserMessageMatches(msg, currentText) {
 			continue
 		}
 		history = append(history, messageToContent(msg))
@@ -125,14 +129,58 @@ func (h *HistoryBuilder) buildHistory(msgs []Message, currentText string) []*gen
 	return append(summaries, history...)
 }
 
+// currentUserMessageMatches reports whether the in-flight request's user
+// content corresponds to the given persisted user message (dedup guard for
+// buildHistory).
+func currentUserMessageMatches(msg Message, currentText string) bool {
+	if currentText == msg.Content {
+		return true
+	}
+	// Attachment-bearing messages persist the bare prompt; the request text
+	// is the prompt followed by any attachment parts (text files), so a
+	// prefix match means the same message.
+	if len(msg.Attachments) > 0 && currentText != "" && strings.HasPrefix(currentText, msg.Content) {
+		return true
+	}
+	// Image-only messages persist no text and the request carries only the
+	// image part (no text either).
+	if len(msg.Attachments) > 0 && currentText == "" && msg.Content == "" {
+		return true
+	}
+	return false
+}
+
 // messageToContent converts a persisted message into a genai.Content with
-// the appropriate role. Agent messages map to the model role.
+// the appropriate role. Agent messages map to the model role. Messages with
+// attachments rebuild their parts: text verbatim, text files as text parts,
+// images as inline data parts (content re-read from Path).
 func messageToContent(msg Message) *genai.Content {
 	role := genai.Role(msg.Role)
 	if msg.Role == "agent" {
 		role = genai.RoleModel
 	}
-	return genai.NewContentFromText(msg.Content, role)
+	if len(msg.Attachments) == 0 {
+		return genai.NewContentFromText(msg.Content, role)
+	}
+	var parts []*genai.Part
+	if strings.TrimSpace(msg.Content) != "" {
+		parts = append(parts, genai.NewPartFromText(msg.Content))
+	}
+	for _, att := range msg.Attachments {
+		if att.Path == "" {
+			continue
+		}
+		data, err := os.ReadFile(att.Path)
+		if err != nil {
+			continue
+		}
+		if imageMimes[att.MIME] {
+			parts = append(parts, genai.NewPartFromBytes(data, att.MIME))
+		} else {
+			parts = append(parts, genai.NewPartFromText(string(data)))
+		}
+	}
+	return genai.NewContentFromParts(parts, role)
 }
 
 // contentText extracts the concatenated text of a genai.Content for dedup
@@ -194,7 +242,7 @@ func (h *HistoryBuilder) fitToBudget(session *Session, history []*genai.Content,
 	// Stage (c): async summarization, only if still over target. The summary
 	// is picked up on the next turn; UI never blocks.
 	if currentTokens+EstimateContentsTokens(history)+reserveTokens > int(target) {
-		h.scheduleSummarize(session.ID)
+		h.scheduleSummarize(session.ID, "")
 	}
 
 	return history
