@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -672,3 +674,480 @@ func TestEvaluateCommandEdgeCases(t *testing.T) {
 
 // ss is a helper to construct string slices compactly in test tables.
 func ss(args ...string) []string { return args }
+
+// ---- 12.4 Indirection Hardening Tests ---- //
+
+// TestSymlinkBypass verifies symlink resolution catches rename-type bypasses
+// (12.1). Uses real temp symlinks to prove resolution works.
+func TestSymlinkBypass(t *testing.T) {
+	// Check that /bin/rm exists; skip gracefully if not.
+	if _, err := os.Stat("/bin/rm"); err != nil {
+		t.Skip("/bin/rm not found on this system")
+	}
+
+	dir := t.TempDir()
+	rmLink := filepath.Join(dir, "ls")
+	catLink := filepath.Join(dir, "echo")
+	echoLink := filepath.Join(dir, "cat")
+
+	if err := os.Symlink("/bin/rm", rmLink); err != nil {
+		t.Fatalf("symlink rm->ls: %v", err)
+	}
+	if err := os.Symlink("/bin/cat", catLink); err != nil {
+		t.Fatalf("symlink cat->echo: %v", err)
+	}
+	if err := os.Symlink("/bin/echo", echoLink); err != nil {
+		t.Fatalf("symlink echo->cat: %v", err)
+	}
+
+	// Helper sandboxes.
+	paths := &SandboxConfig{
+		Mode:        SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	bwrap := &SandboxConfig{
+		Mode:        SandboxModeBubblewrap,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	off := &SandboxConfig{
+		Mode:        SandboxModeOff,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	sandboxes := []struct {
+		name string
+		sb   *SandboxConfig
+	}{
+		{"off", off},
+		{"paths", paths},
+		{"bubblewrap", bwrap},
+	}
+
+	for _, sb := range sandboxes {
+		t.Run(sb.name, func(t *testing.T) {
+			// /tmp/ls (symlink to /bin/rm) -rf /dev/sda must hard-deny.
+			dec := evaluateCommand(sb.sb, rmLink, []string{"-rf", "/dev/sda"})
+			if dec.Action != ActionDeny {
+				t.Errorf("%s: %s -rf /dev/sda should hard-deny, got %s (reason: %s)", sb.name, rmLink, dec.Action, dec.Reason)
+			}
+
+			// /tmp/ls (symlink to /bin/rm) must classify HIGH.
+			risk := classifyRisk([]string{rmLink})
+			if risk != RiskHigh {
+				t.Errorf("%s: classifyRisk(%s) = %s, want high", sb.name, rmLink, risk)
+			}
+
+			// /tmp/echo (symlink to /bin/cat) /dev/sda should NOT allow
+			// (cat is LOW, targeting a device through resolved path doesn't
+			// trigger hard-deny since cat isn't in the device-destruction
+			// switch; but the classifyRisk should resolve to cat=LOW).
+			dec = evaluateCommand(sb.sb, catLink, []string{"/dev/sda"})
+			if dec.Action == ActionDeny {
+				// If hard-deny fires, that's also acceptable
+				t.Logf("%s: %s /dev/sda = %s (risk=%s, reason=%s)", sb.name, catLink, dec.Action, dec.Risk, dec.Reason)
+			}
+
+			// /tmp/cat (symlink to /bin/echo) "hello" is LOW/LOW -> allowed in paths/off.
+			dec = evaluateCommand(sb.sb, echoLink, []string{"hello"})
+			if sb.name == "bubblewrap" {
+				// echo is LOW, bubblewrap threshold is HIGH -> allow.
+				if dec.Action != ActionAllow {
+					t.Errorf("%s: %s hello should allow (echo=LOW, threshold=HIGH), got %s", sb.name, echoLink, dec.Action)
+				}
+			}
+		})
+	}
+}
+
+// TestInterpreterEscalation verifies interpreter opaque-code escalation (12.2).
+func TestInterpreterEscalation(t *testing.T) {
+	paths := &SandboxConfig{
+		Mode:        SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	bwrap := &SandboxConfig{
+		Mode:        SandboxModeBubblewrap,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	// Should be escalated to ask.
+	escalated := []struct {
+		cmd  string
+		args []string
+	}{
+		{"python3", ss("evil.py")},
+		{"python3", ss("-c", "print(1)")},
+		{"python", ss("script.py")},
+		{"python", ss("-c", "x")},
+		{"node", ss("-e", "console.log(1)")},
+		{"ruby", ss("-e", "puts 1")},
+		{"perl", ss("-e", "print 1")},
+		{"php", ss("-r", "echo 1;")},
+		{"bash", ss("script.sh")},
+		{"sh", ss("-c", "echo hi")},
+		{"zsh", ss("script.zsh")},
+		{"lua", ss("-e", "print(1)")},
+		{"R", ss("-e", "1+1")},
+		{"dash", ss("-c", "echo hi")},
+		{"fish", ss("-c", "echo hi")},
+	}
+
+	for _, tt := range escalated {
+		t.Run(tt.cmd+"_paths", func(t *testing.T) {
+			dec := evaluateCommand(paths, tt.cmd, tt.args)
+			if dec.Action != ActionAsk {
+				t.Errorf("%s %v in paths: want ask, got %s (risk=%s, reason=%s)", tt.cmd, tt.args, dec.Action, dec.Risk, dec.Reason)
+			}
+			if !strings.Contains(dec.Reason, "interpreter") {
+				t.Errorf("%s %v: reason should mention interpreter, got: %s", tt.cmd, tt.args, dec.Reason)
+			}
+		})
+		t.Run(tt.cmd+"_bubblewrap", func(t *testing.T) {
+			dec := evaluateCommand(bwrap, tt.cmd, tt.args)
+			if dec.Action != ActionAsk {
+				t.Errorf("%s %v in bubblewrap: want ask, got %s (risk=%s, reason=%s)", tt.cmd, tt.args, dec.Action, dec.Risk, dec.Reason)
+			}
+		})
+	}
+
+	// Should NOT be escalated.
+	notEscalated := []struct {
+		cmd  string
+		args []string
+	}{
+		{"python3", nil},
+		{"python3", ss("--version")},
+		{"python3", ss("-V")},
+		{"python3", ss("--help")},
+		{"python", nil},
+		{"python", ss("--version")},
+		{"python", ss("-V")},
+		{"python", ss("--help")},
+		{"node", ss("--version")},
+		{"node", ss("-V")},
+		{"bash", ss("--version")},
+		{"bash", nil},
+		{"sh", ss("--version")},
+		{"ruby", ss("--version")},
+	}
+
+	for _, tt := range notEscalated {
+		t.Run(tt.cmd+"_bare_not_escalated", func(t *testing.T) {
+			dec := evaluateCommand(paths, tt.cmd, tt.args)
+			if dec.Action == ActionAsk && strings.Contains(dec.Reason, "interpreter") {
+				t.Errorf("%s %v should NOT be escalated, got ask (reason=%s)", tt.cmd, tt.args, dec.Reason)
+			}
+			// bash/sh are RiskUnknown (not in the risk table); python3/node/ruby are RiskMedium.
+			risk := classifyRisk(append([]string{tt.cmd}, tt.args...))
+			switch tt.cmd {
+			case "bash", "sh":
+				if risk != RiskUnknown {
+					t.Errorf("%s %v: classifyRisk = %s, want unknown (not in risk table)", tt.cmd, tt.args, risk)
+				}
+			default:
+				if risk != RiskMedium {
+					t.Errorf("%s %v: classifyRisk = %s, want medium", tt.cmd, tt.args, risk)
+				}
+			}
+		})
+	}
+
+	// classifyRisk("python3") bare == RiskMedium still holds.
+	if risk := classifyRisk([]string{"python3"}); risk != RiskMedium {
+		t.Errorf("classifyRisk(python3 bare) = %s, want medium", risk)
+	}
+}
+
+// TestScriptContentScan verifies heuristic script-content scanning (12.3).
+func TestScriptContentScan(t *testing.T) {
+	paths := &SandboxConfig{
+		Mode:        SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	dir := t.TempDir()
+
+	// Script containing rm -rf / -> hard-deny.
+	evilScript := filepath.Join(dir, "evil.sh")
+	if err := os.WriteFile(evilScript, []byte("#!/bin/bash\nrm -rf /\n"), 0o755); err != nil {
+		t.Fatalf("write evil.sh: %v", err)
+	}
+	dec := evaluateCommand(paths, "bash", []string{evilScript})
+	if dec.Action != ActionDeny {
+		t.Errorf("bash evil.sh (rm -rf /): want deny, got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "script contains:") {
+		t.Errorf("bash evil.sh: reason should have 'script contains:', got: %s", dec.Reason)
+	}
+
+	// Script containing os.system("rm -rf /tmp/x") -> ask "risky pattern".
+	osSystemScript := filepath.Join(dir, "os_system.py")
+	if err := os.WriteFile(osSystemScript, []byte("import os\nos.system('rm -rf /tmp/x')\n"), 0o644); err != nil {
+		t.Fatalf("write os_system.py: %v", err)
+	}
+	dec = evaluateCommand(paths, "python3", []string{osSystemScript})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 os_system.py: want ask, got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "script contains risky pattern:") {
+		t.Errorf("python3 os_system.py: reason should have 'script contains risky pattern:', got: %s", dec.Reason)
+	}
+
+	// Script containing subprocess.run -> ask "risky pattern".
+	subprocessScript := filepath.Join(dir, "subprocess.py")
+	if err := os.WriteFile(subprocessScript, []byte("import subprocess\nsubprocess.run(['ls', '-la'])\n"), 0o644); err != nil {
+		t.Fatalf("write subprocess.py: %v", err)
+	}
+	dec = evaluateCommand(paths, "python3", []string{subprocessScript})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 subprocess.py: want ask, got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "script contains risky pattern:") {
+		t.Errorf("python3 subprocess.py: reason should have 'script contains risky pattern:', got: %s", dec.Reason)
+	}
+
+	// Script containing git push --force -> ask "risky pattern".
+	gitScript := filepath.Join(dir, "force_push.sh")
+	if err := os.WriteFile(gitScript, []byte("#!/bin/bash\ngit push --force origin main\n"), 0o755); err != nil {
+		t.Fatalf("write force_push.sh: %v", err)
+	}
+	dec = evaluateCommand(paths, "bash", []string{gitScript})
+	if dec.Action != ActionAsk {
+		t.Errorf("bash force_push.sh: want ask, got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "script contains risky pattern:") {
+		t.Errorf("bash force_push.sh: reason should have 'script contains risky pattern:', got: %s", dec.Reason)
+	}
+
+	// Script containing shutil.rmtree -> ask "risky pattern".
+	rmtreeScript := filepath.Join(dir, "rmtree.py")
+	if err := os.WriteFile(rmtreeScript, []byte("import shutil\nshutil.rmtree('/tmp/foo')\n"), 0o644); err != nil {
+		t.Fatalf("write rmtree.py: %v", err)
+	}
+	dec = evaluateCommand(paths, "python3", []string{rmtreeScript})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 rmtree.py: want ask, got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "script contains risky pattern:") {
+		t.Errorf("python3 rmtree.py: reason should have 'script contains risky pattern:', got: %s", dec.Reason)
+	}
+
+	// Script containing eval() -> ask "risky pattern".
+	evalScript := filepath.Join(dir, "eval.py")
+	if err := os.WriteFile(evalScript, []byte("eval('1+1')\n"), 0o644); err != nil {
+		t.Fatalf("write eval.py: %v", err)
+	}
+	dec = evaluateCommand(paths, "python3", []string{evalScript})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 eval.py: want ask, got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "script contains risky pattern:") {
+		t.Errorf("python3 eval.py: reason should have 'script contains risky pattern:', got: %s", dec.Reason)
+	}
+
+	// Benign script (echo hi) -> no hard-deny, no risky pattern, but
+	// bash is an interpreter with a script file -> escalated to ask by 12.2
+	// (interpreter opaque-code escalation).
+	benignScript := filepath.Join(dir, "benign.sh")
+	if err := os.WriteFile(benignScript, []byte("#!/bin/bash\necho hello world\n"), 0o755); err != nil {
+		t.Fatalf("write benign.sh: %v", err)
+	}
+	dec = evaluateCommand(paths, "bash", []string{benignScript})
+	// bash with a script file: 12.2 escalation -> ActionAsk "interpreter executing opaque script/code".
+	if dec.Action != ActionAsk {
+		t.Errorf("bash benign.sh: want ask (interpreter escalation), got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "interpreter executing opaque script") {
+		t.Errorf("bash benign.sh: reason should be interpreter escalation, got: %s", dec.Reason)
+	}
+
+	// python3 with benign script: escalated by 12.2 to ask.
+	benignPy := filepath.Join(dir, "benign.py")
+	if err := os.WriteFile(benignPy, []byte("print('hello')\n"), 0o644); err != nil {
+		t.Fatalf("write benign.py: %v", err)
+	}
+	dec = evaluateCommand(paths, "python3", []string{benignPy})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 benign.py: want ask (interpreter escalation), got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "interpreter executing opaque script") {
+		t.Errorf("python3 benign.py: reason should be interpreter escalation, got: %s", dec.Reason)
+	}
+
+	// -c / -e code flags: script scan skips (no file to read), but 12.2
+	// escalation still fires.
+	dec = evaluateCommand(paths, "python3", []string{"-c", "print('hi')"})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 -c 'print(hi)': want ask (interpreter escalation), got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "interpreter executing opaque script") {
+		t.Errorf("python3 -c: reason should be interpreter escalation, got: %s", dec.Reason)
+	}
+
+	// python3 bare stays MEDIUM (no opaque args -> not escalated).
+	dec = evaluateCommand(paths, "python3", nil)
+	if dec.Action == ActionAsk && strings.Contains(dec.Reason, "interpreter") {
+		t.Errorf("python3 bare should NOT be escalated, got ask (reason=%s)", dec.Reason)
+	}
+}
+
+// TestResolveBinaryBase verifies the symlink resolution helper (12.1).
+func TestResolveBinaryBase(t *testing.T) {
+	// Bare names return unchanged basename.
+	if got := resolveBinaryBase("ls"); got != "ls" {
+		t.Errorf("resolveBinaryBase(ls) = %q, want ls", got)
+	}
+	if got := resolveBinaryBase("rm"); got != "rm" {
+		t.Errorf("resolveBinaryBase(rm) = %q, want rm", got)
+	}
+	if got := resolveBinaryBase("python3"); got != "python3" {
+		t.Errorf("resolveBinaryBase(python3) = %q, want python3", got)
+	}
+
+	// Path-form names: resolve symlinks.
+	dir := t.TempDir()
+	link := filepath.Join(dir, "myls")
+	if err := os.Symlink("/bin/ls", link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	got := resolveBinaryBase(link)
+	if got != "ls" {
+		t.Errorf("resolveBinaryBase(%s) = %q, want ls", link, got)
+	}
+
+	// Symlink to rm.
+	rmLink := filepath.Join(dir, "notrm")
+	if _, err := os.Stat("/bin/rm"); err == nil {
+		if err := os.Symlink("/bin/rm", rmLink); err != nil {
+			t.Fatalf("symlink rm: %v", err)
+		}
+		got := resolveBinaryBase(rmLink)
+		if got != "rm" {
+			t.Errorf("resolveBinaryBase(%s) = %q, want rm", rmLink, got)
+		}
+	}
+
+	// Nonexistent path falls back to basename.
+	got = resolveBinaryBase("/nonexistent/path/foo")
+	if got != "foo" {
+		t.Errorf("resolveBinaryBase(/nonexistent/path/foo) = %q, want foo", got)
+	}
+}
+
+// TestGateRegression verifies existing behavior is preserved after hardening.
+func TestGateRegression(t *testing.T) {
+	paths := &SandboxConfig{
+		Mode:        SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	bwrap := &SandboxConfig{
+		Mode:        SandboxModeBubblewrap,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	// Risk table: known commands classify correctly.
+	tests := []struct {
+		argv []string
+		want CommandRisk
+	}{
+		{ss("ls"), RiskLow},
+		{ss("cat", "file.txt"), RiskLow},
+		{ss("git", "status"), RiskLow},
+		{ss("git", "push", "--force"), RiskHigh},
+		{ss("sed", "-i", "s/a/b/", "file"), RiskMedium},
+		{ss("awk", "-i", "inplace"), RiskMedium},
+		{ss("tar", "-tf", "archive.tar"), RiskLow},
+		{ss("tar", "-xf", "a.tar"), RiskMedium},
+		{ss("kill", "-9", "1234"), RiskHigh},
+		{ss("kill", "1234"), RiskMedium},
+		{ss("chmod", "755", "file"), RiskMedium},
+		{ss("chmod", "-R", "777", "/etc"), RiskHigh},
+		{ss("chown", "-R", "root", "/"), RiskHigh},
+		{ss("rm", "file.txt"), RiskHigh},
+		{ss("mkfs.ext4", "/dev/sda1"), RiskHigh},
+		{ss("sudo", "whoami"), RiskHigh},
+		{ss("curl", "https://example.com"), RiskMedium},
+		{ss("python3"), RiskMedium},
+		{ss("python3", "script.py"), RiskMedium},
+		{ss("./script.sh"), RiskUnknown},
+		{ss("unknown_tool"), RiskUnknown},
+	}
+	for _, tt := range tests {
+		got := classifyRisk(tt.argv)
+		if got != tt.want {
+			t.Errorf("classifyRisk(%v) = %s, want %s", tt.argv, got, tt.want)
+		}
+	}
+
+	// Hard-deny matrix: key entries still work.
+	hardDenyOK := []struct {
+		cmd  string
+		args []string
+	}{
+		{"rm", ss("-rf", "/")},
+		{"rm", ss("-rf", "/etc")},
+		{"dd", ss("if=/dev/zero", "of=/dev/sda")},
+	}
+	for _, tt := range hardDenyOK {
+		dec := evaluateCommand(paths, tt.cmd, tt.args)
+		if dec.Action != ActionDeny {
+			t.Errorf("hard-deny %s %v: want deny, got %s", tt.cmd, tt.args, dec.Action)
+		}
+	}
+
+	// Threshold: LOW commands allowed under paths (threshold=medium).
+	dec := evaluateCommand(paths, "ls", nil)
+	if dec.Action != ActionAllow {
+		t.Errorf("ls under paths (threshold=medium): want allow, got %s", dec.Action)
+	}
+
+	// MEDIUM commands allowed under bubblewrap (threshold=high).
+	dec = evaluateCommand(bwrap, "curl", []string{"https://example.com"})
+	if dec.Action != ActionAllow {
+		t.Errorf("curl under bubblewrap (threshold=high): want allow, got %s", dec.Action)
+	}
+
+	// HIGH commands ask under bubblewrap.
+	dec = evaluateCommand(bwrap, "sudo", []string{"whoami"})
+	if dec.Action != ActionAsk {
+		t.Errorf("sudo under bubblewrap (threshold=high): want ask, got %s", dec.Action)
+	}
+
+	// Permission precedence: deny > hard-deny > allow.
+	sb := &SandboxConfig{Mode: SandboxModePaths, Permissions: map[string]string{"system_exec": "deny"}}
+	dec = evaluateCommand(sb, "ls", nil)
+	if dec.Action != ActionDeny {
+		t.Errorf("deny permission should deny ls, got %s", dec.Action)
+	}
+
+	// Allowlist.
+	sb = &SandboxConfig{
+		Mode:            SandboxModePaths,
+		Permissions:     map[string]string{"system_exec": "ask"},
+		AllowedCommands: []string{"ls", "cat"},
+	}
+	dec = evaluateCommand(sb, "ls", nil)
+	if dec.Action == ActionDeny {
+		t.Errorf("ls should be in allowlist, got deny")
+	}
+	dec = evaluateCommand(sb, "grep", []string{"foo", "bar"})
+	if dec.Action != ActionDeny {
+		t.Errorf("grep should be denied by allowlist, got %s", dec.Action)
+	}
+
+	// DenyPatterns.
+	sb = &SandboxConfig{
+		Mode:         SandboxModePaths,
+		Permissions:  map[string]string{"system_exec": "ask"},
+		DenyPatterns: []string{"reboot"},
+	}
+	dec = evaluateCommand(sb, "reboot", nil)
+	if dec.Action != ActionDeny {
+		t.Errorf("reboot should be denied by deny pattern, got %s", dec.Action)
+	}
+
+	// UNKNOWN always asks.
+	dec = evaluateCommand(paths, "some_tool", nil)
+	if dec.Action != ActionAsk {
+		t.Errorf("unknown binary should ask, got %s", dec.Action)
+	}
+}

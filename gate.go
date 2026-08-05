@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -122,7 +123,7 @@ func classifyRisk(argv []string) CommandRisk {
 		return RiskUnknown
 	}
 
-	basename := strings.ToLower(filepath.Base(argv[0]))
+	basename := strings.ToLower(resolveBinaryBase(argv[0]))
 
 	// HIGH risk binaries (check first - destructive/privileged)
 	highRisk := map[string]bool{
@@ -456,7 +457,7 @@ func collectViews(command string) []string {
 func checkHardDeny(argv []string, views []string) string {
 	// Check parsed argv if available.
 	if len(argv) > 0 {
-		bin := strings.ToLower(filepath.Base(argv[0]))
+		bin := strings.ToLower(resolveBinaryBase(argv[0]))
 
 		// 1. Recursive deletion of system/home roots.
 		if bin == "rm" {
@@ -588,7 +589,7 @@ func checkRmHardDeny(argv []string) string {
 // checkDeviceDestruction checks argv for device destruction patterns
 // (dd, mkfs, shred, fdisk, parted).
 func checkDeviceDestruction(argv []string) string {
-	bin := strings.ToLower(filepath.Base(argv[0]))
+	bin := strings.ToLower(resolveBinaryBase(argv[0]))
 
 	switch bin {
 	case "dd":
@@ -753,6 +754,150 @@ func checkChmodChownInString(s string) string {
 	return ""
 }
 
+// ---- Indirection Hardening (Phase 5) ---- //
+
+// resolveBinaryBase resolves the real basename of a binary, following
+// symlinks to defeat rename-type bypasses. Only resolves path-form names
+// (containing "/"); bare names use filepath.Base directly since PATH
+// symlink resolution (awk->gawk, reboot->systemctl) would incorrectly
+// change risk-table lookups. Best-effort: falls back to filepath.Base(name)
+// on any error so a legit command is never blocked because resolution
+// failed.
+func resolveBinaryBase(name string) string {
+	if !strings.Contains(name, "/") {
+		return filepath.Base(name)
+	}
+	// Path form: resolve symlinks directly.
+	resolved, err := filepath.EvalSymlinks(name)
+	if err != nil {
+		return filepath.Base(name)
+	}
+	return filepath.Base(resolved)
+}
+
+// codeInterpreters is the set of binaries that can execute opaque scripts
+// or inline code (12.2).
+var codeInterpreters = map[string]bool{
+	"python": true, "python3": true, "node": true, "ruby": true,
+	"perl": true, "php": true, "lua": true, "r": true,
+	"bash": true, "sh": true, "zsh": true, "dash": true, "fish": true,
+}
+
+// hasOpaqueCodeArg reports whether argv[1:] contains a code-execution flag
+// (-c, -e, -r, --eval, -f, -c<script>, -e<script>) or a non-flag
+// argument (script file). Returns false when argv has no args or only
+// informational flags like --version, -V, --help.
+func hasOpaqueCodeArg(argv []string) bool {
+	if len(argv) <= 1 {
+		return false
+	}
+	for _, a := range argv[1:] {
+		if a == "-c" || a == "-e" || a == "-r" || a == "--eval" || a == "-f" {
+			return true
+		}
+		// -c<script> / -e<script> prefixes.
+		if len(a) > 2 && strings.HasPrefix(a, "-c") && a[2] != '-' {
+			return true
+		}
+		if len(a) > 2 && strings.HasPrefix(a, "-e") && a[2] != '-' {
+			return true
+		}
+		// Non-flag argument (script file).
+		if !strings.HasPrefix(a, "-") {
+			return true
+		}
+	}
+	return false
+}
+
+// maxScriptScanBytes caps how much of a script file is read for heuristic
+// scanning (12.3).
+const maxScriptScanBytes = 256 * 1024
+
+// riskyScriptPatterns is the regex list matched against script contents
+// during the heuristic scan (12.3). Order matters: first match wins.
+var riskyScriptPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)rm\s+-[^\s]*[rf][^\s]*\s*/`),
+	regexp.MustCompile(`(?i)rm\s+-rf`),
+	regexp.MustCompile(`(?i)dd\s+.*\bof=/dev/`),
+	regexp.MustCompile(`(?i)\bmkfs\b`),
+	regexp.MustCompile(`(?i)shred\s+/dev/`),
+	regexp.MustCompile(`(?i)fdisk\s+/dev/`),
+	regexp.MustCompile(`(?i)parted\s+/dev/`),
+	regexp.MustCompile(`:\(\)\s*\{`),
+	regexp.MustCompile(`(?i)chmod\s+-R\s+777\s*/`),
+	regexp.MustCompile(`(?i)chown\s+-R\s+.*\s+/`),
+	regexp.MustCompile(`(?i)git\s+push\s+.*(--force|-f\b)`),
+	regexp.MustCompile(`(?i)curl\s+.*\|\s*(sh|bash)`),
+	regexp.MustCompile(`(?i)wget\s+.*\|\s*(sh|bash)`),
+	regexp.MustCompile(`(?i)base64\s+(-d|--decode).*\|\s*(sh|bash)`),
+	regexp.MustCompile(`(?i)(sudo|su\s+-)`),
+	regexp.MustCompile(`>\s*/dev/sd[a-z]`),
+	regexp.MustCompile(`(?i)os\.system\s*\(`),
+	regexp.MustCompile(`(?i)subprocess\.(run|call|Popen|check_output|os\.system)`),
+	regexp.MustCompile(`(?i)os\.remove\s*\(`),
+	regexp.MustCompile(`(?i)shutil\.rmtree`),
+	regexp.MustCompile(`(?i)\beval\s*\(`),
+	regexp.MustCompile(`/dev/sda|/dev/nvme|/dev/mmcblk`),
+}
+
+// scanScriptContent reads and heuristically scans a script file referenced
+// in argv for dangerous patterns (12.3). Returns the found pattern and
+// RiskHigh on match, or ("", RiskLow) when clean / unreadable.
+func scanScriptContent(argv []string) (string, CommandRisk) {
+	// Find the first non-flag arg (the script file), skipping code flags.
+	var scriptPath string
+	for _, a := range argv[1:] {
+		// Skip standalone code flags.
+		if a == "-c" || a == "-e" || a == "-r" || a == "--eval" || a == "-f" {
+			continue
+		}
+		// Skip -c<script> / -e<script> packed forms.
+		if len(a) > 2 && strings.HasPrefix(a, "-c") && a[2] != '-' {
+			continue
+		}
+		if len(a) > 2 && strings.HasPrefix(a, "-e") && a[2] != '-' {
+			continue
+		}
+		// Skip other flags and flag-value args (e.g. "-m", "module").
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		scriptPath = a
+		break
+	}
+	if scriptPath == "" {
+		return "", RiskLow
+	}
+
+	abs, err := filepath.Abs(scriptPath)
+	if err != nil {
+		return "", RiskLow
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", RiskLow
+	}
+	if len(data) > maxScriptScanBytes {
+		data = data[:maxScriptScanBytes]
+	}
+	content := string(data)
+
+	// Step 1: hard-deny circuit breaker against script content.
+	if reason := checkHardDeny(nil, []string{content}); reason != "" {
+		return reason, RiskHigh
+	}
+
+	// Step 2: risky pattern scan.
+	for _, re := range riskyScriptPatterns {
+		if match := re.FindString(content); match != "" {
+			return match, RiskHigh
+		}
+	}
+
+	return "", RiskLow
+}
+
 // effectiveRiskThreshold returns the ask-threshold for the given sandbox:
 // - explicit sb.RiskThreshold ("low"|"medium"|"high"|"unknown") when set
 // - otherwise bubblewrap mode -> RiskHigh, paths/off/nil -> RiskMedium
@@ -836,6 +981,33 @@ func evaluateCommand(sb *SandboxConfig, command string, args []string) GateDecis
 	}
 
 	risk := classifyRisk(argv)
+
+	// 12.2 / 12.3: Indirection hardening for code interpreters.
+	resolvedBase := strings.ToLower(resolveBinaryBase(argv[0]))
+	if codeInterpreters[resolvedBase] {
+		// 12.3: Script-content heuristic scan (hard-deny first).
+		if found, scrRisk := scanScriptContent(argv); scrRisk == RiskHigh && found != "" {
+			// Distinguish hard-deny (from checkHardDeny) from risky
+			// pattern match. Hard-deny reasons contain distinctive
+			// phrases about destruction/permission changes.
+			if strings.Contains(found, "recursive") ||
+				strings.Contains(found, "raw device") ||
+				strings.Contains(found, "filesystem") ||
+				strings.Contains(found, "secure deletion") ||
+				strings.Contains(found, "partition table") ||
+				strings.Contains(found, "redirect to device") ||
+				strings.Contains(found, "fork bomb") ||
+				strings.Contains(found, "world-writable") ||
+				strings.Contains(found, "ownership change") {
+				return GateDecision{Action: ActionDeny, Risk: RiskHigh, Reason: "script contains: " + found}
+			}
+			return GateDecision{Action: ActionAsk, Risk: RiskHigh, Reason: "script contains risky pattern: " + found}
+		}
+		// 12.2: Interpreter opaque-code escalation.
+		if hasOpaqueCodeArg(argv) {
+			return GateDecision{Action: ActionAsk, Risk: RiskUnknown, Reason: "interpreter executing opaque script/code requires user approval"}
+		}
+	}
 
 	// 5. Risk == RiskUnknown -> ActionAsk (fail-closed on unknown binaries).
 	// Per semantics note: RiskUnknown ALWAYS asks, regardless of permission mode.
