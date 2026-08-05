@@ -66,6 +66,15 @@ var builtinCommands = []SlashCommand{
 		},
 	},
 	{
+		Name:        "board",
+		Aliases:     []string{"tasks", "task"},
+		Description: "Manage the task board: summary, list, new, get, update, done, fail, cancel, delete, archive, claim",
+		Usage:       "/board <subcommand> [args]",
+		Run: func(m *appModel, args string) tea.Cmd {
+			return runBoardCommand(m, args)
+		},
+	},
+	{
 		Name:        "exit",
 		Aliases:     []string{"quit"},
 		Description: "Exit hakase",

@@ -1456,6 +1456,7 @@ func (m *appModel) helpView() tea.View {
 			{"@name", "Attach a file (pick from the @ menu)"},
 		}},
 		{"Slash Commands", []helpBinding{
+			{"/board", "Task board: summary, list, new, get, update, done, fail, cancel, delete, archive, claim"},
 			{"/compact [focus]", "Summarize the conversation to free context"},
 			{"/new", "Start a fresh session"},
 			{"/sessions", "Open the session chooser"},

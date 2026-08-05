@@ -96,6 +96,7 @@ Type `/` in the input to see a filtered command menu (arrow keys navigate,
 
 | Command                | Action                                                        |
 | ---------------------- | ------------------------------------------------------------- |
+| `/board`               | Task board: `summary`, `list`, `new <title>`, `get <id>`, `update <id>`, `done <id>`, `fail <id>`, `cancel <id>`, `delete <id>`, `archive <id>`, `claim <id>` |
 | `/compact [focus]`     | Summarize the conversation to free context, continuing the same session; optional focus instructions steer the summary |
 | `/new`                 | Start a fresh session (previous sessions stay resumable)      |
 | `/sessions`            | Open the session chooser to switch or resume old sessions     |
