@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // slash.go implements the built-in slash command system: a registry of
@@ -256,11 +257,22 @@ func (m *appModel) handleCommandMenuKey(key string) (tea.Cmd, bool) {
 }
 
 // commandMenuView renders the slash command menu overlay: the filtered
-// command list with the highlighted selection marked.
+// command list with the highlighted selection marked. The box spans the
+// input pane width so command descriptions are readable, wrapping long
+// descriptions across lines with a hanging indent.
 func (m *appModel) commandMenuView() string {
 	filtered := m.filteredCommands()
 	if len(filtered) == 0 {
 		return menuBoxStyle.Render("  (no matching command)  ")
+	}
+
+	// The menu overlays the input pane (leftWidth wide) at X(0); cap the box
+	// there so it never bleeds into the right pane. Box width = content +
+	// horizontal padding (2) + border (2).
+	rightWidth := m.width / 5
+	maxContent := m.width - rightWidth - 4 - 4
+	if maxContent < 20 {
+		maxContent = 20
 	}
 
 	maxLines := 8
@@ -274,11 +286,36 @@ func (m *appModel) commandMenuView() string {
 		if i == m.commandMenuIndex {
 			marker = "❯ "
 		}
-		desc := c.Description
-		if len(desc) > 34 {
-			desc = desc[:31] + "..."
-		}
-		lines = append(lines, fmt.Sprintf("%s/%s  %s", marker, c.Name, desc))
+		head := fmt.Sprintf("%s/%s", marker, c.Name)
+		descCol := lipgloss.Width(head) + 2
+		desc := wrapCommandDesc(c.Description, maxContent-descCol, descCol)
+		lines = append(lines, head+"  "+desc)
 	}
 	return menuBoxStyle.Render(strings.Join(lines, "\n"))
+}
+
+// wrapCommandDesc wraps desc to fit within width columns, indenting each
+// continuation line by indent spaces so wrapped descriptions read as a
+// hanging indent under the command name.
+func wrapCommandDesc(desc string, width, indent int) string {
+	if width <= 1 {
+		return desc
+	}
+	pad := strings.Repeat(" ", indent)
+	var lines []string
+	var cur string
+	for _, w := range strings.Fields(desc) {
+		if cur == "" {
+			cur = w
+		} else if lipgloss.Width(cur)+1+lipgloss.Width(w) <= width {
+			cur += " " + w
+		} else {
+			lines = append(lines, cur)
+			cur = pad + w
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return strings.Join(lines, "\n")
 }

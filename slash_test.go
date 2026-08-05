@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 )
+
+// ansiStrip removes SGR escape sequences so rendered output can be asserted
+// on as plain text.
+var ansiStrip = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func TestParseSlashCommand(t *testing.T) {
 	cases := []struct {
@@ -185,6 +190,51 @@ func TestEscInCommandMenuClearsInput(t *testing.T) {
 	}
 	if mm.input.Value() != "" {
 		t.Fatalf("esc in command menu must clear the input, got %q", mm.input.Value())
+	}
+}
+
+func TestCommandMenuViewWrapsLongDescriptions(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("/")
+	m.input.CursorEnd()
+
+	menu := m.commandMenuView()
+	if menu == "" {
+		t.Fatal("command menu must render")
+	}
+	// Every command description must be fully surfaced; wrapping may split a
+	// description across lines (with the box border in between), so check the
+	// words appear in order after stripping ANSI codes.
+	plain := ansiStrip.ReplaceAllString(menu, "")
+	menuWords := strings.Fields(plain)
+	for _, c := range builtinCommands {
+		if !isSubsequence(menuWords, strings.Fields(c.Description)) {
+			t.Fatalf("command menu must surface full description for /%s, got:\n%s", c.Name, menu)
+		}
+	}
+}
+
+// isSubsequence reports whether want appears as a subsequence of have (in
+// order, not necessarily contiguous).
+func isSubsequence(have, want []string) bool {
+	i := 0
+	for _, w := range have {
+		if i < len(want) && w == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
+}
+
+func TestWrapCommandDesc(t *testing.T) {
+	got := wrapCommandDesc("aa bb cc dd", 5, 2)
+	want := "aa bb\n  cc\n  dd"
+	if got != want {
+		t.Fatalf("wrapCommandDesc = %q, want %q", got, want)
+	}
+	// Width large enough for one line: no wrap.
+	if got := wrapCommandDesc("aa bb", 80, 0); got != "aa bb" {
+		t.Fatalf("wrapCommandDesc short = %q, want %q", got, "aa bb")
 	}
 }
 
