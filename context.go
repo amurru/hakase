@@ -22,12 +22,19 @@ type HistoryBuilder struct {
 	modelInfo   *ModelInfo // guarded by modelInfoMu
 	modelInfoMu sync.RWMutex
 	logf        func(format string, args ...any)
+	pending     *pendingQueue // mid-run steering queue (may be nil)
 }
 
 // NewHistoryBuilder creates a HistoryBuilder bound to the given session
 // service. svc may be nil (history injection is a no-op in that case).
 func NewHistoryBuilder(svc *SessionService) *HistoryBuilder {
 	return &HistoryBuilder{svc: svc}
+}
+
+// SetPendingQueue attaches the TUI's mid-run message queue so queued prompts
+// are steered into the request on every model call. May be nil (no steering).
+func (h *HistoryBuilder) SetPendingQueue(q *pendingQueue) {
+	h.pending = q
 }
 
 // SetModelInfo updates the model capabilities used for budget decisions.
@@ -100,6 +107,17 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		h.logfSafe("⚠ project context files changed; update notice injected")
 		noticeContent := genai.NewContentFromText(notice, genai.RoleUser)
 		req.Contents = append(append(append([]*genai.Content{}, history...), noticeContent), current...)
+	}
+
+	// Steer queued user messages (typed while the agent was busy) into the
+	// tail of the request as the most recent user intent. Injected on every
+	// model call: ADK rebuilds req.Contents fresh per call from session
+	// events (which never contain the queue), so re-injecting keeps the
+	// steering active for the whole run. The queue drains at agentDoneMsg.
+	if h.pending != nil && h.pending.len() > 0 {
+		for _, q := range h.pending.snapshot() {
+			req.Contents = append(req.Contents, steeringContent(q))
+		}
 	}
 	return nil, nil
 }

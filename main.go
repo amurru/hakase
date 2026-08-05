@@ -86,6 +86,13 @@ func main() {
 	p = tea.NewProgram(&m)
 	m.program = p
 
+	// Share the TUI's mid-run message queue with the HistoryBuilder so
+	// prompts typed while the agent is busy are steered into the running
+	// session at model-call boundaries (BeforeModelCallback).
+	if currentHistoryBuilder != nil {
+		currentHistoryBuilder.SetPendingQueue(m.pendingQueue)
+	}
+
 	// Install the interactive approval gate so tool handlers can ask the
 	// user for confirmation via the TUI approval modal.
 	expiry := time.Duration(cfg.Approval.ExpirySeconds) * time.Second

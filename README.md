@@ -66,18 +66,20 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 - **Left panel** — Chat viewport displaying agent responses and tool call logs
 - **Right panel** — Real-time status and execution logs
 - **Bottom** — Multi-line text input (auto-grows up to 3 lines) with focus cycling (`Tab` to switch panes) and a hint bar showing the most used shortcuts
+- **Mid-run messaging** — Type and send while the agent is working: your message is queued (shown as `N queued` in the hint bar), steered into the running session at the next model-call boundary as a `USER INTERJECTION`, then processed as its own turn when the current run completes
 - **Help overlay** — Press `Ctrl+/` (`?` when not typing) for a full keyboard shortcut reference
 
 ### Keyboard Shortcuts
 
 | Shortcut               | Action                                          |
 | ---------------------- | ----------------------------------------------- |
-| `Ctrl+C`               | Quit the application                            |
+| `Ctrl+C`               | Quit the application (also cancels a running agent) |
+| `Esc` `Esc`            | Interrupt the running agent (double-press within 2s) |
 | `Esc`                  | Close the help overlay (never quits)            |
 | `Ctrl+/` or `?`        | Toggle the help overlay                         |
 | `Tab` / `Shift+Tab`    | Cycle focus: input → chat → log → task          |
 | `Ctrl+T`               | Toggle the thinking display                     |
-| `Enter`                | Send the message                                |
+| `Enter`                | Send the message (queued while the agent is busy) |
 | `Shift+Enter` / `Ctrl+J` | Insert a newline in the input                 |
 | `↑`/`k`, `↓`/`j`       | Scroll the focused pane (older/newer content)   |
 | `PgUp`/`b`, `PgDn`/`f` | Page up / down in the focused pane              |

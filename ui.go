@@ -205,6 +205,17 @@ type agentTextMsg string
 type agentLogMsg string
 type agentDoneMsg struct{}
 
+// escInterruptWindow is how long a single Esc press stays "armed" before a
+// second press is required to interrupt the running agent. Guards against
+// accidental cancellation by a stray Esc.
+const escInterruptWindow = 2 * time.Second
+
+// escArmTimeoutMsg fires when the double-Esc window expires with no second
+// press, disarming the pending interrupt so a later Esc starts fresh. at
+// carries the arm timestamp so a stale tick from a previous arm cannot clear
+// a newer one (e.g. after an interrupt + re-arm within the old window).
+type escArmTimeoutMsg struct{ at time.Time }
+
 // approvalPromptMsg carries an approval request from a tool handler to the TUI.
 // The Resp channel is written to by the Update handler when the user answers.
 type approvalPromptMsg struct {
@@ -328,6 +339,21 @@ type appModel struct {
 
 	// Approval modal state.
 	pendingApproval *approvalPromptMsg
+
+	// Mid-run message queue: prompts typed while the agent is busy. Steered
+	// into the running session by the HistoryBuilder callback, drained into
+	// fresh runs at agentDoneMsg.
+	pendingQueue *pendingQueue
+
+	// runCtrl shares the active run's cancel func and interrupt flag across
+	// the TUI goroutine (Esc / Ctrl+C) and the runAgentTask goroutine.
+	runCtrl *runControl
+
+	// escArmedAt records when the first Esc press happened while the agent
+	// was busy. A second press within escInterruptWindow cancels the run;
+	// the single-press guard prevents accidental interruption. Zero = not
+	// armed.
+	escArmedAt time.Time
 }
 
 func newModel(
@@ -370,6 +396,8 @@ func newModel(
 		sessionService:  sessionSvc,
 		mentionFiltered: make([]string, 0),
 		attachments:     make([]attachment, 0),
+		pendingQueue:    newPendingQueue(),
+		runCtrl:         newRunControl(),
 	}
 }
 
@@ -446,6 +474,9 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				m.pendingApproval.Resp <- false
 				m.pendingApproval = nil
+				if m.runCtrl != nil {
+					m.runCtrl.interrupt()
+				}
 				return m, tea.Quit
 			}
 			return m, nil
@@ -455,6 +486,9 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showHelp {
 			switch key {
 			case "ctrl+c":
+				if m.runCtrl != nil {
+					m.runCtrl.interrupt()
+				}
 				return m, tea.Quit
 			case "esc", "ctrl+/", "ctrl+_", "ctrl+?", "?":
 				m.showHelp = false
@@ -482,12 +516,35 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch key {
-		// Esc only closes the help overlay (guard above) and is otherwise a
-		// no-op: it never quits, and it is swallowed here so it cannot leak
-		// into the input or viewport handlers below.
+		// Esc closes the help overlay (guard above) and is otherwise a no-op
+		// that never quits. While the agent is busy, a double-Esc within
+		// escInterruptWindow is a hard interrupt (Codex-style): it cancels
+		// the run; queued messages then drain as a single merged turn. A
+		// single Esc just arms the press so a stray key can't cancel a run.
 		case "esc":
+			if m.isProcessing && !m.showSessionList {
+				now := time.Now()
+				if m.escArmedAt.IsZero() || now.Sub(m.escArmedAt) > escInterruptWindow {
+				// First press: arm the double-press interrupt.
+				m.escArmedAt = now
+				m.appendLog("⚡ press Esc again within 2s to interrupt")
+				return m, tea.Tick(escInterruptWindow, func(t time.Time) tea.Msg {
+					return escArmTimeoutMsg{at: now}
+				})
+				}
+				// Second press within the window: cancel the run.
+				m.escArmedAt = time.Time{}
+				m.runCtrl.interrupt()
+				m.appendLog("⏹ interrupt requested (Esc) - stopping agent")
+				return m, nil
+			}
 			return m, nil
 		case "ctrl+c":
+			// Cancel the running agent goroutine so it cannot outlive the
+			// program (goroutine leak fix).
+			if m.runCtrl != nil {
+				m.runCtrl.interrupt()
+			}
 			return m, tea.Quit
 		// Ctrl+/ sends byte 0x1F, decoded as "ctrl+_" on standard terminals,
 		// "ctrl+/" via the kitty protocol, and "ctrl+?" on some emulators.
@@ -503,9 +560,10 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Ctrl+V: try to paste an image from the clipboard as an attachment
 		// chip. When the clipboard holds no image, fall through so the
-		// textarea handles text paste.
+		// textarea handles text paste. Allowed while processing so a queued
+		// message can carry attachments.
 		case "ctrl+v":
-			if m.focus == inputFocus && !m.isProcessing {
+			if m.focus == inputFocus {
 				if data, mimeType, err := readImageFromClipboard(); err == nil && len(data) > 0 {
 					m.addImageAttachment(data, mimeType)
 					return m, nil
@@ -541,6 +599,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				if m.isProcessing {
+					// The agent is busy: queue the message instead of
+					// dropping it. It is steered into the running session at
+					// the next model-call boundary (HistoryBuilder callback)
+					// and drained into its own turn when the run completes.
+					attached := m.attachments
+					m.input.Reset()
+					m.attachments = nil
+					m.pendingQueue.push(queuedPrompt{text: prompt, attach: attached})
+					m.appendLog(fmt.Sprintf("⏳ queued: %s (%d pending)", prompt, m.pendingQueue.len()))
 					return m, nil
 				}
 
@@ -592,7 +659,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.appendLog(fmt.Sprintf("⚠ context %d%% full (effective budget)", pct))
 				}
 
-				go runAgentTask(m.ctx, m.r, m.program, content, GenerateTaskID())
+				go m.runAgentTask(content, GenerateTaskID())
 			}
 		case "up", "k":
 			if m.focus == chatFocus {
@@ -801,6 +868,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentLogMsg:
 		m.appendLog(string(msg))
 
+	// The double-Esc window expired with no second press: disarm so a later
+	// Esc starts a fresh armed state instead of cancelling. A stale tick
+	// (at != current arm) is ignored so an old window can't clear a newer arm.
+	case escArmTimeoutMsg:
+		if !m.escArmedAt.IsZero() && m.escArmedAt.Equal(msg.at) {
+			m.escArmedAt = time.Time{}
+		}
+		return m, nil
+
 	case StatusLogMsg:
 		m.appendLog(msg.Text)
 	case DelegationProgressMsg:
@@ -810,7 +886,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TaskBoardMsg:
 		m.refreshTaskBoard()
 	case agentDoneMsg:
-		m.isProcessing = false
+		interrupted := m.runCtrl.consumeInterrupt()
+		// A run ended: clear any armed double-Esc state so a stray Esc can't
+		// cancel the next run within the window.
+		m.escArmedAt = time.Time{}
+
 		// Save the final agent message to the session with the provider-
 		// reported token count (UsageUpdateMsg arrives before agentDoneMsg,
 		// so m.usage is current here).
@@ -826,6 +906,27 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				_ = m.sessionService.RecordUsage("agent", last.Content, last.Thinking, tokens)
 			}
+		}
+
+		// Drain the mid-run message queue: chain fresh runs for queued
+		// prompts. On an Esc interrupt all pending steers merge into a single
+		// turn (Codex semantics); otherwise FIFO, one run per prompt, with
+		// isProcessing staying true until the queue drains.
+		if m.pendingQueue.len() > 0 {
+			if interrupted {
+				text, attached := mergeQueued(m.pendingQueue.popAll())
+				m.launchTurn(text, attached)
+				return m, nil
+			}
+			if next, ok := m.pendingQueue.pop(); ok {
+				m.launchTurn(next.text, next.attach)
+				return m, nil
+			}
+		}
+
+		m.isProcessing = false
+		if interrupted {
+			m.appendLog("Conversation interrupted - tell the model what to do differently.")
 		}
 	case approvalPromptMsg:
 		m.pendingApproval = &msg
@@ -1264,10 +1365,16 @@ func (m *appModel) hintBar() string {
 	if m.isProcessing {
 		status += " ⏳ working"
 	}
+	if n := m.pendingQueue.len(); n > 0 {
+		status += fmt.Sprintf(" · %d queued", n)
+	}
 	if m.showThinking {
 		status += " 💭 thinking"
 	}
 	hints := "ctrl+/ help · / commands · @ attach · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
+	if m.isProcessing {
+		hints = "esc esc interrupt · " + hints
+	}
 	return hintBarStyle.Render(status + "  │  " + hints)
 }
 
@@ -1439,6 +1546,7 @@ func (m *appModel) helpView() tea.View {
 	}{
 		{"Global", []helpBinding{
 			{"ctrl+c", "Quit the application"},
+			{"esc esc", "Double-press while the agent works to interrupt it (within 2s)"},
 			{"esc", "Close the help overlay"},
 			{"ctrl+/", "Toggle this help screen"},
 			{"?", "Toggle help (when not typing)"},
@@ -1447,7 +1555,7 @@ func (m *appModel) helpView() tea.View {
 			{"ctrl+t", "Toggle thinking display"},
 		}},
 		{"Input", []helpBinding{
-			{"enter", "Send the message"},
+			{"enter", "Send the message (queued while the agent is busy)"},
 			{"shift+enter / ctrl+j", "Insert a newline"},
 			{"ctrl+a / ctrl+e", "Jump to line start / end"},
 			{"left / right", "Move the cursor"},
@@ -1503,19 +1611,73 @@ type helpBinding struct {
 	desc string
 }
 
-func runAgentTask(
-	ctx context.Context,
-	r *runner.Runner,
-	p *tea.Program,
-	content *genai.Content,
-	taskID string,
-) {
+// launchTurn records a user turn (chat display + session persistence) and
+// starts a fresh agent run for it. Used by the mid-run queue drain: queued
+// prompts become their own turn after the current run completes.
+func (m *appModel) launchTurn(text string, attached []attachment) {
+	content := genai.NewContentFromParts(buildMessageParts(text, attached), genai.RoleUser)
+	display := text
+	if labels := attachmentLabels(attached); labels != "" {
+		display = text + "\n" + labels
+	}
+	m.chatHistory = append(m.chatHistory, ChatMessage{
+		Role:    "user",
+		Content: display,
+	})
+	m.rebuildRenderedLines()
+	m.chatScrollOffset = m.maxChatScrollOffset()
+	m.renderChatViewport()
+
+	// Persist the user message before the run starts so it lands in the
+	// right session even if the agent never completes.
+	if m.sessionService != nil {
+		tokens := EstimateTokens(text)
+		refs := make([]AttachmentRef, 0, len(attached))
+		for _, a := range attached {
+			tokens += attachmentTokens(a)
+			refs = append(refs, AttachmentRef{
+				Name:  a.Name,
+				Path:  a.Path,
+				MIME:  a.MIME,
+				Label: a.Label,
+			})
+		}
+		_ = m.sessionService.RecordUsageWithAttachments("user", text, "", tokens, refs)
+	}
+
+	m.isProcessing = true
+	go m.runAgentTask(content, GenerateTaskID())
+}
+
+// mergeQueued joins multiple queued prompts into a single turn: texts joined
+// with blank lines, attachments concatenated. Used for the Esc-interrupt
+// drain (Codex semantics: all pending steers become one turn).
+func mergeQueued(qs []queuedPrompt) (string, []attachment) {
+	var texts []string
+	var atts []attachment
+	for _, q := range qs {
+		if strings.TrimSpace(q.text) != "" {
+			texts = append(texts, q.text)
+		}
+		atts = append(atts, q.attach...)
+	}
+	return strings.Join(texts, "\n\n"), atts
+}
+
+func (m *appModel) runAgentTask(content *genai.Content, taskID string) {
+	if m.r == nil {
+		return
+	}
+	p := m.program
 	msg := content
 	debugEvent("user_prompt", "task_id", taskID, "text", contentText(content))
 
 	// Wrap the passed context so the degeneration watchdogs can abort the run.
-	runCtx, runCancel := context.WithCancel(ctx)
+	runCtx, runCancel := context.WithCancel(m.ctx)
 	defer runCancel()
+	// Expose the cancel func to the TUI so Esc / Ctrl+C can interrupt.
+	m.runCtrl.setCancel(runCancel)
+	defer m.runCtrl.setCancel(nil)
 
 	guard := guardDefaults(currentGuard)
 
@@ -1523,11 +1685,17 @@ func runAgentTask(
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
-		for ev, err := range r.Run(runCtx, "user-1", taskID, msg, agent.RunConfig{}) {
+		for ev, err := range m.r.Run(runCtx, "user-1", taskID, msg, agent.RunConfig{}) {
 			if err != nil {
 				if isToolCallJSONErr(err) && attempt < maxToolCallRepairAttempts {
 					parseErr = err
 					break
+				}
+				if m.runCtrl.wasInterrupted() {
+					// User-initiated interrupt (Esc): not an error, and the
+					// agentDoneMsg handler will drain queued messages.
+					debugEvent("agent_interrupted", "task_id", taskID)
+					break outer
 				}
 				if p != nil {
 					p.Send(agentLogMsg(fmt.Sprintf("❌ Error: %v", err)))

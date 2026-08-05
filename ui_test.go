@@ -653,3 +653,325 @@ func TestSelectionDragUpdatesEndLineAndHighlight(t *testing.T) {
 		t.Fatalf("expected highlight (ANSI styling) in chat viewport after drag, got:\n%s", view)
 	}
 }
+
+// TestEnterWhileProcessingQueuesInsteadOfDropping verifies that pressing Enter
+// while the agent is busy buffers the message instead of silently discarding it.
+func TestEnterWhileProcessingQueuesInsteadOfDropping(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.input.SetValue("steer me")
+	m.input.CursorEnd()
+
+	model, _ := m.Update(keyMsg("enter"))
+	mm := model.(*appModel)
+
+	if mm.pendingQueue.len() != 1 {
+		t.Fatalf("pendingQueue len = %d, want 1", mm.pendingQueue.len())
+	}
+	got := mm.pendingQueue.snapshot()
+	if got[0].text != "steer me" {
+		t.Fatalf("queued text = %q, want %q", got[0].text, "steer me")
+	}
+	if mm.input.Value() != "" {
+		t.Fatalf("input should be cleared after queueing, got %q", mm.input.Value())
+	}
+	if !mm.isProcessing {
+		t.Fatal("isProcessing must stay true while a run is active")
+	}
+}
+
+// TestEnterWhileIdleStillSends verifies that the normal (non-processing) path
+// is untouched: Enter launches the run and never queues.
+func TestEnterWhileIdleStillSends(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("normal message")
+	m.input.CursorEnd()
+
+	// The test model has no runner, so the send path still records the user
+	// message in chat history and marks processing (the goroutine is a no-op
+	// with a nil runner).
+	model, _ := m.Update(keyMsg("enter"))
+	mm := model.(*appModel)
+
+	if mm.pendingQueue.len() != 0 {
+		t.Fatalf("idle Enter must not queue, got %d queued", mm.pendingQueue.len())
+	}
+	if len(mm.chatHistory) != 1 || mm.chatHistory[0].Role != "user" {
+		t.Fatalf("chat history should contain the sent user message, got %+v", mm.chatHistory)
+	}
+}
+
+// TestQueuedMessageDrainsIntoFreshRun verifies that agentDoneMsg drains the
+// queue FIFO and chains a fresh run, keeping isProcessing true until empty.
+func TestQueuedMessageDrainsIntoFreshRun(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.input.SetValue("first")
+	m.input.CursorEnd()
+	model, _ := m.Update(keyMsg("enter"))
+	mm := model.(*appModel)
+	mm.input.SetValue("second")
+	mm.input.CursorEnd()
+	model, _ = mm.Update(keyMsg("enter"))
+	mm = model.(*appModel)
+
+	if mm.pendingQueue.len() != 2 {
+		t.Fatalf("setup: want 2 queued, got %d", mm.pendingQueue.len())
+	}
+
+	// Run 1 completes: drains "first" into a fresh run, keeps processing.
+	model, _ = mm.Update(agentDoneMsg{})
+	mm = model.(*appModel)
+	if mm.pendingQueue.len() != 1 {
+		t.Fatalf("after first done: queue len = %d, want 1", mm.pendingQueue.len())
+	}
+	if !mm.isProcessing {
+		t.Fatal("isProcessing must stay true while the queue drains")
+	}
+	got := mm.pendingQueue.snapshot()
+	if got[0].text != "second" {
+		t.Fatalf("FIFO violation: next queued = %q, want %q", got[0].text, "second")
+	}
+
+	// Run 2 completes: drains "second".
+	model, _ = mm.Update(agentDoneMsg{})
+	mm = model.(*appModel)
+	if mm.pendingQueue.len() != 0 {
+		t.Fatalf("after second done: queue len = %d, want 0", mm.pendingQueue.len())
+	}
+	if !mm.isProcessing {
+		t.Fatal("isProcessing stays true while the chained run is active")
+	}
+
+	// Run 3 completes: queue empty, processing ends.
+	model, _ = mm.Update(agentDoneMsg{})
+	mm = model.(*appModel)
+	if mm.isProcessing {
+		t.Fatal("isProcessing must end when the queue is empty")
+	}
+}
+
+// TestHintBarShowsQueuedCount verifies the footer surfaces pending queue depth.
+func TestHintBarShowsQueuedCount(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.pendingQueue.push(queuedPrompt{text: "a"})
+	m.pendingQueue.push(queuedPrompt{text: "b"})
+
+	view := m.hintBar()
+	if !strings.Contains(view, "2 queued") {
+		t.Fatalf("hint bar missing queued count:\n%s", view)
+	}
+	if !strings.Contains(view, "esc esc interrupt") {
+		t.Fatalf("hint bar missing double-esc interrupt hint while processing:\n%s", view)
+	}
+}
+
+// TestSingleEscArmsWithoutInterrupting verifies that one Esc while the agent
+// is busy only arms the double-press interrupt and does not cancel the run.
+func TestSingleEscArmsWithoutInterrupting(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.runCtrl.setCancel(func() {})
+
+	model, _ := m.Update(keyMsg("esc"))
+	mm := model.(*appModel)
+	if mm.runCtrl.wasInterrupted() {
+		t.Fatal("single esc must not interrupt - it only arms the double-press")
+	}
+	if mm.escArmedAt.IsZero() {
+		t.Fatal("single esc should arm the interrupt window")
+	}
+}
+
+// TestEscInterruptsActiveRunOnDoublePress verifies that a second Esc within
+// the window cancels the run and surfaces the interrupt state.
+func TestEscInterruptsActiveRunOnDoublePress(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.runCtrl.setCancel(func() {})
+
+	// First press arms; second press within the window interrupts.
+	model, _ := m.Update(keyMsg("esc"))
+	mm := model.(*appModel)
+	model, _ = mm.Update(keyMsg("esc"))
+	mm = model.(*appModel)
+	if !mm.runCtrl.wasInterrupted() {
+		t.Fatal("double esc within window should interrupt the run")
+	}
+	if !mm.escArmedAt.IsZero() {
+		t.Fatal("interrupt should clear the armed state")
+	}
+}
+
+// TestEscArmTimeoutDisarms verifies that when the double-Esc window expires
+// with no second press, the armed state clears so a later single Esc just
+// re-arms instead of cancelling.
+func TestEscArmTimeoutDisarms(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.runCtrl.setCancel(func() {})
+
+	model, _ := m.Update(keyMsg("esc"))
+	mm := model.(*appModel)
+	if mm.escArmedAt.IsZero() {
+		t.Fatal("test setup: esc should arm")
+	}
+	armedAt := mm.escArmedAt
+
+	// Window expires: disarm.
+	model, _ = mm.Update(escArmTimeoutMsg{at: armedAt})
+	mm = model.(*appModel)
+	if !mm.escArmedAt.IsZero() {
+		t.Fatal("timeout should disarm the armed state")
+	}
+	if mm.runCtrl.wasInterrupted() {
+		t.Fatal("timeout alone must not interrupt")
+	}
+
+	// A later single Esc re-arms (not interrupt).
+	model, _ = mm.Update(keyMsg("esc"))
+	mm = model.(*appModel)
+	if mm.runCtrl.wasInterrupted() {
+		t.Fatal("esc after timeout must re-arm, not interrupt")
+	}
+	if mm.escArmedAt.IsZero() {
+		t.Fatal("esc after timeout should re-arm")
+	}
+}
+
+// TestEscStaleTimeoutDoesNotClearNewArm verifies that a timeout tick from an
+// old arm cannot disarm a newer arm (interrupt + re-arm within the old
+// window).
+func TestEscStaleTimeoutDoesNotClearNewArm(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.runCtrl.setCancel(func() {})
+
+	model, _ := m.Update(keyMsg("esc"))
+	mm := model.(*appModel)
+	oldArm := mm.escArmedAt
+	if oldArm.IsZero() {
+		t.Fatal("test setup: first esc should arm")
+	}
+
+	// Interrupt (clears armed), then re-arm with a fresh press.
+	model, _ = mm.Update(keyMsg("esc"))
+	mm = model.(*appModel)
+	if !mm.runCtrl.wasInterrupted() {
+		t.Fatal("test setup: second esc should interrupt")
+	}
+	mm.runCtrl.consumeInterrupt() // simulate agentDoneMsg consuming the flag
+	model, _ = mm.Update(keyMsg("esc"))
+	mm = model.(*appModel)
+	newArm := mm.escArmedAt
+	if newArm.IsZero() || newArm.Equal(oldArm) {
+		t.Fatalf("test setup: expected a fresh arm, got %v", newArm)
+	}
+
+	// The stale tick from the first arm must not clear the new arm.
+	model, _ = mm.Update(escArmTimeoutMsg{at: oldArm})
+	mm = model.(*appModel)
+	if mm.escArmedAt.IsZero() {
+		t.Fatal("stale timeout tick must not clear the newer arm")
+	}
+}
+
+// TestEscAgentDoneClearsArmedState verifies that a run completing clears the
+// armed window so a stray Esc can't cancel the next run.
+func TestEscAgentDoneClearsArmedState(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.runCtrl.setCancel(func() {})
+
+	model, _ := m.Update(keyMsg("esc"))
+	mm := model.(*appModel)
+	if mm.escArmedAt.IsZero() {
+		t.Fatal("test setup: esc should arm")
+	}
+
+	model, _ = mm.Update(agentDoneMsg{})
+	mm = model.(*appModel)
+	if !mm.escArmedAt.IsZero() {
+		t.Fatal("agentDoneMsg should clear the armed state")
+	}
+}
+
+// TestEscIdleIsNoOp verifies Esc with no active run stays a no-op.
+func TestEscIdleIsNoOp(t *testing.T) {
+	m := newTestModel(t)
+	model, cmd := m.Update(keyMsg("esc"))
+	mm := model.(*appModel)
+	if mm.runCtrl.wasInterrupted() {
+		t.Fatal("esc with idle agent must not interrupt")
+	}
+	if cmd != nil {
+		t.Fatalf("esc must not quit, got cmd %v", cmd)
+	}
+}
+
+// TestInterruptWithQueueMergesIntoOneTurn verifies that an interrupted run
+// drains ALL queued messages as a single merged turn (Codex semantics).
+func TestInterruptWithQueueMergesIntoOneTurn(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.pendingQueue.push(queuedPrompt{text: "stop X"})
+	m.pendingQueue.push(queuedPrompt{text: "do Y"})
+
+	// Simulate the interrupt flag set by Esc, then the run completing.
+	m.runCtrl.interrupt()
+	model, _ := m.Update(agentDoneMsg{})
+	mm := model.(*appModel)
+
+	if mm.pendingQueue.len() != 0 {
+		t.Fatalf("interrupt drain must empty the queue, got %d", mm.pendingQueue.len())
+	}
+	// The merged turn is launched as a fresh run (isProcessing stays true).
+	if !mm.isProcessing {
+		t.Fatal("merged turn should launch a fresh run")
+	}
+	// The merged user message must appear in chat history (display for the
+	// launchTurn path), containing both queued texts.
+	var sawUser bool
+	for _, c := range mm.chatHistory {
+		if c.Role == "user" && strings.Contains(c.Content, "stop X") && strings.Contains(c.Content, "do Y") {
+			sawUser = true
+		}
+	}
+	if !sawUser {
+		t.Fatalf("merged turn missing in chat history: %+v", mm.chatHistory)
+	}
+}
+
+// TestInterruptEmptyQueueShowsNotice verifies the Codex-style notice when an
+// interrupted run has nothing queued.
+func TestInterruptEmptyQueueShowsNotice(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.runCtrl.interrupt()
+
+	model, _ := m.Update(agentDoneMsg{})
+	mm := model.(*appModel)
+	if mm.isProcessing {
+		t.Fatal("empty queue after interrupt must end processing")
+	}
+	joined := strings.Join(mm.logLines, "\n")
+	if !strings.Contains(joined, "Conversation interrupted") {
+		t.Fatalf("interrupt notice missing in log:\n%s", joined)
+	}
+}
+
+// TestCtrlVWhileProcessingQueuesAttachment verifies image paste is unlocked
+// during processing so queued messages can carry attachments.
+func TestCtrlVWhileProcessingAllowed(t *testing.T) {
+	m := newTestModel(t)
+	m.isProcessing = true
+	m.focus = inputFocus
+
+	// The clipboard read fails in tests (no X server / wl-paste), so this
+	// must fall through to the textarea paste path without erroring. The
+	// important regression is that the !m.isProcessing guard was removed.
+	model, _ := m.Update(keyMsg("ctrl+v"))
+	_ = model.(*appModel)
+}
+
