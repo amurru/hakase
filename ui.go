@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -92,6 +93,47 @@ var (
 	helpFooterStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).
 			Italic(true)
+
+	// Approval modal styles.
+	approvalBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("214")).
+				Padding(1, 2)
+
+	approvalTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("214"))
+
+	approvalCommandStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252"))
+
+	approvalHintStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				Italic(true)
+
+	riskBadgeHigh = lipgloss.NewStyle().
+			Background(lipgloss.Color("124")).
+			Foreground(lipgloss.Color("15")).
+			Bold(true).
+			Padding(0, 1)
+
+	riskBadgeMed = lipgloss.NewStyle().
+			Background(lipgloss.Color("178")).
+			Foreground(lipgloss.Color("0")).
+			Bold(true).
+			Padding(0, 1)
+
+	riskBadgeLow = lipgloss.NewStyle().
+			Background(lipgloss.Color("28")).
+			Foreground(lipgloss.Color("15")).
+			Bold(true).
+			Padding(0, 1)
+
+	riskBadgeUnknown = lipgloss.NewStyle().
+				Background(lipgloss.Color("240")).
+				Foreground(lipgloss.Color("15")).
+				Bold(true).
+				Padding(0, 1)
 )
 
 type focusedPane int
@@ -149,6 +191,17 @@ func (m *appModel) mousePane(x, y int) string {
 type agentTextMsg string
 type agentLogMsg string
 type agentDoneMsg struct{}
+
+// approvalPromptMsg carries an approval request from a tool handler to the TUI.
+// The Resp channel is written to by the Update handler when the user answers.
+type approvalPromptMsg struct {
+	Req  ApprovalRequest
+	Resp chan bool
+}
+
+// approvalResultMsg is a noop message sent after the approval channel is
+// resolved so the TUI loop can re-render without the modal.
+type approvalResultMsg struct{}
 
 type agentStreamMsg struct {
 	Content  string
@@ -247,6 +300,9 @@ type appModel struct {
 	sessionListFilter   string
 	sessionListSessions []SessionSummary
 	sessionListFiltered []SessionSummary
+
+	// Approval modal state.
+	pendingApproval *approvalPromptMsg
 }
 
 func newModel(
@@ -349,6 +405,24 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		key := msg.String()
+
+		// Approval modal interception: when a tool needs user approval, all keys
+		// except y/n/esc/ctrl+c are swallowed and normal input is blocked.
+		if m.pendingApproval != nil {
+			switch key {
+			case "y", "Y":
+				m.pendingApproval.Resp <- true
+				m.pendingApproval = nil
+			case "n", "N", "esc":
+				m.pendingApproval.Resp <- false
+				m.pendingApproval = nil
+			case "ctrl+c":
+				m.pendingApproval.Resp <- false
+				m.pendingApproval = nil
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 
 		// While the help overlay is open, swallow all keys except close/quit.
 		if m.showHelp {
@@ -652,6 +726,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.sessionService.RecordUsage("agent", last.Content, last.Thinking, tokens)
 			}
 		}
+	case approvalPromptMsg:
+		m.pendingApproval = &msg
+		return m, nil
+	case approvalResultMsg:
+		// no-op: already cleared; just re-renders.
+		return m, nil
 	case ModelInfoMsg:
 		if msg.Info != nil {
 			m.modelInfo = msg.Info
@@ -957,6 +1037,10 @@ func (m *appModel) View() tea.View {
 		return m.helpView()
 	}
 
+	if m.pendingApproval != nil {
+		return m.approvalModalView()
+	}
+
 	// The textarea uses DynamicHeight (1..inputLines). When it grows beyond
 	// 1 line, shrink the chat viewport by the extra rows so the input pane
 	// never overlaps the hint bar. reservedRows budgets for the minimum.
@@ -1167,6 +1251,52 @@ func usageBar(pct int) string {
 		filled = cells
 	}
 	return strings.Repeat("█", filled) + strings.Repeat("░", cells-filled)
+}
+
+// riskBadge renders a colored risk level badge.
+func riskBadge(risk string) string {
+	switch strings.ToLower(risk) {
+	case "high":
+		return riskBadgeHigh.Render("HIGH")
+	case "medium":
+		return riskBadgeMed.Render("MEDIUM")
+	case "low":
+		return riskBadgeLow.Render("LOW")
+	default:
+		return riskBadgeUnknown.Render(strings.ToUpper(risk))
+	}
+}
+
+// approvalModalView renders the approval modal overlay on top of the normal
+// TUI. It shows the tool name, risk badge, command verbatim, reason, and
+// [y]es/[n]o/esc hint.
+func (m *appModel) approvalModalView() tea.View {
+	if m.pendingApproval == nil {
+		return tea.NewView("")
+	}
+	req := m.pendingApproval.Req
+	var b strings.Builder
+
+	b.WriteString(approvalTitleStyle.Render("Command Approval Required"))
+	b.WriteString("\n\n")
+
+	b.WriteString("Tool:   " + req.Tool + "\n")
+	b.WriteString("Risk:   " + riskBadge(req.Risk) + "\n")
+	b.WriteString("Reason: " + req.Reason + "\n\n")
+
+	b.WriteString("Command:\n")
+	// Show the command verbatim in monospace style.
+	cmdText := approvalCommandStyle.Render(req.Command)
+	b.WriteString(cmdText + "\n\n")
+
+	b.WriteString(strings.Repeat("─", 40) + "\n")
+	b.WriteString(approvalHintStyle.Render("[y]es approve / [n]o deny / esc deny"))
+
+	box := approvalBoxStyle.Render(b.String())
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box))
+	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = true
+	return v
 }
 
 // helpView renders the full-screen keyboard shortcut overlay.
@@ -1778,4 +1908,16 @@ func (m *appModel) copySelection() {
 		return
 	}
 	_ = copyToClipboard(text)
+}
+
+// waitForApproval blocks on the response channel until the user answers or the
+// expiry timer fires. Returns false (auto-deny) on expiry. Extracted so the
+// select logic is unit-testable without a tea.Program.
+func waitForApproval(resp chan bool, expiry time.Duration) bool {
+	select {
+	case ok := <-resp:
+		return ok
+	case <-time.After(expiry):
+		return false
+	}
 }

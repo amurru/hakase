@@ -33,6 +33,13 @@ type EnvOverrideConfig struct {
 	MemoryLimitMB int    `json:"memory_limit_mb,omitempty"`
 }
 
+// ApprovalConfig tunes the interactive approval gate.
+type ApprovalConfig struct {
+	// Mode: "interactive" (default) | "deny" (auto-deny everything) | "allow" (auto-approve everything).
+	Mode          string `json:"mode,omitempty"`
+	ExpirySeconds int    `json:"expiry_seconds,omitempty"` // default 60
+}
+
 type Config struct {
 	Provider          string                 `json:"provider"`
 	ModelName         string                 `json:"model_name"`
@@ -71,6 +78,9 @@ type Config struct {
 	// LoopGuard enables anti-degeneration guardrails (max output cap, repetition
 	// and no-tool-call watchdogs). Absent/zero values use loopguard.go defaults.
 	LoopGuard LoopGuardConfig `json:"loop_guard,omitempty"`
+	// Approval tunes the interactive approval gate for harmful-command
+	// protection. Absent/zero values use defaults (interactive mode, 60s expiry).
+	Approval ApprovalConfig `json:"approval,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.

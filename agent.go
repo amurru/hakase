@@ -156,6 +156,71 @@ func getVenvPython(log LogFunc) (string, error) {
 	return pyBin, nil
 }
 
+// checkPythonGate evaluates the python_interpreter permission gate against the
+// sandbox configuration. Returns nil when execution is allowed or approved; returns
+// an error when denied or not approved. Audits every decision.
+//
+// The gate runs BEFORE getVenvPython (which has side effects - creates .venv) so
+// denied code never triggers venv creation.
+func checkPythonGate(sb *SandboxConfig, code string) error {
+	sandboxMode := "off"
+	if sb != nil {
+		sandboxMode = string(sb.Mode)
+	}
+	perm, _ := sb.permitted("python_interpreter")
+	if perm == "deny" {
+		auditCommandExec(CommandAuditEntry{
+			Timestamp: time.Now(), Tool: "python_interpreter",
+			Decision: "denied", Risk: "high", Reason: "permission denied",
+			SandboxMode: sandboxMode,
+		})
+		return fmt.Errorf("python_interpreter is denied by sandbox permissions")
+	}
+	if perm == "allow" {
+		auditCommandExec(CommandAuditEntry{
+			Timestamp: time.Now(), Tool: "python_interpreter",
+			Decision: "allowed", Risk: "high",
+			SandboxMode: sandboxMode,
+		})
+		return nil
+	}
+	// nil sandbox, "" (missing), or "ask": require approval (fail closed).
+	// Source: "direct" for the root orchestrator. Delegation source tracking
+	// is out of scope for the initial implementation.
+	approved, aerr := approveExec(ApprovalRequest{
+		Tool:      "python_interpreter",
+		Command:   truncateStr(code),
+		Risk:      "high",
+		Reason:    "arbitrary Python code execution",
+		Source:    "direct",
+		ExpiresAt: time.Now().Add(approvalExpiry()),
+	})
+	if aerr != nil || !approved {
+		auditCommandExec(CommandAuditEntry{
+			Timestamp: time.Now(), Tool: "python_interpreter",
+			Command:  truncateStr(code),
+			Decision: "not_approved", Risk: "high",
+			Reason:      "python code execution not approved by user",
+			SandboxMode: sandboxMode,
+		})
+		return fmt.Errorf("python code execution not approved by user")
+	}
+	auditCommandExec(CommandAuditEntry{
+		Timestamp: time.Now(), Tool: "python_interpreter",
+		Command:  truncateStr(code),
+		Decision: "approved", Risk: "high",
+		Reason:      "arbitrary Python code execution",
+		SandboxMode: sandboxMode,
+	})
+	return nil
+}
+
+// pipAllowed returns true when pip install is permitted by the sandbox config.
+// nil sandbox -> false (fail closed; config must explicitly allow pip).
+func pipAllowed(sb *SandboxConfig) bool {
+	return sb != nil && sb.AllowPipInstall
+}
+
 // createPythonTool returns an ADK tool that executes Python code in a temporary directory.
 // If parentEnv is non-nil, it is used as the environment for subprocess execution
 // instead of os.Environ(). This ensures the sub-agent can find Python even when
@@ -163,6 +228,12 @@ func getVenvPython(log LogFunc) (string, error) {
 func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	// Function tool handler signature takes agent.Context
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
+		// Harmful-command protection gate: runs BEFORE getVenvPython so
+		// denied code never triggers venv creation side effects.
+		if err := checkPythonGate(currentSandbox, input.Code); err != nil {
+			return PythonExecOutput{}, err
+		}
+
 		pyBin, err := getVenvPython(log)
 		if err != nil {
 			return PythonExecOutput{}, err
@@ -243,6 +314,33 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			if len(matches) > 1 {
 				missingPkg := strings.Split(matches[1], ".")[0] // Handle sub-modules like 'bs4.element' -> 'bs4'
 
+				// Pip install gate: controlled by sandbox.AllowPipInstall.
+				// fail closed (nil sandbox → not allowed).
+				if !pipAllowed(currentSandbox) {
+					sandboxMode := "off"
+					if currentSandbox != nil {
+						sandboxMode = string(currentSandbox.Mode)
+					}
+					auditCommandExec(CommandAuditEntry{
+						Timestamp: time.Now(), Tool: "pip",
+						Command:  "pip install " + missingPkg,
+						Decision: "denied", Risk: "medium",
+						Reason:      "pip install not allowed (allow_pip_install)",
+						SandboxMode: sandboxMode,
+					})
+					return PythonExecOutput{Stdout: stdout, Stderr: stderr}, nil
+				}
+				sandboxMode := "off"
+				if currentSandbox != nil {
+					sandboxMode = string(currentSandbox.Mode)
+				}
+				auditCommandExec(CommandAuditEntry{
+					Timestamp: time.Now(), Tool: "pip",
+					Command:  "pip install " + missingPkg,
+					Decision: "allowed", Risk: "medium",
+					SandboxMode: sandboxMode,
+				})
+
 				pipBin := filepath.Join("./.venv", "bin", "pip")
 				if runtime.GOOS == "windows" {
 					pipBin = filepath.Join("./.venv", "Scripts", "pip.exe")
@@ -299,7 +397,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 
 	return newDocTool(functiontool.Config{
 		Name:        "python_interpreter",
-		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution.",
+		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution. Execution may require user approval depending on sandbox permissions.",
 	}, execHandler)
 }
 
@@ -1348,6 +1446,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	// Load sandbox config before any tool creation so createPythonTool,
 	// createDownloadTool, and buildExecCommand can consult it.
 	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
+	currentApproval = cfg.Approval
 	currentGuard = loopGuardConfig(cfg.LoopGuard)
 
 	provider, err := ProviderFactory(cfg)

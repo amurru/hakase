@@ -299,6 +299,45 @@ func TestLoadSandboxConfigDefaults(t *testing.T) {
 			t.Error("expected python_interpreter absent when map was explicit")
 		}
 	})
+
+	t.Run("new fields default to zero values", func(t *testing.T) {
+		sb := LoadSandboxConfig(&SandboxJSON{Mode: "paths"})
+		if sb.AllowedCommands != nil {
+			t.Errorf("AllowedCommands = %v, want nil", sb.AllowedCommands)
+		}
+		if sb.DenyPatterns != nil {
+			t.Errorf("DenyPatterns = %v, want nil", sb.DenyPatterns)
+		}
+		if sb.RiskThreshold != "" {
+			t.Errorf("RiskThreshold = %q, want empty", sb.RiskThreshold)
+		}
+		if sb.AllowFallback {
+			t.Error("AllowFallback = true, want false")
+		}
+	})
+
+	t.Run("new fields round-trip through SandboxJSON", func(t *testing.T) {
+		input := &SandboxJSON{
+			Mode:            "bubblewrap",
+			AllowedCommands: []string{"ls", "cat", "git"},
+			RiskThreshold:   "high",
+			DenyPatterns:    []string{"rm -rf /"},
+			AllowFallback:   true,
+		}
+		sb := LoadSandboxConfig(input)
+		if len(sb.AllowedCommands) != 3 || sb.AllowedCommands[0] != "ls" {
+			t.Errorf("AllowedCommands = %v, want [ls cat git]", sb.AllowedCommands)
+		}
+		if sb.RiskThreshold != "high" {
+			t.Errorf("RiskThreshold = %q, want high", sb.RiskThreshold)
+		}
+		if len(sb.DenyPatterns) != 1 || sb.DenyPatterns[0] != "rm -rf /" {
+			t.Errorf("DenyPatterns = %v, want [rm -rf /]", sb.DenyPatterns)
+		}
+		if !sb.AllowFallback {
+			t.Error("AllowFallback = false, want true")
+		}
+	})
 }
 
 // TestSandboxConfigWorkspaceRoot verifies workspaceRoot() returns the first

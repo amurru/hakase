@@ -219,6 +219,88 @@ func buildExecCommand(command string, args []string, workingDir string, env map[
 		return nil, fmt.Errorf("command must not be empty")
 	}
 
+	// Harmful-command protection gate: policy decision + approval.
+	// Runs BEFORE auditSystemCommandPaths so denied commands never reach
+	// path auditing. The audit entries record the decision at the gate
+	// level (DurationMs=0, ExitCode=0) - the post-execution audit is in
+	// the sync/start handlers.
+	decision := evaluateCommand(currentSandbox, command, args)
+	var sandboxMode string
+	if currentSandbox != nil {
+		sandboxMode = string(currentSandbox.Mode)
+	} else {
+		sandboxMode = "off"
+	}
+	cd := workingDir
+	if cd == "" {
+		cd, _ = os.Getwd()
+	}
+	switch decision.Action {
+	case ActionDeny:
+		auditCommandExec(CommandAuditEntry{
+			Timestamp:   time.Now(),
+			Tool:        "system_exec",
+			Command:     command,
+			Args:        args,
+			CWD:         cd,
+			SandboxMode: sandboxMode,
+			Decision:    "denied",
+			Risk:        decision.Risk.String(),
+			Reason:      decision.Reason,
+		})
+		return nil, fmt.Errorf("command denied by protection policy: %s", decision.Reason)
+	case ActionAsk:
+		approved, aerr := approveExec(ApprovalRequest{
+			Tool:      "system_exec",
+			Command:   command,
+			Args:      args,
+			Risk:      decision.Risk.String(),
+			Reason:    decision.Reason,
+			Source:    "direct",
+			ExpiresAt: time.Now().Add(approvalExpiry()),
+		})
+		if aerr != nil || !approved {
+			auditCommandExec(CommandAuditEntry{
+				Timestamp:   time.Now(),
+				Tool:        "system_exec",
+				Command:     command,
+				Args:        args,
+				CWD:         cd,
+				SandboxMode: sandboxMode,
+				Decision:    "not_approved",
+				Risk:        decision.Risk.String(),
+				Reason:      decision.Reason,
+			})
+			if aerr != nil {
+				return nil, fmt.Errorf("command approval failed: %w", aerr)
+			}
+			return nil, fmt.Errorf("command not approved by user: %s", command)
+		}
+		auditCommandExec(CommandAuditEntry{
+			Timestamp:   time.Now(),
+			Tool:        "system_exec",
+			Command:     command,
+			Args:        args,
+			CWD:         cd,
+			SandboxMode: sandboxMode,
+			Decision:    "approved",
+			Risk:        decision.Risk.String(),
+			Reason:      decision.Reason,
+		})
+	case ActionAllow:
+		auditCommandExec(CommandAuditEntry{
+			Timestamp:   time.Now(),
+			Tool:        "system_exec",
+			Command:     command,
+			Args:        args,
+			CWD:         cd,
+			SandboxMode: sandboxMode,
+			Decision:    "allowed",
+			Risk:        decision.Risk.String(),
+			Reason:      decision.Reason,
+		})
+	}
+
 	// Sandbox confinement: reject commands that reference paths outside the
 	// sandbox's trusted folders (read roots + system dirs). Applies to both
 	// the sync and background tools since both go through here.
@@ -247,10 +329,13 @@ func buildExecCommand(command string, args []string, workingDir string, env map[
 		}
 		bwCmd, err := wrapBwrapCmd(currentSandbox, innerArgv, wd, currentSandbox.AllowNetwork, nil)
 		if err != nil {
-			// bwrap not available or config invalid: fall back to the
-			// non-sandbox exec path rather than failing the whole tool.
-			// The Phase-1 path checks still apply below.
-			debugWarn("sandbox_bwrap_fallback", "error", err)
+			if currentSandbox.AllowFallback {
+				// Explicitly configured to allow fallback: warn and
+				// fall through to the plain exec path below.
+				debugWarn("sandbox_bwrap_fallback", "error", err)
+			} else {
+				return nil, fmt.Errorf("bubblewrap sandbox unavailable (bwrap not installed?) and sandbox.allow_fallback is false: %w", err)
+			}
 		} else {
 			bwCmd.Env = os.Environ()
 			for k, v := range env {
@@ -281,11 +366,13 @@ func buildExecCommand(command string, args []string, workingDir string, env map[
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
+	// Always scrub sensitive env prefixes so secrets (HAKASE_*, AWS_*,
+	// GITHUB_*, OPENAI_*) never leak into subprocesses, even in sandbox-off
+	// mode (Phase 2.5).
+	cmd.Env = scrubEnv(cmd.Env)
+
 	// Working directory: sandbox-aware resolution.
 	if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
-		// Scrub sensitive env prefixes so secrets never leak into
-		// sandboxed subprocesses.
-		cmd.Env = scrubEnv(cmd.Env)
 		if workingDir == "" {
 			if root := currentSandbox.workspaceRoot(); root != "" {
 				cmd.Dir = root
@@ -473,10 +560,11 @@ type SystemExecOutput struct {
 
 // SystemExecStartInput is the input schema for the asynchronous system_exec_start tool.
 type SystemExecStartInput struct {
-	Command    string            `json:"command"        doc:"Full command line (e.g. 'find /home -name \"*.pdf\" 2>/dev/null') when args is empty; executable name only when args is provided"`
-	Args       []string          `json:"args,omitempty" doc:"Optional list of arguments passed to the command"`
-	WorkingDir string            `json:"working_dir,omitempty" doc:"Optional working directory for the command; defaults to the agent process working directory"`
-	Env        map[string]string `json:"env,omitempty"  doc:"Optional environment variables merged over the agent process environment; these override inherited values"`
+	Command        string            `json:"command"        doc:"Full command line (e.g. 'find /home -name \"*.pdf\" 2>/dev/null') when args is empty; executable name only when args is provided"`
+	Args           []string          `json:"args,omitempty" doc:"Optional list of arguments passed to the command"`
+	WorkingDir     string            `json:"working_dir,omitempty" doc:"Optional working directory for the command; defaults to the agent process working directory"`
+	Env            map[string]string `json:"env,omitempty"  doc:"Optional environment variables merged over the agent process environment; these override inherited values"`
+	TimeoutSeconds float64           `json:"timeout_seconds,omitempty" doc:"Optional timeout in seconds; the background process group is killed if it exceeds this duration. Defaults to 0 (no timeout)."`
 }
 
 // SystemExecStartOutput is the output schema for the asynchronous system_exec_start tool.
@@ -554,7 +642,7 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 	// system_exec: synchronous fire-and-wait execution.
 	execTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec",
-		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter.",
+		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). Commands are checked against a harmful-command policy and may require approval. When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter.",
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
 		procID := m.allocateID()
@@ -654,7 +742,7 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 	// system_exec_start: detached background execution registered in the registry.
 	startTool, err := newDocTool(functiontool.Config{
 		Name:        "system_exec_start",
-		Description: "Starts a system command or executable on the host machine in the background, registers it in the process registry, and returns immediately with a process ID for later polling with system_exec_status, killing with system_exec_kill, or listing with system_exec_list.",
+		Description: "Starts a system command or executable on the host machine in the background, registers it in the process registry, and returns immediately with a process ID for later polling with system_exec_status, killing with system_exec_kill, or listing with system_exec_list. Commands are checked against a harmful-command policy and may require approval.",
 	}, func(ctx agent.Context, input SystemExecStartInput) (SystemExecStartOutput, error) {
 		workingDir := input.WorkingDir
 		if workingDir == "" {
@@ -689,6 +777,23 @@ func createSystemExecTools(log LogFunc, sessionManager *SessionManager, taskID s
 				return
 			}
 			startCh <- startResult{err: nil}
+
+			// Optional timeout: kill the process group after
+			// TimeoutSeconds (same group-kill pattern as the sync
+			// handler). Default 0 = no timeout.
+			var timeoutTimer *time.Timer
+			if input.TimeoutSeconds > 0 {
+				timeoutTimer = time.AfterFunc(
+					time.Duration(input.TimeoutSeconds*float64(time.Second)),
+					func() {
+						rp.markTimedOut()
+						if cmd.Process != nil {
+							_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+						}
+					},
+				)
+				defer timeoutTimer.Stop()
+			}
 
 			exitCode := 0
 			if err := cmd.Wait(); err != nil {

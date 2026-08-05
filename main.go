@@ -82,6 +82,21 @@ func main() {
 	p = tea.NewProgram(&m)
 	m.program = p
 
+	// Install the interactive approval gate so tool handlers can ask the
+	// user for confirmation via the TUI approval modal.
+	expiry := time.Duration(cfg.Approval.ExpirySeconds) * time.Second
+	if expiry <= 0 {
+		expiry = 60 * time.Second
+	}
+	askApproval = func(req ApprovalRequest) (bool, error) {
+		if p == nil {
+			return false, nil
+		}
+		resp := make(chan bool, 1)
+		p.Send(approvalPromptMsg{Req: req, Resp: resp})
+		return waitForApproval(resp, expiry), nil
+	}
+
 	// Run stale session cleanup on startup.
 	go func() {
 		if m.sessionService != nil {

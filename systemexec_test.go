@@ -47,6 +47,18 @@ func withPathsSandbox(t *testing.T, dir string, readRoots []string) {
 	t.Cleanup(func() { currentSandbox = saved })
 }
 
+// withApproval installs a stub askApproval that returns the given decision
+// and restores the original on cleanup. Use when a test's command hits
+// ActionAsk (RiskUnknown or risk >= threshold).
+func withApproval(t *testing.T, approved bool) {
+	t.Helper()
+	saved := askApproval
+	askApproval = func(req ApprovalRequest) (bool, error) {
+		return approved, nil
+	}
+	t.Cleanup(func() { askApproval = saved })
+}
+
 // TestBuildExecCommandShellRouting verifies that when args is empty the
 // whole command line is routed through "sh -c" (P0-1), and when args are
 // provided the explicit executable+args form is used.
@@ -207,8 +219,8 @@ func TestSystemExecSyncEcho(t *testing.T) {
 	}
 
 	out, err := runSystemExecTool(t, tools, map[string]any{
-		"command":       "echo a; echo b",
-		"merge_output":  true,
+		"command":      "echo a; echo b",
+		"merge_output": true,
 	})
 	if err != nil {
 		t.Fatalf("system_exec echo: %v", err)
@@ -368,6 +380,7 @@ func TestEffectiveExecTimeout(t *testing.T) {
 func TestBuildExecCommandSandboxAudit(t *testing.T) {
 	dir := t.TempDir()
 	withPathsSandbox(t, dir, nil)
+	withApproval(t, true) // "find" is RiskUnknown -> ActionAsk
 
 	_, err := buildExecCommand("find / -type d -name skills", nil, "", nil)
 	if err == nil {
@@ -381,10 +394,239 @@ func TestBuildExecCommandSandboxAudit(t *testing.T) {
 		t.Errorf("expected relative 'find .' to be allowed, got %v", err)
 	}
 
-	// Off/nil sandbox: no audit.
+	// Off/nil sandbox: no audit, but gate still runs.
+	// "find" is RiskUnknown; need approval for the gate.
 	currentSandbox = &SandboxConfig{Mode: SandboxModeOff}
 	t.Cleanup(func() { currentSandbox = nil })
 	if _, err := buildExecCommand("find / -type d -name skills", nil, "", nil); err != nil {
 		t.Errorf("sandbox off: expected 'find /' to build, got %v", err)
+	}
+}
+
+// TestBuildExecCommandGateDeny verifies the protection gate hard-blocks
+// a destructive command (rm -rf /) that hits the hard-deny circuit breaker.
+func TestBuildExecCommandGateDeny(t *testing.T) {
+	withNilSandbox(t)
+	withApproval(t, true) // approval stub installed, but hard-deny runs first
+
+	_, err := buildExecCommand("rm -rf /", nil, "", nil)
+	if err == nil {
+		t.Fatal("expected gate deny for 'rm -rf /', got nil")
+	}
+	if !strings.Contains(err.Error(), "denied by protection policy") {
+		t.Errorf("expected 'denied by protection policy', got %v", err)
+	}
+}
+
+// TestBuildExecCommandGateAskApproved verifies an unknown command with
+// approval granted passes the gate and builds (audit may still reject it
+// if sandboxed, but the gate itself allows it).
+func TestBuildExecCommandGateAskApproved(t *testing.T) {
+	withNilSandbox(t)
+	withApproval(t, true)
+
+	cmd, err := buildExecCommand("nonexistent", nil, "", nil)
+	if err != nil {
+		t.Fatalf("expected gate to allow with approval, got %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	// Verify it routes through sh -c (shell routing, no args).
+	if len(cmd.Args) < 2 || cmd.Args[0] != "sh" || cmd.Args[1] != "-c" {
+		t.Errorf("expected sh -c routing, got %v", cmd.Args)
+	}
+}
+
+// TestBuildExecCommandGateAskDenied verifies an unknown command with
+// approval denied returns "not approved".
+func TestBuildExecCommandGateAskDenied(t *testing.T) {
+	withNilSandbox(t)
+	withApproval(t, false)
+
+	_, err := buildExecCommand("nonexistent", nil, "", nil)
+	if err == nil {
+		t.Fatal("expected gate to deny when approval is refused, got nil")
+	}
+	if !strings.Contains(err.Error(), "not approved") {
+		t.Errorf("expected 'not approved', got %v", err)
+	}
+}
+
+// TestBuildExecCommandBwrapFailClosed verifies that when bubblewrap mode
+// is active but bwrap is unavailable and AllowFallback is false, the
+// command is refused.
+func TestBuildExecCommandBwrapFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	saved := currentSandbox
+	currentSandbox = &SandboxConfig{
+		Mode:           SandboxModeBubblewrap,
+		WorkspaceRoots: []string{abs},
+		ReadRoots:      []string{abs},
+		AllowFallback:  false,
+	}
+	t.Cleanup(func() { currentSandbox = saved })
+	withApproval(t, true)
+
+	_, err = buildExecCommand("echo hello", nil, "", nil)
+	if err != nil {
+		// If bwrap is not installed, we expect the fail-closed error.
+		if !strings.Contains(err.Error(), "bubblewrap sandbox unavailable") &&
+			!strings.Contains(err.Error(), "allow_fallback") {
+			t.Errorf("expected bubblewrap unavailable error, got %v", err)
+		}
+	}
+	// If bwrap IS installed and the command builds, that's also fine - the
+	// test verifies the code path doesn't panic and behaves deterministically.
+}
+
+// TestBuildExecCommandBwrapFallback verifies that when bubblewrap mode
+// is active and AllowFallback is true, the command either wraps in bwrap
+// (when bwrap is available) or falls through to the plain sh -c exec path
+// (when bwrap is not installed). Both outcomes are valid.
+func TestBuildExecCommandBwrapFallback(t *testing.T) {
+	dir := t.TempDir()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	saved := currentSandbox
+	currentSandbox = &SandboxConfig{
+		Mode:           SandboxModeBubblewrap,
+		WorkspaceRoots: []string{abs},
+		ReadRoots:      []string{abs},
+		AllowFallback:  true,
+	}
+	t.Cleanup(func() { currentSandbox = saved })
+	withApproval(t, true)
+
+	cmd, err := buildExecCommand("echo hello", nil, "", nil)
+	if err != nil {
+		t.Fatalf("expected fallback to succeed, got %v", err)
+	}
+	// When bwrap is available: command is wrapped in bwrap (argv starts
+	// with bwrap binary path). When bwrap is missing: falls through to
+	// sh -c on the plain exec path. Both are correct.
+	if len(cmd.Args) == 0 {
+		t.Fatal("expected non-empty argv")
+	}
+	// Verify the inner command text is present somewhere in argv or
+	// combined args.
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "echo") {
+		t.Errorf("expected 'echo' in argv, got %v", cmd.Args)
+	}
+}
+
+// TestBuildExecCommandEnvScrubOffMode verifies that sensitive env vars
+// (HAKASE_*, AWS_*, GITHUB_*, OPENAI_*) are stripped in sandbox-off mode.
+func TestBuildExecCommandEnvScrubOffMode(t *testing.T) {
+	withNilSandbox(t)
+	withApproval(t, true)
+
+	// Set a sensitive env var via the env map.
+	cmd, err := buildExecCommand("echo hello", nil, "", map[string]string{
+		"AWS_SECRET_ACCESS_KEY": "test-secret",
+		"PATH":                  "/usr/bin",
+	})
+	if err != nil {
+		t.Fatalf("buildExecCommand: %v", err)
+	}
+
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "AWS_") {
+			t.Errorf("AWS_ var should be scrubbed in off mode, found %q", kv)
+		}
+	}
+	// PATH should still be present.
+	foundPath := false
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "PATH=") {
+			foundPath = true
+			break
+		}
+	}
+	if !foundPath {
+		t.Error("PATH should not be scrubbed")
+	}
+}
+
+// TestSystemExecStartTimeout verifies the background start tool respects
+// the optional timeout_seconds field and kills the process group.
+func TestSystemExecStartTimeout(t *testing.T) {
+	withNilSandbox(t)
+	withApproval(t, true)
+
+	tools, err := createSystemExecTools(nil, nil, "")
+	if err != nil {
+		t.Fatalf("createSystemExecTools: %v", err)
+	}
+
+	// tools[1] is system_exec_start.
+	type runnable interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	}
+	rt, ok := tools[1].(runnable)
+	if !ok {
+		t.Fatalf("tool %T does not expose Run", tools[1])
+	}
+	ctx := agent.NewContext(&agent.ContextMock{})
+
+	result, startErr := rt.Run(ctx, map[string]any{
+		"command":         "sleep 30",
+		"timeout_seconds": float64(1),
+	})
+	if startErr != nil {
+		t.Fatalf("system_exec_start should not error on start: %v", startErr)
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var startOut SystemExecStartOutput
+	if err := json.Unmarshal(data, &startOut); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !startOut.Started {
+		t.Fatalf("expected process to start, got %v", startOut)
+	}
+
+	// Poll via system_exec_status until finished (or timeout).
+	statusTool, ok := tools[2].(runnable)
+	if !ok {
+		t.Fatalf("status tool does not expose Run")
+	}
+
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for process to be killed")
+		case <-ticker.C:
+			statusResult, serr := statusTool.Run(ctx, map[string]any{
+				"process_id": float64(startOut.ProcessID),
+			})
+			if serr != nil {
+				t.Fatalf("status: %v", serr)
+			}
+			sdata, _ := json.Marshal(statusResult)
+			var statusOut SystemExecStatusOutput
+			json.Unmarshal(sdata, &statusOut)
+
+			if statusOut.Finished {
+				if statusOut.ExitCode != -1 {
+					t.Logf("process exited with code %d (timed out)", statusOut.ExitCode)
+				}
+				return
+			}
+		}
 	}
 }

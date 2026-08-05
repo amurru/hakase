@@ -13,16 +13,24 @@
   "task_checkpoint": false,
   "summary_model": "",
   "sandbox": {
-    "mode": "paths",
+    "mode": "bubblewrap",
     "workspace_roots": ["."],
     "read_roots": [],
     "deny_roots": [],
     "allow_network": false,
-    "allow_pip_install": true
+    "allow_pip_install": true,
+    "allow_fallback": false,
+    "allowed_commands": ["ls","cat","grep","head","tail","echo","git"],
+    "deny_patterns": [],
+    "risk_threshold": ""
   },
   "loop_guard": {
     "max_output_tokens": 8192,
     "repetition_limit": 8,
     "max_text_without_tool": 20000
+  },
+  "approval": {
+    "mode": "interactive",
+    "expiry_seconds": 60
   }
 }

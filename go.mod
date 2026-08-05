@@ -9,7 +9,9 @@ require (
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/google/jsonschema-go v0.4.2
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
 	github.com/oklog/ulid/v2 v2.1.2
 	google.golang.org/adk/v2 v2.1.0
@@ -33,7 +35,6 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

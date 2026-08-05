@@ -19,10 +19,10 @@ import (
 type SandboxMode string
 
 const (
-	SandboxModeOff       SandboxMode = "off"
-	SandboxModePaths     SandboxMode = "paths"     // Phase 1: workspace path confinement
+	SandboxModeOff        SandboxMode = "off"
+	SandboxModePaths      SandboxMode = "paths"      // Phase 1: workspace path confinement
 	SandboxModeBubblewrap SandboxMode = "bubblewrap" // Phase 2: bwrap subprocess isolation
-	SandboxModeLandlock  SandboxMode = "landlock"  // Phase 3: in-process Landlock + seccomp
+	SandboxModeLandlock   SandboxMode = "landlock"   // Phase 3: in-process Landlock + seccomp
 )
 
 // SandboxConfig is the resolved, normalized sandbox configuration used
@@ -31,26 +31,43 @@ const (
 // falls back to filepath.Abs (the legacy behavior). In practice
 // LoadSandboxConfig never returns nil - the default is SandboxModePaths.
 type SandboxConfig struct {
-	Mode           SandboxMode
-	WorkspaceRoots []string
-	ReadRoots      []string
-	DenyRoots      []string
-	AllowNetwork   bool
+	Mode            SandboxMode
+	WorkspaceRoots  []string
+	ReadRoots       []string
+	DenyRoots       []string
+	AllowNetwork    bool
 	AllowPipInstall bool
-	Permissions    map[string]string
+	Permissions     map[string]string
+	// AllowedCommands is an opt-in allowlist of allowed binaries (basename
+	// only). Empty means no allowlist restrictions apply.
+	AllowedCommands []string
+	// DenyPatterns is a list of regex patterns matched against the raw
+	// command line. Any match triggers a hard deny.
+	DenyPatterns []string
+	// RiskThreshold overrides the ask threshold. Valid values: "low",
+	// "medium", "high", "unknown". Empty string means use the mode-based
+	// default (bubblewrap->high, paths/off/nil->medium).
+	RiskThreshold string
+	// AllowFallback controls whether the agent falls back to paths-mode
+	// execution when bubblewrap is unavailable. Default false (fail closed).
+	AllowFallback bool
 }
 
 // SandboxJSON is the on-disk JSON shape for the "sandbox" config block.
 // It maps 1:1 onto SandboxConfig; LoadSandboxConfig performs the
 // normalization (defaults, root resolution, symlink eval).
 type SandboxJSON struct {
-	Mode           string            `json:"mode,omitempty"`
-	WorkspaceRoots []string          `json:"workspace_roots,omitempty"`
-	ReadRoots      []string          `json:"read_roots,omitempty"`
-	DenyRoots      []string          `json:"deny_roots,omitempty"`
-	AllowNetwork   bool              `json:"allow_network,omitempty"`
-	AllowPipInstall bool             `json:"allow_pip_install,omitempty"`
-	Permissions    map[string]string `json:"permissions,omitempty"`
+	Mode            string            `json:"mode,omitempty"`
+	WorkspaceRoots  []string          `json:"workspace_roots,omitempty"`
+	ReadRoots       []string          `json:"read_roots,omitempty"`
+	DenyRoots       []string          `json:"deny_roots,omitempty"`
+	AllowNetwork    bool              `json:"allow_network,omitempty"`
+	AllowPipInstall bool              `json:"allow_pip_install,omitempty"`
+	Permissions     map[string]string `json:"permissions,omitempty"`
+	AllowedCommands []string          `json:"allowed_commands,omitempty"`
+	DenyPatterns    []string          `json:"deny_patterns,omitempty"`
+	RiskThreshold   string            `json:"risk_threshold,omitempty"`
+	AllowFallback   bool              `json:"allow_fallback,omitempty"`
 }
 
 // LoadSandboxConfig converts a *SandboxJSON into a normalized *SandboxConfig,
@@ -68,6 +85,10 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 		AllowNetwork:    s.AllowNetwork,
 		AllowPipInstall: s.AllowPipInstall,
 		Permissions:     s.Permissions,
+		AllowedCommands: append([]string(nil), s.AllowedCommands...),
+		DenyPatterns:    append([]string(nil), s.DenyPatterns...),
+		RiskThreshold:   s.RiskThreshold,
+		AllowFallback:   s.AllowFallback,
 	}
 
 	// Mode default: empty or unrecognized -> paths (sandbox ON by default).
@@ -114,9 +135,9 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 	// Permissions default only when nil.
 	if sb.Permissions == nil {
 		sb.Permissions = map[string]string{
-			"system_exec":         "ask",
-			"python_interpreter":  "allow",
-			"write_file":          "allow",
+			"system_exec":        "ask",
+			"python_interpreter": "allow",
+			"write_file":         "allow",
 		}
 	}
 
