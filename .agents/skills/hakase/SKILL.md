@@ -56,7 +56,9 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - `provider` - `gemini` (default), `openai`, `openai-compatible`. `base_url` for compatible endpoints (e.g. Ollama `http://localhost:11434/v1`).
 - `model_name` - empty uses provider default (`gemini-2.5-flash`, `gpt-4o-mini`).
 - `api_key` - required for gemini/openai.
-- `instruction` - parsed but NOT wired into agent prompts (dead field; system prompts come from agent.go constants). Do not rely on it.
+- `instruction` - optional, additional customization rendered into the agent instructions as a `USER CONFIG INSTRUCTION` section (alongside discovered AGENTS.md context). It is NOT a replacement for the built-in system prompts (system prompts come from agent.go constants); it only adds.
+- `instruction_files` - extra context files (local paths or http(s) URLs) merged into the project context after project and user-level AGENTS.md files.
+- `context_files` - tunes project-context loading: `max_chars` (per-file cap, default 20000), `apply_to` (which agents receive the block; empty = all).
 - `mcp_server_url` - Lightpanda browser MCP endpoint.
 - `knowledge_dir` - knowledge base directory (default `./knowledge`; `~` expands to home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `skill_dirs` - extra markdown skill directories, resolved against project root when relative.

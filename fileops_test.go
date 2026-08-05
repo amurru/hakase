@@ -108,6 +108,72 @@ func TestReadFileToolMissing(t *testing.T) {
 	}
 }
 
+func TestReadFileToolAttachesSubdirContext(t *testing.T) {
+	tools, err := createFileOpsTools(nil, nil, "")
+	if err != nil {
+		t.Fatalf("createFileOpsTools: %v", err)
+	}
+
+	// Workspace: git root with root AGENTS.md (in the prompt) and a subdir
+	// AGENTS.md (hinted on read).
+	root := makeGitDir(t, t.TempDir())
+	sub := filepath.Join(root, "pkg", "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	subAgents := filepath.Join(sub, "AGENTS.md")
+	writeContextFile(t, filepath.Join(root, "AGENTS.md"), "# root rules\n")
+	writeContextFile(t, subAgents, "# sub rules\n")
+	initContextState(root, &Config{}, []InstructionFile{{Path: filepath.Join(root, "AGENTS.md"), Content: "# root rules\n"}})
+
+	file := writeTempFile(t, sub, "x.go", "package sub\n")
+
+	out, err := runTool(t, tools[0], map[string]any{"path": file})
+	if err != nil {
+		t.Fatalf("read_file: %v", err)
+	}
+	ctxHint, _ := out["context"].(string)
+	if !strings.Contains(ctxHint, "### SUBDIRECTORY CONTEXT:") ||
+		!strings.Contains(ctxHint, "# sub rules") {
+		t.Errorf("read_file should attach the subdir AGENTS.md hint, got %q", ctxHint)
+	}
+
+	// A second read does not re-attach (session dedup).
+	out, err = runTool(t, tools[0], map[string]any{"path": file})
+	if err != nil {
+		t.Fatalf("read_file (second): %v", err)
+	}
+	if ctxHint, _ := out["context"].(string); ctxHint != "" {
+		t.Errorf("expected dedup on second read, got %q", ctxHint)
+	}
+}
+
+func TestSearchFilesToolAttachesSubdirContext(t *testing.T) {
+	tools, err := createFileOpsTools(nil, nil, "")
+	if err != nil {
+		t.Fatalf("createFileOpsTools: %v", err)
+	}
+
+	root := makeGitDir(t, t.TempDir())
+	sub := filepath.Join(root, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	writeContextFile(t, filepath.Join(root, "AGENTS.md"), "# root rules\n")
+	writeContextFile(t, filepath.Join(sub, "AGENTS.md"), "# pkg rules\n")
+	writeTempFile(t, sub, "x.go", "package pkg\n// TODO marker\n")
+	initContextState(root, &Config{}, []InstructionFile{{Path: filepath.Join(root, "AGENTS.md"), Content: "# root rules\n"}})
+
+	out, err := runTool(t, tools[3], map[string]any{"pattern": "TODO", "path": sub})
+	if err != nil {
+		t.Fatalf("search_files: %v", err)
+	}
+	ctxHint, _ := out["context"].(string)
+	if !strings.Contains(ctxHint, "# pkg rules") {
+		t.Errorf("search_files should attach the search-root AGENTS.md hint, got %q", ctxHint)
+	}
+}
+
 func TestWriteFileToolCreates(t *testing.T) {
 	tools, err := createFileOpsTools(nil, nil, "")
 	if err != nil {

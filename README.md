@@ -39,6 +39,8 @@ hakase/
 ├── fileops.go               # File operation tools (read/write/patch/search) with sandbox-aware resolution
 ├── debug_log.go             # Structured JSON debug logging (info/warn/error levels)
 ├── skill_discovery.go       # Markdown & Python skill discovery/loading
+├── instruction_context.go   # Project context files (AGENTS.md) discovery & rendering
+├── rule_cli.go              # hakase rules CLI (list/show project context files)
 ├── ui.go                    # Bubble Tea TUI — split-pane layout with chat, log, and input views
 ├── config.go                # Config loader (reads config.json)
 ├── config.json              # Runtime configuration (API key, model, MCP server URL)
@@ -152,6 +154,45 @@ The `hakase knowledge` CLI manages the knowledge base:
 hakase knowledge create "Quantum Computing" --tags physics --content "See [[Superposition]]."
 hakase knowledge read quantum-computing
 hakase knowledge lint
+```
+
+### 📄 Project Context Files (AGENTS.md)
+
+hakase loads project context files - `AGENTS.md` - into every agent's system instruction, so repository conventions, architecture notes, and coding rules are followed without being repeated in every prompt. The semantics match the conventions used by OpenCode and Hermes Agent, so context files authored for those agents work unchanged:
+
+- **Project scope** - `AGENTS.md` files are collected from the current directory up to the git root (closest first; nested files stack). Only when no `AGENTS.md` exists anywhere in the walk is a **project-scoped** `CLAUDE.md` used as a fallback.
+- **User scope** - `~/.hakase/AGENTS.md` (or `$HAKASE_HOME/AGENTS.md`) when present. The Claude Code global `~/.claude/CLAUDE.md` is deliberately **never** loaded.
+- **Custom files** - `instruction_files` in `config.json` adds more context: absolute paths, `~/`-prefixed paths, project-relative paths, or `http(s)://` URLs (fetched at startup with a short timeout; failures are skipped, never fatal).
+
+Each loaded file is rendered as `Instructions from: <path>` followed by its content under a `### PROJECT CONTEXT FILES:` header. Content is **prompt-injection scanned** (matching files are blocked and replaced with a warning) and **truncated per file** (Hermes-style 70% head / 20% tail split, default 20,000 characters, configurable via `context_files.max_chars`). The rendered block is accounted for in the context-compaction token budget, so large files cannot silently blow the model window.
+
+The block is injected into the **orchestrator** and all sub-agents by default; `context_files.apply_to` restricts it to a named subset (`orchestrator`, `web_researcher`, `code_interpreter`, `general_purpose`).
+
+```json
+{
+  "instruction_files": ["docs/rules.md", "https://example.com/team-agents.md"],
+  "context_files": {
+    "max_chars": 20000,
+    "apply_to": ["orchestrator", "general_purpose"]
+  }
+}
+```
+
+#### Progressive subdirectory context
+
+Beyond the startup block, reading a file (`read_file`) or searching a directory (`search_files`) below the workspace root attaches any `AGENTS.md` in that directory tree - not already in the system prompt - to the tool result under a `SUBDIRECTORY CONTEXT` header. Each file is attached **once per session**, injection-scanned, and capped at 8,000 characters per file. This keeps deep-nested conventions in the model's view without bloating the system prompt.
+
+#### Live reconcile
+
+If a loaded context file changes mid-session, hakase detects it (cheap path/size/mtime fingerprint, checked before every model call) and injects a one-shot `PROJECT CONTEXT UPDATE` notice so the model follows the updated instructions.
+
+#### The `hakase rules` CLI
+
+Preview the active context without running the agent:
+
+```bash
+hakase rules list    # list the context files that would be loaded (render order + scope)
+hakase rules show AGENTS.md   # show one file's content (path or basename)
 ```
 
 ### 📥 File Download
@@ -318,6 +359,9 @@ When `model_name` is empty, the provider's default model is used.
 - `base_url` — Base URL for OpenAI-compatible endpoints (e.g. `http://localhost:11434/v1` for Ollama). Ignored when empty; used only by the `openai` / `openai-compatible` providers.
 - `fallback_providers` — Optional ordered list of provider names to try if the primary provider fails (e.g. `["openai"]`). Empty by default.
 - `provider_options` — Optional map of provider-specific settings. Reserved for future use.
+- `instruction` - Optional, additional customization rendered into the agent instructions as a `USER CONFIG INSTRUCTION` section (alongside the discovered `AGENTS.md` context). It is not a replacement for the built-in system prompts - it only adds.
+- `instruction_files` - Optional list of extra context files merged into the project context (see [Project Context Files](#-project-context-files-agentsmd)): absolute paths, `~/`-prefixed paths, project-relative paths, or `http(s)://` URLs.
+- `context_files` - Optional tuning for the project context files: `max_chars` (per-file truncation cap, default `20000`) and `apply_to` (restrict which agents receive the block; empty = all).
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
  - `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.

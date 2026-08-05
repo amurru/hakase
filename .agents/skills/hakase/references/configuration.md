@@ -17,6 +17,11 @@
   "api_key": "your_api_key",
   "base_url": "",
   "instruction": "You are a web automation agent harness.",
+  "instruction_files": [],
+  "context_files": {
+    "max_chars": 20000,
+    "apply_to": []
+  },
   "mcp_server_url": "http://localhost:9223/mcp",
   "fallback_providers": ["openai"],
   "skill_dirs": [],

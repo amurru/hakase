@@ -57,6 +57,10 @@ type ReadFileOutput struct {
 	Lines     int    `json:"lines"     doc:"Total number of lines in the file"`
 	Offset    int    `json:"offset"    doc:"The 1-based line number the returned content starts at"`
 	Truncated bool   `json:"truncated" doc:"True if the file has more lines than the returned range"`
+	// Context is a project context hint (AGENTS.md) for the file's
+	// directory, attached when one exists below the workspace root and has
+	// not already been attached this session. Omitted when empty.
+	Context string `json:"context,omitempty" doc:"Project context hint (AGENTS.md) for the file's directory, when one exists"`
 }
 
 // WriteFileInput is the input schema for the write_file tool.
@@ -110,6 +114,10 @@ type SearchFilesOutput struct {
 	Matches   []SearchMatch `json:"matches"   doc:"Matching files and lines"`
 	Total     int           `json:"total"     doc:"Total number of results"`
 	Truncated bool          `json:"truncated" doc:"True if the result list was capped by head_limit"`
+	// Context is a project context hint (AGENTS.md) for the search root
+	// directory, attached when one exists below the workspace root and has
+	// not already been attached this session. Omitted when empty.
+	Context string `json:"context,omitempty" doc:"Project context hint (AGENTS.md) for the search root, when one exists"`
 }
 
 // createFileOpsTools builds the four-tool file operations toolset shared by
@@ -171,6 +179,7 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 			Lines:     total,
 			Offset:    offset,
 			Truncated: end < total,
+			Context:   subdirContextHint(filepath.Dir(path)),
 		}, nil
 	})
 	if err != nil {
@@ -372,7 +381,7 @@ func createFileOpsTools(log LogFunc, sessionManager *SessionManager, taskID stri
 				return SearchFilesOutput{}, fmt.Errorf("search walk failed: %w", walkErr)
 			}
 		}
-		return SearchFilesOutput{Matches: matches, Total: len(matches), Truncated: truncated}, nil
+		return SearchFilesOutput{Matches: matches, Total: len(matches), Truncated: truncated, Context: subdirContextHint(rootAbs)}, nil
 	})
 	if err != nil {
 		return nil, err

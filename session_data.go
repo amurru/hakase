@@ -34,6 +34,10 @@ type Session struct {
 	Archived         bool      `json:"archived"`
 	Messages         []Message `json:"messages"`
 	SummaryMessageID string    `json:"summary_message_id,omitempty"` // sequence of the running summary message
+	// HintedContextFiles are the subdirectory AGENTS.md paths already
+	// attached as context hints in this session. Persisted so a resumed
+	// session does not re-attach them.
+	HintedContextFiles []string `json:"hinted_context_files,omitempty"`
 }
 
 // Message represents a single turn in a chat session.

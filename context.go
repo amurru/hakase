@@ -88,7 +88,18 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 
 	// Prepend, do not replace: ADK manages the current run's contents
 	// (user message + tool calls + results).
-	req.Contents = append(history, req.Contents...)
+	current := req.Contents
+	req.Contents = append(history, current...)
+
+	// Live reconcile: if a project context file (AGENTS.md) changed
+	// mid-session, inject a one-shot update notice at the head of the current
+	// run's contents so the model follows the updated instructions. The
+	// notice is not persisted; the model's next response reflects the change.
+	if notice := contextUpdateNotice(); notice != "" {
+		h.logfSafe("⚠ project context files changed; update notice injected")
+		noticeContent := genai.NewContentFromText(notice, genai.RoleUser)
+		req.Contents = append(append(append([]*genai.Content{}, history...), noticeContent), current...)
+	}
 	return nil, nil
 }
 
@@ -152,10 +163,12 @@ func (h *HistoryBuilder) fitToBudget(session *Session, history []*genai.Content,
 	}
 
 	// Reserve budget for the system prompt + tool schemas + current run
-	// contents. The instruction can be long (HakaseSystemInstruction etc.),
-	// and tool declarations (MCP tools) add up; a flat reserve is a
-	// conservative approximation since we cannot see the rendered prompt.
-	const reserveTokens = 8000
+	// contents, plus the rendered project-context block (contextBlockTokens,
+	// set in setupRunner from the discovered AGENTS.md files). The flat
+	// baseline plus the block is a conservative approximation since we cannot
+	// see the fully rendered prompt.
+	const baseReserveTokens = 8000
+	reserveTokens := baseReserveTokens + contextBlockTokens
 
 	currentTokens := EstimateContentsTokens(current)
 	trigger := int64(effectiveMax * 9 / 10)
@@ -270,10 +283,12 @@ func (h *HistoryBuilder) stageBSnip(session *Session, history []*genai.Content, 
 }
 
 // persistSnapshot saves the session's current message state to disk (the
-// InContext flips from the compaction cascade).
+// InContext flips from the compaction cascade). Hint dedup state is synced
+// onto the session so a resumed session does not re-attach hints.
 func (h *HistoryBuilder) persistSnapshot(session *Session) {
 	if h.svc == nil || session == nil {
 		return
 	}
+	syncHintedPaths(session)
 	_ = h.svc.store.Save(session)
 }

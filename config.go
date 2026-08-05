@@ -41,12 +41,38 @@ type ApprovalConfig struct {
 	ExpirySeconds int    `json:"expiry_seconds,omitempty"` // default 60
 }
 
+// ContextFilesConfig tunes the project context files (AGENTS.md) feature.
+type ContextFilesConfig struct {
+	// MaxChars caps the per-file content contributed to the system
+	// instruction. 0 uses defaultContextFileMaxChars (20000). Content beyond
+	// the cap is truncated with a 70% head / 20% tail split and a marker.
+	MaxChars int `json:"max_chars,omitempty"`
+	// ApplyTo restricts which agents receive the rendered context block.
+	// Empty means all agents. Valid names: orchestrator, web_researcher,
+	// code_interpreter, general_purpose.
+	ApplyTo []string `json:"apply_to,omitempty"`
+}
+
 type Config struct {
 	Provider          string                 `json:"provider"`
 	ModelName         string                 `json:"model_name"`
 	APIKey            string                 `json:"api_key"`
 	BaseURL           string                 `json:"base_url,omitempty"`
-	Instruction       string                 `json:"instruction"`
+	// Instruction is an optional, additional customization rendered into the
+	// agent instructions as a "USER CONFIG INSTRUCTION" section alongside the
+	// discovered project context files (AGENTS.md). It is NOT a replacement
+	// for the built-in system prompts; it only adds.
+	Instruction string `json:"instruction"`
+	// InstructionFiles lists extra context files (local paths or http(s)
+	// URLs) merged into the project context, after project and user-level
+	// AGENTS.md files. Local paths may be absolute, "~/"-prefixed, or
+	// relative to the project root. Remote URLs are fetched at startup with
+	// a short timeout; fetch failures are skipped, never fatal.
+	InstructionFiles []string `json:"instruction_files,omitempty"`
+	// ContextFiles tunes project-context loading: MaxChars caps each file
+	// (0 uses 20000), ApplyTo restricts which agents receive the rendered
+	// block (empty = all agents).
+	ContextFiles ContextFilesConfig `json:"context_files,omitempty"`
 	MCPServerURL      string                 `json:"mcp_server_url"`
 	FallbackProviders []string               `json:"fallback_providers,omitempty"`
 	SkillDirs         []string               `json:"skill_dirs,omitempty"`

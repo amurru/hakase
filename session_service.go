@@ -43,11 +43,18 @@ func (s *SessionService) CreateSession(title string) (*Session, error) {
 }
 
 // GetActiveSession returns the currently active session, or nil if none.
+// Loading seeds the subdirectory-hint dedup set from the session so hints
+// attached in a previous run are not re-attached on resume.
 func (s *SessionService) GetActiveSession() (*Session, error) {
 	if s.activeSessionID == "" {
 		return nil, nil
 	}
-	return s.store.Load(s.activeSessionID)
+	session, err := s.store.Load(s.activeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	seedHintedContextPaths(session.HintedContextFiles)
+	return session, nil
 }
 
 // SetActiveSession switches to the session with the given ID.
@@ -79,6 +86,7 @@ func (s *SessionService) AddMessage(role, content, thinking string) error {
 		return err
 	}
 	session.AddMessage(role, content, thinking)
+	syncHintedPaths(session)
 	return s.store.Save(session)
 }
 
@@ -110,6 +118,7 @@ func (s *SessionService) RecordUsage(role, content, thinking string, tokens int)
 		return err
 	}
 	session.AddMessageWithMeta(role, content, thinking, tokens, MessageKindText)
+	syncHintedPaths(session)
 	return s.store.Save(session)
 }
 

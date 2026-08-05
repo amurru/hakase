@@ -901,7 +901,7 @@ func createLoadMarkdownSkillTool(skills []MarkdownSkill, cwd string, extraDirs [
 		return LoadMarkdownSkillOutput{
 			Name:        skill.Frontmatter.Name,
 			Description: skill.Frontmatter.Description,
-			Content:     skill.Body,
+			Content:     sanitizeContextContent(skill.Body),
 			Location:    skill.Path,
 			Scripts:     skill.Scripts,
 		}, nil
@@ -1442,12 +1442,44 @@ func buildGenerationConfig(level string) *genai.GenerateContentConfig {
 	return gc
 }
 
+// contextBlockFor returns the rendered project-context block when the named
+// agent is included by context_files.apply_to. An empty applyTo list means
+// every agent receives the block. A non-empty list restricts it to the named
+// agents (orchestrator, web_researcher, code_interpreter, general_purpose).
+func contextBlockFor(agent, block string, applyTo []string) string {
+	if block == "" {
+		return ""
+	}
+	if len(applyTo) == 0 {
+		return block
+	}
+	for _, a := range applyTo {
+		if a == agent {
+			return block
+		}
+	}
+	return ""
+}
+
 func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *SessionService) (*runner.Runner, error) {
 	// Load sandbox config before any tool creation so createPythonTool,
 	// createDownloadTool, and buildExecCommand can consult it.
 	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
 	currentApproval = cfg.Approval
 	currentGuard = loopGuardConfig(cfg.LoopGuard)
+
+	// Load the workspace root and project context files (AGENTS.md, with a
+	// project-scoped CLAUDE.md fallback) once at startup so every agent
+	// shares the same rendered block. Discovery walks from cwd up to the git
+	// root; user-global CLAUDE.md is never loaded. The rendered block size
+	// feeds the compaction reserve in context.go via contextBlockTokens.
+	cwd, _ := os.Getwd()
+	instructionFiles := DiscoveredInstructionFiles(cwd, cfg, log)
+	ctxBlock := RenderInstructionBlock(instructionFiles, cfg.Instruction, cfg.ContextFiles.MaxChars)
+	contextBlockTokens = EstimateTokens(ctxBlock)
+	// Record session-scoped state for progressive subdirectory context hints
+	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
+	initContextState(cwd, cfg, instructionFiles)
 
 	provider, err := ProviderFactory(cfg)
 	if err != nil {
@@ -1495,7 +1527,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:                  "web_researcher",
 		Description:           "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction:           HakaseSystemInstruction + "\n\n" + buildTimeReminder(),
+		Instruction:           HakaseSystemInstruction + contextBlockFor("web_researcher", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool},
 		Toolsets:              []tool.Toolset{mcpToolset},
@@ -1515,7 +1547,6 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 
 	// Discover markdown skills BEFORE building the prompt and the load tool
 	// so the prompt lists them and the tool index is fresh at startup.
-	cwd, _ := os.Getwd()
 	mdSkills := DiscoverMarkdownSkills(cwd, cfg.SkillDirs, log)
 	loadMarkdownSkillTool, err := createLoadMarkdownSkillTool(mdSkills, cwd, cfg.SkillDirs, log)
 	if err != nil {
@@ -1547,7 +1578,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
 		Description: "Specialist agent for executing Python code, data analysis, parsing JSON/CSV, and managing learned skills.",
-		Instruction: CodeInterpreterSystemInstruction + "\n\n" + installedSkills + `
+		Instruction: CodeInterpreterSystemInstruction + contextBlockFor("code_interpreter", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + installedSkills + `
 ### SKILL REUSE & EVOLUTION RULES:
 1. REUSE FIRST: Check the "AVAILABLE PRE-LEARNED SKILLS" list above before writing code. If a skill exists that can solve or assist in the task, write a Python script that imports and calls it!
 2. SAVE NOVEL SKILLS: If you solve a new problem with fresh code, test it with python_interpreter, then call save_skill to store it for future reuse.
@@ -1575,7 +1606,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "general_purpose",
 		Description:           "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
-		Instruction:           GeneralPurposeSystemInstruction + "\n\n" + buildTimeReminder(),
+		Instruction:           GeneralPurposeSystemInstruction + contextBlockFor("general_purpose", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
 		Model:                 model,
 		Tools:                 fileOpsTools,
 		GenerateContentConfig: genCfg,
@@ -1634,7 +1665,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "orchestrator",
 		Description:           "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction:           buildOrchestratorInstruction(installedSkills),
+		Instruction:           buildOrchestratorInstruction(installedSkills) + contextBlockFor("orchestrator", ctxBlock, cfg.ContextFiles.ApplyTo),
 		Model:                 model,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{

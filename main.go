@@ -27,6 +27,10 @@ func main() {
 		os.Exit(runSessionCLI(os.Args[2:]))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "rules" {
+		os.Exit(runRulesCLI(os.Args[2:]))
+	}
+
 	ctx := context.Background()
 
 	cfg, err := loadConfig(resolveConfigPath("config.json"))

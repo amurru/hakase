@@ -365,7 +365,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 		return RecallKnowledgeOutput{
 			Title:         note.Frontmatter.Title,
 			Slug:          note.Slug,
-			Content:       note.Body,
+			Content:       sanitizeContextContent(note.Body),
 			Summary:       note.Frontmatter.Summary,
 			Backlinks:     idx.Backlinks[note.Slug],
 			Related:       note.Frontmatter.Related,
@@ -407,7 +407,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 				Tags:    n.Frontmatter.Tags,
 				Updated: n.Frontmatter.Updated,
 				Status:  n.Frontmatter.Status,
-				Snippet: snippet,
+				Snippet: sanitizeContextContent(snippet),
 			})
 		}
 
