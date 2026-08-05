@@ -43,7 +43,10 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - **Data analysis & visualization** - pandas/matplotlib in `.venv`; artifacts saved to `./outputs/`.
 - **Task board** - persisted `tasks.json`: `create_task`, `list_tasks`, `get_task`, `update_task`, `archive_task`, `delete_task`.
 - **Session persistence** - conversation sessions stored under `./sessions` (`session` CLI + `hakase session`); stale sessions cleaned after 30 days.
-- **Context management** - history building with budget math and optional cheap-model summarization (`summary_model`).
+- **Context management** - history building with budget math and optional cheap-model summarization (`summary_model`); manual `/compact [focus]` triggers the same compaction cascade on demand.
+- **Message attachments** - `@` file mention menu and `Ctrl+V` image paste; text files embed as text parts, images as inline data parts; attachments persist by path+MIME and re-read on resume.
+- **Mid-run messaging & interrupt** - messages typed while the agent is busy are queued and steered into the running session as a `USER INTERJECTION`; `Esc Esc` (within 2s) interrupts the running agent.
+- **Slash commands** - local command menu (`/board`, `/compact`, `/new`, `/sessions`, `/help`, `/exit`) that never reaches the model.
 
 ## 4. Configuration
 
@@ -128,21 +131,55 @@ Eight tools: `save_knowledge`, `recall_knowledge`, `search_knowledge`, `update_k
 - **Process hardening**: spawned processes get parent-death signals; children reaped if the agent dies.
 - **system_exec default timeout**: 120s (use `system_exec_start` for long-running or set `timeout_seconds`).
 
-## 8. TUI & Keyboard Shortcuts
+## 8. TUI, Slash Commands & Attachments
 
-Split-pane TUI: left chat viewport, right status/log pane, bottom multi-line input. Key shortcuts:
+Split-pane TUI: left chat viewport, right status/log pane, bottom multi-line input. Panes are clickable to focus; the hint bar under the input surfaces the most-used shortcuts and, while the agent is busy, an `N queued` counter.
+
+### Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+C` | Quit |
+| `Ctrl+C` | Quit (also cancels a running agent) |
+| `Esc` `Esc` | Interrupt the running agent (double-press within 2s; a single `Esc` only arms it) |
+| `Esc` | Close the help overlay (never quits) |
 | `Ctrl+/` or `?` | Toggle help overlay |
 | `Tab` / `Shift+Tab` | Cycle focus (input -> chat -> log -> task) |
 | `Ctrl+T` | Toggle thinking display |
-| `Enter` | Send message |
+| `Enter` | Send message (queued while the agent is busy) |
 | `Shift+Enter` / `Ctrl+J` | Newline in input |
+| `Ctrl+V` | Paste text, or attach a clipboard image as a chip |
+| `@name` | Attach a file via the `@` mention menu (arrow keys navigate, `Enter`/`Tab` selects) |
+| `Ctrl+Shift+C` | Copy the focused pane's content (ANSI-stripped) to the clipboard |
 | `↑`/`k`, `↓`/`j`, `PgUp`/`b`, `PgDn`/`f`, `u`/`d`, `Home`/`g`, `End`/`G` | Scroll focused pane |
 | `Ctrl+A` / `Ctrl+E` | Line start / end |
 | `Ctrl+U` | Clear input |
+
+### Slash commands
+
+Typing `/` in the input opens a filtered command menu (arrow keys navigate, `Tab` completes, `Enter` runs); commands are handled locally and never reach the model. Built-ins:
+
+| Command | Action |
+|---|---|
+| `/board <sub>` | Task board: `summary`, `list`, `new <title>`, `get <id>`, `update <id>`, `done <id>`, `fail <id>`, `cancel <id>`, `delete <id>`, `archive <id>`, `claim <id>` (aliases `/tasks`, `/task`; mutating subcommands blocked while the agent works) |
+| `/compact [focus]` | Manually trigger the compaction cascade: deterministic history snip immediately, async LLM summary (optional focus steers it) |
+| `/new` | Start a fresh session (previous sessions stay resumable) |
+| `/sessions` | Open the session chooser to switch or resume a session (alias `/resume`) |
+| `/help` | Show the keyboard/slash command reference (alias `/?`) |
+| `/exit` / `/quit` | Exit hakase |
+
+`/compact`, `/new`, and `/sessions` are blocked while the agent is processing.
+
+### Mid-run messaging
+
+Messages typed and sent while the agent is working are **queued** (the hint bar shows `N queued`). They are steered into the running session at the next model-call boundary as a `USER INTERJECTION (while you were working):` user turn, then drained as their own full turn when the current run completes. Queued prompts can carry attachments. Interrupting with `Esc Esc` merges all pending queued prompts into a single turn (Codex semantics).
+
+### Attachments
+
+Files and images can be attached without the agent having to find them:
+
+- **`@file`** - type `@` to open a workspace file picker (bounded walk, hidden/heavy dirs skipped); text files embed their content (cap 200 KB), images embed as multimodal input (cap 10 MB). `@` paths resolve through the sandbox read roots; out-of-workspace paths are rejected.
+- **Image paste** - copy an image and press `Ctrl+V`; it is read from the clipboard (wl-paste/xclip/xsel) and attached as a `[image N]` chip.
+- Chips render above the input; `Backspace` on an empty input removes the last chip. Only the path + MIME are persisted in the session; content is re-read on resume so session files stay small.
 
 ## 9. Common Operations
 
@@ -151,6 +188,8 @@ Split-pane TUI: left chat viewport, right status/log pane, bottom multi-line inp
 - **Adding a skill**: prefer project `.agents/skills/<name>/SKILL.md` (always-scanned, portable, default `hakase skill create` target); fall back to `.claude/skills`, `.opencode/skills`, `.gemini/skills`, then user `~/.hakase/skills`, `~/.agents/skills`, etc. Never create skills outside discovery paths. Directory name must match frontmatter `name`. Restart to load.
 - **Installing a skill from GitHub**: the standard cross-tool path is `gh skill install <owner/repo>` which writes to `.agents/skills/` (project scope). hakase's skill CLI currently has create/list/validate only; a fetched skill placed in any discovery dir is picked up after restart.
 - **User-global knowledge**: set `knowledge_dir: "~/.hakase/knowledge"` (tilde expands) so durable facts persist across projects.
+- **Steering a running agent**: type a message while the agent is busy and press `Enter` - it is queued and injected into the running session as a `USER INTERJECTION`; press `Esc` twice (within 2s) to interrupt the run. Queued messages drain as their own turn when the run completes.
+- **Attaching files/images**: type `@` in the input to pick a workspace file, or copy an image and press `Ctrl+V`. `@` paths must resolve under the sandbox read roots.
 - **Troubleshooting**:
   - `unsupported provider: <name>` - provider field is wrong; use gemini/openai/openai-compatible or empty.
   - `gemini provider requires an api_key` / `openai provider requires an api_key` - missing key in config.

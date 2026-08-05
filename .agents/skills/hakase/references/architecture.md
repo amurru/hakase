@@ -6,7 +6,12 @@
 hakase binary (Go)
 ├── main.go            - entry point, CLI dispatch, config load, TUI boot
 ├── agent.go           - setupRunner(): builds all 4 ADK agents + tools
-├── ui.go              - Bubble Tea TUI (chat / log / task panes)
+├── ui.go              - Bubble Tea TUI (chat / log / task panes, help overlay, hint bar)
+├── slash.go           - slash command registry + command menu (/compact, /new, /sessions, /help, /exit)
+├── task_slash.go      - /board slash command (TUI mirror of the task CLI)
+├── attach.go          - message attachments (@ mention menu, chips, genai parts)
+├── clipboard.go       - clipboard copy/paste backends (wl-copy/xclip/xsel) + image paste + pane copy
+├── queue.go           - mid-run message queue + run control (Esc-interrupt state)
 ├── delegate.go        - delegate_task tool, progress reporting, dedup cache, watchdog
 ├── sandbox.go         - path confinement (securejoin, root normalization)
 ├── sandboxexec.go     - bubblewrap (bwrap) subprocess isolation
@@ -18,6 +23,7 @@ hakase binary (Go)
 ├── knowledge*.go      - knowledge base engine + 8 tools + CLI
 ├── skill*.go          - skill discovery, SKILL.md parser, skill CLI
 ├── session*.go        - session persistence, history building
+├── summarize.go       - async LLM summarization (9-section template) for compaction + /compact
 ├── gate.go            - harmful-command approval gate
 ├── loopguard.go       - anti-degeneration guardrails
 └── provider*.go       - gemini / openai / openai-compatible providers
@@ -53,7 +59,17 @@ hakase binary (Go)
   the rendered project-context block is folded into the compaction reserve
   (`contextBlockTokens`).
 - `summary_model` (cheaper/weaker) compacts context when the budget gets tight;
-  falls back to the primary model when unset or on creation failure.
+  falls back to the primary model when unset or on creation failure. Compaction is
+  a cascade: deterministic history snip (keeps the last two turns) runs in the
+  callback, then `summarize.go` produces an async 9-section running summary that is
+  re-injected at the front of history. `/compact [focus]` triggers the same cascade
+  manually with an optional steering instruction.
+- **Mid-run steering**: the TUI's `pendingQueue` is shared with the HistoryBuilder
+  (`SetPendingQueue`); `BeforeModelCallback` injects queued user messages (typed
+  while the agent was busy) into the tail of every request as `USER INTERJECTION`
+  content. The queue drains at run end; an Esc-interrupt merges all pending prompts
+  into a single turn. Messages with attachments persist only path+MIME refs
+  (`AttachmentRef`); `messageToContent` re-reads content from `Path` on resume.
 - Sub-agents keep isolated context by design.
 
 ## Project Context Files (AGENTS.md)
