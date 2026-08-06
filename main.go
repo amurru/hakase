@@ -108,6 +108,17 @@ func main() {
 		return waitForApproval(resp, expiry), nil
 	}
 
+	// Install the interactive clarify gate so tool handlers can ask the user
+	// mid-task questions via the TUI clarify modal.
+	askClarify = func(req ClarifyRequest) (ClarifyResponse, error) {
+		if p == nil {
+			return ClarifyResponse{}, fmt.Errorf("no TUI available")
+		}
+		resp := make(chan ClarifyResponse, 1)
+		p.Send(clarifyPromptMsg{Req: req, Resp: resp})
+		return waitForClarify(resp, clarifyTimeout()), nil
+	}
+
 	// Run stale session cleanup on startup.
 	go func() {
 		if m.sessionService != nil {

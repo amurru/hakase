@@ -1402,6 +1402,9 @@ func buildOrchestratorInstruction(installedSkills string) string {
 - Use 'delegate_task' to spawn an isolated sub-agent with its own task-scoped session and restricted toolset. This is useful when a task requires a different specialist agent or when you want to run work in an isolated context. The sub-agent cannot call delegate_task, clarify, memory, send_message, or cronjob.
 - Synthesize responses from the specialists into a final markdown output.
 
+### CLARIFY:
+You have a 'clarify' tool to ask the user a question mid-task when you need input you cannot infer (a preference, a decision, confirmation, a choice between options). Pass up to 4 answer options in 'choices' - never embed them in the question text. Omit 'choices' for an open-ended question. Set 'multi_select' only when multiple options may apply. The run blocks until the user answers; a canceled or timed-out response means the user did not answer - proceed with your best judgment and state the assumption.
+
 ### TASK BOARD:
 You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'archive_task' (archive completed tasks to keep them for reference and remove them from the active board), 'delete_task' (remove any task permanently, including completed or archived tasks, upon user request). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
 ARTIFACT LOCATION: When asked where a file/artifact produced earlier is, FIRST call 'list_tasks'/'get_task' and 'search_knowledge'/'recall_knowledge' to find recorded paths BEFORE searching the filesystem with 'search_files' or 'system_exec'.
@@ -1466,6 +1469,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	// createDownloadTool, and buildExecCommand can consult it.
 	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
 	currentApproval = cfg.Approval
+	currentClarify = cfg.Clarify
 	currentGuard = loopGuardConfig(cfg.LoopGuard)
 
 	// Load the workspace root and project context files (AGENTS.md, with a
@@ -1654,6 +1658,12 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		return nil, err
 	}
 
+	// clarify tool for mid-task user questions.
+	clarifyT, err := registerClarifyTool()
+	if err != nil {
+		return nil, err
+	}
+
 	// Context management: build history for the root orchestrator only.
 	// Sub-agents keep isolated context by design (delegate.go untouched).
 	historyBuilder := NewHistoryBuilder(sessionSvc)
@@ -1680,6 +1690,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			getTaskT,
 			deleteTaskT,
 			archiveTaskT,
+			clarifyT,
 		}, append(append(knowledgeTools, delegateTaskT), append(fileOpsTools, systemExecTools...)...)...),
 		SubAgents: []agent.Agent{
 			researcherAgent,

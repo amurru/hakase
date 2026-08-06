@@ -67,6 +67,7 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 - **Right panel** — Real-time status and execution logs
 - **Bottom** — Multi-line text input (auto-grows up to 3 lines) with focus cycling (`Tab` to switch panes) and a hint bar showing the most used shortcuts
 - **Mid-run messaging** — Type and send while the agent is working: your message is queued (shown as `N queued` in the hint bar), steered into the running session at the next model-call boundary as a `USER INTERJECTION`, then processed as its own turn when the current run completes
+- **Mid-run questions** — The agent can pause and ask you a question mid-task via the `clarify` tool; choose from up to 4 options or type a free-text answer, [esc] to dismiss
 - **Help overlay** — Press `Ctrl+/` (`?` when not typing) for a full keyboard shortcut reference
 
 ### Keyboard Shortcuts

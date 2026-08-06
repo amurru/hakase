@@ -41,6 +41,13 @@ type ApprovalConfig struct {
 	ExpirySeconds int    `json:"expiry_seconds,omitempty"` // default 60
 }
 
+// ClarifyConfig tunes the interactive clarify gate.
+type ClarifyConfig struct {
+	// ExpirySeconds is how long the tool waits for a user answer before
+	// returning a timed-out response. 0 uses the default (120s).
+	ExpirySeconds int `json:"expiry_seconds,omitempty"`
+}
+
 // ContextFilesConfig tunes the project context files (AGENTS.md) feature.
 type ContextFilesConfig struct {
 	// MaxChars caps the per-file content contributed to the system
@@ -108,6 +115,9 @@ type Config struct {
 	// Approval tunes the interactive approval gate for harmful-command
 	// protection. Absent/zero values use defaults (interactive mode, 60s expiry).
 	Approval ApprovalConfig `json:"approval,omitempty"`
+	// Clarify tunes the interactive clarify gate for mid-task questions.
+	// Absent/zero values use defaults (120s expiry).
+	Clarify ClarifyConfig `json:"clarify,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.

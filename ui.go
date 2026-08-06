@@ -340,6 +340,10 @@ type appModel struct {
 	// Approval modal state.
 	pendingApproval *approvalPromptMsg
 
+	// Clarify modal state.
+	pendingClarify   *clarifyPromptMsg
+	clarifySelection []int // transient multi-select state; reset on arrival + clear
+
 	// Mid-run message queue: prompts typed while the agent is busy. Steered
 	// into the running session by the HistoryBuilder callback, drained into
 	// fresh runs at agentDoneMsg.
@@ -460,6 +464,80 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		key := msg.String()
+
+		// Clarify modal interception: when the agent asks a mid-task question, all
+		// keys except those handling the clarify modal are blocked. Takes
+		// precedence over the approval modal (both cannot be active at once).
+		if m.pendingClarify != nil {
+			q := m.pendingClarify
+			switch {
+			case len(q.Req.Choices) > 0:
+				// Choice mode: digit keys select; enter confirms; esc cancels;
+				// ctrl+c cancels + quits.
+				switch key {
+				case "1", "2", "3", "4":
+					idx := int(key[0] - '1')
+					if idx < len(q.Req.Choices) {
+						if q.Req.MultiSelect {
+							m.clarifySelection = toggleInt(m.clarifySelection, idx)
+						} else {
+							m.clarifySelection = nil
+							q.Resp <- ClarifyResponse{Answer: []string{q.Req.Choices[idx]}}
+							m.pendingClarify = nil
+						}
+					}
+				case "enter":
+					if q.Req.MultiSelect {
+						ans := make([]string, 0, len(m.clarifySelection))
+						for _, idx := range m.clarifySelection {
+							if idx < len(q.Req.Choices) {
+								ans = append(ans, q.Req.Choices[idx])
+							}
+						}
+						m.clarifySelection = nil
+						q.Resp <- ClarifyResponse{Answer: ans}
+						m.pendingClarify = nil
+					}
+				case "esc":
+					m.clarifySelection = nil
+					q.Resp <- ClarifyResponse{Canceled: true}
+					m.pendingClarify = nil
+				case "ctrl+c":
+					m.clarifySelection = nil
+					q.Resp <- ClarifyResponse{Canceled: true}
+					m.pendingClarify = nil
+					if m.runCtrl != nil {
+						m.runCtrl.interrupt()
+					}
+					return m, tea.Quit
+				}
+				return m, nil
+			default:
+				// Free-text mode: typed characters fall through to the textarea
+				// so the user can compose an answer; enter/esc/ctrl+c are
+				// intercepted here.
+				switch key {
+				case "enter":
+					ans := strings.TrimSpace(m.input.Value())
+					q.Resp <- ClarifyResponse{Answer: []string{ans}}
+					m.pendingClarify = nil
+					m.input.Reset()
+				case "esc":
+					q.Resp <- ClarifyResponse{Canceled: true}
+					m.pendingClarify = nil
+					m.input.Reset()
+				case "ctrl+c":
+					q.Resp <- ClarifyResponse{Canceled: true}
+					m.pendingClarify = nil
+					if m.runCtrl != nil {
+						m.runCtrl.interrupt()
+					}
+					return m, tea.Quit
+				default:
+					// fall through to normal textarea processing
+				}
+			}
+		}
 
 		// Approval modal interception: when a tool needs user approval, all keys
 		// except y/n/esc/ctrl+c are swallowed and normal input is blocked.
@@ -928,6 +1006,10 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if interrupted {
 			m.appendLog("Conversation interrupted - tell the model what to do differently.")
 		}
+	case clarifyPromptMsg:
+		m.pendingClarify = &msg
+		m.clarifySelection = nil
+		return m, nil
 	case approvalPromptMsg:
 		m.pendingApproval = &msg
 		return m, nil
@@ -1240,6 +1322,10 @@ func (m *appModel) View() tea.View {
 
 	if m.showHelp {
 		return m.helpView()
+	}
+
+	if m.pendingClarify != nil {
+		return m.clarifyModalView()
 	}
 
 	if m.pendingApproval != nil {
