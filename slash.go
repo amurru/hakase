@@ -76,6 +76,14 @@ var builtinCommands = []SlashCommand{
 		},
 	},
 	{
+		Name:        "mcp",
+		Description: "Manage MCP servers: open the server panel, or list / enable / disable / reconnect",
+		Usage:       "/mcp [list|enable <name>|disable <name>|reconnect <name>]",
+		Run: func(m *appModel, args string) tea.Cmd {
+			return runMCPCommand(m, args)
+		},
+	},
+	{
 		Name:        "exit",
 		Aliases:     []string{"quit"},
 		Description: "Exit hakase",

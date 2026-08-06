@@ -36,7 +36,9 @@ hakase binary (Go)
 2. Creates the provider via `ProviderFactory(cfg)`; validates config; resolves model name.
 3. Discovers project context files (AGENTS.md, with a project-scoped CLAUDE.md fallback),
    renders the block, and records session state via `initContextState` (hints + reconcile).
-4. Creates MCP toolset (Lightpanda browser) + download tool -> `web_researcher`.
+4. Creates the MCP manager (multi-server, from the `mcp` config block; legacy
+   `mcp_server_url` migrates to a `lightpanda` server) + download tool ->
+   `web_researcher`; the manager toolset is also attached to the orchestrator.
 5. Creates python interpreter tool, save_skill tool, discovers markdown skills, creates
    list/load skill tools, knowledge tools -> `code_interpreter`.
 6. Creates file-op tools -> `general_purpose`.

@@ -476,19 +476,27 @@ func extractFilePath(args map[string]interface{}) string {
 func buildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]tool.Tool, []tool.Toolset) {
 	visionTool, _ := createVisionTool()
 
+	// MCP toolsets are shared with sub-agents via the manager (nil when no
+	// usable MCP config). A nil toolset element would panic in the ADK
+	// toolProcessor, so only attach the manager when present.
+	var mcpToolsets []tool.Toolset
+	if currentMCPManager != nil {
+		mcpToolsets = []tool.Toolset{currentMCPManager}
+	}
+
 	switch agentName {
 	case "code_interpreter":
 		pyTool, _ := createPythonTool(log, parentEnv)
 		return []tool.Tool{pyTool, visionTool}, nil
 	case "web_researcher":
 		dlTool, _ := createDownloadTool()
-		return []tool.Tool{dlTool, visionTool}, []tool.Toolset{currentMCPToolset}
+		return []tool.Tool{dlTool, visionTool}, mcpToolsets
 	case "general_purpose":
 		fileTools, _ := createFileOpsTools(log, nil, "")
 		return append(fileTools, visionTool), nil
 	default:
 		allTools, _ := createAllTools(log, parentEnv)
-		return filterBlockedTools(allTools), []tool.Toolset{currentMCPToolset}
+		return filterBlockedTools(allTools), mcpToolsets
 	}
 }
 

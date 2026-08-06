@@ -79,8 +79,11 @@ type Config struct {
 	// ContextFiles tunes project-context loading: MaxChars caps each file
 	// (0 uses 20000), ApplyTo restricts which agents receive the rendered
 	// block (empty = all agents).
-	ContextFiles      ContextFilesConfig     `json:"context_files,omitempty"`
-	MCPServerURL      string                 `json:"mcp_server_url"`
+	ContextFiles ContextFilesConfig `json:"context_files,omitempty"`
+	MCPServerURL string             `json:"mcp_server_url"`
+	// MCPServers configures MCP servers (see mcp_config.go). Legacy
+	// mcp_server_url is auto-migrated into the "lightpanda" server.
+	MCPServers        MCPConfig              `json:"mcp,omitempty"`
 	FallbackProviders []string               `json:"fallback_providers,omitempty"`
 	SkillDirs         []string               `json:"skill_dirs,omitempty"`
 	KnowledgeDir      string                 `json:"knowledge_dir,omitempty"`

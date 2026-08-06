@@ -25,8 +25,8 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 
 | Agent | Role | Key tools |
 |---|---|---|
-| **orchestrator** (root) | Coordinates everything; delegates to sub-agents by intent; owns planning, knowledge, skills | task tools, knowledge tools, file ops, system_exec, delegate_task, cronjob, list/load skill tools |
-| **web_researcher** | Searches/navigates the web, downloads files, extracts content | MCP browser toolset (Lightpanda at `localhost:9223`), download tool |
+| **orchestrator** (root) | Coordinates everything; delegates to sub-agents by intent; owns planning, knowledge, skills | task tools, knowledge tools, file ops, system_exec, delegate_task, cronjob, list/load skill tools, MCP toolsets (`mcp_<server>_<tool>`) |
+| **web_researcher** | Searches/navigates the web, downloads files, extracts content | MCP toolsets (all configured MCP servers via the manager), download tool |
 | **code_interpreter** | Executes Python in `.venv`, data analysis, manages the Python skill library | python_interpreter, save_skill, list_skills, load_markdown_skill |
 | **general_purpose** | Workspace file operations | read_file, write_file, patch, search_files |
 
@@ -35,7 +35,7 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 
 ## 3. Capability Inventory
 
-- **Web research & browsing** - MCP-connected browser tools (requires the Lightpanda MCP server at `http://localhost:9223/mcp`, configured via `mcp_server_url`).
+- **Web research & browsing** - MCP-connected browser tools (requires the Lightpanda MCP server at `http://localhost:9223/mcp`, configured via `mcp_server_url` or the `mcp` block).
 - **File download** - any HTTP/HTTPS URL to `./downloads/`; filename basename-sanitized, sandbox-confined.
 - **Vision** - `vision` tool loads an image (URL, local file, or `data:` URL) so the model can see it; native attachment when the main model is multimodal, text description via `vision_model` otherwise. Attached images (`@file`/paste) are auto-described by `vision_model` on non-vision main models.
 - **Python code interpreter** - isolated `.venv`; auto-resolves missing pip dependencies (`ModuleNotFoundError` -> install -> retry); `PYTHONPATH` includes `./skills`; own process group with parent-death signal; temp/work dirs pinned to workspace under sandbox.
@@ -74,7 +74,8 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - `instruction` - optional, additional customization rendered into the agent instructions as a `USER CONFIG INSTRUCTION` section (alongside discovered AGENTS.md context). It is NOT a replacement for the built-in system prompts (system prompts come from agent.go constants); it only adds.
 - `instruction_files` - extra context files (local paths or http(s) URLs) merged into the project context after project and user-level AGENTS.md files.
 - `context_files` - tunes project-context loading: `max_chars` (per-file cap, default 20000), `apply_to` (which agents receive the block; empty = all).
-- `mcp_server_url` - Lightpanda browser MCP endpoint.
+- `mcp_server_url` - Lightpanda browser MCP endpoint (legacy; auto-migrated to the `mcp` block).
+- `mcp` - multi-server MCP config: `servers` map of name -> `{type: stdio|http, command, env, url, headers, disabled, tools: {include, exclude}, timeout_ms (reserved), oauth (reserved)}`. Tools surface to the orchestrator as `mcp_<server>_<tool>`. Manage at runtime with `/mcp` in the TUI (list/enable/disable/reconnect); toggles persist to `~/.hakase/mcp.json`.
 - `knowledge_dir` - knowledge base directory (default `./knowledge`; `~` expands to home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `skill_dirs` - extra markdown skill directories, resolved against project root when relative.
 - `summary_model` - cheaper model for context-compaction; `HAKASE_SUMMARY_MODEL` env override.

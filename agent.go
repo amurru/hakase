@@ -24,7 +24,6 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
-	"google.golang.org/adk/v2/tool/mcptoolset"
 	"google.golang.org/genai"
 )
 
@@ -507,9 +506,9 @@ var currentConfig *Config
 // same model without needing to re-create the provider.
 var currentModel model.LLM
 
-// currentMCPToolset holds the MCP toolset for sub-agent delegation.
-// Set during setupRunner so delegate_task can pass it to sub-agents.
-var currentMCPToolset tool.Toolset
+// currentMCPManager (declared in mcp_servers.go) holds the MCP server manager
+// for sub-agent delegation. Set during setupRunner so delegate_task can pass
+// it to sub-agents.
 
 // currentGuard holds the effective anti-degeneration limit settings derived
 // from config at startup. buildGenerationConfig consults it to cap
@@ -1530,13 +1529,15 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		}
 	}
 
-	mcpToolset, err := mcptoolset.New(mcptoolset.Config{
-		Endpoint: cfg.MCPServerURL,
-	})
+	// MCP server manager: exposes every configured MCP server's tools to the
+	// orchestrator and (via buildSubAgentTools) delegated sub-agents. Built
+	// from project config + legacy mcp_server_url + the user registry; the
+	// /mcp TUI command toggles it at runtime.
+	mcpManager, err := NewMCPServerManager(cfg, log)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mcp: %w", err)
 	}
-	currentMCPToolset = mcpToolset
+	currentMCPManager = mcpManager
 	// Researcher agent
 	downloadTool, err := createDownloadTool()
 	if err != nil {
@@ -1558,7 +1559,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		Instruction:           HakaseSystemInstruction + contextBlockFor("web_researcher", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool, visionTool},
-		Toolsets:              []tool.Toolset{mcpToolset},
+		Toolsets:              []tool.Toolset{mcpManager},
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
 	})
@@ -1729,6 +1730,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			cronjobT,
 			visionTool,
 		}, append(append(knowledgeTools, delegateTaskT), append(fileOpsTools, systemExecTools...)...)...),
+		Toolsets: []tool.Toolset{mcpManager},
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,

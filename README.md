@@ -102,6 +102,7 @@ Type `/` in the input to see a filtered command menu (arrow keys navigate,
 | Command                | Action                                                        |
 | ---------------------- | ------------------------------------------------------------- |
 | `/board`               | Task board: `summary`, `list`, `new <title>`, `get <id>`, `update <id>`, `done <id>`, `fail <id>`, `cancel <id>`, `delete <id>`, `archive <id>`, `claim <id>` |
+| `/mcp`                 | Manage MCP servers: open the interactive server panel, or `list` / `enable <name>` / `disable <name>` / `reconnect <name>` |
 | `/compact [focus]`     | Summarize the conversation to free context, continuing the same session; optional focus instructions steer the summary |
 | `/new`                 | Start a fresh session (previous sessions stay resumable)      |
 | `/sessions`            | Open the session chooser to switch or resume old sessions     |
@@ -298,7 +299,48 @@ Key properties:
 
 ### 🔌 MCP Integration
 
-Connects to an MCP (Model Context Protocol) server for browser automation and web navigation tools. Configured via `config.json` → `mcp_server_url`.
+hakase is an MCP (Model Context Protocol) **client**. Any number of stdio or
+streamable-HTTP MCP servers can be configured, and their tools are exposed to
+the orchestrator (and delegated sub-agents) dynamically as `mcp_<server>_<tool>`
+tools. Manage servers at runtime from the TUI with `/mcp` - the interactive
+panel shows per-server status and supports enable / disable / reconnect without
+a restart (toggles apply on the next message).
+
+Configuration lives in the `mcp` block of `config.json` (project scope, never
+written by the app) merged with the user registry at `~/.hakase/mcp.json`
+(written by the TUI):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "lightpanda": { "type": "http", "url": "http://localhost:9223/mcp" },
+      "github": {
+        "type": "stdio",
+        "command": ["npx", "-y", "@github/mcp-server"],
+        "env": { "GITHUB_PAT": "${GITHUB_PAT}" },
+        "tools": { "exclude": ["mcp_github_delete_repo"] }
+      }
+    }
+  }
+}
+```
+
+- `type`: `stdio` (default when `command` is set) or `http`.
+- `command` + `env`: the stdio child process. `HAKASE_*`/`AWS_*`/`GITHUB_*`/
+  `OPENAI_*` are scrubbed from its environment (same rule as `system_exec`);
+  the server's own `env` block is applied on top, with `${VAR}` /
+  `${VAR:-default}` expansion (also applied to `url`, `headers`, and command
+  args).
+- `url` + `headers`: a streamable-HTTP endpoint. `headers` values are
+  env-expanded, so keep tokens out of committed config.
+- `disabled: true`: explicit opt-out (new servers default to enabled).
+- `tools.include` / `tools.exclude`: per-server allow/deny lists on the
+  namespaced tool names (`mcp_<server>_<tool>`); exclude wins.
+- `timeout_ms` and `oauth` are reserved for the auth phase (remote OAuth).
+
+The legacy single-server `mcp_server_url` field still works and is
+auto-migrated to a server named `lightpanda`.
 
 ---
 
@@ -349,6 +391,11 @@ Edit `config.json`:
   "api_key": "your-gemini-api-key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
+  "mcp": {
+    "servers": {
+      "lightpanda": { "type": "http", "url": "http://localhost:9223/mcp" }
+    }
+  },
   "knowledge_dir": "",
   "sandbox": {
     "mode": "paths"
@@ -416,6 +463,8 @@ When `model_name` is empty, the provider's default model is used.
 - `instruction` - Optional, additional customization rendered into the agent instructions as a `USER CONFIG INSTRUCTION` section (alongside the discovered `AGENTS.md` context). It is not a replacement for the built-in system prompts - it only adds.
 - `instruction_files` - Optional list of extra context files merged into the project context (see [Project Context Files](#-project-context-files-agentsmd)): absolute paths, `~/`-prefixed paths, project-relative paths, or `http(s)://` URLs.
 - `context_files` - Optional tuning for the project context files: `max_chars` (per-file truncation cap, default `20000`) and `apply_to` (restrict which agents receive the block; empty = all).
+- `mcp_server_url` - Legacy single MCP server URL (Lightpanda browser automation). Auto-migrated to a server named `lightpanda` in the `mcp` block.
+- `mcp` - Optional MCP server configuration (see [MCP Integration](#-mcp-integration)): `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
 - `vision_model` - Optional multimodal model used to describe images as text when the main model lacks vision (legacy mode). Empty = disabled.
@@ -550,12 +599,14 @@ Python skills (`skills.json` + `.py` files) are unchanged. On a name collision, 
 
 The creative skills port (see `.omo/plans/creative-skills-port.md`) deliberately
 deferred a subset of the Hermes creative skills that depend on capabilities
-hakase does not yet have. Revisit these after implementing native **MCP client
-support on the orchestrator**, an **`image_gen` tool**, and a **`video_gen`
-tool**:
+hakase did not have at the time. Native **MCP client support on the
+orchestrator** (see [MCP Integration](#-mcp-integration)) is now implemented -
+connect any MCP server (stdio or HTTP) via the `mcp` config block and manage it
+from the TUI with `/mcp`. Still deferred for the remaining skills: an
+**`image_gen` tool** and a **`video_gen` tool**:
 
-- `touchdesigner-mcp` - skipped entirely; requires orchestrator-level MCP client
-  support (MCP tools currently exist only on `web_researcher` for Lightpanda).
+- `touchdesigner-mcp` - requires a TouchDesigner MCP server; can now be added
+  via the generic `mcp` config once a server endpoint is available.
 - `baoyu-infographic` - currently adapted to HTML/SVG output; revisit to use a
   native `image_gen` tool when available.
 - `comfyui` - ported as doctrine + gated on user infra (ComfyUI/comfy-cli,

@@ -336,6 +336,11 @@ type appModel struct {
 	sessionListSessions []SessionSummary
 	sessionListFiltered []SessionSummary
 
+	// MCP server list modal state (/mcp).
+	showMCPList     bool
+	mcpListIndex    int
+	mcpListFiltered []MCPServerStatus
+
 	// Slash command menu state (visibility is derived from the input value).
 	commandMenuIndex int
 
@@ -672,12 +677,20 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// The /mcp modal owns all keys while open. It is handled before the
+		// main switch (unlike the session modal, which is closed while the
+		// agent works) so Esc closes it even during a run instead of arming
+		// the double-Esc interrupt; toggles apply on the next run anyway.
+		if m.showMCPList {
+			return m, m.handleMCPListKey(key)
+		}
+
 		// Slash command and @ file menus are input-focus interactions. They
 		// intercept navigation/selection keys (up/down/tab/enter/esc) before
 		// the main switch; character keys fall through to the textarea so the
-		// filter updates naturally. The session-list modal takes precedence
-		// (its own key handler owns the keys while open).
-		if m.focus == inputFocus && !m.isProcessing && !m.showSessionList {
+		// filter updates naturally. The session-list and /mcp modals take
+		// precedence (their own key handlers own the keys while open).
+		if m.focus == inputFocus && !m.isProcessing && !m.showSessionList && !m.showMCPList {
 			if m.commandMenuOpen() {
 				if cmd, handled := m.handleCommandMenuKey(key); handled {
 					return m, cmd
@@ -1492,6 +1505,22 @@ func (m *appModel) View() tea.View {
 		)
 	}
 
+	// /mcp modal renders the same way: an inline overlay below the content.
+	if m.showMCPList {
+		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
+		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
+		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+		return tea.NewView(
+			lipgloss.JoinVertical(
+				lipgloss.Left,
+				m.statusBar(),
+				content,
+				m.mcpListView(),
+				m.hintBar(),
+			),
+		)
+	}
+
 	// Main layout: each pane is a named Layer positioned at its exact screen
 	// coordinates. The Compositor renders the whole screen and resolves mouse
 	// clicks by layer ID, so hit-zones always match the drawn panes (borders
@@ -1757,6 +1786,7 @@ func (m *appModel) helpView() tea.View {
 		}},
 		{"Slash Commands", []helpBinding{
 			{"/board", "Task board: summary, list, new, get, update, done, fail, cancel, delete, archive, claim"},
+			{"/mcp", "Manage MCP servers: open the panel, or list / enable / disable / reconnect"},
 			{"/compact [focus]", "Summarize the conversation to free context"},
 			{"/new", "Start a fresh session"},
 			{"/sessions", "Open the session chooser"},
@@ -2029,6 +2059,7 @@ func (m *appModel) toggleSessionList() tea.Cmd {
 		return nil
 	}
 	m.showSessionList = true
+	m.showMCPList = false // modals are mutually exclusive
 	m.sessionListIndex = 0
 	m.sessionListFilter = ""
 	if m.sessionService != nil {

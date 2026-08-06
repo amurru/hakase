@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,5 +267,47 @@ func TestResolveConfigPathEnvOverride(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "config.json")
 	if got := resolveConfigPath(missing); got != userCfg {
 		t.Errorf("resolveConfigPath with HAKASE_HOME: expected %q, got %q", userCfg, got)
+	}
+}
+
+// TestConfigExampleFileValid guards the committed config.json.example: it must
+// parse into the Config struct without unknown keys (encoding/json silently
+// ignores typos, so a strict decode catches config drift) and its MCP servers
+// must pass the same validation the runtime applies. Users copy this file
+// verbatim, so it must never reference a field that no longer exists.
+func TestConfigExampleFileValid(t *testing.T) {
+	data, err := os.ReadFile("config.json.example")
+	if err != nil {
+		t.Fatalf("reading config.json.example: %v", err)
+	}
+
+	var cfg Config
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		t.Fatalf("config.json.example has keys that do not map to Config fields: %v", err)
+	}
+
+	// The example must also survive the runtime MCP registry validation. Use
+	// an isolated HAKASE_HOME so a real ~/.hakase/mcp.json never merges in.
+	mcpTestIsolate(t)
+	reg, err := LoadMCPRegistry(&cfg)
+	if err != nil {
+		t.Fatalf("LoadMCPRegistry(config.json.example): %v", err)
+	}
+	if len(reg.Servers) != 3 {
+		t.Fatalf("expected 3 MCP servers (lightpanda, github, remote), got %d", len(reg.Servers))
+	}
+	lp, ok := reg.Servers["lightpanda"]
+	if !ok || lp.Type != "http" || lp.URL != "http://localhost:9223/mcp" {
+		t.Fatalf("lightpanda server wrong: %+v", lp)
+	}
+	gh, ok := reg.Servers["github"]
+	if !ok || gh.Type != "stdio" || len(gh.Command) == 0 || gh.Command[0] != "npx" {
+		t.Fatalf("github server wrong: %+v", gh)
+	}
+	rm, ok := reg.Servers["remote"]
+	if !ok || rm.Type != "http" || rm.URL != "https://mcp.example.com/mcp" {
+		t.Fatalf("remote server wrong: %+v", rm)
 	}
 }

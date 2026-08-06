@@ -10,6 +10,22 @@
     "apply_to": []
   },
   "mcp_server_url": "http://localhost:9223/mcp",
+  "mcp": {
+    "servers": {
+      "lightpanda": { "type": "http", "url": "http://localhost:9223/mcp" },
+      "github": {
+        "type": "stdio",
+        "command": ["npx", "-y", "@github/mcp-server"],
+        "env": { "GITHUB_PAT": "${GITHUB_PAT}" },
+        "tools": { "exclude": ["mcp_github_delete_repo"] }
+      },
+      "remote": {
+        "type": "http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+      }
+    }
+  },
   "fallback_providers": [],
   "skill_dirs": [],
   "knowledge_dir": "",
@@ -30,7 +46,7 @@
     "allow_network": false,
     "allow_pip_install": true,
     "allow_fallback": false,
-    "allowed_commands": ["ls","cat","grep","head","tail","echo","git"],
+    "allowed_commands": ["ls", "cat", "grep", "head", "tail", "echo", "git"],
     "deny_patterns": [],
     "risk_threshold": ""
   },

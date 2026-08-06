@@ -27,7 +27,6 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
-	"google.golang.org/adk/v2/tool/mcptoolset"
 	"google.golang.org/genai"
 )
 
@@ -1132,13 +1131,15 @@ func cronModelBootstrap() error {
 		delegateTimeout = 300 * time.Second
 	}
 
-	// MCP toolset is needed by buildSubAgentTools for the "default" agent
-	// type. We create it here so sub-agent toolsets resolve correctly.
-	if cfg.MCPServerURL != "" {
-		mcpToolset, err := mcptoolset.New(mcptoolset.Config{Endpoint: cfg.MCPServerURL})
-		if err == nil {
-			currentMCPToolset = mcpToolset
-		}
+	// MCP manager is needed by buildSubAgentTools for the "default" agent
+	// type. We create it here so sub-agent toolsets resolve correctly. A
+	// broken MCP config is a warning, not a blocker: cron runs without MCP
+	// tools rather than failing entirely.
+	mcpManager, err := NewMCPServerManager(cfg, func(string) {})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: warning: mcp servers unavailable: %v\n", err)
+	} else {
+		currentMCPManager = mcpManager
 	}
 
 	return nil
