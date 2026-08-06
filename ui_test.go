@@ -133,6 +133,89 @@ func TestStreamChunksMergeIntoOneAgentMessage(t *testing.T) {
 	}
 }
 
+// TestNewThinkingBlockAfterAnsweredMessage verifies that a NEW thinking block
+// streaming after an already-answered agent message opens a fresh agent
+// message instead of appending into the previous message's thinking block.
+// This is the reported bug: a second question's thinking (streamed as an
+// interjection response) landed inside the first question's already-answered
+// thinking block. The fix tracks thinking-block continuity so a thinking
+// chunk that arrives outside an in-flight thinking block starts a new block.
+func TestNewThinkingBlockAfterAnsweredMessage(t *testing.T) {
+	m := newTestModel(t)
+	m.showThinking = true
+	m.chatHistory = []ChatMessage{
+		{Role: "user", Content: "Q1"},
+		{Role: "agent", Content: "A1 answer", Thinking: "T1 thinking"},
+	}
+	m.rebuildRenderedLines()
+	m.renderChatViewport()
+
+	var model tea.Model = m
+	// A new thinking episode starts (e.g. the model responding to a queued
+	// second question steered into the running session as an interjection).
+	model, _ = model.Update(agentStreamMsg{Thinking: "T2 thinking"})
+	mm := model.(*appModel)
+
+	if len(mm.chatHistory) != 3 {
+		t.Fatalf("expected 3 messages (user + 2 agent), got %d", len(mm.chatHistory))
+	}
+	// The previous message must be untouched.
+	if mm.chatHistory[1].Thinking != "T1 thinking" || mm.chatHistory[1].Content != "A1 answer" {
+		t.Fatalf("previous agent message was mutated: %+v", mm.chatHistory[1])
+	}
+	last := mm.chatHistory[2]
+	if last.Role != "agent" || last.Thinking != "T2 thinking" || last.Content != "" {
+		t.Fatalf("expected new agent message with only thinking, got %+v", last)
+	}
+
+	// The content that follows the new thinking block merges into the NEW
+	// message, not the old one.
+	model, _ = model.Update(agentStreamMsg{Content: "A2 answer"})
+	mm = model.(*appModel)
+	if len(mm.chatHistory) != 3 {
+		t.Fatalf("content should merge into the new message, got %d messages", len(mm.chatHistory))
+	}
+	last = mm.chatHistory[2]
+	if last.Content != "A2 answer" || last.Thinking != "T2 thinking" {
+		t.Fatalf("new message content/thinking mismatch: %+v", last)
+	}
+	if mm.chatHistory[1].Content != "A1 answer" {
+		t.Fatalf("old message content was mutated: %+v", mm.chatHistory[1])
+	}
+}
+
+// TestThinkingContinuationMergesIntoSameBlock verifies that thinking chunks
+// streamed by the model itself while a thinking block is in flight keep
+// merging into that same block (the "updating on the same thinking block"
+// case the user described).
+func TestThinkingContinuationMergesIntoSameBlock(t *testing.T) {
+	m := newTestModel(t)
+	m.chatHistory = []ChatMessage{{Role: "user", Content: "hello"}}
+	m.rebuildRenderedLines()
+	m.renderChatViewport()
+
+	var model tea.Model = m
+	for _, sm := range []agentStreamMsg{
+		{Thinking: "step one"},
+		{Thinking: "\nstep two"},
+		{Content: "done"},
+	} {
+		model, _ = model.Update(sm)
+	}
+	mm := model.(*appModel)
+
+	if len(mm.chatHistory) != 2 {
+		t.Fatalf("expected 2 messages (user+agent), got %d", len(mm.chatHistory))
+	}
+	last := mm.chatHistory[1]
+	if last.Thinking != "step one\nstep two" {
+		t.Fatalf("thinking continuation merged wrong: %q", last.Thinking)
+	}
+	if last.Content != "done" {
+		t.Fatalf("content mismatch: %q", last.Content)
+	}
+}
+
 func TestStreamPreservesScrollPosition(t *testing.T) {
 	m := newTestModel(t)
 	for i := 0; i < 5; i++ {
@@ -751,6 +834,67 @@ func TestQueuedMessageDrainsIntoFreshRun(t *testing.T) {
 	}
 }
 
+// TestAgentDonePersistsAllRunMessages verifies that agentDoneMsg persists
+// EVERY agent message the run produced, not only the last one. A single run
+// can now emit multiple agent messages (one per thinking block, e.g. when a
+// mid-run interjection opens a fresh block), and each must land in the
+// session so a resumed conversation shows the same blocks.
+func TestAgentDonePersistsAllRunMessages(t *testing.T) {
+	m := newModelWithSvc(t)
+	// Seed the session like the enter handler does: user message persisted
+	// before the run starts.
+	if err := m.sessionService.RecordUsageWithAttachments("user", "Q1", "", 5, nil); err != nil {
+		t.Fatalf("seed user message: %v", err)
+	}
+	// Simulate a run that produced two agent messages: the Q1 answer plus a
+	// new thinking block (interjection response). runStartHistoryLen marks
+	// where this run's messages begin (after the user message).
+	m.chatHistory = []ChatMessage{
+		{Role: "user", Content: "Q1"},
+		{Role: "agent", Content: "A1", Thinking: "T1"},
+		{Role: "agent", Content: "A2", Thinking: "T2"},
+	}
+	m.runStartHistoryLen = 1
+	m.usage = &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     100,
+		CandidatesTokenCount: 50,
+		TotalTokenCount:      150,
+	}
+
+	model, _ := m.Update(agentDoneMsg{})
+	mm := model.(*appModel)
+
+	// The session must contain: user Q1, agent A1, agent A2.
+	msgs, err := mm.sessionService.GetMessages(mm.sessionService.ActiveSessionID())
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 persisted messages (user+2 agent), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[1].Role != "agent" || msgs[1].Content != "A1" || msgs[1].Thinking != "T1" {
+		t.Fatalf("first agent message mismatch: %+v", msgs[1])
+	}
+	if msgs[2].Role != "agent" || msgs[2].Content != "A2" || msgs[2].Thinking != "T2" {
+		t.Fatalf("second agent message mismatch: %+v", msgs[2])
+	}
+	// Provider usage lands on the final agent message.
+	if msgs[2].Tokens != 150 {
+		t.Fatalf("final message tokens = %d, want 150 (provider usage)", msgs[2].Tokens)
+	}
+
+	// A second agentDoneMsg must not re-persist the same messages.
+	if _, err := mm.sessionService.GetMessages(mm.sessionService.ActiveSessionID()); err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	before := len(mm.chatHistory)
+	model, _ = mm.Update(agentDoneMsg{})
+	mm = model.(*appModel)
+	if len(mm.chatHistory) != before {
+		t.Fatalf("agentDoneMsg should not add chat messages, got %d -> %d", before, len(mm.chatHistory))
+	}
+}
+
 // TestHintBarShowsQueuedCount verifies the footer surfaces pending queue depth.
 func TestHintBarShowsQueuedCount(t *testing.T) {
 	m := newTestModel(t)
@@ -974,4 +1118,3 @@ func TestCtrlVWhileProcessingAllowed(t *testing.T) {
 	model, _ := m.Update(keyMsg("ctrl+v"))
 	_ = model.(*appModel)
 }
-

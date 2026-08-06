@@ -298,8 +298,20 @@ type appModel struct {
 	chatScrollOffset int
 	renderedLines    []string // cached, fully rendered chat lines (styled + wrapped)
 	lastMsgStart     int      // index into renderedLines where the last chatHistory message starts
-	logLines         []string // cached log pane lines
-	taskLines        []string // cached task board lines
+
+	// streamingThinking is true while the model is actively streaming the
+	// current thinking block. A thinking chunk that arrives while this is
+	// false starts a NEW thinking block (fresh reasoning episode) and must
+	// open a new agent message instead of appending to a previous one.
+	streamingThinking bool
+
+	// runStartHistoryLen is the len(m.chatHistory) when the current agent run
+	// started. agentDoneMsg persists every agent message appended from this
+	// index onward, since a single run can now produce multiple messages (one
+	// per thinking block) and only the last one used to be saved.
+	runStartHistoryLen int
+	logLines           []string // cached log pane lines
+	taskLines          []string // cached task board lines
 
 	// Text selection state for auto-copy on selection end.
 	selectionStartLine int
@@ -725,12 +737,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isProcessing && !m.showSessionList {
 				now := time.Now()
 				if m.escArmedAt.IsZero() || now.Sub(m.escArmedAt) > escInterruptWindow {
-				// First press: arm the double-press interrupt.
-				m.escArmedAt = now
-				m.appendLog("⚡ press Esc again within 2s to interrupt")
-				return m, tea.Tick(escInterruptWindow, func(t time.Time) tea.Msg {
-					return escArmTimeoutMsg{at: now}
-				})
+					// First press: arm the double-press interrupt.
+					m.escArmedAt = now
+					m.appendLog("⚡ press Esc again within 2s to interrupt")
+					return m, tea.Tick(escInterruptWindow, func(t time.Time) tea.Msg {
+						return escArmTimeoutMsg{at: now}
+					})
 				}
 				// Second press within the window: cancel the run.
 				m.escArmedAt = time.Time{}
@@ -859,6 +871,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.appendLog(fmt.Sprintf("⚠ context %d%% full (effective budget)", pct))
 				}
 
+				// Record where this run's streamed agent messages begin so
+				// agentDoneMsg can persist every message the run produces
+				// (a run may now emit several: one per thinking block).
+				m.streamingThinking = false
+				m.runStartHistoryLen = len(m.chatHistory)
 				go m.runAgentTask(content, GenerateTaskID())
 			}
 		case "up", "k":
@@ -1037,6 +1054,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Content:  content,
 			Thinking: thinking,
 		})
+		m.streamingThinking = false
 		m.rebuildRenderedLines()
 		m.chatScrollOffset = m.maxChatScrollOffset()
 		m.renderChatViewport()
@@ -1047,7 +1065,24 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		wasAtBottom := m.atBottom()
-		if len(m.chatHistory) > 0 && m.chatHistory[len(m.chatHistory)-1].Role == "agent" {
+
+		// A thinking chunk that arrives outside an in-flight thinking block
+		// is the START of a new thinking block: a fresh reasoning episode,
+		// e.g. the model's response to a mid-run interjected question. It
+		// must open a NEW agent message so it renders as its own block
+		// instead of being appended to a previous, already-answered
+		// message's thinking. Chunks that arrive while streamingThinking is
+		// true are the same block being streamed by the model itself and
+		// keep merging into it.
+		newThinkingBlock := msg.Thinking != "" && !m.streamingThinking
+		if newThinkingBlock {
+			m.chatHistory = append(m.chatHistory, ChatMessage{
+				Role:     "agent",
+				Content:  "",
+				Thinking: msg.Thinking,
+			})
+			m.lastMsgStart = len(m.renderedLines)
+		} else if len(m.chatHistory) > 0 && m.chatHistory[len(m.chatHistory)-1].Role == "agent" {
 			last := &m.chatHistory[len(m.chatHistory)-1]
 			last.Content += msg.Content
 			last.Thinking += msg.Thinking
@@ -1059,6 +1094,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			m.lastMsgStart = len(m.renderedLines)
 		}
+		m.streamingThinking = msg.Thinking != ""
 		m.refreshLastMessage()
 		if wasAtBottom {
 			m.chatScrollOffset = m.maxChatScrollOffset()
@@ -1096,22 +1132,43 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cancel the next run within the window.
 		m.escArmedAt = time.Time{}
 
-		// Save the final agent message to the session with the provider-
+		// Save every agent message the run produced with the provider-
 		// reported token count (UsageUpdateMsg arrives before agentDoneMsg,
-		// so m.usage is current here).
-		if m.sessionService != nil && len(m.chatHistory) > 0 {
-			last := m.chatHistory[len(m.chatHistory)-1]
-			if last.Role == "agent" {
-				tokens := 0
-				if m.usage != nil {
-					tokens = int(m.usage.TotalTokenCount)
-					if tokens <= 0 {
-						tokens = int(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
-					}
+		// so m.usage is current here). A single run can now produce several
+		// agent messages - one per thinking block (e.g. a mid-run
+		// interjection response opens a fresh block) - so persist the whole
+		// range the run appended rather than only the last message.
+		if m.sessionService != nil && len(m.chatHistory) > m.runStartHistoryLen {
+			// Provider usage is attributed to the final agent message of the
+			// run; earlier ones get token estimates so the session fill
+			// estimate stays reasonable.
+			tokens := 0
+			if m.usage != nil {
+				tokens = int(m.usage.TotalTokenCount)
+				if tokens <= 0 {
+					tokens = int(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
 				}
-				_ = m.sessionService.RecordUsage("agent", last.Content, last.Thinking, tokens)
+			}
+			lastAgent := -1
+			for i := m.runStartHistoryLen; i < len(m.chatHistory); i++ {
+				if m.chatHistory[i].Role == "agent" {
+					lastAgent = i
+				}
+			}
+			for i := m.runStartHistoryLen; i < len(m.chatHistory); i++ {
+				msg := m.chatHistory[i]
+				if msg.Role != "agent" {
+					continue
+				}
+				msgTokens := EstimateTokens(msg.Content) + EstimateTokens(msg.Thinking)
+				if i == lastAgent && tokens > 0 {
+					msgTokens = tokens
+				}
+				_ = m.sessionService.RecordUsage("agent", msg.Content, msg.Thinking, msgTokens)
 			}
 		}
+		m.runStartHistoryLen = len(m.chatHistory)
+		m.streamingThinking = false
 
 		// Drain the mid-run message queue: chain fresh runs for queued
 		// prompts. On an Esc interrupt all pending steers merge into a single
@@ -1892,6 +1949,11 @@ func (m *appModel) launchTurn(text string, attached []attachment) {
 		_ = m.sessionService.RecordUsageWithAttachments("user", text, "", tokens, refs)
 	}
 
+	// Record where this run's streamed agent messages begin so agentDoneMsg
+	// can persist every message the run produces (a run may now emit several:
+	// one per thinking block).
+	m.streamingThinking = false
+	m.runStartHistoryLen = len(m.chatHistory)
 	m.isProcessing = true
 	go m.runAgentTask(content, GenerateTaskID())
 }
@@ -2035,6 +2097,8 @@ func (m *appModel) newSession() tea.Cmd {
 	}
 	m.sessionService.ClearActiveSession()
 	m.chatHistory = make([]ChatMessage, 0)
+	m.streamingThinking = false
+	m.runStartHistoryLen = 0
 	m.attachments = nil
 	m.rebuildRenderedLines()
 	m.chatScrollOffset = 0
@@ -2207,6 +2271,8 @@ func (m *appModel) switchToSession(id string) tea.Cmd {
 		}
 		m.chatHistory = append(m.chatHistory, cm)
 	}
+	m.streamingThinking = false
+	m.runStartHistoryLen = len(m.chatHistory)
 	m.attachments = nil
 	m.rebuildRenderedLines()
 	m.chatScrollOffset = m.maxChatScrollOffset()
