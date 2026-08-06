@@ -22,6 +22,7 @@ The agent can:
 - 🛡️ **Sandboxed execution** — subprocesses and file operations are confined to an approved workspace by default (path-confinement), with optional kernel-level bubblewrap isolation
 - 💻 **Run system commands** — execute shell commands, scripts, and executables directly on the host via a `system_exec` toolset
 - 📂 **Manage outputs** — generated HTML files, data artifacts, and more are saved to `./outputs/`
+- ⏰ **Schedule recurring tasks** — a `cronjob` tool for one-shot and recurring agent tasks (research digests, monitoring, periodic reports) with cron/interval/ISO schedules, persisted to `~/.hakase/cronjobs.json` and fired by a background scheduler
 
 ---
 
@@ -31,6 +32,7 @@ The agent can:
 hakase/
 ├── main.go                  # Entry point — loads config, boots the TUI and agent runner
 ├── agent.go                 # Core agent logic: ADK setup, sub-agents, tools (Python interpreter, downloader, skill manager)
+├── cronjob.go               # Scheduled tasks - cronjob tool, scheduler, ~/.hakase/cronjobs.json registry
 ├── delegate.go              # Sub-agent delegation — execute_task, progress reporting, dedup cache, watchdog
 ├── toolcall.go              # Malformed tool-call JSON repair and retry
 ├── sandbox.go               # Workspace path confinement (root normalization, secure join, containment checks)
@@ -193,6 +195,14 @@ hakase knowledge create "Quantum Computing" --tags physics --content "See [[Supe
 hakase knowledge read quantum-computing
 hakase knowledge lint
 ```
+
+#### The `hakase cron` CLI
+
+The `hakase cron` command manages scheduled tasks:
+
+- `hakase cron list|status|pause <id>|resume <id>|run <id>|tick` - list all jobs, show the registry path and state counts, pause/resume a job by ID or name, trigger a job immediately, or run all due jobs once
+
+The in-process scheduler runs while the TUI is open (a 30-second tick fires due jobs headless); `hakase cron tick` runs all due jobs once from the CLI. `run` and `tick` bootstrap the model for headless execution; the other subcommands are pure file operations.
 
 ### 📄 Project Context Files (AGENTS.md)
 
@@ -546,6 +556,7 @@ Python skills (`skills.json` + `.py` files) are unchanged. On a name collision, 
 | `github.com/openai/openai-go/v3`         | OpenAI API client                         |
 | `github.com/modelcontextprotocol/go-sdk` | MCP client for browser automation         |
 | `github.com/cyphar/filepath-securejoin` | Symlink-safe secure path joining for sandbox confinement |
+| `github.com/robfig/cron/v3`               | 5-field cron parsing for scheduled tasks |
 
 ---
 

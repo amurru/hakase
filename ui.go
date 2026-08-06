@@ -263,6 +263,17 @@ type DelegationProgressMsg struct {
 	Message string
 }
 
+// CronJobMsg represents a cron job lifecycle event from the background
+// scheduler. Status values: "scheduled", "started", "completed", "failed",
+// "silent", "triggered".
+type CronJobMsg struct {
+	JobID      string
+	Name       string
+	Status     string
+	Summary    string
+	OutputPath string
+}
+
 // TaskBoardMsg represents a full task board refresh
 type TaskBoardMsg struct {
 	Tasks []TaskMeta
@@ -456,6 +467,93 @@ func formatDelegationProgress(msg DelegationProgressMsg) string {
 	default: // "running", "log"
 		return fmt.Sprintf("🔀 %s: %s", prefix, msg.Message)
 	}
+}
+
+// formatCronJob renders a cron job lifecycle event for the log pane with a
+// status-specific marker. Summary is truncated to ~200 runes.
+func formatCronJob(msg CronJobMsg) string {
+	label := msg.Name
+	if label == "" {
+		label = msg.JobID
+	}
+	prefix := fmt.Sprintf("[cron %s] %s", msg.JobID, label)
+	switch msg.Status {
+	case "scheduled":
+		return fmt.Sprintf("📅 %s scheduled", prefix)
+	case "started":
+		return fmt.Sprintf("▶️ %s started", prefix)
+	case "completed":
+		line := fmt.Sprintf("✅ %s completed", prefix)
+		if s := truncateRunes(msg.Summary, 200); s != "" {
+			line += ": " + s
+		}
+		if msg.OutputPath != "" {
+			line += "\n         output: " + msg.OutputPath
+		}
+		return line
+	case "failed":
+		line := fmt.Sprintf("❌ %s failed", prefix)
+		if s := truncateRunes(msg.Summary, 200); s != "" {
+			line += ": " + s
+		}
+		if msg.OutputPath != "" {
+			line += "\n         output: " + msg.OutputPath
+		}
+		return line
+	case "silent":
+		return fmt.Sprintf("🤫 %s ran silently (output suppressed)", prefix)
+	case "triggered":
+		return fmt.Sprintf("🔔 %s triggered", prefix)
+	default:
+		return fmt.Sprintf("🔀 %s: %s", prefix, msg.Status)
+	}
+}
+
+// truncateRunes returns s truncated to at most n runes, preserving on
+// multi-byte boundaries. Returns s unchanged when len(s) <= n.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "..."
+}
+
+// appendCronChatNotice puts a system-style cron notice into the chat pane so
+// completed / failed jobs are visible even when the log pane is hidden.
+func (m *appModel) appendCronChatNotice(msg CronJobMsg) {
+	label := msg.Name
+	if label == "" {
+		label = msg.JobID
+	}
+
+	var sb strings.Builder
+	sb.WriteString("─── ")
+	switch msg.Status {
+	case "completed":
+		sb.WriteString("Cron job completed: ")
+	case "failed":
+		sb.WriteString("Cron job failed: ")
+	}
+	sb.WriteString(label)
+	sb.WriteString(" ───")
+
+	if s := truncateRunes(msg.Summary, 200); s != "" {
+		sb.WriteString("\n")
+		sb.WriteString(s)
+	}
+	if msg.OutputPath != "" {
+		sb.WriteString("\nOutput: ")
+		sb.WriteString(msg.OutputPath)
+	}
+
+	m.chatHistory = append(m.chatHistory, ChatMessage{
+		Role:    "system",
+		Content: sb.String(),
+	})
+	m.rebuildRenderedLines()
+	m.chatScrollOffset = m.maxChatScrollOffset()
+	m.renderChatViewport()
 }
 
 func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -959,6 +1057,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendLog(msg.Text)
 	case DelegationProgressMsg:
 		m.appendLog(formatDelegationProgress(msg))
+	case CronJobMsg:
+		m.appendLog(formatCronJob(msg))
+		if msg.Status == "completed" || msg.Status == "failed" {
+			m.appendCronChatNotice(msg)
+		}
 	case TaskUpdateMsg:
 		m.refreshTaskBoard()
 	case TaskBoardMsg:
@@ -1093,6 +1196,9 @@ func (m *appModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	if msg.Role == "user" {
 		prefix = "👤 User: "
 	}
+	if msg.Role == "system" {
+		prefix = ""
+	}
 
 	var lines []string
 
@@ -1111,7 +1217,7 @@ func (m *appModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 			contentLines := strings.Split(msg.Content, "\n")
 			for i, line := range contentLines {
 				var wrapped string
-				if i == 0 {
+				if i == 0 && prefix != "" {
 					wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(prefix + line)
 				} else {
 					wrapped = lipgloss.NewStyle().Width(wrapWidth).Render(line)

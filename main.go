@@ -31,6 +31,10 @@ func main() {
 		os.Exit(runRulesCLI(os.Args[2:]))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "cron" {
+		os.Exit(runCronCLI(os.Args[2:]))
+	}
+
 	ctx := context.Background()
 
 	cfg, err := loadConfig(resolveConfigPath("config.json"))
@@ -65,6 +69,13 @@ func main() {
 	delegationProgressNotify = func(status string, taskID, agent, message string) {
 		if p != nil {
 			p.Send(DelegationProgressMsg{TaskID: taskID, Agent: agent, Status: status, Message: message})
+		}
+	}
+
+	// Stream cron job lifecycle events (scheduled/completed/failed) to the TUI
+	cronJobNotify = func(status, jobID, name, summary, outputPath string) {
+		if p != nil {
+			p.Send(CronJobMsg{JobID: jobID, Name: name, Status: status, Summary: summary, OutputPath: outputPath})
 		}
 	}
 

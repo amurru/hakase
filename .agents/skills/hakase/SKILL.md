@@ -25,7 +25,7 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 
 | Agent | Role | Key tools |
 |---|---|---|
-| **orchestrator** (root) | Coordinates everything; delegates to sub-agents by intent; owns planning, knowledge, skills | task tools, knowledge tools, file ops, system_exec, delegate_task, list/load skill tools |
+| **orchestrator** (root) | Coordinates everything; delegates to sub-agents by intent; owns planning, knowledge, skills | task tools, knowledge tools, file ops, system_exec, delegate_task, cronjob, list/load skill tools |
 | **web_researcher** | Searches/navigates the web, downloads files, extracts content | MCP browser toolset (Lightpanda at `localhost:9223`), download tool |
 | **code_interpreter** | Executes Python in `.venv`, data analysis, manages the Python skill library | python_interpreter, save_skill, list_skills, load_markdown_skill |
 | **general_purpose** | Workspace file operations | read_file, write_file, patch, search_files |
@@ -43,11 +43,22 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - **System command execution** - `system_exec` toolset: shell routing (`sh -c` when no args), process hardening, 120s default timeout (use `system_exec_start` for background), path-confined under sandbox.
 - **Data analysis & visualization** - pandas/matplotlib in `.venv`; artifacts saved to `./outputs/`.
 - **Task board** - persisted `tasks.json`: `create_task`, `list_tasks`, `get_task`, `update_task`, `archive_task`, `delete_task`.
+- **Scheduled tasks** - `cronjob` tool (orchestrator only) schedules one-shot and recurring agent tasks that run headless in fresh isolated sub-agent sessions; persisted to `~/.hakase/cronjobs.json` and fired by a background scheduler while the TUI is open.
 - **Session persistence** - conversation sessions stored under `./sessions` (`session` CLI + `hakase session`); stale sessions cleaned after 30 days.
 - **Context management** - history building with budget math and optional cheap-model summarization (`summary_model`); manual `/compact [focus]` triggers the same compaction cascade on demand.
 - **Message attachments** - `@` file mention menu and `Ctrl+V` image paste; text files embed as text parts, images as inline data parts; attachments persist by path+MIME and re-read on resume.
 - **Mid-run messaging & interrupt** - messages typed while the agent is busy are queued and steered into the running session as a `USER INTERJECTION`; `Esc Esc` (within 2s) interrupts the running agent.
 - **Slash commands** - local command menu (`/board`, `/compact`, `/new`, `/sessions`, `/help`, `/exit`) that never reaches the model.
+
+### Scheduled tasks (cronjob)
+
+- **One-tool API on the orchestrator only** - the `cronjob` tool schedules one-shot and recurring agent tasks with actions `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`. Sub-agents cannot call it (blocked tool, see section 2).
+- **Schedule formats** - `'30m'` / `'2h'` / `'1d'` / `'45s'` (relative one-shot), `'every 30m'` / `'every 2 hours'` (recurring interval), `'0 9 * * *'` (5-field cron; 6-field rejected), `'2026-06-01T09:00:00'` (ISO timestamp one-shot).
+- **Persistence** - jobs live in `~/.hakase/cronjobs.json` (or `$HAKASE_HOME/cronjobs.json`), written atomically (tmp + rename) under a mutex with a cross-process flock - the same pattern as `tasks.json`.
+- **Scheduler** - a 30-second ticker goroutine started in `setupRunner` (agent.go) fires due jobs while the TUI is open. Due jobs run headless in fresh isolated sub-agent sessions (same pattern as `delegate_task`) with optional markdown skill context injected before the prompt; results are saved to `outputs/cron/<job-id>-<timestamp>.md` and surface as a notice in the chat pane.
+- **Lifecycle** - states `scheduled`, `paused`, `running`, `completed`. One-shot jobs complete after firing; recurring jobs keep running until paused/removed; an optional repeat count (0 = unlimited) completes a job after N runs.
+- **[SILENT] suppression** - a `[SILENT]` marker in a job's output suppresses delivery (monitoring-style jobs).
+- **CLI** - `hakase cron list|status|pause <id>|resume <id>|run <id>|tick`; `run`/`tick` bootstrap the model for headless execution, the rest are pure file operations.
 
 ## 4. Configuration
 

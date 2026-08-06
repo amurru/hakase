@@ -1405,6 +1405,9 @@ func buildOrchestratorInstruction(installedSkills string) string {
 ### CLARIFY:
 You have a 'clarify' tool to ask the user a question mid-task when you need input you cannot infer (a preference, a decision, confirmation, a choice between options). Pass up to 4 answer options in 'choices' - never embed them in the question text. Omit 'choices' for an open-ended question. Set 'multi_select' only when multiple options may apply. The run blocks until the user answers; a canceled or timed-out response means the user did not answer - proceed with your best judgment and state the assumption.
 
+### SCHEDULED TASKS (CRONJOB):
+You have a 'cronjob' tool to schedule one-shot or recurring tasks that run in fresh headless sessions with attached skills. Use it for recurring research digests, monitoring, periodic reports, delayed prompts, or planning workflows. Schedule string formats: '30m' (once in 30 minutes), 'every 2h' (recurring interval), '0 9 * * *' (5-field cron expression), or an ISO timestamp like '2026-06-01T09:00:00' (one-shot at a specific time). Jobs run in isolated sub-agent sessions with restricted toolsets; results are saved to outputs/cron/ and appear in the TUI. Lifecycle actions: create (schedule a new job), list (show all jobs), update (modify fields), pause / resume, run (trigger immediately), remove (delete).
+
 ### TASK BOARD:
 You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'archive_task' (archive completed tasks to keep them for reference and remove them from the active board), 'delete_task' (remove any task permanently, including completed or archived tasks, upon user request). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
 ARTIFACT LOCATION: When asked where a file/artifact produced earlier is, FIRST call 'list_tasks'/'get_task' and 'search_knowledge'/'recall_knowledge' to find recorded paths BEFORE searching the filesystem with 'search_files' or 'system_exec'.
@@ -1689,6 +1692,12 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		return nil, err
 	}
 
+	// cronjob tool for scheduling one-shot and recurring agent tasks.
+	cronjobT, err := createCronjobTool(log)
+	if err != nil {
+		return nil, err
+	}
+
 	// Context management: build history for the root orchestrator only.
 	// Sub-agents keep isolated context by design (delegate.go untouched).
 	historyBuilder := NewHistoryBuilder(sessionSvc)
@@ -1717,6 +1726,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			deleteTaskT,
 			archiveTaskT,
 			clarifyT,
+			cronjobT,
 			visionTool,
 		}, append(append(knowledgeTools, delegateTaskT), append(fileOpsTools, systemExecTools...)...)...),
 		SubAgents: []agent.Agent{
@@ -1728,6 +1738,9 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	if err != nil {
 		return nil, err
 	}
+
+	// Start the background cron scheduler (fires due one-shot/recurring jobs).
+	startCronScheduler(log)
 
 	return runner.New(runner.Config{
 		AppName:           "hakase_harness",

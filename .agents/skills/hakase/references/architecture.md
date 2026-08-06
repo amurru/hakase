@@ -13,6 +13,7 @@ hakase binary (Go)
 ├── clipboard.go       - clipboard copy/paste backends (wl-copy/xclip/xsel) + image paste + pane copy
 ├── queue.go           - mid-run message queue + run control (Esc-interrupt state)
 ├── delegate.go        - delegate_task tool, progress reporting, dedup cache, watchdog
+├── cronjob.go         - cronjob tool, schedule parsing, 30s scheduler, headless executor (outputs/cron/)
 ├── sandbox.go         - path confinement (securejoin, root normalization)
 ├── sandboxexec.go     - bubblewrap (bwrap) subprocess isolation
 ├── systemexec.go      - system_exec toolset (shell routing, hardening, env scrubbing)
@@ -39,7 +40,7 @@ hakase binary (Go)
 5. Creates python interpreter tool, save_skill tool, discovers markdown skills, creates
    list/load skill tools, knowledge tools -> `code_interpreter`.
 6. Creates file-op tools -> `general_purpose`.
-7. Creates system_exec tools, 6 task-board tools, delegate_task tool.
+7. Creates system_exec tools, 6 task-board tools, delegate_task tool, and the cronjob tool (orchestrator only).
 8. Wires the root `orchestrator` with all of the above + history builder + sub-agents.
 
 ## Delegation Model
@@ -50,6 +51,34 @@ hakase binary (Go)
 - Watchdog: a delegated run is aborted after `delegate_timeout_seconds` (default 300s).
 - Progress streams to the TUI via `delegationProgressNotify`.
 - A dedup cache prevents re-delegating identical in-flight tasks.
+
+## Scheduled Tasks (cronjob)
+
+- **One tool, action-style API**: the `cronjob` tool on the orchestrator (only) manages
+  jobs with actions `create` / `list` / `update` / `pause` / `resume` / `run` / `remove`.
+  Sub-agents cannot call it (see the blocked list above).
+- **Schedules** (`parseSchedule`): relative one-shot `'30m'` / `'2h'` / `'1d'` / `'45s'`,
+  recurring intervals `'every 30m'` / `'every 2 hours'`, 5-field cron `'0 9 * * *'`
+  (6-field rejected; parsed via `github.com/robfig/cron/v3`), and ISO timestamps
+  `'2026-06-01T09:00:00'`.
+- **Persistence**: `~/.hakase/cronjobs.json` (or `$HAKASE_HOME/cronjobs.json`), written
+  atomically via tmp-file + rename under a mutex and a cross-process flock - the same
+  pattern as `tasks.json`.
+- **Scheduler**: a 30-second ticker goroutine started in `setupRunner` fires due jobs
+  while the TUI is open. `hakase cron tick` runs all due jobs once from the CLI.
+- **Headless execution**: due jobs run in fresh isolated sub-agent sessions, reusing the
+  delegate sub-agent pattern (watchdog, loop guard, tool-call repair) with optional
+  markdown skill context injected before the prompt; `cronModelBootstrap` bootstraps the
+  model for headless `run`/`tick`.
+- **Outputs**: results are written to `outputs/cron/<job-id>-<timestamp>.md`; completed
+  and failed jobs surface a notice in the TUI chat pane via `CronJobMsg`. A `[SILENT]`
+  marker in a job's output suppresses delivery (monitoring-style jobs).
+- **Lifecycle**: `scheduled`, `paused`, `running`, `completed`. One-shot jobs complete
+  after firing; recurring jobs persist until paused/removed; an optional repeat count
+  (0 = unlimited) completes a job after N runs.
+- **CLI**: `hakase cron list|status|pause <id>|resume <id>|run <id>|tick` - `list`/
+  `status`/`pause`/`resume` are pure file operations; `run`/`tick` bootstrap the model.
+  Exit codes: 0 ok, 1 runtime error, 2 usage.
 
 ## Context Management
 
