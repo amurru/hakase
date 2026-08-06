@@ -544,6 +544,27 @@ Python skills (`skills.json` + `.py` files) are unchanged. On a name collision, 
 
 ---
 
+## TODO
+
+### Creative skills - deferred items
+
+The creative skills port (see `.omo/plans/creative-skills-port.md`) deliberately
+deferred a subset of the Hermes creative skills that depend on capabilities
+hakase does not yet have. Revisit these after implementing native **MCP client
+support on the orchestrator**, an **`image_gen` tool**, and a **`video_gen`
+tool**:
+
+- `touchdesigner-mcp` - skipped entirely; requires orchestrator-level MCP client
+  support (MCP tools currently exist only on `web_researcher` for Lightpanda).
+- `baoyu-infographic` - currently adapted to HTML/SVG output; revisit to use a
+  native `image_gen` tool when available.
+- `comfyui` - ported as doctrine + gated on user infra (ComfyUI/comfy-cli,
+  GPU or cloud); revisit to integrate with native image/video generation.
+- `songwriting-and-ai-music` - doctrine ported; generation is external (Suno);
+  revisit for native TTS/audio when relevant tools exist.
+
+---
+
 ## Dependencies
 
 | Package                                  | Purpose                                   |
