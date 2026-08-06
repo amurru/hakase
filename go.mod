@@ -14,6 +14,7 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
 	github.com/oklog/ulid/v2 v2.1.2
+	golang.org/x/image v0.44.0
 	google.golang.org/adk/v2 v2.1.0
 	google.golang.org/genai v1.63.0
 	gopkg.in/yaml.v3 v3.0.1

@@ -155,6 +155,7 @@ func main() {
 		if currentHistoryBuilder != nil {
 			currentHistoryBuilder.SetModelInfo(info)
 		}
+		currentModelInfo = info
 		if p != nil {
 			p.Send(ModelInfoMsg{Info: info})
 		}

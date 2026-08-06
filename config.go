@@ -61,10 +61,10 @@ type ContextFilesConfig struct {
 }
 
 type Config struct {
-	Provider          string                 `json:"provider"`
-	ModelName         string                 `json:"model_name"`
-	APIKey            string                 `json:"api_key"`
-	BaseURL           string                 `json:"base_url,omitempty"`
+	Provider  string `json:"provider"`
+	ModelName string `json:"model_name"`
+	APIKey    string `json:"api_key"`
+	BaseURL   string `json:"base_url,omitempty"`
 	// Instruction is an optional, additional customization rendered into the
 	// agent instructions as a "USER CONFIG INSTRUCTION" section alongside the
 	// discovered project context files (AGENTS.md). It is NOT a replacement
@@ -79,7 +79,7 @@ type Config struct {
 	// ContextFiles tunes project-context loading: MaxChars caps each file
 	// (0 uses 20000), ApplyTo restricts which agents receive the rendered
 	// block (empty = all agents).
-	ContextFiles ContextFilesConfig `json:"context_files,omitempty"`
+	ContextFiles      ContextFilesConfig     `json:"context_files,omitempty"`
 	MCPServerURL      string                 `json:"mcp_server_url"`
 	FallbackProviders []string               `json:"fallback_providers,omitempty"`
 	SkillDirs         []string               `json:"skill_dirs,omitempty"`
@@ -95,6 +95,27 @@ type Config struct {
 	// compaction summarization (the plan's "cheap/weak model if available").
 	// When empty, the primary model is used for summaries.
 	SummaryModel string `json:"summary_model,omitempty"`
+	// VisionModel optionally names a multimodal model used to describe images
+	// when the primary model has no vision support (the legacy path). When
+	// empty and the primary model is not vision-capable, the vision tool
+	// warns and continues. Set e.g. "google/gemini-3-flash-preview:free".
+	VisionModel string `json:"vision_model,omitempty"`
+	// VisionBaseURL optionally overrides the endpoint used for the vision
+	// model. When empty, the primary base_url is used.
+	VisionBaseURL string `json:"vision_base_url,omitempty"`
+	// VisionAPIKey optionally overrides the API key used for the vision
+	// model. When empty, the primary api_key is used.
+	VisionAPIKey string `json:"vision_api_key,omitempty"`
+	// VisionProvider optionally selects the provider used for the vision
+	// model: "gemini", "openai", or "openai-compatible". When empty, the
+	// primary provider is used (vision_base_url alone still forces an
+	// OpenAI-compatible endpoint). Needed when the vision model lives on a
+	// different backend than the primary - e.g. a gemini vision model while
+	// the primary provider is openai-compatible.
+	VisionProvider string `json:"vision_provider,omitempty"`
+	// ModelVision overrides multimodal detection for the primary model:
+	// "auto" (default), "yes", or "no".
+	ModelVision string `json:"model_vision,omitempty"`
 	// EnvOverrides maps task IDs or agent names to environment
 	// isolation configurations for delegated sub-agents.
 	EnvOverrides map[string]EnvOverrideConfig `json:"env_overrides,omitempty"`
@@ -128,7 +149,12 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_PROVIDER") != "" ||
 		os.Getenv("HAKASE_MODEL") != "" ||
 		os.Getenv("HAKASE_BASE_URL") != "" ||
-		os.Getenv("HAKASE_SUMMARY_MODEL") != ""
+		os.Getenv("HAKASE_SUMMARY_MODEL") != "" ||
+		os.Getenv("HAKASE_VISION_MODEL") != "" ||
+		os.Getenv("HAKASE_VISION_BASE_URL") != "" ||
+		os.Getenv("HAKASE_VISION_API_KEY") != "" ||
+		os.Getenv("HAKASE_VISION_PROVIDER") != "" ||
+		os.Getenv("HAKASE_MODEL_VISION") != ""
 }
 
 // hakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -196,6 +222,21 @@ func loadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_SUMMARY_MODEL"); v != "" {
 		cfg.SummaryModel = v
+	}
+	if v := os.Getenv("HAKASE_VISION_MODEL"); v != "" {
+		cfg.VisionModel = v
+	}
+	if v := os.Getenv("HAKASE_VISION_BASE_URL"); v != "" {
+		cfg.VisionBaseURL = v
+	}
+	if v := os.Getenv("HAKASE_VISION_API_KEY"); v != "" {
+		cfg.VisionAPIKey = v
+	}
+	if v := os.Getenv("HAKASE_VISION_PROVIDER"); v != "" {
+		cfg.VisionProvider = v
+	}
+	if v := os.Getenv("HAKASE_MODEL_VISION"); v != "" {
+		cfg.ModelVision = v
 	}
 	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
 		cfg.Debug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")

@@ -62,6 +62,7 @@ func (p *GeminiProvider) GetModelInfo(ctx context.Context, cfg *Config, modelNam
 		ContextWindow:   int64(m.InputTokenLimit),
 		MaxInputTokens:  int64(m.InputTokenLimit),
 		ThinkingEnabled: m.Thinking,
+		SupportsVision:  boolPtr(true),
 		Source:          "gemini models.get",
 	}, nil
 }
@@ -107,6 +108,7 @@ type openAIModelInfo struct {
 	InputTokenLimit     int64           `json:"input_token_limit"`
 	Reasoning           json.RawMessage `json:"reasoning"`
 	SupportedParameters []string        `json:"supported_parameters"`
+	InputModalities     []string        `json:"input_modalities"`
 }
 
 // reasoningDetail carries the fields of the OpenRouter reasoning object that
@@ -128,6 +130,27 @@ func (m *openAIModelInfo) reasoningSupported() bool {
 		}
 	}
 	return false
+}
+
+// visionSupported reports whether the model accepts image input. The
+// authoritative signal is OpenRouter's input_modalities list. When that is
+// absent, supported_parameters entries like "image_url" imply vision.
+// Returns nil when the endpoint reports neither (unknown).
+func (m *openAIModelInfo) visionSupported() *bool {
+	if len(m.InputModalities) > 0 {
+		for _, mod := range m.InputModalities {
+			if mod == "image" {
+				return boolPtr(true)
+			}
+		}
+		return boolPtr(false)
+	}
+	for _, p := range m.SupportedParameters {
+		if p == "image_url" || p == "image" || p == "images" {
+			return boolPtr(true)
+		}
+	}
+	return nil
 }
 
 // thinkingLevel reports the provider's default reasoning effort, if exposed.
@@ -220,6 +243,7 @@ func (m *openAIModelInfo) toModelInfo(name string) *ModelInfo {
 		MaxInputTokens:  m.InputTokenLimit,
 		ThinkingEnabled: m.reasoningSupported(),
 		ThinkingLevel:   m.thinkingLevel(),
+		SupportsVision:  m.visionSupported(),
 		Source:          "models endpoint",
 	}
 }

@@ -256,6 +256,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
 	})
 	if err != nil {
 		reporter.finish("failed", err, "")
@@ -473,16 +474,18 @@ func extractFilePath(args map[string]interface{}) string {
 // through so the sub-agent's tools can use it even if the ADK runner strips
 // env vars.
 func buildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]tool.Tool, []tool.Toolset) {
+	visionTool, _ := createVisionTool()
+
 	switch agentName {
 	case "code_interpreter":
 		pyTool, _ := createPythonTool(log, parentEnv)
-		return []tool.Tool{pyTool}, nil
+		return []tool.Tool{pyTool, visionTool}, nil
 	case "web_researcher":
 		dlTool, _ := createDownloadTool()
-		return []tool.Tool{dlTool}, []tool.Toolset{currentMCPToolset}
+		return []tool.Tool{dlTool, visionTool}, []tool.Toolset{currentMCPToolset}
 	case "general_purpose":
 		fileTools, _ := createFileOpsTools(log, nil, "")
-		return fileTools, nil
+		return append(fileTools, visionTool), nil
 	default:
 		allTools, _ := createAllTools(log, parentEnv)
 		return filterBlockedTools(allTools), []tool.Toolset{currentMCPToolset}
@@ -511,6 +514,11 @@ func createAllTools(log LogFunc, parentEnv []string) ([]tool.Tool, error) {
 	sysTools, err := createSystemExecTools(log, nil, "")
 	if err == nil {
 		tools = append(tools, sysTools...)
+	}
+
+	visionTool, err := createVisionTool()
+	if err == nil {
+		tools = append(tools, visionTool)
 	}
 
 	return tools, nil

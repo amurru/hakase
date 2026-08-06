@@ -37,6 +37,7 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 
 - **Web research & browsing** - MCP-connected browser tools (requires the Lightpanda MCP server at `http://localhost:9223/mcp`, configured via `mcp_server_url`).
 - **File download** - any HTTP/HTTPS URL to `./downloads/`; filename basename-sanitized, sandbox-confined.
+- **Vision** - `vision` tool loads an image (URL, local file, or `data:` URL) so the model can see it; native attachment when the main model is multimodal, text description via `vision_model` otherwise. Attached images (`@file`/paste) are auto-described by `vision_model` on non-vision main models.
 - **Python code interpreter** - isolated `.venv`; auto-resolves missing pip dependencies (`ModuleNotFoundError` -> install -> retry); `PYTHONPATH` includes `./skills`; own process group with parent-death signal; temp/work dirs pinned to workspace under sandbox.
 - **File operations** - `read_file` (offset/limit ranges), `write_file` (overwrite flag), `patch` (byte-exact string replacement), `search_files` (recursive regex; head_limit default 100, max 50k entries walked, 30s deadline).
 - **System command execution** - `system_exec` toolset: shell routing (`sh -c` when no args), process hardening, 120s default timeout (use `system_exec_start` for background), path-confined under sandbox.
@@ -66,13 +67,18 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - `knowledge_dir` - knowledge base directory (default `./knowledge`; `~` expands to home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `skill_dirs` - extra markdown skill directories, resolved against project root when relative.
 - `summary_model` - cheaper model for context-compaction; `HAKASE_SUMMARY_MODEL` env override.
+- `vision_model` - multimodal model used to describe images as text when the main model lacks vision; empty = disabled. `HAKASE_VISION_MODEL` env override.
+- `vision_base_url` - optional separate endpoint for the vision model; empty = primary `base_url`. `HAKASE_VISION_BASE_URL` env override.
+- `vision_api_key` - optional separate key for the vision model; empty = primary `api_key`. `HAKASE_VISION_API_KEY` env override.
+- `vision_provider` - optional provider for the vision model (`gemini` | `openai` | `openai-compatible`); empty = primary provider, except a `vision_base_url` alone forces an OpenAI-compatible endpoint. Lets a Gemini vision model serve an OpenAI-compatible main model. `HAKASE_VISION_PROVIDER` env override.
+- `model_vision` - override multimodal detection for the main model (`auto` | `yes` | `no`). `HAKASE_MODEL_VISION` env override.
 - `sandbox` - confinement strategy (`paths` default, `bubblewrap`, `landlock` reserved, `off`).
 - `loop_guard` - anti-degeneration guardrails: `max_output_tokens` (default 8192), `repetition_limit` (8), `max_text_without_tool` (20000).
 - `approval` - interactive approval gate: `mode` (`interactive` default, `deny`, `allow`), `expiry_seconds` (60).
 - `thinking_level` - passed to provider (`off`, `low`, `medium`, `high`, `maximum`, `xhigh`).
 
 ### Environment variables (override config file)
-`HAKASE_API_KEY`, `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_BASE_URL`, `HAKASE_SUMMARY_MODEL`, `HAKASE_DEBUG`, `HAKASE_MAX_OUTPUT_TOKENS`, `HAKASE_HOME`.
+`HAKASE_API_KEY`, `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_BASE_URL`, `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_MODEL`, `HAKASE_VISION_BASE_URL`, `HAKASE_VISION_API_KEY`, `HAKASE_VISION_PROVIDER`, `HAKASE_MODEL_VISION`, `HAKASE_DEBUG`, `HAKASE_MAX_OUTPUT_TOKENS`, `HAKASE_HOME`.
 
 **Important:** `HAKASE_*` variables are scrubbed from subprocess environments so the API key never leaks into shell commands or sandboxed Python.
 

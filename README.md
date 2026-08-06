@@ -241,6 +241,12 @@ hakase rules show AGENTS.md   # show one file's content (path or basename)
 - **Filename sanitized** — a supplied filename is stripped to its base component (`filepath.Base`) so `../` traversal attempts are neutralized
 - **Sandbox-aware** — when the sandbox is active, the download target is resolved through workspace confinement and rejected if it would land outside the approved workspace
 
+### 👁️ Vision
+
+The `vision` tool loads an image (URL, local file path, or `data:` URL) so the model can see it. When the main model supports images (Gemini models), the image is attached directly to the model context; otherwise a configured `vision_model` describes the image as text. Images are SSRF-guarded, size-capped, and auto-converted or resized to fit provider limits. Configure via `vision_model`, `vision_provider`, `vision_base_url`, `vision_api_key`, and `model_vision`.
+
+Attached images (`@file` or pasted screenshots) are handled the same way: on a non-vision main model they are described by `vision_model` before reaching the model (required on OpenAI-compatible providers, whose adapter rejects raw image parts); on a vision-capable model they pass through as inline input.
+
 ### 📁 File Operations
 
 The `general_purpose` agent provides workspace file tools:
@@ -402,6 +408,11 @@ When `model_name` is empty, the provider's default model is used.
 - `context_files` - Optional tuning for the project context files: `max_chars` (per-file truncation cap, default `20000`) and `apply_to` (restrict which agents receive the block; empty = all).
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
+- `vision_model` - Optional multimodal model used to describe images as text when the main model lacks vision (legacy mode). Empty = disabled.
+- `vision_base_url` - Optional separate endpoint for the vision model; empty = primary `base_url`.
+- `vision_api_key` - Optional separate key for the vision model; empty = primary `api_key`.
+- `vision_provider` - Optional provider for the vision model: `gemini`, `openai`, or `openai-compatible`. Empty = primary provider (a `vision_base_url` alone still forces an OpenAI-compatible endpoint). Use this when the vision model lives on a different backend than the main model - e.g. a Gemini vision model while the primary provider is OpenAI-compatible.
+- `model_vision` - Override multimodal detection for the main model: `auto` | `yes` | `no` (default `auto`).
  - `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
  - `loop_guard` — Optional anti-degeneration guardrails that abort a run stuck in a repetition loop or text-only bloat instead of burning the whole context/output window. Zero values use the defaults. Fields: `max_output_tokens` (cap on provider `maxOutputTokens`, default `8192`), `repetition_limit` (abort after this many consecutive identical non-thought chunks, default `8`), `max_text_without_tool` (abort after this many runes of text with zero tool calls, default `20000`). Set `HAKASE_MAX_OUTPUT_TOKENS` to override the cap via environment.
 
@@ -416,6 +427,11 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_MODEL`    | `model_name` |
 | `HAKASE_BASE_URL` | `base_url`   |
 | `HAKASE_SUMMARY_MODEL` | `summary_model` |
+| `HAKASE_VISION_MODEL` | `vision_model` |
+| `HAKASE_VISION_BASE_URL` | `vision_base_url` |
+| `HAKASE_VISION_API_KEY` | `vision_api_key` |
+| `HAKASE_VISION_PROVIDER` | `vision_provider` |
+| `HAKASE_MODEL_VISION` | `model_vision` |
 | `HAKASE_DEBUG`    | `debug`      |
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
 | `HAKASE_HOME`     | user home directory (default `~/.hakase`) |

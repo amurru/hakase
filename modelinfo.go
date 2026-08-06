@@ -21,7 +21,9 @@ type ModelInfo struct {
 	MaxInputTokens  int64
 	ThinkingEnabled bool
 	ThinkingLevel   string
-	Source          string
+	// SupportsVision reports whether the model accepts image input. nil = unknown/not reported.
+	SupportsVision *bool
+	Source         string
 }
 
 // FetchModelInfo resolves the configured provider and queries it for the

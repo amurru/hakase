@@ -1512,6 +1512,21 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		}
 	}
 
+	// Vision model for the legacy path (non-vision main models), when configured.
+	// The provider is selected by resolveVisionProvider: an explicit
+	// vision_provider wins, a vision_base_url alone forces an OpenAI-compatible
+	// endpoint, and otherwise the primary provider serves the vision model.
+	if cfg.VisionModel != "" && cfg.VisionModel != modelName {
+		vp := resolveVisionProvider(provider, cfg)
+		vKey := cfg.APIKey
+		if cfg.VisionAPIKey != "" {
+			vKey = cfg.VisionAPIKey
+		}
+		if vm, err := vp.CreateModel(ctx, cfg.VisionModel, vKey); err == nil {
+			visionModel = vm
+		}
+	}
+
 	mcpToolset, err := mcptoolset.New(mcptoolset.Config{
 		Endpoint: cfg.MCPServerURL,
 	})
@@ -1525,6 +1540,12 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		return nil, err
 	}
 
+	// vision tool: loads an image (URL/path/data URL) natively or via vision_model.
+	visionTool, err := createVisionTool()
+	if err != nil {
+		return nil, err
+	}
+
 	// Apply the configured thinking level to every agent sharing this model.
 	genCfg := buildGenerationConfig(cfg.ThinkingLevel)
 
@@ -1533,9 +1554,10 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		Description:           "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
 		Instruction:           HakaseSystemInstruction + contextBlockFor("web_researcher", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
 		Model:                 model,
-		Tools:                 []tool.Tool{downloadTool},
+		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              []tool.Toolset{mcpToolset},
 		GenerateContentConfig: genCfg,
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
 	})
 
 	// Code Inpterpreter agent/ data analyst
@@ -1593,8 +1615,10 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			saveSkillTool,
 			listSkillsTool,
 			loadMarkdownSkillTool,
+			visionTool,
 		}, // 👈 Attached skill tools here!
 		GenerateContentConfig: genCfg,
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
 	})
 	if err != nil {
 		return nil, err
@@ -1612,8 +1636,9 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		Description:           "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
 		Instruction:           GeneralPurposeSystemInstruction + contextBlockFor("general_purpose", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
 		Model:                 model,
-		Tools:                 fileOpsTools,
+		Tools:                 append(fileOpsTools, visionTool),
 		GenerateContentConfig: genCfg,
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
 	})
 	if err != nil {
 		return nil, err
@@ -1680,6 +1705,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			historyBuilder.BeforeModelCallback,
+			visionInjectionCallback,
 		},
 		Tools: append([]tool.Tool{
 			listSkillsTool,
@@ -1691,6 +1717,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			deleteTaskT,
 			archiveTaskT,
 			clarifyT,
+			visionTool,
 		}, append(append(knowledgeTools, delegateTaskT), append(fileOpsTools, systemExecTools...)...)...),
 		SubAgents: []agent.Agent{
 			researcherAgent,

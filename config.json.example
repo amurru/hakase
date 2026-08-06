@@ -17,6 +17,11 @@
   "chat_buffer_size": 1000,
   "task_checkpoint": false,
   "summary_model": "",
+  "vision_model": "",
+  "vision_base_url": "",
+  "vision_api_key": "",
+  "vision_provider": "",
+  "model_vision": "auto",
   "sandbox": {
     "mode": "bubblewrap",
     "workspace_roots": ["."],
