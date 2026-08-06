@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 type SaveKnowledgeInput struct {
 	Title      string   `json:"title" doc:"Required. Display title for the note (slug is derived from it)."`
 	Content    string   `json:"content" doc:"Required. Markdown body content. [[wikilinks]] will be resolved and dangling targets reported."`
+	Summary    string   `json:"summary,omitempty" doc:"Optional one-line summary. When empty, a summary is derived automatically from the content and stored in frontmatter."`
 	Tags       []string `json:"tags,omitempty" doc:"Optional tags for search filtering."`
 	Sources    []string `json:"sources,omitempty" doc:"Optional source URLs or raw/ paths for provenance."`
 	Confidence string   `json:"confidence,omitempty" doc:"Optional confidence level: high, medium, or low."`
@@ -29,10 +31,14 @@ type SaveKnowledgeInput struct {
 
 // SaveKnowledgeOutput is the output for the save_knowledge tool.
 type SaveKnowledgeOutput struct {
-	Slug          string   `json:"slug" doc:"The kebab-case slug derived from the title."`
-	Path          string   `json:"path" doc:"File path where the note was saved."`
-	DanglingLinks []string `json:"dangling_links" doc:"[[wikilink]] targets from the content that do not resolve to existing notes."`
-	Message       string   `json:"message" doc:"Human-readable status."`
+	Slug          string            `json:"slug" doc:"The kebab-case slug derived from the title."`
+	Path          string            `json:"path" doc:"File path where the note was saved."`
+	Summary       string            `json:"summary" doc:"Summary stored in the note frontmatter (provided or auto-derived)."`
+	Excerpt       string            `json:"excerpt" doc:"Auto-extracted plain-text excerpt (first ~300 characters) used to link the note with related knowledge."`
+	Related       []string          `json:"related" doc:"Slugs of existing notes auto-linked under the Related section."`
+	Metadata      map[string]string `json:"metadata,omitempty" doc:"Structured metadata extracted from the content (e.g. GitHub project fields such as maintainers, stars, language)."`
+	DanglingLinks []string          `json:"dangling_links" doc:"[[wikilink]] targets from the content that do not resolve to existing notes."`
+	Message       string            `json:"message" doc:"Human-readable status."`
 }
 
 // RecallKnowledgeInput is the input for the recall_knowledge tool.
@@ -42,17 +48,18 @@ type RecallKnowledgeInput struct {
 
 // RecallKnowledgeOutput is the output for the recall_knowledge tool.
 type RecallKnowledgeOutput struct {
-	Title         string   `json:"title" doc:"Display title from frontmatter."`
-	Slug          string   `json:"slug" doc:"Note slug."`
-	Content       string   `json:"content" doc:"Full markdown body."`
-	Summary       string   `json:"summary" doc:"One-line summary from frontmatter."`
-	Backlinks     []string `json:"backlinks" doc:"Slugs of notes that link to this note."`
-	Related       []string `json:"related" doc:"Related note titles from frontmatter."`
-	Sources       []string `json:"sources" doc:"Source URLs from frontmatter."`
-	Tags          []string `json:"tags" doc:"Tags from frontmatter."`
-	Updated       string   `json:"updated" doc:"Last-updated date."`
-	Status        string   `json:"status" doc:"Note status: draft, permanent, or archived."`
-	DanglingLinks []string `json:"dangling_links" doc:"[[wikilink]] targets in the body that do not exist."`
+	Title         string            `json:"title" doc:"Display title from frontmatter."`
+	Slug          string            `json:"slug" doc:"Note slug."`
+	Content       string            `json:"content" doc:"Full markdown body."`
+	Summary       string            `json:"summary" doc:"One-line summary from frontmatter."`
+	Backlinks     []string          `json:"backlinks" doc:"Slugs of notes that link to this note."`
+	Related       []string          `json:"related" doc:"Related note titles from frontmatter."`
+	Sources       []string          `json:"sources" doc:"Source URLs from frontmatter."`
+	Tags          []string          `json:"tags" doc:"Tags from frontmatter."`
+	Metadata      map[string]string `json:"metadata,omitempty" doc:"Structured metadata from frontmatter (e.g. GitHub project fields)."`
+	Updated       string            `json:"updated" doc:"Last-updated date."`
+	Status        string            `json:"status" doc:"Note status: draft, permanent, or archived."`
+	DanglingLinks []string          `json:"dangling_links" doc:"[[wikilink]] targets in the body that do not exist."`
 }
 
 // SearchKnowledgeInput is the input for the search_knowledge tool.
@@ -211,6 +218,17 @@ func serializeNote(note *KnowledgeNote) []byte {
 			builder.WriteString(fmt.Sprintf("  - %s\n", quoteYAML(r)))
 		}
 	}
+	if len(note.Frontmatter.Metadata) > 0 {
+		builder.WriteString("metadata:\n")
+		keys := make([]string, 0, len(note.Frontmatter.Metadata))
+		for k := range note.Frontmatter.Metadata {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			builder.WriteString(fmt.Sprintf("  %s: %s\n", k, quoteYAML(note.Frontmatter.Metadata[k])))
+		}
+	}
 	builder.WriteString("---\n\n")
 	builder.WriteString(note.Body)
 
@@ -241,7 +259,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 	// 1. save_knowledge
 	saveTool, err := newDocTool(functiontool.Config{
 		Name:        "save_knowledge",
-		Description: "Save a new knowledge note. The title is slugified into a filename. [[wikilinks]] in the content are resolved against existing notes; unresolved targets are reported as dangling links.",
+		Description: "Save a new knowledge note. The title is slugified into a filename. The note is enriched automatically: the configured summarization model produces structured data (summary, excerpt, tags, aliases, related notes, and metadata) in a strict JSON shape, with deterministic extraction as fallback. Existing notes that are genuinely related are auto-linked under a Related section (related frontmatter plus [[wikilinks]]). If the content or sources reference a GitHub repository (github.com/owner/repo), project metadata (owner, maintainers, stars, language, license) is captured from the GitHub API best-effort and stored in the note frontmatter. [[wikilinks]] in the content are resolved against existing notes; unresolved targets are reported as dangling links.",
 	}, func(ctx agent.Context, input SaveKnowledgeInput) (SaveKnowledgeOutput, error) {
 		if input.Title == "" {
 			return SaveKnowledgeOutput{}, fmt.Errorf("title is required")
@@ -291,6 +309,59 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 			},
 			Body: input.Content,
 		}
+
+		// Enrich the note before persisting. Primary path: the configured
+		// summarization model produces structured data (summary, excerpt,
+		// tags, aliases, related, metadata) in a strict JSON shape.
+		// Deterministic extraction fills gaps and is the full fallback when
+		// no model is available or the call fails. GitHub repository facts
+		// are refreshed from the GitHub API when a repo is referenced
+		// (authoritative override of model-provided github_* values).
+		if input.Summary != "" {
+			note.Frontmatter.Summary = input.Summary
+		} else {
+			note.Frontmatter.Summary = deriveSummary(input.Content, input.Title)
+		}
+		excerpt := deriveExcerpt(input.Content)
+
+		var modelRelated []string
+		if enr := modelEnrichKnowledge(input.Title, input.Content, input.Tags, idx); enr != nil {
+			if input.Summary == "" && enr.Summary != "" {
+				note.Frontmatter.Summary = enr.Summary
+			}
+			if enr.Excerpt != "" {
+				excerpt = enr.Excerpt
+			}
+			if len(input.Tags) == 0 && len(enr.Tags) > 0 {
+				note.Frontmatter.Tags = dedupeStrings(enr.Tags)
+			}
+			if len(input.Aliases) == 0 && len(enr.Aliases) > 0 {
+				note.Frontmatter.Aliases = dedupeStrings(enr.Aliases)
+			}
+			note.Frontmatter.Metadata = enr.Metadata
+			modelRelated = enr.Related
+		}
+
+		// GitHub API ground truth for repository metadata (best-effort).
+		if meta := enrichGitHubMetadata(input.Content, input.Sources); meta != nil {
+			if note.Frontmatter.Metadata == nil {
+				note.Frontmatter.Metadata = meta
+			} else {
+				for k, v := range meta {
+					note.Frontmatter.Metadata[k] = v
+				}
+			}
+		}
+
+		// Related links: resolve model-selected slugs; keyword discovery is
+		// the fallback when the model produced none.
+		related := resolveRelated(idx, note, modelRelated)
+		var relatedSlugs []string
+		for _, r := range related {
+			note.Frontmatter.Related = appendUnique(note.Frontmatter.Related, r.Frontmatter.Title)
+			relatedSlugs = append(relatedSlugs, r.Slug)
+		}
+		note.Body = appendRelatedSection(note.Body, related)
 		serializeNote(note)
 
 		if err := SaveNote(dir, note); err != nil {
@@ -317,6 +388,10 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 		return SaveKnowledgeOutput{
 			Slug:          slug,
 			Path:          note.Path,
+			Summary:       note.Frontmatter.Summary,
+			Excerpt:       excerpt,
+			Related:       relatedSlugs,
+			Metadata:      note.Frontmatter.Metadata,
 			DanglingLinks: dangling,
 			Message:       fmt.Sprintf("Note %q saved successfully.", slug),
 		}, nil
@@ -371,6 +446,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 			Related:       note.Frontmatter.Related,
 			Sources:       sourceURLs,
 			Tags:          note.Frontmatter.Tags,
+			Metadata:      note.Frontmatter.Metadata,
 			Updated:       note.Frontmatter.Updated,
 			Status:        note.Frontmatter.Status,
 			DanglingLinks: dangling,
@@ -786,4 +862,36 @@ func appendAfterSection(body, section, text string) string {
 		}
 	}
 	return strings.Join(result, "\n")
+}
+
+// appendUnique appends v to list when it is not already present.
+func appendUnique(list []string, v string) []string {
+	for _, x := range list {
+		if x == v {
+			return list
+		}
+	}
+	return append(list, v)
+}
+
+// appendRelatedSection appends [[wikilinks]] to related notes under a
+// "## Related" heading, skipping notes already linked in the body. Returns
+// the body unchanged when there is nothing to add.
+func appendRelatedSection(body string, related []*KnowledgeNote) string {
+	var links []string
+	for _, r := range related {
+		if strings.Contains(body, "[["+r.Slug) ||
+			strings.Contains(body, "[["+r.Frontmatter.Title) {
+			continue
+		}
+		links = append(links, fmt.Sprintf("- [[%s|%s]]", r.Slug, r.Frontmatter.Title))
+	}
+	if len(links) == 0 {
+		return body
+	}
+	section := strings.Join(links, "\n")
+	if strings.Contains(body, "## Related") {
+		return appendAfterSection(body, "## Related", section)
+	}
+	return body + "\n\n## Related\n\n" + section + "\n"
 }

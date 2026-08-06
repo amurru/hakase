@@ -7,10 +7,16 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +49,9 @@ type KnowledgeFrontmatter struct {
 	Sources    []KnowledgeSource `yaml:"sources,omitempty"`
 	Summary    string            `yaml:"summary,omitempty"`
 	Related    []string          `yaml:"related,omitempty"`
+	// Metadata holds structured key/value facts extracted at save time (e.g.
+	// GitHub project fields: owner, maintainers, stars, language, license).
+	Metadata map[string]string `yaml:"metadata,omitempty"`
 }
 
 // KnowledgeNote is a single knowledge note: its slug, file path, parsed
@@ -411,10 +420,15 @@ noteloop:
 		}
 
 		// Substring match across searchable fields.
+		var metadataText string
+		for _, v := range note.Frontmatter.Metadata {
+			metadataText += v + " "
+		}
 		matched := strings.Contains(strings.ToLower(note.Frontmatter.Title), query) ||
 			strings.Contains(strings.ToLower(strings.Join(note.Frontmatter.Aliases, " ")), query) ||
 			strings.Contains(strings.ToLower(strings.Join(note.Frontmatter.Tags, " ")), query) ||
 			strings.Contains(strings.ToLower(note.Frontmatter.Summary), query) ||
+			strings.Contains(strings.ToLower(metadataText), query) ||
 			strings.Contains(strings.ToLower(note.Body), query)
 
 		if matched {
@@ -557,4 +571,567 @@ func AppendLog(dir, action, title string) error {
 	defer f.Close()
 	_, err = f.WriteString(entry)
 	return err
+}
+
+// ------------------- enrichment helpers ---------------------------------------
+//
+// save_knowledge enriches a new note before persisting it: a summary and a
+// plain-text excerpt are derived from the content, existing notes that share
+// significant keywords are linked under a Related section, and GitHub project
+// metadata (owner, maintainers, stars, language, ...) is captured when the
+// content or sources reference a repository.
+
+// plainText strips markdown formatting, code fences, inline code, links, and
+// wikilinks from content, returning readable prose with collapsed whitespace.
+func plainText(content string) string {
+	// Drop fenced code blocks (even-indexed chunks are outside fences).
+	chunks := strings.Split(content, "```")
+	var out strings.Builder
+	for i, chunk := range chunks {
+		if i%2 != 0 {
+			continue
+		}
+		out.WriteString(chunk)
+	}
+	s := out.String()
+	// Inline code.
+	s = regexp.MustCompile("`[^`]*`").ReplaceAllString(s, " ")
+	// Markdown links: [text](url) -> text.
+	s = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`).ReplaceAllString(s, "$1")
+	// Wikilinks: [[target|label]] / [[target#heading]] -> target.
+	s = regexp.MustCompile(`\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]`).ReplaceAllString(s, "$1")
+	// Headings, emphasis, and list markers.
+	s = regexp.MustCompile(`(?m)^#{1,6}\s+`).ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "__", "")
+	s = strings.ReplaceAll(s, "*", "")
+	var cleaned []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "-*># "))
+		if line != "" {
+			cleaned = append(cleaned, line)
+		}
+	}
+	return strings.Join(cleaned, " ")
+}
+
+// splitSentences splits text on sentence-ending punctuation (. ! ?) that is
+// followed by a space or the end of the string.
+func splitSentences(text string) []string {
+	var sentences []string
+	var current []rune
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		current = append(current, c)
+		if (c == '.' || c == '!' || c == '?') &&
+			(i+1 >= len(runes) || runes[i+1] == ' ') {
+			if s := strings.TrimSpace(string(current)); s != "" {
+				sentences = append(sentences, s)
+			}
+			current = current[:0]
+		}
+	}
+	if s := strings.TrimSpace(string(current)); s != "" {
+		sentences = append(sentences, s)
+	}
+	return sentences
+}
+
+// deriveSummary returns a one-line summary of content: the first sentence,
+// extended with the second when it is very short, capped at 240 runes. Empty
+// content falls back to fallbackTitle.
+func deriveSummary(content, fallbackTitle string) string {
+	text := strings.Join(strings.Fields(plainText(content)), " ")
+	if text == "" {
+		return fallbackTitle
+	}
+	parts := splitSentences(text)
+	if len(parts) == 0 {
+		return truncateRunes(text, 240)
+	}
+	summary := parts[0]
+	if len([]rune(summary)) < 40 && len(parts) > 1 {
+		summary = parts[0] + " " + parts[1]
+	}
+	return truncateRunes(summary, 240)
+}
+
+// deriveExcerpt returns the first ~300 runes of plain text from content.
+func deriveExcerpt(content string) string {
+	text := strings.Join(strings.Fields(plainText(content)), " ")
+	if text == "" {
+		return ""
+	}
+	return truncateRunes(text, 300)
+}
+
+// knowledgeStopwords are common English function words excluded from related-
+// note keyword extraction.
+var knowledgeStopwords = map[string]bool{
+	"about": true, "above": true, "after": true, "again": true, "against": true,
+	"also": true, "been": true, "before": true, "being": true, "below": true,
+	"between": true, "both": true, "could": true, "does": true, "doing": true,
+	"down": true, "each": true, "else": true, "from": true, "further": true,
+	"have": true, "having": true, "here": true, "into": true, "just": true,
+	"like": true, "more": true, "most": true, "much": true, "must": true,
+	"only": true, "other": true, "over": true, "same": true, "such": true,
+	"than": true, "that": true, "their": true, "them": true, "then": true,
+	"there": true, "these": true, "they": true, "this": true, "those": true,
+	"through": true, "under": true, "until": true, "upon": true, "very": true,
+	"were": true, "what": true, "when": true, "where": true, "which": true,
+	"while": true, "will": true, "with": true, "within": true, "would": true,
+	"your": true, "yours": true, "should": true, "because": true, "using": true,
+}
+
+// significantKeywords tokenizes the given texts into lowercase alphanumeric
+// words of length >= 4 that are not stopwords. Returns a deduplicated set.
+func significantKeywords(texts ...string) map[string]bool {
+	kw := make(map[string]bool)
+	for _, text := range texts {
+		for _, w := range strings.Fields(strings.ToLower(plainText(text))) {
+			w = strings.Trim(w, ".,;:!?()[]{}\"'`-")
+			r := []rune(w)
+			if len(r) < 4 {
+				continue
+			}
+			alpha := true
+			for _, c := range r {
+				if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+					alpha = false
+					break
+				}
+			}
+			if !alpha || knowledgeStopwords[w] {
+				continue
+			}
+			kw[w] = true
+		}
+	}
+	return kw
+}
+
+// findRelatedNotes scores existing notes by how many significant keywords of
+// the new note appear in their title (weight 3), tags (weight 2), summary (1),
+// and body (1). Notes scoring below 2 are skipped, archived notes are excluded,
+// and at most maxResults notes are returned ordered by score desc, then title.
+func findRelatedNotes(idx *KnowledgeIndex, note *KnowledgeNote, maxResults int) []*KnowledgeNote {
+	keywords := significantKeywords(
+		note.Frontmatter.Title,
+		note.Frontmatter.Summary,
+		strings.Join(note.Frontmatter.Tags, " "),
+		note.Body,
+	)
+	if len(keywords) == 0 {
+		return nil
+	}
+	type scored struct {
+		note  *KnowledgeNote
+		score int
+	}
+	var candidates []scored
+	for slug, other := range idx.BySlug {
+		if slug == note.Slug || other.Frontmatter.Status == "archived" {
+			continue
+		}
+		title := strings.ToLower(other.Frontmatter.Title)
+		summary := strings.ToLower(other.Frontmatter.Summary)
+		body := strings.ToLower(other.Body)
+		score := 0
+		for kw := range keywords {
+			if strings.Contains(title, kw) {
+				score += 3
+			}
+			for _, t := range other.Frontmatter.Tags {
+				if strings.EqualFold(t, kw) {
+					score += 2
+					break
+				}
+			}
+			if strings.Contains(summary, kw) {
+				score++
+			}
+			if strings.Contains(body, kw) {
+				score++
+			}
+		}
+		if score >= 2 {
+			candidates = append(candidates, scored{other, score})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].note.Frontmatter.Title < candidates[j].note.Frontmatter.Title
+	})
+	if len(candidates) > maxResults {
+		candidates = candidates[:maxResults]
+	}
+	var out []*KnowledgeNote
+	for _, c := range candidates {
+		out = append(out, c.note)
+	}
+	return out
+}
+
+// GitHub repository detection. githubURLRe matches github.com URLs; the bare
+// pattern matches owner/repo mentions in prose (validated by the API later).
+var (
+	githubURLRe = regexp.MustCompile(`(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9_.-]+)`)
+	githubBareRe = regexp.MustCompile(`(^|[^A-Za-z0-9/])([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?)/([A-Za-z0-9_.-]+)([^A-Za-z0-9_.-]|$)`)
+)
+
+// extractGitHubRepos returns explicit (github.com URL) and bare (owner/repo)
+// repository candidates found in content and sources, deduplicated and in
+// discovery order. github.com URLs are masked before bare matching so URL path
+// segments (e.g. "com/amurru" inside github.com/amurru/gocaster) are not
+// misread as prose mentions; captured segments are trimmed of trailing
+// punctuation.
+func extractGitHubRepos(content string, sources []string) (explicit, bare [][2]string) {
+	seen := make(map[[2]string]bool)
+	texts := append([]string{content}, sources...)
+
+	for _, text := range texts {
+		for _, m := range githubURLRe.FindAllStringSubmatch(text, -1) {
+			if len(m) < 3 {
+				continue
+			}
+			repo := strings.TrimRight(m[2], "._-")
+			if repo == "" {
+				continue
+			}
+			c := [2]string{m[1], repo}
+			if !seen[c] {
+				seen[c] = true
+				explicit = append(explicit, c)
+			}
+		}
+	}
+
+	masked := make([]string, len(texts))
+	for i, text := range texts {
+		masked[i] = githubURLRe.ReplaceAllString(text, " ")
+	}
+	for _, text := range masked {
+		for _, m := range githubBareRe.FindAllStringSubmatch(text, -1) {
+			if len(m) < 4 {
+				continue
+			}
+			repo := strings.TrimRight(m[3], "._-")
+			if repo == "" {
+				continue
+			}
+			c := [2]string{m[2], repo}
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			bare = append(bare, c)
+		}
+	}
+	return explicit, bare
+}
+
+// fetchGitHubMetadata fetches public repository metadata from the GitHub REST
+// API: description, language, stars, forks, license, default branch, owner,
+// and the top contributors (a proxy for maintainers). It is a package-level
+// variable so tests can stub it without network access. The call is bounded by
+// an 8-second context deadline.
+var fetchGitHubMetadata = func(owner, repo string) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	client := &http.Client{}
+	meta := map[string]string{
+		"github_owner": owner,
+		"github_repo":  repo,
+		"github_url":   "https://github.com/" + owner + "/" + repo,
+	}
+
+	repoPath := "https://api.github.com/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, repoPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "hakase-knowledge-bot")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github api status %d for %s/%s", resp.StatusCode, owner, repo)
+	}
+
+	var repoInfo struct {
+		Description   string `json:"description"`
+		Language      string `json:"language"`
+		Stargazers    int    `json:"stargazers_count"`
+		Forks         int    `json:"forks_count"`
+		License       *struct {
+			SpdxID string `json:"spdx_id"`
+		} `json:"license"`
+		DefaultBranch string `json:"default_branch"`
+		Archived      bool   `json:"archived"`
+		UpdatedAt     string `json:"updated_at"`
+		Owner         struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"owner"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
+		return nil, err
+	}
+
+	if repoInfo.Description != "" {
+		meta["github_description"] = repoInfo.Description
+	}
+	if repoInfo.Language != "" {
+		meta["github_language"] = repoInfo.Language
+	}
+	meta["github_stars"] = strconv.Itoa(repoInfo.Stargazers)
+	meta["github_forks"] = strconv.Itoa(repoInfo.Forks)
+	if repoInfo.License != nil && repoInfo.License.SpdxID != "" {
+		meta["github_license"] = repoInfo.License.SpdxID
+	}
+	if repoInfo.DefaultBranch != "" {
+		meta["github_default_branch"] = repoInfo.DefaultBranch
+	}
+	meta["github_archived"] = strconv.FormatBool(repoInfo.Archived)
+	if len(repoInfo.UpdatedAt) >= 10 {
+		meta["github_updated"] = repoInfo.UpdatedAt[:10]
+	}
+	if repoInfo.Owner.Login != "" {
+		meta["github_owner_type"] = repoInfo.Owner.Type
+	}
+
+	// Top contributors as maintainers (best effort; shares the context deadline).
+	maintainers := []string{repoInfo.Owner.Login}
+	if cReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/contributors?per_page=5", nil); err == nil {
+		cReq.Header.Set("Accept", "application/vnd.github+json")
+		cReq.Header.Set("User-Agent", "hakase-knowledge-bot")
+		if cResp, err := client.Do(cReq); err == nil {
+			defer cResp.Body.Close()
+			if cResp.StatusCode == http.StatusOK {
+				var contribs []struct {
+					Login string `json:"login"`
+				}
+				if err := json.NewDecoder(cResp.Body).Decode(&contribs); err == nil {
+					for _, c := range contribs {
+						if c.Login != "" && c.Login != repoInfo.Owner.Login {
+							maintainers = append(maintainers, c.Login)
+						}
+					}
+				}
+			}
+		}
+	}
+	if len(maintainers) > 0 {
+		meta["github_maintainers"] = strings.Join(maintainers, ", ")
+	}
+	return meta, nil
+}
+
+// enrichGitHubMetadata detects a GitHub repository in content or sources and
+// fetches best-effort project metadata. Explicit github.com URLs are trusted
+// even when the fetch fails (the URL itself is evidence); bare owner/repo
+// mentions are only recorded when the API validates them. Returns nil when no
+// repository can be identified.
+func enrichGitHubMetadata(content string, sources []string) map[string]string {
+	explicit, bare := extractGitHubRepos(content, sources)
+	for _, c := range explicit {
+		if meta, err := fetchGitHubMetadata(c[0], c[1]); err == nil && meta != nil {
+			return meta
+		}
+	}
+	for _, c := range bare {
+		if meta, err := fetchGitHubMetadata(c[0], c[1]); err == nil && meta != nil {
+			return meta
+		}
+	}
+	if len(explicit) > 0 {
+		c := explicit[0]
+		return map[string]string{
+			"github_owner": c[0],
+			"github_repo":  c[1],
+			"github_url":   "https://github.com/" + c[0] + "/" + c[1],
+		}
+	}
+	return nil
+}
+
+// ------------------- model-backed enrichment ----------------------------------
+//
+// save_knowledge asks the configured summarization model to produce structured
+// enrichment data (summary, excerpt, tags, aliases, related notes, metadata)
+// in a strict JSON shape. The deterministic extractors above are the fallback
+// when no model is available or the call fails.
+
+// KnowledgeEnrichment is the structured data produced for save_knowledge by
+// the summarization model (primary) or derived deterministically (fallback).
+type KnowledgeEnrichment struct {
+	Summary  string            `json:"summary"`
+	Excerpt  string            `json:"excerpt"`
+	Tags     []string          `json:"tags"`
+	Aliases  []string          `json:"aliases"`
+	Related  []string          `json:"related"`
+	Metadata map[string]string `json:"metadata"`
+}
+
+// enrichKnowledgeFn is the model-backed enrichment callback, set in
+// setupRunner with access to the configured summary model (falling back to
+// the primary model). When nil (CLI, tests, headless runs without a model),
+// save_knowledge uses only the deterministic extractors.
+var enrichKnowledgeFn func(ctx context.Context, prompt string) (string, error)
+
+// knowledgeEnrichTemplate instructs the model to return strict JSON.
+const knowledgeEnrichTemplate = `You enrich a knowledge note before it is persisted. Given the note title and content, and the list of existing notes, produce STRICT JSON (no markdown fences, no preamble) with exactly this shape:
+
+{"summary": "...", "excerpt": "...", "tags": [...], "aliases": [...], "related": [...], "metadata": {...}}
+
+Field rules:
+- summary: one or two sentence plain-text summary of the note (max 240 characters).
+- excerpt: a representative plain-text excerpt from the content (max 300 characters).
+- tags: 3-6 concise lowercase tags for search filtering.
+- aliases: 1-3 alternative names or short forms of the title; empty array when none.
+- related: at most 5 slugs from the EXISTING NOTES list that are genuinely related to this note; empty array when none. Use the exact slug strings.
+- metadata: structured string facts. When the note concerns a GitHub project (github.com/owner/repo or owner/repo is referenced), include github_owner, github_repo, github_url, github_maintainers (owner and known maintainers, comma-separated), github_language, github_stars, github_license, and github_description - only facts you are confident about. Otherwise an empty object {}.
+
+TITLE: %s
+
+TAGS PROVIDED: %s
+
+CONTENT:
+%s
+
+EXISTING NOTES:
+%s
+
+Output ONLY the JSON object.`
+
+// buildKnowledgeEnrichPrompt assembles the enrichment prompt for the model.
+// Content is capped so the call stays cheap; candidates are existing notes
+// with title, slug, and summary so the model can pick related notes.
+func buildKnowledgeEnrichPrompt(title, content string, tags []string, candidates []*KnowledgeNote) string {
+	if len(content) > 4000 {
+		content = content[:4000] + "..."
+	}
+	tagStr := "none"
+	if len(tags) > 0 {
+		tagStr = strings.Join(tags, ", ")
+	}
+	var notes strings.Builder
+	for _, n := range candidates {
+		summary := n.Frontmatter.Summary
+		if summary == "" {
+			summary = "-"
+		}
+		fmt.Fprintf(&notes, "- %s (%s) - %s\n", n.Frontmatter.Title, n.Slug, summary)
+	}
+	return fmt.Sprintf(knowledgeEnrichTemplate, title, tagStr, content, notes.String())
+}
+
+// parseKnowledgeEnrichment extracts a KnowledgeEnrichment from the model's
+// raw response, tolerating markdown fences and surrounding prose. Returns nil
+// when the response does not parse or contains no usable summary.
+func parseKnowledgeEnrichment(raw string) *KnowledgeEnrichment {
+	raw = strings.TrimSpace(raw)
+	// Strip markdown code fences when present.
+	if strings.HasPrefix(raw, "```") {
+		if i := strings.IndexByte(raw, '\n'); i >= 0 {
+			raw = raw[i+1:]
+		}
+		if i := strings.LastIndex(raw, "```"); i >= 0 {
+			raw = raw[:i]
+		}
+		raw = strings.TrimSpace(raw)
+	}
+	var enr KnowledgeEnrichment
+	if err := json.Unmarshal([]byte(raw), &enr); err != nil {
+		// Tolerant fallback: extract the first balanced { ... } block.
+		start := strings.IndexByte(raw, '{')
+		end := strings.LastIndexByte(raw, '}')
+		if start < 0 || end <= start {
+			return nil
+		}
+		if err := json.Unmarshal([]byte(raw[start:end+1]), &enr); err != nil {
+			return nil
+		}
+	}
+	if strings.TrimSpace(enr.Summary) == "" {
+		return nil
+	}
+	enr.Tags = dedupeStrings(enr.Tags)
+	enr.Aliases = dedupeStrings(enr.Aliases)
+	if enr.Metadata == nil {
+		enr.Metadata = map[string]string{}
+	}
+	return &enr
+}
+
+// modelEnrichKnowledge runs the model-backed enrichment for a note being
+// saved. It returns nil when no model callback is configured, when the call
+// fails, or when the response does not parse - callers then fall back to the
+// deterministic extractors.
+func modelEnrichKnowledge(title, content string, tags []string, idx *KnowledgeIndex) *KnowledgeEnrichment {
+	if enrichKnowledgeFn == nil {
+		return nil
+	}
+	var candidates []*KnowledgeNote
+	for _, n := range idx.BySlug {
+		candidates = append(candidates, n)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Frontmatter.Title < candidates[j].Frontmatter.Title
+	})
+	const maxCandidates = 60
+	if len(candidates) > maxCandidates {
+		candidates = candidates[:maxCandidates]
+	}
+
+	prompt := buildKnowledgeEnrichPrompt(title, content, tags, candidates)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	raw, err := enrichKnowledgeFn(ctx, prompt)
+	if err != nil {
+		return nil
+	}
+	return parseKnowledgeEnrichment(raw)
+}
+
+// resolveRelated resolves model-suggested related slugs against the index,
+// skipping unknown or already-selected targets. When none of the suggested
+// slugs resolve, it falls back to keyword-based discovery of related notes.
+func resolveRelated(idx *KnowledgeIndex, note *KnowledgeNote, slugs []string) []*KnowledgeNote {
+	var out []*KnowledgeNote
+	seen := make(map[string]bool)
+	for _, s := range slugs {
+		if r, ok := ResolveTarget(idx, s); ok && !seen[r.Slug] {
+			seen[r.Slug] = true
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return findRelatedNotes(idx, note, 5)
+	}
+	return out
+}
+
+// dedupeStrings removes empty and duplicate entries, preserving order.
+func dedupeStrings(list []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, s := range list {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }

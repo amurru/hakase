@@ -27,6 +27,11 @@ import (
 	"google.golang.org/genai"
 )
 
+// adkLLMRequest aliases model.LLMRequest so the knowledge-enrichment closure
+// in setupRunner can construct a request even though the local `model`
+// variable shadows the package import there.
+type adkLLMRequest = model.LLMRequest
+
 const HakaseSystemInstruction = `You are a high-autonomy, general-purpose research and navigation agent modeled after the Hermes Agent framework.
 
 ### CORE OPERATIONAL PRINCIPLES:
@@ -1412,7 +1417,7 @@ You have a task management system (persisted in tasks.json) for planning and tra
 ARTIFACT LOCATION: When asked where a file/artifact produced earlier is, FIRST call 'list_tasks'/'get_task' and 'search_knowledge'/'recall_knowledge' to find recorded paths BEFORE searching the filesystem with 'search_files' or 'system_exec'.
 
 ### KNOWLEDGE BASE:
-You have a persistent knowledge base (markdown notes with YAML frontmatter in the configured knowledge directory) for storing durable facts you learn. Available tools: 'save_knowledge' (create a new note when you learn something important and worth keeping), 'recall_knowledge' (load a note by name - call this before answering about a known topic so you ground your reply in what you already recorded), 'search_knowledge' (keyword/tag grep across all notes), 'update_knowledge' (correct or extend an existing note), 'link_knowledge' (create [[wikilinks]] between notes to model relationships), 'cite_knowledge' (produce a footnote citation of a note when you use its content in an answer), 'list_knowledge' (enumerate notes), 'lint_knowledge' (run a health check for orphan notes, broken cross-references, and oversized pages). Use save/recall/update proactively: when the user tells you a durable fact, a preference, or a decision, save it; before answering about a topic you have notes on, recall it first. CRITICAL - dangling links: when 'save_knowledge', 'recall_knowledge', 'update_knowledge', or 'link_knowledge' return dangling links (wikilink targets that do not exist yet), you MUST surface them to the user, list the missing notes, and offer to create them. Only create the missing notes after the user confirms. Cite notes in answers either via the 'cite_knowledge' tool output or by inlining [[wikilinks]] so the user can trace claims back to their source note.
+You have a persistent knowledge base (markdown notes with YAML frontmatter in the configured knowledge directory) for storing durable facts you learn. Available tools: 'save_knowledge' (create a new note when you learn something important and worth keeping; provide a concise 'summary', relevant 'tags', 'aliases', and 'sources' when you have them - the tool also auto-enriches the note with the configured summarization model, producing a summary, excerpt, tags, aliases, related notes, and structured metadata such as GitHub maintainers, stars, and language for repository references, with deterministic extraction as fallback), 'recall_knowledge' (load a note by name - call this before answering about a known topic so you ground your reply in what you already recorded), 'search_knowledge' (keyword/tag grep across all notes), 'update_knowledge' (correct or extend an existing note), 'link_knowledge' (create [[wikilinks]] between notes to model relationships), 'cite_knowledge' (produce a footnote citation of a note when you use its content in an answer), 'list_knowledge' (enumerate notes), 'lint_knowledge' (run a health check for orphan notes, broken cross-references, and oversized pages). Use save/recall/update proactively: when the user tells you a durable fact, a preference, or a decision, save it; before answering about a topic you have notes on, recall it first. CRITICAL - dangling links: when 'save_knowledge', 'recall_knowledge', 'update_knowledge', or 'link_knowledge' return dangling links (wikilink targets that do not exist yet), you MUST surface them to the user, list the missing notes, and offer to create them. Only create the missing notes after the user confirms. Cite notes in answers either via the 'cite_knowledge' tool output or by inlining [[wikilinks]] so the user can trace claims back to their source note.
 
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
@@ -1512,6 +1517,39 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		if sm, err := provider.CreateModel(ctx, cfg.SummaryModel, cfg.APIKey); err == nil {
 			summarizeModel = sm
 		}
+	}
+
+	// Model-backed knowledge enrichment: save_knowledge asks the same
+	// cheap/weak model (falling back to the primary) to produce structured
+	// summary/excerpt/tags/aliases/related/metadata data in a strict JSON
+	// shape. save_knowledge falls back to deterministic extraction when this
+	// callback is unset (CLI, tests) or the call fails.
+	enrichKnowledgeFn = func(ctx context.Context, prompt string) (string, error) {
+		llm := summarizeModel
+		if llm == nil {
+			llm = currentModel
+		}
+		if llm == nil {
+			return "", fmt.Errorf("no model available for knowledge enrichment")
+		}
+		req := &adkLLMRequest{
+			Model:    llm.Name(),
+			Contents: []*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)},
+		}
+		var out strings.Builder
+		for resp, err := range llm.GenerateContent(ctx, req, false) {
+			if err != nil {
+				return "", err
+			}
+			if resp != nil && resp.Content != nil {
+				for _, part := range resp.Content.Parts {
+					if part != nil && part.Text != "" && !part.Thought {
+						out.WriteString(part.Text)
+					}
+				}
+			}
+		}
+		return strings.TrimSpace(out.String()), nil
 	}
 
 	// Vision model for the legacy path (non-vision main models), when configured.

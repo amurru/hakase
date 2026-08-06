@@ -170,11 +170,11 @@ knowledge/
 └── raw/        # optional immutable raw sources (excluded from the index)
 ```
 
-Each note is markdown with YAML frontmatter: `title`, `aliases`, `tags`, `created`, `updated`, `status` (`draft` / `permanent` / `archived`), `confidence` (`high` / `medium` / `low`), `sources` (URLs or `raw/` paths), `summary`, and `related`. The body contains `[[wikilinks]]` to related notes.
+Each note is markdown with YAML frontmatter: `title`, `aliases`, `tags`, `created`, `updated`, `status` (`draft` / `permanent` / `archived`), `confidence` (`high` / `medium` / `low`), `sources` (URLs or `raw/` paths), `summary`, `related`, and `metadata` (structured key/value facts extracted at save time, e.g. GitHub project fields). The body contains `[[wikilinks]]` to related notes.
 
 The orchestrator agent exposes eight knowledge tools:
 
-- **`save_knowledge`** - save a new note; unresolved `[[wikilinks]]` are reported as dangling
+- **`save_knowledge`** - save a new note; the note is auto-enriched with the configured summarization model (summary, excerpt, tags, aliases, related notes, and structured metadata), deterministic extraction is the fallback, existing notes that are related are auto-linked under a Related section, GitHub project metadata (owner, maintainers, stars, language, license) is captured when a repository is referenced, and unresolved `[[wikilinks]]` are reported as dangling
 - **`recall_knowledge`** - load a note by slug, basename, or alias, with backlinks
 - **`search_knowledge`** - keyword/tag search across notes
 - **`update_knowledge`** - correct or extend an existing note

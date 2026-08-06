@@ -6,6 +6,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -680,5 +681,223 @@ func TestSerializeNoteRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(parsed.Body, "Body with [[wikilinks]]") {
 		t.Errorf("Body round-trip: got %q", parsed.Body)
+	}
+}
+
+// ------------------- enrichment helpers ---------------------------------------
+
+func TestDeriveSummary(t *testing.T) {
+	content := "# Gocaster\n\nGocaster is a terminal-based podcast client written in Go.\nIt enables users to browse feeds and play episodes.\n"
+	got := deriveSummary(content, "Gocaster")
+	if got == "" {
+		t.Fatal("deriveSummary: empty summary")
+	}
+	if !strings.Contains(got, "Gocaster is a terminal-based podcast client written in Go") {
+		t.Errorf("deriveSummary: got %q", got)
+	}
+	if len([]rune(got)) > 240 {
+		t.Errorf("deriveSummary: too long (%d runes)", len([]rune(got)))
+	}
+
+	// Empty content falls back to the title.
+	if got := deriveSummary("", "Fallback Title"); got != "Fallback Title" {
+		t.Errorf("deriveSummary(empty): got %q, want fallback title", got)
+	}
+
+	// Fenced code blocks are excluded from the summary.
+	code := "```go\nfunc main() {}\n```\n\nReal prose sentence here."
+	got = deriveSummary(code, "T")
+	if strings.Contains(got, "func main") {
+		t.Errorf("deriveSummary: code leaked into summary: %q", got)
+	}
+	if !strings.Contains(got, "Real prose sentence here.") {
+		t.Errorf("deriveSummary: prose not kept: %q", got)
+	}
+}
+
+func TestDeriveExcerpt(t *testing.T) {
+	if got := deriveExcerpt("Just a short note."); got != "Just a short note." {
+		t.Errorf("deriveExcerpt(short): got %q", got)
+	}
+	long := deriveExcerpt(strings.Repeat("word ", 200)) // ~1000 chars
+	if len([]rune(long)) != 303 {
+		t.Errorf("deriveExcerpt(long): expected 303 runes (300 + ...), got %d", len([]rune(long)))
+	}
+	if !strings.HasSuffix(long, "...") {
+		t.Errorf("deriveExcerpt(long): expected truncation marker, got %q", long[len(long)-10:])
+	}
+	if got := deriveExcerpt(""); got != "" {
+		t.Errorf("deriveExcerpt(empty): got %q, want empty", got)
+	}
+}
+
+func TestFindRelatedNotes(t *testing.T) {
+	dir := t.TempDir()
+	writeNoteFile(t, dir, "podcast-clients", "---\ntitle: \"Podcast Clients\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\n---\n\nA comparison of podcast clients.\n")
+	writeNoteFile(t, dir, "bubbletea", "---\ntitle: \"Bubbletea TUI\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\n---\n\nA TUI framework written in Go used for terminal interfaces.\n")
+	writeNoteFile(t, dir, "unrelated", "---\ntitle: \"Cooking Recipes\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\n---\n\nHow to bake bread.\n")
+	writeNoteFile(t, dir, "old", "---\ntitle: \"Old Go Notes\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\nstatus: \"archived\"\n---\n\nTerminal podcast client in Go.\n")
+
+	idx, err := BuildKnowledgeIndex(dir)
+	if err != nil {
+		t.Fatalf("BuildKnowledgeIndex: %v", err)
+	}
+
+	newNote := &KnowledgeNote{
+		Slug: "gocaster",
+		Frontmatter: KnowledgeFrontmatter{
+			Title: "Gocaster",
+			Tags:  []string{"go", "podcast", "tui"},
+		},
+		Body: "A terminal podcast client written in Go using bubbletea.\n",
+	}
+
+	related := findRelatedNotes(idx, newNote, 5)
+	if len(related) < 2 {
+		t.Fatalf("findRelatedNotes: expected at least 2 related notes, got %d (%v)", len(related), related)
+	}
+	// Podcast Clients shares title+body keywords and should rank first.
+	if related[0].Slug != "podcast-clients" {
+		t.Errorf("findRelatedNotes: first match got %q, want podcast-clients", related[0].Slug)
+	}
+	for _, r := range related {
+		if r.Slug == "unrelated" {
+			t.Errorf("findRelatedNotes: unrelated note was linked")
+		}
+		if r.Slug == "old" {
+			t.Errorf("findRelatedNotes: archived note was linked")
+		}
+	}
+
+	// maxResults cap.
+	if got := findRelatedNotes(idx, newNote, 1); len(got) != 1 {
+		t.Errorf("findRelatedNotes(cap 1): expected 1 result, got %d", len(got))
+	}
+
+	// No keywords -> no related notes.
+	if got := findRelatedNotes(idx, &KnowledgeNote{Slug: "empty", Frontmatter: KnowledgeFrontmatter{Title: "x"}, Body: "a b"}, 5); len(got) != 0 {
+		t.Errorf("findRelatedNotes(no keywords): expected 0, got %d", len(got))
+	}
+}
+
+// containsPair reports whether pairs contains c.
+func containsPair(pairs [][2]string, c [2]string) bool {
+	for _, p := range pairs {
+		if p == c {
+			return true
+		}
+	}
+	return false
+}
+
+func TestExtractGitHubRepos(t *testing.T) {
+	// Explicit URLs plus bare mentions; "amurru/gocaster" in prose is a bare
+	// duplicate of the URL candidate and is deduped. "land/bubbletea" inside
+	// "charm.land/bubbletea" is a bare candidate (validated later by the API).
+	content := "See https://github.com/amurru/gocaster. Also mentions amurru/gocaster and charm.land/bubbletea"
+	explicit, bare := extractGitHubRepos(content, []string{"https://github.com/other/thing"})
+
+	if len(explicit) != 2 {
+		t.Fatalf("extractGitHubRepos: explicit got %v, want 2 entries", explicit)
+	}
+	if explicit[0] != [2]string{"amurru", "gocaster"} {
+		t.Errorf("extractGitHubRepos: explicit[0] got %v", explicit[0])
+	}
+	if !containsPair(explicit, [2]string{"other", "thing"}) {
+		t.Errorf("extractGitHubRepos: explicit missing source URL repo, got %v", explicit)
+	}
+	if len(bare) != 1 || bare[0] != [2]string{"land", "bubbletea"} {
+		t.Errorf("extractGitHubRepos: bare got %v, want [land bubbletea]", bare)
+	}
+
+	// Bare-only mention.
+	explicit, bare = extractGitHubRepos("Project amurru/gocaster is cool.", nil)
+	if len(explicit) != 0 {
+		t.Errorf("extractGitHubRepos bare-only: explicit got %v, want none", explicit)
+	}
+	if !containsPair(bare, [2]string{"amurru", "gocaster"}) {
+		t.Errorf("extractGitHubRepos bare-only: bare got %v, want amurru/gocaster", bare)
+	}
+
+	// No repos at all.
+	explicit, bare = extractGitHubRepos("Just some prose without repos.", nil)
+	if len(explicit) != 0 || len(bare) != 0 {
+		t.Errorf("extractGitHubRepos none: explicit=%v bare=%v, want both empty", explicit, bare)
+	}
+}
+
+func TestEnrichGitHubMetadataFetchFailure(t *testing.T) {
+	orig := fetchGitHubMetadata
+	fetchGitHubMetadata = func(owner, repo string) (map[string]string, error) {
+		return nil, fmt.Errorf("stubbed fetch failure")
+	}
+	defer func() { fetchGitHubMetadata = orig }()
+
+	// Bare mention with a failed fetch -> no metadata recorded (not validated).
+	if m := enrichGitHubMetadata("Project amurru/gocaster is a podcast client.", nil); m != nil {
+		t.Errorf("enrichGitHubMetadata(bare+fail): expected nil, got %v", m)
+	}
+
+	// Explicit github.com URL with a failed fetch -> owner/repo/url still kept.
+	m := enrichGitHubMetadata("See https://github.com/amurru/gocaster", nil)
+	if m == nil {
+		t.Fatal("enrichGitHubMetadata(explicit+fail): expected owner/repo metadata")
+	}
+	if m["github_owner"] != "amurru" || m["github_repo"] != "gocaster" {
+		t.Errorf("enrichGitHubMetadata(explicit+fail): got %v", m)
+	}
+	if m["github_url"] != "https://github.com/amurru/gocaster" {
+		t.Errorf("enrichGitHubMetadata(explicit+fail): url got %q", m["github_url"])
+	}
+}
+
+func TestSerializeNoteMetadata(t *testing.T) {
+	note := &KnowledgeNote{
+		Slug: "m",
+		Frontmatter: KnowledgeFrontmatter{
+			Title:    "M",
+			Created:  "2024-01-01",
+			Updated:  "2024-01-01",
+			Metadata: map[string]string{"github_stars": "12", "github_owner": "amurru"},
+		},
+		Body: "body\n",
+	}
+	raw := string(serializeNote(note))
+	if !strings.Contains(raw, "metadata:") || !strings.Contains(raw, `github_owner: "amurru"`) {
+		t.Errorf("serializeNote: metadata missing from frontmatter:\n%s", raw)
+	}
+	// Keys are sorted for determinism.
+	ownerIdx := strings.Index(raw, "github_owner")
+	starsIdx := strings.Index(raw, "github_stars")
+	if ownerIdx == -1 || starsIdx == -1 || ownerIdx > starsIdx {
+		t.Errorf("serializeNote: metadata keys not sorted (owner=%d stars=%d)", ownerIdx, starsIdx)
+	}
+
+	parsed, err := ParseKnowledgeNote("m.md", []byte(raw))
+	if err != nil {
+		t.Fatalf("ParseKnowledgeNote: %v", err)
+	}
+	if parsed.Frontmatter.Metadata["github_owner"] != "amurru" || parsed.Frontmatter.Metadata["github_stars"] != "12" {
+		t.Errorf("ParseKnowledgeNote: metadata got %v", parsed.Frontmatter.Metadata)
+	}
+}
+
+func TestSearchKnowledgeMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeNoteFile(t, dir, "gocaster", "---\ntitle: \"Gocaster\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\nmetadata:\n  github_maintainers: \"amurru\"\n  github_language: \"Go\"\n---\n\nBody text.\n")
+	writeNoteFile(t, dir, "other", "---\ntitle: \"Other\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\n---\n\nBody text.\n")
+
+	idx, err := BuildKnowledgeIndex(dir)
+	if err != nil {
+		t.Fatalf("BuildKnowledgeIndex: %v", err)
+	}
+
+	results := SearchKnowledge(idx, "amurru", nil, false)
+	if len(results) != 1 || results[0].Slug != "gocaster" {
+		t.Errorf("SearchKnowledge(amurru): got %v", results)
+	}
+	results = SearchKnowledge(idx, "Go", nil, false)
+	if len(results) != 1 || results[0].Slug != "gocaster" {
+		t.Errorf("SearchKnowledge(Go): got %v", results)
 	}
 }
