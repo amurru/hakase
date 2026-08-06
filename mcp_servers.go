@@ -335,8 +335,11 @@ func allowsMCPTool(cfg *MCPServerConfig, nsName string) bool {
 // namedMCPTool renames an MCP tool to its namespaced form while delegating
 // execution to the underlying tool (which calls the MCP server with the
 // original tool name). It mirrors ADK's confirmationTool pattern: embed the
-// original tool and override Name/Declaration/ProcessRequest so the namespaced
-// name reaches both the model's function schema and the tool dispatch map.
+// original tool and override Name/Declaration/ProcessRequest/Run so the
+// namespaced name reaches both the model's function schema and the tool
+// dispatch map. Run is delegated explicitly (not through the embedded
+// tool.Tool interface, which lacks Run) so namedMCPTool satisfies
+// toolinternal.FunctionTool and ADK's handleFunctionCalls can dispatch it.
 type namedMCPTool struct {
 	tool.Tool
 	name string
@@ -358,6 +361,17 @@ func (t *namedMCPTool) Declaration() *genai.FunctionDeclaration {
 
 func (t *namedMCPTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
 	return toolutils.PackTool(req, t)
+}
+
+// Run delegates execution to the embedded MCP tool, satisfying
+// toolinternal.FunctionTool so ADK can dispatch function calls.
+func (t *namedMCPTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	if ft, ok := t.Tool.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	}); ok {
+		return ft.Run(ctx, args)
+	}
+	return nil, fmt.Errorf("mcp tool %q: underlying tool does not implement Run", t.name)
 }
 
 func (ms *managedServer) setStatus(status, errMsg string) {
