@@ -127,6 +127,13 @@ func main() {
 		}
 		resp := make(chan ClarifyResponse, 1)
 		p.Send(clarifyPromptMsg{Req: req, Resp: resp})
+		// Notify the TUI when the question expires so the modal (and its
+		// free-text input state) clears even though the agent already moved
+		// on with a timed-out answer.
+		go func() {
+			time.Sleep(clarifyTimeout())
+			p.Send(clarifyTimeoutMsg{})
+		}()
 		return waitForClarify(resp, clarifyTimeout()), nil
 	}
 

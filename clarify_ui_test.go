@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestClarifyUIPromptMsgSetsPendingClarify(t *testing.T) {
@@ -205,7 +207,8 @@ func TestClarifyUIFreeTextEnterSubmits(t *testing.T) {
 	m := makeModel()
 
 	// Set up a text answer before triggering the clarify prompt.
-	m.input.SetValue("my answer here")
+	m.clarifyInput.Focus()
+	m.clarifyInput.SetValue("my answer here")
 
 	resp := make(chan ClarifyResponse, 1)
 	m.pendingClarify = &clarifyPromptMsg{
@@ -213,7 +216,7 @@ func TestClarifyUIFreeTextEnterSubmits(t *testing.T) {
 		Resp: resp,
 	}
 
-	// Press Enter - should capture the current textarea value.
+	// Press Enter - should capture the current clarify input value.
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -232,8 +235,9 @@ func TestClarifyUIFreeTextEnterSubmits(t *testing.T) {
 
 func TestClarifyUIFreeTextEmptyEnterSubmitsEmpty(t *testing.T) {
 	m := makeModel()
-	// Ensure the input is empty.
-	m.input.Reset()
+	// Ensure the clarify input is empty and focused.
+	m.clarifyInput.Focus()
+	m.clarifyInput.Reset()
 
 	resp := make(chan ClarifyResponse, 1)
 	m.pendingClarify = &clarifyPromptMsg{
@@ -259,6 +263,7 @@ func TestClarifyUIFreeTextEmptyEnterSubmitsEmpty(t *testing.T) {
 
 func TestClarifyUIFreeTextCharKeysNotSwallowed(t *testing.T) {
 	m := makeModel()
+	m.clarifyInput.Focus()
 
 	resp := make(chan ClarifyResponse, 1)
 	m.pendingClarify = &clarifyPromptMsg{
@@ -266,7 +271,7 @@ func TestClarifyUIFreeTextCharKeysNotSwallowed(t *testing.T) {
 		Resp: resp,
 	}
 
-	// Typing 'h' should fall through to the textarea, not resolve the channel.
+	// Typing 'h' should land in the clarify input, not resolve the channel.
 	_, _ = m.Update(tea.KeyPressMsg{Text: "h", Code: 'h'})
 
 	// Channel must still be un-resolved.
@@ -274,6 +279,10 @@ func TestClarifyUIFreeTextCharKeysNotSwallowed(t *testing.T) {
 	case <-resp:
 		t.Error("channel should NOT be resolved for a character key in free-text mode")
 	default:
+	}
+
+	if got := m.clarifyInput.Value(); got != "h" {
+		t.Errorf("expected clarifyInput value %q, got %q", "h", got)
 	}
 
 	if m.pendingClarify == nil {
@@ -399,8 +408,131 @@ func TestClarifyUIModalRendersFreeTextHint(t *testing.T) {
 	v := m.View()
 	rendered := v.Content
 
-	if !strings.Contains(rendered, "Type your answer below") {
-		t.Error("modal view missing free-text hint")
+	for _, frag := range []string{"Type your answer", "[enter] submit", "[esc] cancel"} {
+		if !strings.Contains(rendered, frag) {
+			t.Errorf("modal view missing %q\nrendered:\n%s", frag, safeHead(rendered, 500))
+		}
+	}
+	// The answer field (with its placeholder) is rendered inside the modal.
+	// ansi.Strip is needed: the placeholder's first char is styled with the
+	// cursor-line color, so escape codes sit between the characters.
+	if !strings.Contains(ansi.Strip(rendered), clarifyInputPlaceholder) {
+		t.Errorf("modal view missing answer field placeholder %q", clarifyInputPlaceholder)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Free-text input lifecycle
+// ---------------------------------------------------------------------------
+
+func TestClarifyUIFreeTextPromptOpensInput(t *testing.T) {
+	m := makeModel()
+	m.clarifyInput.SetValue("leftover")
+	m.clarifyInput.Blur()
+
+	_, _ = m.Update(clarifyPromptMsg{
+		Req:  ClarifyRequest{Question: "Q"},
+		Resp: make(chan ClarifyResponse, 1),
+	})
+
+	if !m.clarifyInput.Focused() {
+		t.Error("clarifyInput should be focused in free-text mode")
+	}
+	if m.clarifyInput.Value() != "" {
+		t.Errorf("clarifyInput should start empty, got %q", m.clarifyInput.Value())
+	}
+}
+
+func TestClarifyUIFreeTextPromptDoesNotTouchMainInput(t *testing.T) {
+	m := makeModel()
+	m.input.SetValue("draft message")
+
+	_, _ = m.Update(clarifyPromptMsg{
+		Req:  ClarifyRequest{Question: "Q"},
+		Resp: make(chan ClarifyResponse, 1),
+	})
+
+	// The user's half-composed main message must survive a clarify prompt.
+	if got := m.input.Value(); got != "draft message" {
+		t.Errorf("main input was clobbered: got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Timeout clears the modal
+// ---------------------------------------------------------------------------
+
+func TestClarifyUITimeoutClearsModal(t *testing.T) {
+	m := makeModel()
+	m.clarifyInput.Focus()
+
+	resp := make(chan ClarifyResponse, 1)
+	m.pendingClarify = &clarifyPromptMsg{
+		Req:  ClarifyRequest{Question: "Q"},
+		Resp: resp,
+	}
+
+	_, _ = m.Update(clarifyTimeoutMsg{})
+
+	if m.pendingClarify != nil {
+		t.Error("pendingClarify should be nil after timeout msg")
+	}
+	if m.clarifyInput.Focused() {
+		t.Error("clarifyInput should be blurred after timeout msg")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Modal wrapping: long questions never overflow the terminal width
+// ---------------------------------------------------------------------------
+
+func TestClarifyUIModalWrapsLongQuestion(t *testing.T) {
+	m := makeModel() // 80x40 from makeModel
+
+	// A question far wider than any terminal. The unique tail proves the full
+	// text is present (wrapped), not clipped at the screen edge.
+	marker := "UNIQUE_TAIL_MARKER_xyzzy"
+	question := strings.Repeat("word ", 200) + marker
+
+	m.pendingClarify = &clarifyPromptMsg{
+		Req:  ClarifyRequest{Question: question},
+		Resp: make(chan ClarifyResponse, 1),
+	}
+
+	v := m.View()
+	rendered := v.Content
+
+	if !strings.Contains(rendered, marker) {
+		t.Errorf("long question was clipped; unique tail missing\nrendered:\n%s", safeHead(rendered, 500))
+	}
+	for i, line := range strings.Split(rendered, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line %d exceeds screen width %d: width=%d", i, m.width, w)
+		}
+	}
+}
+
+func TestClarifyUIModalWrapsLongChoices(t *testing.T) {
+	m := makeModel()
+
+	m.pendingClarify = &clarifyPromptMsg{
+		Req: ClarifyRequest{
+			Question: "Pick one",
+			Choices:  []string{strings.Repeat("choice ", 100), "short"},
+		},
+		Resp: make(chan ClarifyResponse, 1),
+	}
+
+	v := m.View()
+	rendered := v.Content
+
+	if !strings.Contains(rendered, "short") {
+		t.Errorf("short choice lost after wrapping long sibling\nrendered:\n%s", safeHead(rendered, 500))
+	}
+	for i, line := range strings.Split(rendered, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line %d exceeds screen width %d: width=%d", i, m.width, w)
+		}
 	}
 }
 

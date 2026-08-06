@@ -358,7 +358,8 @@ type appModel struct {
 
 	// Clarify modal state.
 	pendingClarify   *clarifyPromptMsg
-	clarifySelection []int // transient multi-select state; reset on arrival + clear
+	clarifySelection []int          // transient multi-select state; reset on arrival + clear
+	clarifyInput     textarea.Model // dedicated free-text answer field
 
 	// Mid-run message queue: prompts typed while the agent is busy. Steered
 	// into the running session by the HistoryBuilder callback, drained into
@@ -397,6 +398,18 @@ func newModel(
 	// Enter sends the message; shift+enter / ctrl+j inserts a newline.
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter", "ctrl+j")
 
+	// Dedicated free-text answer field for the clarify modal. A separate
+	// textarea keeps the answer separate from any half-composed message in the
+	// main input and lets the modal render the field visibly.
+	ci := textarea.New()
+	ci.Placeholder = clarifyInputPlaceholder
+	ci.ShowLineNumbers = false
+	ci.Prompt = ""
+	ci.DynamicHeight = true
+	ci.MinHeight = 1
+	ci.MaxHeight = 2
+	ci.KeyMap.InsertNewline.SetKeys("shift+enter", "ctrl+j")
+
 	// Default to 1000 lines if not configured
 	if chatBufferSize <= 0 {
 		chatBufferSize = 1000
@@ -418,6 +431,7 @@ func newModel(
 		attachments:     make([]attachment, 0),
 		pendingQueue:    newPendingQueue(),
 		runCtrl:         newRunControl(),
+		clarifyInput:    ci,
 	}
 }
 
@@ -586,7 +600,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						} else {
 							m.clarifySelection = nil
 							q.Resp <- ClarifyResponse{Answer: []string{q.Req.Choices[idx]}}
-							m.pendingClarify = nil
+							m.closeClarify()
 						}
 					}
 				case "enter":
@@ -597,18 +611,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								ans = append(ans, q.Req.Choices[idx])
 							}
 						}
-						m.clarifySelection = nil
 						q.Resp <- ClarifyResponse{Answer: ans}
-						m.pendingClarify = nil
+						m.closeClarify()
 					}
 				case "esc":
-					m.clarifySelection = nil
 					q.Resp <- ClarifyResponse{Canceled: true}
-					m.pendingClarify = nil
+					m.closeClarify()
 				case "ctrl+c":
-					m.clarifySelection = nil
 					q.Resp <- ClarifyResponse{Canceled: true}
-					m.pendingClarify = nil
+					m.closeClarify()
 					if m.runCtrl != nil {
 						m.runCtrl.interrupt()
 					}
@@ -616,29 +627,29 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			default:
-				// Free-text mode: typed characters fall through to the textarea
-				// so the user can compose an answer; enter/esc/ctrl+c are
-				// intercepted here.
+				// Free-text mode: edit the dedicated answer field here so
+				// typing works even when the main input is blurred.
 				switch key {
 				case "enter":
-					ans := strings.TrimSpace(m.input.Value())
+					ans := strings.TrimSpace(m.clarifyInput.Value())
 					q.Resp <- ClarifyResponse{Answer: []string{ans}}
-					m.pendingClarify = nil
-					m.input.Reset()
+					m.closeClarify()
 				case "esc":
 					q.Resp <- ClarifyResponse{Canceled: true}
-					m.pendingClarify = nil
-					m.input.Reset()
+					m.closeClarify()
 				case "ctrl+c":
 					q.Resp <- ClarifyResponse{Canceled: true}
-					m.pendingClarify = nil
+					m.closeClarify()
 					if m.runCtrl != nil {
 						m.runCtrl.interrupt()
 					}
 					return m, tea.Quit
 				default:
-					// fall through to normal textarea processing
+					updated, cmd := m.clarifyInput.Update(msg)
+					m.clarifyInput = updated
+					return m, cmd
 				}
+				return m, nil
 			}
 		}
 
@@ -1125,6 +1136,14 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clarifyPromptMsg:
 		m.pendingClarify = &msg
 		m.clarifySelection = nil
+		if len(msg.Req.Choices) == 0 {
+			return m, m.openClarifyInput()
+		}
+		return m, nil
+	case clarifyTimeoutMsg:
+		if m.pendingClarify != nil {
+			m.closeClarify()
+		}
 		return m, nil
 	case approvalPromptMsg:
 		m.pendingApproval = &msg
@@ -1161,7 +1180,13 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var tiCmd tea.Cmd
-	m.input, tiCmd = m.input.Update(msg)
+	if m.pendingClarify != nil && len(m.pendingClarify.Req.Choices) == 0 {
+		// Non-key messages (e.g. paste) while the free-text clarify modal is
+		// open go into the visible answer field, not the hidden main input.
+		m.clarifyInput, tiCmd = m.clarifyInput.Update(msg)
+	} else {
+		m.input, tiCmd = m.input.Update(msg)
+	}
 	cmds = append(cmds, tiCmd)
 
 	return m, tea.Batch(cmds...)

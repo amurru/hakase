@@ -24,6 +24,20 @@ var (
 	clarifyHintStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("245")).
 				Italic(true)
+
+	// clarifyInputStyle draws a border around the free-text answer field so
+	// the user can see and edit what they type.
+	clarifyInputStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("75"))
+)
+
+// clarifyMaxWidth caps the modal box so a long question can never make it
+// wider than the terminal. clarifyInputPlaceholder is shown in the free-text
+// answer field while it is empty.
+const (
+	clarifyMaxWidth         = 72
+	clarifyInputPlaceholder = "Type your answer..."
 )
 
 // clarifyPromptMsg carries a clarify request from a tool handler to the TUI.
@@ -32,6 +46,11 @@ type clarifyPromptMsg struct {
 	Req  ClarifyRequest
 	Resp chan ClarifyResponse
 }
+
+// clarifyTimeoutMsg tells the TUI that a pending clarify question expired, so
+// the modal (and any free-text input state) is cleared even though the agent
+// already moved on with a timed-out answer.
+type clarifyTimeoutMsg struct{}
 
 // waitForClarify blocks on the response channel until the user answers or the
 // expiry timer fires. Returns a timed-out response on expiry. Extracted so the
@@ -45,17 +64,64 @@ func waitForClarify(resp chan ClarifyResponse, expiry time.Duration) ClarifyResp
 	}
 }
 
+// clarifyBoxWidth returns the box and content widths for the clarify modal at
+// the current screen size. The box fills the terminal up to clarifyMaxWidth
+// with a small screen margin, so it is never clipped at the right edge.
+func (m *appModel) clarifyBoxWidth() (boxW, contentW int) {
+	boxW = m.width - 8
+	if boxW > clarifyMaxWidth {
+		boxW = clarifyMaxWidth
+	}
+	if boxW < 20 {
+		boxW = 20
+	}
+	contentW = boxW - 6 // border (2) + horizontal padding (4)
+	if contentW < 1 {
+		contentW = 1
+	}
+	return boxW, contentW
+}
+
+// openClarifyInput resets and focuses the dedicated free-text answer field.
+// It is a fresh, empty input so a half-composed main message is never mistaken
+// for the answer. Returns the cursor blink command so the answer field cursor
+// blinks immediately.
+func (m *appModel) openClarifyInput() tea.Cmd {
+	_, contentW := m.clarifyBoxWidth()
+	m.clarifyInput.Reset()
+	m.clarifyInput.SetWidth(contentW - 2) // inside the clarifyInputStyle border
+	return m.clarifyInput.Focus()
+}
+
+// closeClarifyInput blurs the dedicated answer field so its cursor stops
+// blinking once the modal is gone.
+func (m *appModel) closeClarifyInput() {
+	m.clarifyInput.Blur()
+}
+
+// closeClarify clears the pending clarify modal and all its transient state.
+func (m *appModel) closeClarify() {
+	m.closeClarifyInput()
+	m.clarifySelection = nil
+	m.pendingClarify = nil
+}
+
 // clarifyModalView renders the clarify modal overlay on top of the normal
 // TUI. It shows the question text, optional answer choices with multi-select
-// markers, and keyboard hints.
+// markers, a visible free-text input field, and keyboard hints. The box width
+// is capped and every text line is wrapped to it, so long questions never
+// overflow the terminal.
 func (m *appModel) clarifyModalView() tea.View {
 	if m.pendingClarify == nil {
 		return tea.NewView("")
 	}
 	req := m.pendingClarify.Req
+	_, contentW := m.clarifyBoxWidth()
 	var b strings.Builder
 
-	b.WriteString(clarifyTitleStyle.Render("❓ " + req.Question))
+	// Wrap the question and every answer line to the content width so long
+	// text wraps instead of overflowing the box (and thus the terminal).
+	b.WriteString(clarifyTitleStyle.Width(contentW).Render("❓ " + req.Question))
 	b.WriteString("\n\n")
 
 	if len(req.Choices) > 0 {
@@ -64,18 +130,31 @@ func (m *appModel) clarifyModalView() tea.View {
 			if containsInt(m.clarifySelection, i) {
 				marker = "x"
 			}
-			b.WriteString(fmt.Sprintf("[%s] %d. %s\n", marker, i+1, c))
+			line := fmt.Sprintf("[%s] %d. %s", marker, i+1, c)
+			b.WriteString(lipgloss.NewStyle().Width(contentW).Render(line))
+			b.WriteString("\n")
 		}
 		hint := "[1-4] select  ·  [enter] confirm"
 		if req.MultiSelect {
 			hint = "[1-4] toggle  ·  [enter] confirm"
 		}
-		b.WriteString("\n" + clarifyHintStyle.Render(hint+"  ·  [esc] cancel"))
+		b.WriteString("\n" + clarifyHintStyle.Width(contentW).Render(hint+"  ·  [esc] cancel"))
 	} else {
-		b.WriteString(clarifyHintStyle.Render("Type your answer below  ·  [esc] cancel"))
+		// Free-text mode: render the dedicated answer field inside the box so
+		// the user can see what they type. Keep the field width in sync with
+		// the box (resizes are handled here, idempotently).
+		m.clarifyInput.SetWidth(contentW - 2)
+		b.WriteString(clarifyInputStyle.Render(m.clarifyInput.View()))
+		b.WriteString("\n\n" + clarifyHintStyle.Width(contentW).Render("Type your answer  ·  [enter] submit  ·  [esc] cancel"))
 	}
 
-	box := clarifyBoxStyle.Render(b.String())
+	// Cap the box height so a tiny terminal clips the modal instead of
+	// lipgloss misbehaving with a negative MaxHeight.
+	maxH := m.height - 4
+	if maxH < 3 {
+		maxH = 3
+	}
+	box := clarifyBoxStyle.MaxHeight(maxH).Render(b.String())
 	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box))
 	v.MouseMode = tea.MouseModeCellMotion
 	v.AltScreen = true
