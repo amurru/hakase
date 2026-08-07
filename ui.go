@@ -310,6 +310,15 @@ type appModel struct {
 	// open a new agent message instead of appending to a previous one.
 	streamingThinking bool
 
+	// math renders LaTeX math in the chat output: kitty graphics PNGs when
+	// the terminal + toolchain support it, Unicode char-grid otherwise.
+	math *MathRenderer
+	// mathImages gates the kitty PNG path. False while a message is still
+	// streaming (equations are incomplete and per-chunk recompilation would
+	// be wasteful); true once a message is complete so display math renders
+	// as images.
+	mathImages bool
+
 	// runStartHistoryLen is the len(m.chatHistory) when the current agent run
 	// started. agentDoneMsg persists every agent message appended from this
 	// index onward, since a single run can now produce multiple messages (one
@@ -454,6 +463,7 @@ func newModel(
 		pendingQueue:    newPendingQueue(),
 		runCtrl:         newRunControl(),
 		clarifyInput:    ci,
+		math:            newMathRenderer(),
 	}
 }
 
@@ -645,7 +655,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.runCtrl != nil {
 						m.runCtrl.interrupt()
 					}
-					return m, tea.Quit
+					return m, m.quitCmd()
 				}
 				return m, nil
 			default:
@@ -665,7 +675,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.runCtrl != nil {
 						m.runCtrl.interrupt()
 					}
-					return m, tea.Quit
+					return m, m.quitCmd()
 				default:
 					updated, cmd := m.clarifyInput.Update(msg)
 					m.clarifyInput = updated
@@ -691,7 +701,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.runCtrl != nil {
 					m.runCtrl.interrupt()
 				}
-				return m, tea.Quit
+				return m, m.quitCmd()
 			}
 			return m, nil
 		}
@@ -703,7 +713,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.runCtrl != nil {
 					m.runCtrl.interrupt()
 				}
-				return m, tea.Quit
+				return m, m.quitCmd()
 			case "esc", "ctrl+/", "ctrl+_", "ctrl+?", "?":
 				m.showHelp = false
 			}
@@ -767,7 +777,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.runCtrl != nil {
 				m.runCtrl.interrupt()
 			}
-			return m, tea.Quit
+			return m, m.quitCmd()
 		// Ctrl+/ sends byte 0x1F, decoded as "ctrl+_" on standard terminals,
 		// "ctrl+/" via the kitty protocol, and "ctrl+?" on some emulators.
 		case "ctrl+/", "ctrl+_", "ctrl+?":
@@ -1065,9 +1075,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Thinking: thinking,
 		})
 		m.streamingThinking = false
+		m.mathImages = true // complete message: display math may render as PNGs
 		m.rebuildRenderedLines()
 		m.chatScrollOffset = m.maxChatScrollOffset()
 		m.renderChatViewport()
+		cmds = append(cmds, m.mathRawCmds()...)
 
 	case agentStreamMsg:
 		if msg.Content == "" && msg.Thinking == "" {
@@ -1105,6 +1117,10 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastMsgStart = len(m.renderedLines)
 		}
 		m.streamingThinking = msg.Thinking != ""
+		// Keep images disabled while streaming: the equation is incomplete
+		// and recompiling per chunk would be wasteful. Display math upgrades
+		// to PNGs when the message completes (agentDoneMsg / agentTextMsg).
+		m.mathImages = false
 		m.refreshLastMessage()
 		if wasAtBottom {
 			m.chatScrollOffset = m.maxChatScrollOffset()
@@ -1179,6 +1195,16 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.runStartHistoryLen = len(m.chatHistory)
 		m.streamingThinking = false
+
+		// The run is complete: upgrade display math in the last streamed
+		// message from Unicode to PNGs (when the kitty path is available) and
+		// flush the transmitted image sequences to the terminal.
+		if !m.mathImages && len(m.chatHistory) > 0 {
+			m.mathImages = true
+			m.refreshLastMessage()
+			m.renderChatViewport()
+			cmds = append(cmds, m.mathRawCmds()...)
+		}
 
 		// Drain the mid-run message queue: chain fresh runs for queued
 		// prompts. On an Esc interrupt all pending steers merge into a single
@@ -1293,6 +1319,31 @@ func (m *appModel) atBottom() bool {
 	return m.chatScrollOffset >= m.maxChatScrollOffset()
 }
 
+// mathRawCmds converts the queued kitty APC sequences (produced while
+// rendering display math) into tea.Raw commands for the update loop. Called
+// after any render that may have queued image transmissions.
+func (m *appModel) mathRawCmds() []tea.Cmd {
+	raw := m.math.FlushRaw()
+	if len(raw) == 0 {
+		return nil
+	}
+	cmds := make([]tea.Cmd, 0, len(raw))
+	for _, seq := range raw {
+		cmds = append(cmds, tea.Raw(seq))
+	}
+	return cmds
+}
+
+// quitCmd returns the ordered command sequence for a clean TUI exit: first
+// delete any kitty images this process placed (so they do not linger in the
+// terminal after the app exits), then quit. Used at every tea.Quit site.
+func (m *appModel) quitCmd() tea.Cmd {
+	if m.math == nil || !m.math.canRenderImages() {
+		return tea.Quit
+	}
+	return tea.Sequence(tea.Raw(m.math.ClearAll()), tea.Quit)
+}
+
 // renderMsgLines renders a single chat message into styled, width-wrapped
 // lines. The thinking text is rendered as ONE bordered block so empty interior
 // lines (paragraph breaks) do not show up as separate empty boxes.
@@ -1316,7 +1367,7 @@ func (m *appModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	if strings.TrimSpace(msg.Content) != "" {
 		if msg.Role == "agent" {
 			lines = append(lines, agentLabelStyle.Render(prefix))
-			mdLines := strings.Split(renderMarkdown(msg.Content, wrapWidth), "\n")
+			mdLines := strings.Split(m.math.RenderMarkdown(msg.Content, wrapWidth, m.mathImages), "\n")
 			lines = append(lines, mdLines...)
 		} else {
 			contentLines := strings.Split(msg.Content, "\n")

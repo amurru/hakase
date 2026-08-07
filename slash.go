@@ -89,7 +89,7 @@ var builtinCommands = []SlashCommand{
 		Description: "Exit hakase",
 		Usage:       "/exit",
 		Run: func(m *appModel, args string) tea.Cmd {
-			return tea.Quit
+			return m.quitCmd()
 		},
 	},
 	{
