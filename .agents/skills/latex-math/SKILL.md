@@ -39,6 +39,20 @@ graphics protocol or a Unicode fallback - just emit the math delimiters
 directly in your response and it displays). For **document**/**beamer**,
 compile-verify-fix (Section 4) before presenting.
 
+**HARD RULE - always wrap math in delimiters.** Every equation, formula, or
+math expression you emit in chat output MUST be wrapped in proper math
+delimiters - never bare LaTeX:
+
+- Display / standalone equations (own line): `$$...$$` (e.g.
+  `$$ E = mc^2 $$`)
+- Inline math (within a sentence): `$...$` (e.g. "the energy is $E = mc^2$")
+
+Raw LaTeX without delimiters (e.g. `[ G_{\mu\nu} = 8\pi T_{\mu\nu} ]`) will
+NOT render - the TUI shows it as plain text. When you write an equation, wrap
+it yourself; never output a math expression that is not delimited. This
+applies to every mode: snippets render inline, and document/beamer outputs
+that quote math in the chat must use the delimiters too.
+
 ## 2. Preamble (never improvise)
 
 Use the verbatim preamble catalog in `SKILL_DIR/references/preamble-lib.md`.
@@ -112,7 +126,10 @@ The hakase TUI renders math in chat output automatically:
   the built-in math renderer (`mathrender.go`): kitty graphics protocol PNGs
   when the terminal + toolchain support it, Unicode character grids
   otherwise. Just write normal LaTeX math in your answer - no special
-  handling needed.
+  handling needed. **But the delimiters are mandatory**: math that is not
+  wrapped in `$$...$$` or `$...$` is shown verbatim as plain text. Always
+  wrap raw LaTeX equations in the proper delimiters (see the HARD RULE in
+  Section 1).
 - For a standalone equation PNG on disk (e.g. to embed elsewhere):
   `bash SKILL_DIR/scripts/compile.sh <file.tex>` produces `<file>-1.png`
   (transparent, 300 DPI) next to the PDF.

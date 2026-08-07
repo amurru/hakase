@@ -394,7 +394,8 @@ func TestEndToEndCompilePNG(t *testing.T) {
 	if !detectMathToolchain() {
 		t.Skip("tectonic+poppler not installed")
 	}
-	png, err := compileEquationPNG(mathFrac)
+	mr := newMathRenderer()
+	png, err := mr.compileEquationPNG(mathFrac)
 	if err != nil {
 		t.Fatalf("compileEquationPNG failed: %v", err)
 	}
@@ -619,5 +620,92 @@ func TestDecisionTree(t *testing.T) {
 	mr4.asciiMode = true
 	if mr4.canRenderImages() {
 		t.Fatal("7-bit terminal must not enable images")
+	}
+}
+
+// TestNormalizeMathDelimiters verifies raw-LaTeX delimiter normalization
+// handles \[...\], \(...\), \begin{equation}..., bracketed equations, and
+// undelimited exponent equations, while leaving prose and code untouched.
+func TestNormalizeMathDelimiters(t *testing.T) {
+	has := func(s, sub string) bool {
+		return strings.Contains(s, sub)
+	}
+
+	// \[ ... \] -> $$ ... $$
+	if out := normalizeMathDelimiters(`\[ E = mc^2 \]`); !has(out, "$$\nE = mc^2\n$$") {
+		t.Errorf("\\[...\\] not converted: %q", out)
+	}
+	// \( ... \) -> $ ... $
+	if out := normalizeMathDelimiters(`the energy is \( E = mc^2 \) here`); !has(out, "$E = mc^2$") {
+		t.Errorf("\\(...\\) not converted: %q", out)
+	}
+	// \begin{equation} -> $$ ... $$
+	if out := normalizeMathDelimiters("\\begin{equation}\nF = G \\frac{m_1 m_2}{r^2}\n\\end{equation}"); !has(out, "$$\nF = G \\frac{m_1 m_2}{r^2}\n$$") {
+		t.Errorf("equation env not converted: %q", out)
+	}
+	// bracketed boxed equation (nemotron style)
+	if out := normalizeMathDelimiters(`[ \boxed{(a + b)^{n} = \sum_{k=0}^{n} \binom{n}{k} a^{\,n-k}\, b^{\,k}} ]`); !has(out, "$$\n[ \\boxed{") {
+		t.Errorf("bracketed equation not wrapped: %q", out)
+	}
+	// undelimited exponent equation
+	if out := normalizeMathDelimiters(`E = mc^2`); !has(out, "$$\nE = mc^2\n$$") {
+		t.Errorf("bare equation not wrapped: %q", out)
+	}
+	// no double wrapping after convertBlockMath
+	if out := normalizeMathDelimiters(`\[ E = mc^2 \]`); strings.Count(out, "$$") != 2 {
+		t.Errorf("expected single $$ pair, got: %q", out)
+	}
+	// prose stays untouched
+	prose := "The answer is that energy equals mass times c squared, and this is a sentence with many words."
+	if out := normalizeMathDelimiters(prose); out != prose {
+		t.Errorf("prose was modified: %q", out)
+	}
+	// code fence untouched
+	code := "```\n[ \\boxed{x} ]\n```"
+	if out := normalizeMathDelimiters(code); out != code {
+		t.Errorf("code fence was modified: %q", out)
+	}
+	// markdown list items untouched
+	list := "- this is a list item"
+	if out := normalizeMathDelimiters(list); out != list {
+		t.Errorf("list item was modified: %q", out)
+	}
+}
+
+// TestParseOSC11 verifies OSC 11 response parsing for the common formats.
+func TestParseOSC11(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\", "1e1e2e", true},
+		{"\x1b]11;rgb:ff/ff/ff\x1b\\", "ffffff", true},
+		{"\x1b]11;#aabbcc\x07", "aabbcc", true},
+		{"\x1b]11;rgb:1e1e/1e1e/2e2e\x07", "1e1e2e", true},
+		{"garbage", "", false},
+		{"\x1b]11;rgb:1e1e/1e1e\x1b\\", "", false}, // malformed (2 parts)
+	}
+	for i, c := range cases {
+		got, ok := parseOSC11(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("case %d: parseOSC11(%q) = %q,%v want %q,%v", i, c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestUseWhiteText verifies the luminance-based glyph color selection.
+func TestUseWhiteText(t *testing.T) {
+	if !useWhiteText("000000") {
+		t.Error("black bg should use white text")
+	}
+	if !useWhiteText("1e1e2e") {
+		t.Error("dark bg should use white text")
+	}
+	if useWhiteText("ffffff") {
+		t.Error("white bg should use black text")
+	}
+	if useWhiteText("f8f8f8") {
+		t.Error("light bg should use black text")
 	}
 }

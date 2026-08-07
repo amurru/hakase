@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/x/ansi/kitty"
 	"github.com/doug/termtex"
@@ -46,6 +48,16 @@ type MathRenderer struct {
 	toolchainOK bool // tectonic + pdftoppm binaries are available
 	asciiMode   bool // terminal needs 7-bit ASCII output
 
+	// bgColor is the terminal's background color as a lowercase hex string
+	// (e.g. "1e1e2e") detected via the OSC 11 query, or "" when unknown.
+	// textColor is the contrasting glyph color ("white" or "black") picked
+	// from the background luminance. When both are set, equations render as
+	// colored glyphs on a transparent PNG that blends into the terminal
+	// background; when unknown, equations render as black glyphs on a white
+	// card (always readable on any theme).
+	bgColor   string
+	textColor string
+
 	// nextImageID is the next kitty image ID (monotonic per process).
 	nextImageID int
 
@@ -73,6 +85,9 @@ func newMathRenderer() *MathRenderer {
 		asciiMode:   os.Getenv("TERM") == "dumb" || os.Getenv("TERM") == "",
 		pngCache:    make(map[string][]byte),
 		imageIDs:    make(map[string]int),
+	}
+	if mr.kittyOK {
+		mr.detectTerminalColors()
 	}
 	return mr
 }
@@ -115,6 +130,115 @@ func (mr *MathRenderer) canRenderImages() bool {
 	return mr.kittyOK && mr.toolchainOK && !mr.asciiMode
 }
 
+// detectTerminalColors queries the terminal background color via the OSC 11
+// escape sequence and picks a contrasting glyph color. Failures are silent:
+// the fields stay empty and the renderer falls back to a white-card PNG.
+func (mr *MathRenderer) detectTerminalColors() {
+	bg, ok := queryTerminalBGColor()
+	if !ok {
+		return
+	}
+	mr.bgColor = bg
+	if useWhiteText(bg) {
+		mr.textColor = "white"
+	} else {
+		mr.textColor = "black"
+	}
+}
+
+// queryTerminalBGColor sends the OSC 11 query (background color) to the
+// controlling terminal and parses the response. A read timeout (goroutine +
+// select) keeps it from hanging on terminals that do not answer. Returns the
+// background color as a lowercase 6-hex string.
+func queryTerminalBGColor() (string, bool) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return "", false
+	}
+	defer tty.Close()
+
+	if _, err := tty.WriteString("\x1b]11;?\x1b\\"); err != nil {
+		return "", false
+	}
+
+	resp := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 512)
+		n, err := tty.Read(buf)
+		if err != nil || n == 0 {
+			resp <- ""
+			return
+		}
+		resp <- string(buf[:n])
+	}()
+
+	select {
+	case s := <-resp:
+		return parseOSC11(s)
+	case <-time.After(300 * time.Millisecond):
+		return "", false
+	}
+}
+
+// parseOSC11 extracts an rgb color from an OSC 11 response. Handles the
+// rgb:RRRR/GGGG/BBBB form (kitty, 16-bit channels), the rgb:RR/GG/BB form
+// (xterm), and the #RRGGBB form. Returns the color as a lowercase 6-hex
+// string.
+func parseOSC11(s string) (string, bool) {
+	if i := strings.Index(s, "rgb:"); i >= 0 {
+		rest := s[i+4:]
+		// Terminate at the ST (ESC \) or BEL terminator.
+		if j := strings.IndexByte(rest, '\x1b'); j >= 0 {
+			rest = rest[:j]
+		}
+		if j := strings.IndexByte(rest, '\x07'); j >= 0 {
+			rest = rest[:j]
+		}
+		parts := strings.SplitN(rest, "/", 3)
+		if len(parts) != 3 {
+			return "", false
+		}
+		var hex strings.Builder
+		for _, p := range parts {
+			if len(p) >= 2 {
+				hex.WriteString(p[:2])
+			} else {
+				return "", false
+			}
+		}
+		if len(hex.String()) == 6 {
+			return strings.ToLower(hex.String()), true
+		}
+		return "", false
+	}
+	if i := strings.Index(s, "#"); i >= 0 {
+		rest := s[i+1:]
+		if j := strings.IndexByte(rest, '\x1b'); j >= 0 {
+			rest = rest[:j]
+		}
+		if j := strings.IndexByte(rest, '\x07'); j >= 0 {
+			rest = rest[:j]
+		}
+		if len(rest) >= 6 {
+			return strings.ToLower(rest[:6]), true
+		}
+	}
+	return "", false
+}
+
+// useWhiteText reports whether white glyphs contrast better than black glyphs
+// against the given 6-hex background color (luminance threshold).
+func useWhiteText(bgHex string) bool {
+	if len(bgHex) < 6 {
+		return false
+	}
+	r, _ := strconv.ParseInt(bgHex[0:2], 16, 32)
+	g, _ := strconv.ParseInt(bgHex[2:4], 16, 32)
+	b, _ := strconv.ParseInt(bgHex[4:6], 16, 32)
+	lum := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+	return lum < 128
+}
+
 // RenderMarkdown renders markdown content with math support to ANSI-styled,
 // width-wrapped text.
 //
@@ -133,6 +257,11 @@ func (mr *MathRenderer) RenderMarkdown(content string, width int, allowImages bo
 	if width <= 0 {
 		width = 80
 	}
+	// Normalize common raw-LaTeX delimiter forms (\[...\], \(...\),
+	// \begin{equation}..., and undelimited equation lines) into the $$...$$
+	// / $...$ form the rest of the pipeline understands, so model output that
+	// does not use the delimiters still renders.
+	content = normalizeMathDelimiters(content)
 	// Fast path: no display math. termtex.Expand handles inline $...$
 	// (code-span aware) and glamour styles the rest.
 	if !strings.Contains(content, "$$") {
@@ -212,7 +341,7 @@ func (mr *MathRenderer) renderKittyBlock(latex string, width int) (string, bool)
 	}
 	mr.mu.Unlock()
 
-	png, err := compileEquationPNG(latex)
+	png, err := mr.compileEquationPNG(latex)
 	if err != nil {
 		// Compile failed - do not cache the failure (the equation might be
 		// mid-stream); let the Unicode fallback handle it this pass.
@@ -240,14 +369,17 @@ func mathHash(src string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// compileEquationPNG compiles a LaTeX math expression to a transparent PNG.
+// compileEquationPNG compiles a LaTeX math expression to a PNG.
 //
-// Pipeline: standalone .tex -> tectonic (PDF) -> pdftocairo (transparent PNG,
-// alpha channel). pdftocairo is preferred because recent poppler builds
-// removed -transp from pdftoppm; pdftoppm -transp is tried as a fallback for
-// older poppler. The work runs in a temp dir that is always cleaned up.
-// Errors are returned wrapped so the caller can log the toolchain output.
-func compileEquationPNG(latex string) ([]byte, error) {
+// Pipeline: standalone .tex -> tectonic (PDF) -> pdftocairo (PNG). When the
+// terminal background color is known, the PNG is rendered with transparent
+// background and glyphs in the contrasting color so the equation blends into
+// the terminal; otherwise it is a white-background PNG with black glyphs
+// (readable on any theme). pdftocairo is preferred; pdftoppm is tried as a
+// fallback for poppler builds without it. The work runs in a temp dir that is
+// always cleaned up. Errors are returned wrapped so the caller can log the
+// toolchain output.
+func (mr *MathRenderer) compileEquationPNG(latex string) ([]byte, error) {
 	dir, err := os.MkdirTemp("", "hakase-math-*")
 	if err != nil {
 		return nil, fmt.Errorf("math: create temp dir: %w", err)
@@ -255,7 +387,7 @@ func compileEquationPNG(latex string) ([]byte, error) {
 	defer os.RemoveAll(dir)
 
 	texPath := filepath.Join(dir, "eqn.tex")
-	tex := mathStandaloneDoc(latex)
+	tex := mr.mathStandaloneDoc(latex)
 	if err := os.WriteFile(texPath, []byte(tex), 0o600); err != nil {
 		return nil, fmt.Errorf("math: write tex: %w", err)
 	}
@@ -268,16 +400,30 @@ func compileEquationPNG(latex string) ([]byte, error) {
 
 	pdfPath := filepath.Join(dir, "eqn.pdf")
 
-	// Prefer pdftocairo (transparent PNG with alpha, -singlefile naming).
+	// When the terminal background is known, emit a transparent PNG with
+	// colored glyphs that blend into the terminal; otherwise a white
+	// background with black glyphs.
+	transparent := mr.bgColor != "" && mr.textColor != ""
+
 	pngPath := filepath.Join(dir, "eqn.png")
 	if _, err := exec.LookPath("pdftocairo"); err == nil {
-		cairo := exec.Command("pdftocairo", "-png", "-singlefile", "-transp", "-r", "300", pdfPath, pngPath[:len(pngPath)-4])
+		args := []string{"-png", "-singlefile", "-r", "300"}
+		if transparent {
+			args = append(args, "-transp")
+		}
+		args = append(args, pdfPath, pngPath[:len(pngPath)-4])
+		cairo := exec.Command("pdftocairo", args...)
 		if out, err := cairo.CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("math: pdftocairo failed: %v: %s", err, truncateBytes(out, 800))
 		}
 	} else {
-		// Fallback: pdftoppm -transp writes <prefix>-1.png on older poppler.
-		ppm := exec.Command("pdftoppm", "-png", "-r", "300", "-transp", pdfPath, filepath.Join(dir, "eqn"))
+		// Fallback: pdftoppm writes <prefix>-1.png.
+		args := []string{"-png", "-r", "300"}
+		if transparent {
+			args = append(args, "-transp")
+		}
+		args = append(args, pdfPath, filepath.Join(dir, "eqn"))
+		ppm := exec.Command("pdftoppm", args...)
 		if out, err := ppm.CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("math: pdftoppm failed: %v: %s", err, truncateBytes(out, 800))
 		}
@@ -292,8 +438,23 @@ func compileEquationPNG(latex string) ([]byte, error) {
 }
 
 // mathStandaloneDoc wraps a math expression in a standalone LaTeX document
-// with the math packages needed for common notation.
-func mathStandaloneDoc(latex string) string {
+// with the math packages needed for common notation. When the terminal
+// background color is known, the glyph color is set to contrast with it; the
+// transparent PNG then blends into the terminal background (pdftocairo
+// -transp keeps only the glyph strokes). Otherwise the default black glyphs
+// on a white background are used.
+func (mr *MathRenderer) mathStandaloneDoc(latex string) string {
+	if mr.bgColor != "" && mr.textColor != "" {
+		return `\documentclass[12pt]{standalone}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\color{` + mr.textColor + `}
+\begin{document}
+$` + latex + `$
+\end{document}
+`
+	}
 	return `\documentclass[12pt]{standalone}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -594,6 +755,347 @@ func findInlineCodeClose(content string, from int, c byte) int {
 		}
 	}
 	return -1
+}
+
+// normalizeMathDelimiters rewrites common raw-LaTeX delimiter forms into the
+// $$...$$ / $...$ delimiters the renderer understands, so model output that
+// uses \[...\], \(...\), \begin{equation}..., or undelimited equation lines
+// still renders. Code fences and inline code are left untouched.
+func normalizeMathDelimiters(content string) string {
+	return wrapRawLatexLines(convertBlockMath(content))
+}
+
+// convertBlockMath converts \[...\] to $$...$$, \(...\) to $...$, and
+// \begin{equation}...\end{equation} to $$...$$. Code spans and fences are
+// skipped so escape sequences inside code are untouched.
+func convertBlockMath(content string) string {
+	var sb strings.Builder
+	var (
+		inCode bool
+		fence  byte
+		fenceN int
+		i, n   = 0, len(content)
+	)
+	for i < n {
+		c := content[i]
+
+		if inCode {
+			if c == fence {
+				run := 0
+				for i+run < n && content[i+run] == fence {
+					run++
+				}
+				sb.WriteString(content[i : i+run])
+				if run == fenceN {
+					inCode = false
+					fence = 0
+				}
+				i += run
+				continue
+			}
+			sb.WriteByte(c)
+			i++
+			continue
+		}
+
+		if c == '`' || c == '~' {
+			run := 0
+			for i+run < n && content[i+run] == c {
+				run++
+			}
+			if run >= 3 && atLineStart(content, i) {
+				inCode = true
+				fence = c
+				fenceN = run
+			} else if run >= 1 {
+				if closer := findInlineCodeClose(content, i+run, c); closer >= 0 {
+					sb.WriteString(content[i : closer+run])
+					i = closer + run
+					continue
+				}
+			}
+			sb.WriteString(content[i : i+run])
+			i += run
+			continue
+		}
+
+		// \[ ... \] -> $$ ... $$ (skip \\[ which is a newline then bracket).
+		if c == '\\' && i+1 < n && content[i+1] == '[' && !(i > 0 && content[i-1] == '\\') {
+			if close := findCmdClose(content, i+2, ']'); close >= 0 {
+				sb.WriteString("$$\n")
+				sb.WriteString(strings.TrimSpace(content[i+2 : close]))
+				sb.WriteString("\n$$")
+				i = close + 2
+				continue
+			}
+		}
+		// \( ... \) -> $ ... $
+		if c == '\\' && i+1 < n && content[i+1] == '(' && !(i > 0 && content[i-1] == '\\') {
+			if close := findCmdClose(content, i+2, ')'); close >= 0 {
+				sb.WriteString("$")
+				sb.WriteString(strings.TrimSpace(content[i+2 : close]))
+				sb.WriteString("$")
+				i = close + 2
+				continue
+			}
+		}
+		// \begin{equation} ... \end{equation} -> $$ ... $$
+		if strings.HasPrefix(content[i:], "\\begin{equation}") {
+			if close := findLatexEnvClose(content, i+len("\\begin{equation}")); close >= 0 {
+				sb.WriteString("$$\n")
+				sb.WriteString(strings.TrimSpace(content[i+len("\\begin{equation}") : close]))
+				sb.WriteString("\n$$")
+				i = close + len("\\end{equation}")
+				continue
+			}
+		}
+
+		sb.WriteByte(c)
+		i++
+	}
+	return sb.String()
+}
+
+// findCmdClose finds the position of a \X sequence (X = ch) starting the
+// search at from, skipping sequences whose backslash is itself escaped.
+// Returns -1 if none exists.
+func findCmdClose(content string, from int, ch byte) int {
+	for j := from; j+1 < len(content); j++ {
+		if content[j] == '\\' && content[j+1] == ch {
+			bs := 0
+			for k := j - 1; k >= 0 && content[k] == '\\'; k-- {
+				bs++
+			}
+			if bs%2 == 0 {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// findLatexEnvClose finds the position of \end{equation} starting at from.
+func findLatexEnvClose(content string, from int) int {
+	needle := "\\end{equation}"
+	for j := from; j < len(content); j++ {
+		if content[j] == '\\' && strings.HasPrefix(content[j:], needle) {
+			return j
+		}
+	}
+	return -1
+}
+
+// wrapRawLatexLines wraps standalone lines of raw LaTeX math (no delimiters)
+// in $$...$$ so they render. Lines already delimited (including $$...$$ blocks
+// produced by convertBlockMath), inside code fences, or that look like prose
+// are left alone.
+func wrapRawLatexLines(content string) string {
+	lines := strings.Split(content, "\n")
+	var sb strings.Builder
+	inCode := false
+	inMath := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isFenceLine(trimmed) {
+			inCode = !inCode
+		}
+		if trimmed == "$$" {
+			inMath = !inMath
+		}
+		if !inCode && !inMath && looksLikeMathLine(trimmed) {
+			sb.WriteString("$$\n")
+			sb.WriteString(trimmed)
+			sb.WriteString("\n$$")
+		} else {
+			sb.WriteString(line)
+		}
+		if i < len(lines)-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// isFenceLine reports whether a trimmed line is a markdown code fence opener
+// or closer (3+ backticks or tildes).
+func isFenceLine(trimmed string) bool {
+	if len(trimmed) < 3 {
+		return false
+	}
+	c := trimmed[0]
+	if c != '`' && c != '~' {
+		return false
+	}
+	for j := 1; j < len(trimmed); j++ {
+		if trimmed[j] != c {
+			return j >= 3
+		}
+	}
+	return true
+}
+
+// looksLikeMathLine reports whether a trimmed line appears to be a raw LaTeX
+// equation (as opposed to prose or markdown structure) and would benefit from
+// being wrapped in display-math delimiters.
+func looksLikeMathLine(line string) bool {
+	if line == "" || len(line) > 200 {
+		return false
+	}
+	// Skip markdown structure and already-delimited math.
+	switch {
+	case strings.HasPrefix(line, "#"),
+		strings.HasPrefix(line, "-"),
+		strings.HasPrefix(line, "*"),
+		strings.HasPrefix(line, "+"),
+		strings.HasPrefix(line, ">"),
+		strings.HasPrefix(line, "|"),
+		strings.HasPrefix(line, "```"),
+		strings.HasPrefix(line, "~~~"),
+		strings.HasPrefix(line, "$$"),
+		strings.HasPrefix(line, "$"),
+		strings.HasPrefix(line, "!"):
+		return false
+	}
+
+	strong, cmds := scanMathCommands(line)
+	if cmds == 0 {
+		// No backslash commands: still wrap plain exponent equations like
+		// "E = mc^2" or "F = G m1 m2 / r^2".
+		return looksLikeBareEquation(line)
+	}
+
+	// Bracketed display math: [ \boxed{...} ].
+	if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+		if end := strings.Index(line, "]"); end > 1 {
+			inner := line[1:end]
+			s, _ := scanMathCommands(inner)
+			if s {
+				return true
+			}
+		}
+	}
+
+	// Sentence guard: too many words means prose, not a standalone equation.
+	fields := strings.Fields(line)
+	if len(fields) > 6 {
+		return false
+	}
+
+	hasEq := strings.Contains(line, "=")
+	hasSubSup := hasSubOrSup(line)
+	if strong && hasEq {
+		return true
+	}
+	if strong && hasSubSup && len(fields) <= 4 {
+		return true
+	}
+	if cmds >= 2 && hasSubSup {
+		return true
+	}
+	return false
+}
+
+// looksLikeBareEquation reports whether a line with no LaTeX commands is a
+// standalone equation like "E = mc^2" or "F = G m1 m2 / r^2". Requires an
+// exponent and an equals sign, and at most one short alpha word, to avoid
+// wrapping prose.
+func looksLikeBareEquation(line string) bool {
+	if len(line) > 60 || !strings.Contains(line, "=") {
+		return false
+	}
+	if !hasSuperscript(line) {
+		return false
+	}
+	alpha := 0
+	for _, f := range strings.Fields(line) {
+		if len(f) >= 3 && isAlphaWord(f) {
+			alpha++
+		}
+	}
+	return alpha <= 1
+}
+
+// hasSuperscript reports whether the string contains a caret preceded by an
+// identifier character (e.g. mc^2).
+func hasSuperscript(s string) bool {
+	for i := 1; i < len(s); i++ {
+		if s[i] == '^' && (s[i-1] == '}' || s[i-1] == ')' || s[i-1] >= '0' && s[i-1] <= '9' || s[i-1] >= 'a' && s[i-1] <= 'z' || s[i-1] >= 'A' && s[i-1] <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSubOrSup reports whether the string contains a subscript or superscript
+// pattern (^ or _ preceded by an identifier character).
+func hasSubOrSup(s string) bool {
+	for i := 1; i < len(s); i++ {
+		if s[i] == '^' || s[i] == '_' {
+			prev := s[i-1]
+			if prev == '}' || prev == ')' || prev >= '0' && prev <= '9' || prev >= 'a' && prev <= 'z' || prev >= 'A' && prev <= 'Z' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// strongMathCmds are LaTeX commands whose presence marks a line as math even
+// without sub/superscript or equality evidence.
+var strongMathCmds = map[string]bool{
+	"frac": true, "dfrac": true, "tfrac": true,
+	"sum": true, "int": true, "oint": true, "prod": true, "lim": true,
+	"binom": true, "sqrt": true, "boxed": true,
+	"begin": true, "end": true, "left": true, "right": true,
+	"approx": true, "times": true, "cdot": true, "cdots": true, "ldots": true,
+	"leq": true, "geq": true, "neq": true, "equiv": true, "propto": true,
+	"mathbb": true, "mathbf": true, "mathrm": true, "mathcal": true,
+	"overline": true, "underline": true,
+	"partial": true, "nabla": true, "in": true, "notin": true,
+	"subset": true, "subseteq": true, "cup": true, "cap": true,
+	"oplus": true, "otimes": true,
+	"alpha": true, "beta": true, "gamma": true, "delta": true, "epsilon": true,
+	"theta": true, "lambda": true, "mu": true, "nu": true, "pi": true,
+	"rho": true, "sigma": true, "tau": true, "phi": true, "chi": true,
+	"psi": true, "omega": true, "Phi": true, "Pi": true, "Sigma": true, "Omega": true,
+}
+
+// scanMathCommands counts backslash-prefixed commands in s and reports whether
+// any of them are strong math indicators.
+func scanMathCommands(s string) (strong bool, count int) {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			continue
+		}
+		if !isAlphaByte(s[i+1]) {
+			continue
+		}
+		j := i + 2
+		for j < len(s) && isAlphaByte(s[j]) {
+			j++
+		}
+		count++
+		if strongMathCmds[s[i+1:j]] {
+			strong = true
+		}
+		i = j - 1
+	}
+	return strong, count
+}
+
+// isAlphaByte reports whether c is an ASCII letter.
+func isAlphaByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+// isAlphaWord reports whether s consists only of ASCII letters.
+func isAlphaWord(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isAlphaByte(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // terminalCellPx returns the terminal cell width and height in pixels,

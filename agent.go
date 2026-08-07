@@ -1415,6 +1415,12 @@ func buildOrchestratorInstruction(installedSkills string) string {
 - Use 'delegate_task' to spawn an isolated sub-agent with its own task-scoped session and restricted toolset. This is useful when a task requires a different specialist agent or when you want to run work in an isolated context. The sub-agent cannot call delegate_task, clarify, memory, send_message, or cronjob.
 - Synthesize responses from the specialists into a final markdown output.
 
+### MATH OUTPUT:
+When writing equations or math expressions in your response, ALWAYS wrap them in proper LaTeX delimiters so the terminal can render them:
+- Display / standalone equations (own line): $$...$$ (e.g. $$ E = mc^2 $$)
+- Inline math (within a sentence): $...$ (e.g. "the energy is $E = mc^2$")
+Never output raw LaTeX without delimiters (e.g. [ F = G m_1 m_2 / r^2 ]) - it will show as plain text and not render.
+
 ### CLARIFY:
 You have a 'clarify' tool to ask the user a question mid-task when you need input you cannot infer (a preference, a decision, confirmation, a choice between options). Pass up to 4 answer options in 'choices' - never embed them in the question text. Omit 'choices' for an open-ended question. Set 'multi_select' only when multiple options may apply. The run blocks until the user answers; a canceled or timed-out response means the user did not answer - proceed with your best judgment and state the assumption.
 
