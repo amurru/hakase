@@ -65,6 +65,11 @@ var (
 			Foreground(lipgloss.Color("245")).
 			Padding(0, 1)
 
+	// startupTaglineStyle renders the tagline under the startup logo banner.
+	startupTaglineStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244")).
+				Italic(true)
+
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245")).
 			Padding(0, 1)
@@ -328,6 +333,10 @@ type appModel struct {
 	isProcessing bool
 	showThinking bool
 	showHelp     bool
+	// showStartupLogo renders the startup logo banner in the chat pane while no
+	// conversation has started yet. True only at program boot; cleared on the
+	// first user message, /new, or a session switch.
+	showStartupLogo bool
 
 	// compositor holds the layer tree from the most recent View() render,
 	// used to resolve mouse clicks to a pane by layer ID. Kept on the model
@@ -436,6 +445,7 @@ func newModel(
 		logLines:        make([]string, 0),
 		taskLines:       make([]string, 0),
 		showThinking:    showThinking,
+		showStartupLogo: true,
 		modelName:       modelName,
 		thinkingLevel:   thinkingLevel,
 		sessionService:  sessionSvc,
@@ -1381,6 +1391,18 @@ func (m *appModel) scrollChatDown(lines int) {
 
 func (m *appModel) renderChatViewport() {
 	if !m.ready || len(m.renderedLines) == 0 {
+		// The chat pane is empty: show the startup logo banner until the
+		// first user message starts the conversation. Display-only - it is
+		// never part of renderedLines and never persisted.
+		if m.ready && m.showStartupLogo && len(startupLogoLines) > 0 {
+			content := strings.Join(startupLogoLines, "\n")
+			if startupTagline != "" {
+				content += "\n\n" + startupTaglineStyle.Render(startupTagline)
+			}
+			m.chatViewport.SetContent(content)
+			m.chatScrollOffset = 0
+			return
+		}
 		m.chatViewport.SetContent("")
 		m.chatScrollOffset = 0
 		return
@@ -1953,6 +1975,7 @@ func (m *appModel) launchTurn(text string, attached []attachment) {
 	// can persist every message the run produces (a run may now emit several:
 	// one per thinking block).
 	m.streamingThinking = false
+	m.showStartupLogo = false
 	m.runStartHistoryLen = len(m.chatHistory)
 	m.isProcessing = true
 	go m.runAgentTask(content, GenerateTaskID())
@@ -2097,6 +2120,7 @@ func (m *appModel) newSession() tea.Cmd {
 	}
 	m.sessionService.ClearActiveSession()
 	m.chatHistory = make([]ChatMessage, 0)
+	m.showStartupLogo = false
 	m.streamingThinking = false
 	m.runStartHistoryLen = 0
 	m.attachments = nil
@@ -2272,6 +2296,7 @@ func (m *appModel) switchToSession(id string) tea.Cmd {
 		m.chatHistory = append(m.chatHistory, cm)
 	}
 	m.streamingThinking = false
+	m.showStartupLogo = false
 	m.runStartHistoryLen = len(m.chatHistory)
 	m.attachments = nil
 	m.rebuildRenderedLines()
