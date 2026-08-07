@@ -235,6 +235,10 @@ type CronJob struct {
 	Repeat     int          `json:"repeat,omitempty"`
 	State      CronJobState `json:"state"`
 	Enabled    bool         `json:"enabled"`
+	// Native marks a built-in task type that runs without an LLM session.
+	// Currently "evolve": runs one skill-evolution pass (evolver.go) and
+	// writes the report to outputs/cron/. Empty = a normal LLM job.
+	Native     string       `json:"native,omitempty"`
 	NextRunAt  *time.Time   `json:"next_run_at,omitempty"`
 	LastRunAt  *time.Time   `json:"last_run_at,omitempty"`
 	LastStatus string       `json:"last_status,omitempty"`
@@ -375,10 +379,15 @@ type CronjobInput struct {
 	Action   string   `json:"action" doc:"One of: create, list, update, pause, resume, run, remove"`
 	JobID    string   `json:"job_id,omitempty" doc:"Job ID or name (required for update/pause/resume/run/remove)"`
 	Name     string   `json:"name,omitempty" doc:"Human-friendly job name (optional)"`
-	Prompt   string   `json:"prompt,omitempty" doc:"Self-contained task prompt; required for create, optional for update"`
+	Prompt   string   `json:"prompt,omitempty" doc:"Self-contained task prompt; required for create (not needed for native jobs)"`
 	Schedule string   `json:"schedule,omitempty" doc:"Schedule: '30m', 'every 2h', '0 9 * * *', or ISO timestamp; required for create"`
 	Skills   []string `json:"skills,omitempty" doc:"Optional markdown skill names whose content is injected before the prompt"`
 	Repeat   int      `json:"repeat,omitempty" doc:"Total number of runs; 0 = unlimited (default)"`
+	// Native selects a built-in task type that runs without an LLM session:
+	// "evolve" runs one skill-evolution pass (evaluate + optional mutate)
+	// and writes the report to outputs/cron/. Mutations are applied only
+	// when they pass the A/B gate; incumbent sources are preserved as .bak.
+	Native string `json:"native,omitempty" doc:"Optional native task type: 'evolve' (skill evolution pass)"`
 }
 
 // CronjobOutput is the model-facing result schema for the cronjob tool.
@@ -448,8 +457,16 @@ func handleCronCreate(input CronjobInput, log LogFunc) (CronjobOutput, error) {
 	if input.Schedule == "" {
 		return CronjobOutput{Success: false, Message: "schedule is required for create"}, nil
 	}
-	if input.Prompt == "" {
-		return CronjobOutput{Success: false, Message: "prompt is required for create"}, nil
+	native := strings.TrimSpace(strings.ToLower(input.Native))
+	switch native {
+	case "":
+		if input.Prompt == "" {
+			return CronjobOutput{Success: false, Message: "prompt is required for create"}, nil
+		}
+	case "evolve":
+		// Native jobs run a built-in task and do not need an LLM prompt.
+	default:
+		return CronjobOutput{Success: false, Message: fmt.Sprintf("unknown native task %q (supported: evolve)", input.Native)}, nil
 	}
 
 	sched, err := parseSchedule(input.Schedule)
@@ -491,6 +508,7 @@ func handleCronCreate(input CronjobInput, log LogFunc) (CronjobOutput, error) {
 		Schedule:  input.Schedule,
 		Skills:    input.Skills,
 		Repeat:    input.Repeat,
+		Native:    native,
 		State:     CronStateScheduled,
 		Enabled:   true,
 		NextRunAt: &next,
@@ -776,6 +794,13 @@ func runCronJob(job CronJob, log LogFunc) {
 
 	notifyCronJob("started", job.ID, job.Name, job.Prompt, "")
 
+	// Native jobs (e.g. the skill-evolution pass) run a built-in task
+	// instead of an LLM session. No model bootstrap required.
+	if job.Native != "" {
+		runNativeCronJob(job, log)
+		return
+	}
+
 	if currentModel == nil {
 		notifyCronJob("failed", job.ID, job.Name, "currentModel is nil; bootstrap required", "")
 		log(fmt.Sprintf("[cron] job %s failed: currentModel is nil", job.ID))
@@ -982,6 +1007,40 @@ func buildCronInstruction(name string) string {
 }
 
 // writeCronOutput saves the job summary to outputs/cron/<id>-<ts>.md.
+// runNativeCronJob executes a built-in (non-LLM) cron task. Currently
+// supports "evolve": one skill-evolution pass whose report is written to
+// outputs/cron/ for human review (plan Phase 3b). Mutations are enabled for
+// native cron jobs because the model is typically already bootstrapped in
+// the headless run context; the A/B gate and .bak preservation keep the
+// change reversible.
+func runNativeCronJob(job CronJob, log LogFunc) {
+	switch job.Native {
+	case "evolve":
+		reportPath := filepath.Join("outputs", "cron", fmt.Sprintf("evolve-%s-%s.md", job.ID, time.Now().UTC().Format("20060102-150405")))
+		report, err := RunEvolutionPass(EvolutionOptions{
+			SkillsDir:  "./skills",
+			Mutate:     true,
+			ReportPath: reportPath,
+		})
+		if err != nil {
+			summary := fmt.Sprintf("evolution pass failed: %v", err)
+			log(fmt.Sprintf("[cron] job %s %s", job.ID, summary))
+			updateCronJobAfterRun(job, "failed", summary, "")
+			notifyCronJob("failed", job.ID, job.Name, summary, "")
+			return
+		}
+		outputPath := writeCronOutput(job, report.Summary, false)
+		log(fmt.Sprintf("[cron] job %s evolution pass complete: %s", job.ID, report.Summary))
+		updateCronJobAfterRun(job, "completed", report.Summary, outputPath)
+		notifyCronJob("completed", job.ID, job.Name, report.Summary, outputPath)
+	default:
+		summary := fmt.Sprintf("unknown native task %q", job.Native)
+		log(fmt.Sprintf("[cron] job %s %s", job.ID, summary))
+		updateCronJobAfterRun(job, "failed", summary, "")
+		notifyCronJob("failed", job.ID, job.Name, summary, "")
+	}
+}
+
 func writeCronOutput(job CronJob, summaryText string, silent bool) string {
 	dir := filepath.Join("outputs", "cron")
 	_ = os.MkdirAll(dir, 0755)

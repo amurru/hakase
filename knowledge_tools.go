@@ -253,7 +253,7 @@ const knowledgeLogEmoji = "📚 [knowledge]"
 // as a []tool.Tool slice ready to append to an ADK agent's tool list.
 // dir is the knowledge directory path; if empty, "./knowledge" is used.
 // Each handler builds a fresh index at call time.
-func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
+func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool.Tool, error) {
 	var tools []tool.Tool
 
 	// 1. save_knowledge
@@ -382,6 +382,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 			_ = UpdateIndexFile(dir, newIdx)
 		}
 		_ = AppendLog(dir, "save", input.Title)
+		invalidateKnowledgeCache(dir)
 
 		log(fmt.Sprintf("%s saved note %q", knowledgeLogEmoji, slug))
 
@@ -460,21 +461,46 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 	// 3. search_knowledge
 	searchTool, err := newDocTool(functiontool.Config{
 		Name:        "search_knowledge",
-		Description: "Search knowledge notes by case-insensitive substring over title, aliases, tags, summary, and body. Optional tag filter requires ALL tags to match.",
+		Description: "Search knowledge notes by case-insensitive substring over title, aliases, tags, summary, and body, ranked by relevance (BM25; title matches outrank body matches). Optional tag filter requires ALL tags to match. When search_expansion is enabled in config, the query is expanded via the summarization model into alternative phrasings (HyDE-lite) and results are fused.",
 	}, func(ctx agent.Context, input SearchKnowledgeInput) (SearchKnowledgeOutput, error) {
 		if input.Query == "" {
 			return SearchKnowledgeOutput{}, fmt.Errorf("query is required")
 		}
 
-		idx, err := BuildKnowledgeIndex(dir)
+		idx, err := getKnowledgeIndex(dir)
 		if err != nil {
 			return SearchKnowledgeOutput{}, fmt.Errorf("building index: %w", err)
 		}
 
-		notes := SearchKnowledge(idx, input.Query, input.Tags, input.IncludeArchived)
+		// Collect the scored result sets for each query phrasing. Without
+		// expansion (default) this is a single phrasing - the raw query -
+		// so behavior is byte-identical to plain substring search, just
+		// relevance-ordered.
+		var sets [][]ScoredKnowledgeNote
+		phrasings := []string{input.Query}
+		if searchExpansion {
+			phrasings = expandSearchQuery(ctx, input.Query)
+		}
+		for _, phrasing := range phrasings {
+			set := SearchKnowledgeScored(idx, phrasing, input.Tags, input.IncludeArchived)
+			if len(set) > 0 {
+				sets = append(sets, set)
+			}
+		}
+
+		var scored []ScoredKnowledgeNote
+		switch {
+		case len(sets) == 0:
+			scored = nil // no matches
+		case len(sets) == 1:
+			scored = sets[0]
+		default:
+			scored = fuseRRF(sets)
+		}
 
 		var results []KnowledgeSearchResult
-		for _, n := range notes {
+		for _, s := range scored {
+			n := s.Note
 			snippet := firstSnippet(n.Body, input.Query)
 			results = append(results, KnowledgeSearchResult{
 				Title:   n.Frontmatter.Title,
@@ -560,6 +586,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 			_ = UpdateIndexFile(dir, newIdx)
 		}
 		_ = AppendLog(dir, "update", note.Frontmatter.Title)
+		invalidateKnowledgeCache(dir)
 
 		log(fmt.Sprintf("%s updated note %q", knowledgeLogEmoji, note.Slug))
 
@@ -641,6 +668,7 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 			_ = UpdateIndexFile(dir, newIdx)
 		}
 		_ = AppendLog(dir, "link", fromNote.Frontmatter.Title)
+		invalidateKnowledgeCache(dir)
 
 		log(fmt.Sprintf("%s linked %q -> %q", knowledgeLogEmoji, fromNote.Slug, targetNote.Slug))
 
@@ -827,26 +855,80 @@ func createKnowledgeTools(log LogFunc, dir string) ([]tool.Tool, error) {
 
 // ------------------- snippet helper ------------------------------------------
 
-// firstSnippet returns the first ~200 characters of body. If query is
-// non-empty, returns the line containing the first match (up to 200 chars).
+// snippetWindow is the target length of a query-aware snippet.
+const snippetWindow = 200
+
+// firstSnippet returns a query-aware snippet of body (plan Phase 3d-3):
+// when the raw query appears in the body, the snippet is centered on the
+// first match (context on both sides, up to ~200 chars). When the query is
+// not in the body (it may have matched the title/tags/etc.), it falls back
+// to the line containing the first query token, then to the first ~200
+// chars of the body.
 func firstSnippet(body, query string) string {
-	query = strings.ToLower(query)
-	if query != "" {
+	lower := strings.ToLower(body)
+	lq := strings.ToLower(query)
+
+	if lq != "" {
+		if idx := strings.Index(lower, lq); idx >= 0 {
+			return centerSnippet(body, idx, len(query), snippetWindow)
+		}
+		// No full-query hit in the body: fall back to the first token.
+		if tokens := tokenize(query); len(tokens) > 0 {
+			if tidx := strings.Index(lower, tokens[0]); tidx >= 0 {
+				return centerSnippet(body, tidx, len(tokens[0]), snippetWindow)
+			}
+		}
+		// Old behavior: the first line containing the raw query.
 		lines := strings.Split(body, "\n")
 		for _, line := range lines {
-			if strings.Contains(strings.ToLower(line), query) {
-				if len(line) > 200 {
-					return line[:200]
+			if strings.Contains(strings.ToLower(line), lq) {
+				if len(line) > snippetWindow {
+					return line[:snippetWindow]
 				}
 				return line
 			}
 		}
 	}
 	// Fall back to first 200 chars of body.
-	if len(body) > 200 {
-		return body[:200]
+	if len(body) > snippetWindow {
+		return body[:snippetWindow]
 	}
 	return body
+}
+
+// centerSnippet extracts a window of roughly snippetWindow runes centered on
+// the match at [start, start+matchLen), trimming to word boundaries with
+// ellipses when the window is clipped.
+func centerSnippet(body string, start, matchLen, window int) string {
+	total := len(body)
+	half := window / 2
+	from := start - half
+	if from < 0 {
+		from = 0
+	}
+	to := from + window
+	if to > total {
+		to = total
+		from = to - window
+		if from < 0 {
+			from = 0
+		}
+	}
+	// Snap to word boundaries so the snippet does not start/end mid-word.
+	for from > 0 && body[from-1] != ' ' && body[from-1] != '\n' {
+		from++
+	}
+	for to < total && body[to] != ' ' && body[to] != '\n' {
+		to++
+	}
+	snip := body[from:to]
+	if from > 0 {
+		snip = "..." + snip
+	}
+	if to < total {
+		snip = snip + "..."
+	}
+	return snip
 }
 
 // appendAfterSection appends text after a section header in the body.

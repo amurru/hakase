@@ -359,3 +359,53 @@ func TestDueCronJobs(t *testing.T) {
 		t.Errorf("due job = %s, want due1", due[0].ID)
 	}
 }
+
+// TestHandleCronCreateNativeEvolve verifies the native "evolve" job contract
+// (plan Phase 3b cron wiring): creation without an LLM prompt, and rejection
+// of unknown native types. The registry is sandboxed to a temp HAKASE_HOME.
+func TestHandleCronCreateNativeEvolve(t *testing.T) {
+	t.Setenv("HAKASE_HOME", t.TempDir())
+
+	// Native evolve job: no prompt required.
+	out, err := handleCronCreate(CronjobInput{
+		Action:   "create",
+		Name:     "nightly evolution",
+		Schedule: "every 24h",
+		Native:   "evolve",
+	}, func(string) {})
+	if err != nil {
+		t.Fatalf("handleCronCreate: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("native evolve create failed: %s", out.Message)
+	}
+	if out.Job == nil || out.Job.Native != "evolve" {
+		t.Fatalf("job native field not set: %+v", out.Job)
+	}
+
+	// Unknown native type must be rejected.
+	out2, err := handleCronCreate(CronjobInput{
+		Action:   "create",
+		Name:     "bogus",
+		Schedule: "every 24h",
+		Native:   "bogus",
+	}, func(string) {})
+	if err != nil {
+		t.Fatalf("handleCronCreate(bogus): %v", err)
+	}
+	if out2.Success {
+		t.Fatalf("unknown native type should be rejected: %+v", out2)
+	}
+
+	// Plain job without a prompt must still be rejected.
+	out3, err := handleCronCreate(CronjobInput{
+		Action:   "create",
+		Schedule: "every 24h",
+	}, func(string) {})
+	if err != nil {
+		t.Fatalf("handleCronCreate(no prompt): %v", err)
+	}
+	if out3.Success {
+		t.Fatalf("prompt-less plain job should be rejected: %+v", out3)
+	}
+}

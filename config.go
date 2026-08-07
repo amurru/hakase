@@ -162,6 +162,13 @@ type Config struct {
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
+	// SearchExpansion enables HyDE-lite LLM query expansion for
+	// search_knowledge (plan Phase 3d-4). Default false: when off, search
+	// behavior is byte-identical to plain substring search. When on, one
+	// model call per search expands the query into 2-3 phrasings which are
+	// OR-matched and fused with Reciprocal Rank Fusion; on failure or
+	// timeout it falls back silently to plain substring search.
+	SearchExpansion bool `json:"search_expansion,omitempty"`
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.
@@ -260,6 +267,9 @@ func loadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_MODEL_VISION"); v != "" {
 		cfg.ModelVision = v
+	}
+	if v := os.Getenv("HAKASE_SEARCH_EXPANSION"); v != "" {
+		cfg.SearchExpansion = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
 	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
 		cfg.Debug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")

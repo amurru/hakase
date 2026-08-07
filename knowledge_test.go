@@ -468,9 +468,12 @@ func TestSearchKnowledge(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("substring body: expected 2 results, got %d", len(results))
 	}
-	// Sorted by title: Alpha before Gamma.
-	if results[0].Frontmatter.Title != "Alpha" || results[1].Frontmatter.Title != "Gamma" {
-		t.Errorf("sorted: got %q, %q", results[0].Frontmatter.Title, results[1].Frontmatter.Title)
+	// Relevance-ranked (Phase 3d-1): Gamma's body is a shorter, denser match
+	// ("quantum mechanics" vs "contains quantum here"), so the BM25 length
+	// normalization ranks it above Alpha despite Alpha coming first
+	// alphabetically.
+	if results[0].Frontmatter.Title != "Gamma" || results[1].Frontmatter.Title != "Alpha" {
+		t.Errorf("relevance order: got %q, %q (want Gamma, Alpha)", results[0].Frontmatter.Title, results[1].Frontmatter.Title)
 	}
 
 	// Tag filter requires ALL tags: ["x"] -> only Alpha (Gamma has y, not x).

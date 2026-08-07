@@ -8,6 +8,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -394,8 +396,23 @@ func ResolveTarget(idx *KnowledgeIndex, target string) (*KnowledgeNote, bool) {
 // SearchKnowledge performs a case-insensitive substring search over Title,
 // Aliases, Tags, Summary, and Body. If tags is non-empty, the note must have
 // ALL given tags (case-insensitive). Archived notes are excluded unless
-// includeArchived is true. Results are sorted by Title.
+// includeArchived is true. The result SET is identical to the pre-ranking
+// behavior; results are now ordered by BM25 relevance (score-descending)
+// with the note title as tiebreaker (Phase 3d-1).
 func SearchKnowledge(idx *KnowledgeIndex, query string, tags []string, includeArchived bool) []KnowledgeNote {
+	scored := SearchKnowledgeScored(idx, query, tags, includeArchived)
+	out := make([]KnowledgeNote, 0, len(scored))
+	for _, s := range scored {
+		out = append(out, s.Note)
+	}
+	return out
+}
+
+// SearchKnowledgeScored is the relevance-ranked form of SearchKnowledge: the
+// same substring + tag gating, but returning each match with its BM25 score.
+// Used by the knowledge bench and by query expansion (which fuses several
+// scored result sets).
+func SearchKnowledgeScored(idx *KnowledgeIndex, query string, tags []string, includeArchived bool) []ScoredKnowledgeNote {
 	query = strings.ToLower(query)
 	var results []KnowledgeNote
 
@@ -436,16 +453,160 @@ noteloop:
 		}
 	}
 
-	// Sort by Title.
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[i].Frontmatter.Title > results[j].Frontmatter.Title {
-				results[i], results[j] = results[j], results[i]
-			}
+	// Relevance order (score-descending, title tiebreak). When the query
+	// tokenizes to nothing this degrades to alphabetical, matching the
+	// pre-ranking sort exactly.
+	return scoreKnowledge(idx, query, results)
+}
+
+// ------------------- index caching (Phase 3d-2) -----------------------------
+
+// knowledgeIndexCacheEntry pairs a knowledge index with the fingerprint of
+// the note files it was built from. A fingerprint match means the cache is
+// still valid; any file create/delete/modify changes the fingerprint and
+// forces a rebuild on the next read.
+type knowledgeIndexCacheEntry struct {
+	fingerprint string
+	index       *KnowledgeIndex
+}
+
+// knowledgeIndexCache caches one rebuilt index per resolved knowledge
+// directory. Safe for concurrent use (sync.Map).
+var knowledgeIndexCache sync.Map // resolved dir -> *knowledgeIndexCacheEntry
+
+// knowledgeFingerprint hashes (path, size, mtime) of every note file under
+// dir (same pattern as contextFilesFingerprint in instruction_context.go).
+// Returns "" when the directory has no notes (or does not exist).
+func knowledgeFingerprint(dir string) string {
+	h := sha256.New()
+	n := 0
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries; the walk still completes
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		basename := filepath.Base(path)
+		if basename == "index.md" || basename == "log.md" {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		if strings.HasPrefix(rel, "raw"+string(filepath.Separator)) || rel == "raw" {
+			return nil
+		}
+		st, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		fmt.Fprintf(h, "%s:%d:%d\n", path, st.Size(), st.ModTime().UnixNano())
+		n++
+		return nil
+	})
+	if n == 0 {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// getKnowledgeIndex returns a cached knowledge index when the on-disk notes
+// are unchanged since it was built, otherwise rebuilds and caches it. Read
+// paths (search/recall/list/lint) should call this instead of
+// BuildKnowledgeIndex to avoid re-walking the tree on every call. Mutation
+// paths invalidate the cache after writing (see invalidateKnowledgeCache).
+func getKnowledgeIndex(dir string) (*KnowledgeIndex, error) {
+	dir = knowledgeDir(dir)
+	fp := knowledgeFingerprint(dir)
+	if v, ok := knowledgeIndexCache.Load(dir); ok {
+		entry := v.(*knowledgeIndexCacheEntry)
+		if entry.fingerprint == fp {
+			return entry.index, nil
 		}
 	}
+	idx, err := BuildKnowledgeIndex(dir)
+	if err != nil {
+		return nil, err
+	}
+	knowledgeIndexCache.Store(dir, &knowledgeIndexCacheEntry{fingerprint: fp, index: idx})
+	return idx, nil
+}
 
-	return results
+// invalidateKnowledgeCache drops the cached index for a directory. Call it
+// after any note write so the next read rebuilds from disk.
+func invalidateKnowledgeCache(dir string) {
+	knowledgeIndexCache.Delete(knowledgeDir(dir))
+}
+
+// ------------------- query expansion (Phase 3d-4) ---------------------------
+
+// expandQueryFn is the model-backed query-expansion callback, set in
+// setupRunner alongside enrichKnowledgeFn (same provider stack: the
+// configured summary model, falling back to the primary). It returns 2-3
+// rephrasings of the query (paraphrase + hypothetical answer, HyDE-lite).
+// nil means expansion is unavailable (CLI/tests) and plain search is used.
+var expandQueryFn func(ctx context.Context, query string) ([]string, error)
+
+// expandSearchQuery returns the phrasings to search for: the original query
+// first, then model expansions. On any failure (nil callback, timeout,
+// empty/ungrammatical reply) it returns just the original query so callers
+// fall back silently to plain substring search.
+func expandSearchQuery(ctx context.Context, query string) []string {
+	phrasings := []string{query}
+	if expandQueryFn == nil {
+		return phrasings
+	}
+	ectx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	expanded, err := expandQueryFn(ectx, query)
+	if err != nil {
+		return phrasings
+	}
+	for _, e := range expanded {
+		e = strings.TrimSpace(e)
+		if e == "" || strings.EqualFold(e, query) {
+			continue
+		}
+		phrasings = append(phrasings, e)
+	}
+	return phrasings
+}
+
+// buildQueryExpansionPrompt renders the HyDE-lite prompt for a query. The
+// only dynamic content is the user's query text itself, so there is no
+// prompt-injection surface beyond the query.
+func buildQueryExpansionPrompt(query string) string {
+	return "Rephrase the following knowledge-base search query into exactly 2 alternative phrasings " +
+		"that would find the same information, plus one hypothetical one-sentence answer to it " +
+		"(HyDE style). Output a JSON array of strings only, e.g. [\"...\",\"...\",\"...\"]. " +
+		"Query: " + query
+}
+
+// parseQueryExpansions extracts the string array from a model reply, tolerant
+// of markdown fences and surrounding prose. Returns nil on parse failure.
+func parseQueryExpansions(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "```") {
+		if i := strings.IndexByte(raw, '\n'); i >= 0 {
+			raw = raw[i+1:]
+		}
+		if i := strings.LastIndex(raw, "```"); i >= 0 {
+			raw = raw[:i]
+		}
+		raw = strings.TrimSpace(raw)
+	}
+	start := strings.IndexByte(raw, '[')
+	end := strings.LastIndexByte(raw, ']')
+	if start < 0 || end <= start {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ------------------- persistence ---------------------------------------------

@@ -19,7 +19,7 @@ func TestSaveKnowledgeEnriches(t *testing.T) {
 	// A pre-existing note that shares keywords with the new note.
 	writeNoteFile(t, dir, "podcast-tools", "---\ntitle: \"Podcast Tools\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\n---\n\nTerminal podcast clients overview.\n")
 
-	tools, err := createKnowledgeTools(func(string) {}, dir)
+	tools, err := createKnowledgeTools(func(string) {}, dir, false)
 	if err != nil {
 		t.Fatalf("createKnowledgeTools: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSaveKnowledgeSkipsEnrichment(t *testing.T) {
 	}
 	defer func() { fetchGitHubMetadata = orig }()
 
-	tools, err := createKnowledgeTools(func(string) {}, dir)
+	tools, err := createKnowledgeTools(func(string) {}, dir, false)
 	if err != nil {
 		t.Fatalf("createKnowledgeTools: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestSaveKnowledgeSkipsEnrichment(t *testing.T) {
 // over the auto-derived one.
 func TestSaveKnowledgeProvidedSummary(t *testing.T) {
 	dir := t.TempDir()
-	tools, err := createKnowledgeTools(func(string) {}, dir)
+	tools, err := createKnowledgeTools(func(string) {}, dir, false)
 	if err != nil {
 		t.Fatalf("createKnowledgeTools: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestSaveKnowledgeFallsBackWhenModelFails(t *testing.T) {
 	}
 	defer func() { enrichKnowledgeFn = orig }()
 
-	tools, err := createKnowledgeTools(func(string) {}, dir)
+	tools, err := createKnowledgeTools(func(string) {}, dir, false)
 	if err != nil {
 		t.Fatalf("createKnowledgeTools: %v", err)
 	}

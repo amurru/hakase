@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // skillDescriptionPlaceholder is the default description written into newly
@@ -36,6 +37,8 @@ func runSkillCLI(args []string) int {
 		return runSkillList(args[1:])
 	case "validate":
 		return runSkillValidate(args[1:])
+	case "evolve":
+		return runSkillEvolve(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown skill subcommand %q\n\n", args[0])
 		skillCLIUsage()
@@ -51,6 +54,7 @@ func skillCLIUsage() {
 	fmt.Fprintln(os.Stderr, "  create     create a new markdown skill (SKILL.md with scripts/ and references/)")
 	fmt.Fprintln(os.Stderr, "  list       list discovered skills (Python + markdown) with source paths")
 	fmt.Fprintln(os.Stderr, "  validate   validate a skill directory or SKILL.md file; exit non-zero on failure")
+	fmt.Fprintln(os.Stderr, "  evolve     run one skill-evolution pass (evaluate + optional mutate); writes report to outputs/cron/")
 }
 
 // runSkillCreate scaffolds a new markdown skill at <dir>/<name>/SKILL.md.
@@ -338,5 +342,64 @@ func runSkillValidate(args []string) int {
 		return 1
 	}
 	fmt.Printf("OK %s\n", path)
+	return 0
+}
+
+// runSkillEvolve runs one darwinian-evolver-style evolution pass over the
+// Python skill library (plan Phase 3b/3c). Default mode is evaluation-only:
+// every skill with an eval set is scored, skills below the deprecation
+// threshold are marked deprecated, and an auditable report is written to
+// outputs/cron/. --mutate enables the mutator step (requires a configured
+// model); mutations that beat the incumbent by >=5% with zero holdout
+// regressions are promoted, with the incumbent preserved as <name>.py.bak.
+func runSkillEvolve(args []string) int {
+	fs := flag.NewFlagSet("evolve", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var dirFlag, reportFlag string
+	var mutate, noReport bool
+	fs.StringVar(&dirFlag, "dir", "", "skill library directory (default ./skills)")
+	fs.StringVar(&reportFlag, "report", "", "report path (default outputs/cron/evolve-<timestamp>.md)")
+	fs.BoolVar(&mutate, "mutate", false, "enable the mutator step (requires a configured model)")
+	fs.BoolVar(&noReport, "no-report", false, "do not write the report file")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "evolve takes no positional arguments\n\n")
+		fs.Usage()
+		return 2
+	}
+
+	opts := EvolutionOptions{
+		SkillsDir: dirFlag,
+		Mutate:    mutate,
+	}
+	if !noReport {
+		if reportFlag != "" {
+			opts.ReportPath = reportFlag
+		} else {
+			opts.ReportPath = filepath.Join("outputs", "cron", fmt.Sprintf("evolve-%s.md", time.Now().Format("20060102-150405")))
+		}
+	}
+
+	report, err := RunEvolutionPass(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evolution pass failed: %v\n", err)
+		return 1
+	}
+
+	fmt.Println(report.Summary)
+	if len(report.Promoted) > 0 {
+		fmt.Printf("Promoted: %s\n", strings.Join(report.Promoted, ", "))
+	}
+	if len(report.Deprecated) > 0 {
+		fmt.Printf("Deprecated: %s\n", strings.Join(report.Deprecated, ", "))
+	}
+	if opts.ReportPath != "" {
+		fmt.Printf("Report: %s\n", opts.ReportPath)
+	}
 	return 0
 }

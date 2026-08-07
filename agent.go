@@ -539,6 +539,15 @@ type SkillMeta struct {
 	Description string `json:"description"`
 	FileName    string `json:"file_name"`
 	SavedAt     string `json:"saved_at"`
+	// Evolution tracking (plan Phase 3c): Deprecated marks skills whose eval
+	// hit rate fell below the deprecation threshold; EvalScore is the last
+	// full eval-set score; EvolveCount counts successful promotions;
+	// LastEvolvedAt is when the skill was last promoted. All omitempty so
+	// existing skills.json files remain backward compatible.
+	Deprecated    bool    `json:"deprecated,omitempty"`
+	EvalScore     float64 `json:"eval_score,omitempty"`
+	EvolveCount   int     `json:"evolve_count,omitempty"`
+	LastEvolvedAt string  `json:"last_evolved_at,omitempty"`
 }
 
 type SkillRegistry struct {
@@ -1419,6 +1428,9 @@ ARTIFACT LOCATION: When asked where a file/artifact produced earlier is, FIRST c
 ### KNOWLEDGE BASE:
 You have a persistent knowledge base (markdown notes with YAML frontmatter in the configured knowledge directory) for storing durable facts you learn. Available tools: 'save_knowledge' (create a new note when you learn something important and worth keeping; provide a concise 'summary', relevant 'tags', 'aliases', and 'sources' when you have them - the tool also auto-enriches the note with the configured summarization model, producing a summary, excerpt, tags, aliases, related notes, and structured metadata such as GitHub maintainers, stars, and language for repository references, with deterministic extraction as fallback), 'recall_knowledge' (load a note by name - call this before answering about a known topic so you ground your reply in what you already recorded), 'search_knowledge' (keyword/tag grep across all notes), 'update_knowledge' (correct or extend an existing note), 'link_knowledge' (create [[wikilinks]] between notes to model relationships), 'cite_knowledge' (produce a footnote citation of a note when you use its content in an answer), 'list_knowledge' (enumerate notes), 'lint_knowledge' (run a health check for orphan notes, broken cross-references, and oversized pages). Use save/recall/update proactively: when the user tells you a durable fact, a preference, or a decision, save it; before answering about a topic you have notes on, recall it first. CRITICAL - dangling links: when 'save_knowledge', 'recall_knowledge', 'update_knowledge', or 'link_knowledge' return dangling links (wikilink targets that do not exist yet), you MUST surface them to the user, list the missing notes, and offer to create them. Only create the missing notes after the user confirms. Cite notes in answers either via the 'cite_knowledge' tool output or by inlining [[wikilinks]] so the user can trace claims back to their source note.
 
+### REFLEXION (LESSONS LEARNED):
+After a task that FAILED (repeated errors, dead-ends, blocked steps) or was COMPLEX (multi-step research, tricky debugging, novel problem solved with hard-won steps), write a short "lessons learned" knowledge note via 'save_knowledge' capturing what did NOT work, what finally DID, and any reusable gotchas. Tag it with 'lessons-learned' plus topic tags; set 'confidence' to reflect how certain you are; include 'sources' (URLs or file paths) that were load-bearing. Keep the body focused and actionable (2-6 sentences). This builds a durable reflection layer: at the start of a session, before planning, call 'search_knowledge' with tag 'lessons-learned' (and relevant topic terms) and 'recall_knowledge' the matching notes so you start from what was already learned instead of repeating mistakes. Do NOT create reflection notes for routine successes - only for genuinely instructive failures or hard-won solutions.
+
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
 
@@ -1540,32 +1552,29 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	// summary/excerpt/tags/aliases/related/metadata data in a strict JSON
 	// shape. save_knowledge falls back to deterministic extraction when this
 	// callback is unset (CLI, tests) or the call fails.
-	enrichKnowledgeFn = func(ctx context.Context, prompt string) (string, error) {
-		llm := summarizeModel
-		if llm == nil {
-			llm = currentModel
+	enrichKnowledgeFn = modelPromptFn
+
+	// HyDE-lite query expansion for search_knowledge (config-gated,
+	// plan Phase 3d-4): the same model rephrases the query into alternative
+	// phrasings. Falls back to plain search when unset (CLI/tests) or when
+	// the call fails/times out (handled by expandSearchQuery).
+	expandQueryFn = func(ctx context.Context, query string) ([]string, error) {
+		raw, err := modelPromptFn(ctx, buildQueryExpansionPrompt(query))
+		if err != nil {
+			return nil, err
 		}
-		if llm == nil {
-			return "", fmt.Errorf("no model available for knowledge enrichment")
+		parsed := parseQueryExpansions(raw)
+		if parsed == nil {
+			return nil, fmt.Errorf("query expansion response did not parse")
 		}
-		req := &adkLLMRequest{
-			Model:    llm.Name(),
-			Contents: []*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)},
-		}
-		var out strings.Builder
-		for resp, err := range llm.GenerateContent(ctx, req, false) {
-			if err != nil {
-				return "", err
-			}
-			if resp != nil && resp.Content != nil {
-				for _, part := range resp.Content.Parts {
-					if part != nil && part.Text != "" && !part.Thought {
-						out.WriteString(part.Text)
-					}
-				}
-			}
-		}
-		return strings.TrimSpace(out.String()), nil
+		return parsed, nil
+	}
+
+	// Evolver mutator (plan Phase 3b): proposes a fix for a failing skill
+	// given the current source and a failure case. Falls back to no-op
+	// (no mutation) when unset (CLI/tests) or when the call fails.
+	evolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return modelPromptFn(ctx, prompt)
 	}
 
 	// Vision model for the legacy path (non-vision main models), when configured.
@@ -1641,7 +1650,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		return nil, err
 	}
 
-	knowledgeTools, err := createKnowledgeTools(log, cfg.KnowledgeDir)
+	knowledgeTools, err := createKnowledgeTools(log, cfg.KnowledgeDir, cfg.SearchExpansion)
 	if err != nil {
 		return nil, err
 	}

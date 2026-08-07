@@ -160,6 +160,35 @@ The agent can save tested Python scripts as reusable skills:
 3. Skills are registered in `skills/skills.json` with name, description, and import usage
 4. On subsequent runs, the agent loads all saved skills and can reuse them via `from skills.<name> import ...`
 
+#### Skill evolution (darwinian-evolver style)
+
+hakase ships a native, cron-driven evolution loop over the Python skill
+library (`evolver.go`), inspired by the darwinian-evolver contract (no AGPL
+import - the upstream `imbue-ai/darwinian_evolver` is never wrapped):
+
+- **Evaluator** - each skill's `skills/<name>.eval.json` defines input /
+  expected cases (trainable + holdout split). Skills without an eval set, or
+  whose module fails to load, are skipped.
+- **Mutator** - failing skills are fed to the configured model (current
+  source + failure cases) which proposes a fixed implementation.
+- **A/B gate** - a mutation is promoted only when it beats the incumbent by
+  >=5% on the trainable score with zero holdout regressions. The incumbent
+  is preserved as `<name>.py.bak`. Skills with an eval hit rate below 30%
+  are auto-deprecated in `skills/skills.json`.
+- **Driver** - run `hakase skill evolve [--mutate]` for a manual pass, or
+  schedule the nightly pass as a native cron job (`native: "evolve"` via the
+  `cronjob` tool, or `hakase cron`). Every pass writes an auditable report
+  to `outputs/cron/evolve-*.md` for human review. No live self-modification.
+
+The `darwinian-evolver` markdown skill (`.agents/skills/darwinian-evolver/`)
+documents the loop, the eval-set format, and the cron wiring.
+
+#### Reflexion (lessons learned)
+
+The orchestrator writes "lessons learned" knowledge notes after failed or
+complex tasks (tagged `lessons-learned`) and recalls them at session start,
+so hard-won solutions and dead-ends are not re-learned.
+
 ### 📚 Knowledge Base
 
 The agent maintains a persistent, wiki-style knowledge base for durable facts it learns. Notes are markdown files with YAML frontmatter and `[[wikilinks]]`, stored in a workspace folder (default `./knowledge/`, configurable via `knowledge_dir` in `config.json`):
@@ -192,12 +221,20 @@ Retrieval is keyword/tag/grep only - no embeddings, no vector database, no extra
 The `hakase knowledge` CLI manages the knowledge base:
 
 - `hakase knowledge list|read|search|lint|create|link` - with a `--dir` flag to override the knowledge directory
+- `hakase knowledge bench [--dir <path>] [--k 5] [--eval <file>]` - runs the search-quality benchmark (qmd `qmd bench` analog): reads query -> expected-slug pairs from `<knowledge_dir>/bench.json` (or `--eval`), runs each query through the relevance-ranked search, and reports recall@k / MRR. The eval-set format is shared with the skill evolver.
 
 ```bash
 hakase knowledge create "Quantum Computing" --tags physics --content "See [[Superposition]]."
 hakase knowledge read quantum-computing
 hakase knowledge lint
+hakase knowledge bench
 ```
+
+Search results are relevance-ranked (BM25-style: title/alias/tag matches
+outrank summary/metadata/body, with an alphabetical tiebreak) while keeping
+the exact same result set as the old substring search. Optional HyDE-lite
+LLM query expansion is available via the `search_expansion` config field
+(default off).
 
 #### The `hakase cron` CLI
 
@@ -535,6 +572,7 @@ When `model_name` is empty, the provider's default model is used.
 - `mcp_server_url` - Legacy single MCP server URL (Lightpanda browser automation). Auto-migrated to a server named `lightpanda` in the `mcp` block.
 - `mcp` - Optional MCP server configuration (see [MCP Integration](#-mcp-integration)): `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
+- `search_expansion` - Optional HyDE-lite LLM query expansion for `search_knowledge` (default `false`). When off, search behavior is byte-identical to plain substring search (just relevance-ordered). When on, the summarization model rephrases the query into 2-3 phrasings which are OR-matched and fused with Reciprocal Rank Fusion; on failure or timeout it falls back silently to plain substring search. Set `HAKASE_SEARCH_EXPANSION` to override via environment.
 - `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
 - `vision_model` - Optional multimodal model used to describe images as text when the main model lacks vision (legacy mode). Empty = disabled.
 - `vision_base_url` - Optional separate endpoint for the vision model; empty = primary `base_url`.
@@ -621,6 +659,7 @@ The `hakase skill` command manages markdown skills:
 - `hakase skill create <name> [--dir <path>] [--description <text>] [--template python] [--force]` - Scaffolds `<dir>/<name>/SKILL.md` with valid frontmatter (`name`, `description`, `license: MIT`, `metadata: author/version`) plus `scripts/` and `references/` subdirectories. The `<name>` must match `^[a-z0-9]+(-[a-z0-9]+)*$`. The default directory is the git project root's `.agents/skills/`. The description falls back to a non-empty placeholder so the skill passes validation immediately. The `--template python` flag also writes `scripts/<name>.py`. Fails on an existing directory unless `--force` is used.
 - `hakase skill list` - Prints discovered skills (Python from `./skills/skills.json` plus markdown from project and user directories) with source paths.
 - `hakase skill validate <dir>` - Parses and validates a single skill; exits non-zero on failure (CI-friendly).
+- `hakase skill evolve [--dir ./skills] [--mutate] [--report <path>]` - Runs one darwinian-evolver-style skill-evolution pass over the Python skill library (see [Self-Evolving Skill Library](#-self-evolving-skill-library)). Default is evaluation-only: every skill with a `skills/<name>.eval.json` eval set is scored, skills below the 30% hit-rate threshold are auto-deprecated, and an auditable report is written to `outputs/cron/evolve-<timestamp>.md`. `--mutate` enables the mutator step (requires a configured model): failing skills are mutated via the model, and only mutations that beat the incumbent by >=5% with zero holdout regressions are promoted (the incumbent is preserved as `<name>.py.bak`).
 
 #### Markdown Skill Format
 
@@ -650,6 +689,25 @@ The repository ships a self-knowledge skill at `.agents/skills/hakase/SKILL.md` 
 #### Interoperability
 
 Skills authored to this format (e.g. from Claude Code, Codex CLI, Gemini CLI, or OpenCode - the agentskills.io spec) work in hakase by dropping them into `.agents/skills/`.
+
+#### Research skills (ported from Hermes Agent)
+
+The repository ships a research skill category ported from Hermes Agent's
+`optional-skills/research/` (MIT), alongside the creative port: `domain-intel`
+(passive recon: crt.sh subdomains, WHOIS, DNS-over-HTTPS, SSL, bulk - pure
+stdlib), `osint-investigation` (follow-the-money public-records framework:
+SEC EDGAR, USAspending, OFAC SDN, OpenCorporates, GDELT, Wayback, etc. - 16
+stdlib scripts + 11 source references), `drug-discovery` (ChEMBL, PubChem,
+OpenFDA, OpenTargets doctrine), `bioinformatics` (gateway to bioSkills +
+ClawBio pipelines, cloned on demand), `scrapling` (HTTP/Dynamic/Stealthy
+fetchers + spider, `pip install scrapling[all]` prerequisite), and
+`darwinian-evolver` (documents the native skill-evolution layer above).
+The porting manifest and conventions live in `.agents/skills/research/`.
+Dropped upstream skills (duckduckgo-search, searxng-search, parallel-cli,
+qmd, gitnexus-explorer) are documented there with rationale - generic web
+search is covered by the `web_researcher` sub-agent, and qmd's retrieval
+ideas were folded into the knowledge-search quality work (relevance ranking,
+query expansion, `hakase knowledge bench`).
 
 #### Coexistence with Python Skills
 

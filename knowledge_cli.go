@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -35,6 +36,8 @@ func runKnowledgeCLI(args []string) int {
 		return runKnowledgeCreate(args[1:])
 	case "link":
 		return runKnowledgeLink(args[1:])
+	case "bench":
+		return runKnowledgeBench(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown knowledge subcommand %q\n\n", args[0])
 		knowledgeCLIUsage()
@@ -49,10 +52,11 @@ func knowledgeCLIUsage() {
 	fmt.Fprintln(os.Stderr, "Subcommands:")
 	fmt.Fprintln(os.Stderr, "  list       list all knowledge notes")
 	fmt.Fprintln(os.Stderr, "  read       read a note by slug, basename, or alias")
-	fmt.Fprintln(os.Stderr, "  search     search notes by query")
+	fmt.Fprintln(os.Stderr, "  search     search notes by query (relevance-ranked)")
 	fmt.Fprintln(os.Stderr, "  lint       check knowledge base health (orphans, dangling links)")
 	fmt.Fprintln(os.Stderr, "  create     scaffold a new knowledge note")
 	fmt.Fprintln(os.Stderr, "  link       link two notes with a [[wikilink]]")
+	fmt.Fprintln(os.Stderr, "  bench      run the search-quality benchmark (recall@k / MRR)")
 }
 
 // loadKnowledgeDir returns the knowledge directory from config or the default.
@@ -103,7 +107,7 @@ func runKnowledgeList(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := BuildKnowledgeIndex(dir)
+	idx, err := getKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -187,7 +191,7 @@ func runKnowledgeRead(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := BuildKnowledgeIndex(dir)
+	idx, err := getKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -278,24 +282,155 @@ func runKnowledgeSearch(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := BuildKnowledgeIndex(dir)
+	idx, err := getKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
 	}
 
-	results := SearchKnowledge(idx, query, tags, false)
+	results := SearchKnowledgeScored(idx, query, tags, false)
 	if len(results) == 0 {
 		fmt.Println("No results found.")
 		return 0
 	}
 
-	for _, n := range results {
+	for _, s := range results {
+		n := s.Note
 		snippet := firstSnippet(n.Body, query)
 		fmt.Printf("  %s (%s) [%s] - %s\n    %s\n",
 			n.Frontmatter.Title, n.Slug, n.Frontmatter.Status, n.Frontmatter.Summary, snippet)
 	}
 	fmt.Printf("\n%d results\n", len(results))
+	return 0
+}
+
+// ------------------- bench --------------------------------------------------
+
+// runKnowledgeBench runs the search-quality benchmark (qmd `qmd bench`
+// analog, plan Phase 3d-5). It reads a bench set (query -> expected slugs)
+// from <dir>/bench.json by default (or --eval <file>), runs each query
+// through the relevance-ranked search, and reports recall@k and MRR.
+// The bench set is shared with the evolver's per-skill eval-set format
+// (eval.go), so the same JSON shape drives both.
+func runKnowledgeBench(args []string) int {
+	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var dirFlag, evalFlag string
+	var kFlag int
+	fs.StringVar(&dirFlag, "dir", "", "knowledge directory path")
+	fs.StringVar(&evalFlag, "eval", "", "bench set file (default: <knowledge_dir>/bench.json)")
+	fs.IntVar(&kFlag, "k", 5, "recall depth k (per-query k in the eval file overrides this)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "bench takes no positional arguments\n\n")
+		fs.Usage()
+		return 2
+	}
+	if kFlag < 1 {
+		fmt.Fprintf(os.Stderr, "--k must be >= 1\n")
+		return 2
+	}
+
+	dir := dirFlag
+	if dir == "" {
+		dir = loadKnowledgeDir()
+	}
+
+	evalPath := evalFlag
+	if evalPath == "" {
+		evalPath = filepath.Join(knowledgeDir(dir), "bench.json")
+	}
+	set, err := loadBenchSet(evalPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot load bench set: %v\n", err)
+		return 1
+	}
+
+	idx, err := getKnowledgeIndex(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
+		return 1
+	}
+
+	type queryResult struct {
+		query   string
+		k       int
+		recall  float64
+		mrr     float64
+		matched int
+		hits    []string
+	}
+
+	var results []queryResult
+	var totalRecall, totalMRR float64
+	recallCount, mrrCount := 0, 0
+
+	for _, q := range set.Queries {
+		k := q.K
+		if k <= 0 {
+			k = kFlag
+		}
+		scored := SearchKnowledgeScored(idx, q.Query, nil, false)
+
+		// Expected set, lowercased for matching.
+		expected := make(map[string]bool, len(q.Expected))
+		for _, e := range q.Expected {
+			expected[strings.ToLower(e)] = true
+		}
+		if len(expected) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: query %q has no expected slugs; skipping\n", q.Query)
+			continue
+		}
+
+		topK := scored
+		if len(topK) > k {
+			topK = topK[:k]
+		}
+		var hits []string
+		matched := 0
+		rr := 0.0
+		for rank, s := range topK {
+			if expected[s.Note.Slug] {
+				matched++
+				hits = append(hits, s.Note.Slug)
+				if rr == 0 {
+					rr = 1.0 / float64(rank+1)
+				}
+			}
+		}
+		recall := float64(matched) / float64(len(expected))
+		results = append(results, queryResult{
+			query: q.Query, k: k, recall: recall, mrr: rr, matched: matched, hits: hits,
+		})
+		totalRecall += recall
+		recallCount++
+		totalMRR += rr
+		mrrCount++
+	}
+
+	if recallCount == 0 {
+		fmt.Fprintln(os.Stderr, "no benchmark queries ran")
+		return 1
+	}
+
+	fmt.Printf("Knowledge search benchmark (eval: %s, corpus: %d notes)\n", evalPath, len(idx.BySlug))
+	fmt.Println()
+	for _, r := range results {
+		fmt.Printf("  q: %s\n", r.query)
+		fmt.Printf("     recall@%d: %.2f (%d/%d expected found)%s\n", r.k, r.recall, r.matched, len(r.hits), "")
+		if len(r.hits) > 0 {
+			fmt.Printf("     hits: %s\n", strings.Join(r.hits, ", "))
+		}
+		fmt.Printf("     MRR: %.3f\n", r.mrr)
+	}
+	fmt.Println()
+	fmt.Printf("  Averages: recall@k %.2f  |  MRR %.3f  |  queries %d\n",
+		totalRecall/float64(recallCount), totalMRR/float64(mrrCount), recallCount)
 	return 0
 }
 
@@ -323,7 +458,7 @@ func runKnowledgeLint(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := BuildKnowledgeIndex(dir)
+	idx, err := getKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -463,7 +598,7 @@ func runKnowledgeCreate(args []string) int {
 	}
 
 	// Check if note already exists.
-	idx, err := BuildKnowledgeIndex(dir)
+	idx, err := getKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -523,6 +658,7 @@ func runKnowledgeCreate(args []string) int {
 		_ = UpdateIndexFile(dir, newIdx)
 	}
 	_ = AppendLog(dir, "create", title)
+	invalidateKnowledgeCache(dir)
 
 	fmt.Printf("Created note %q at %s\n", slug, note.Path)
 	return 0
@@ -581,7 +717,7 @@ func runKnowledgeLink(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := BuildKnowledgeIndex(dir)
+	idx, err := getKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -628,6 +764,7 @@ func runKnowledgeLink(args []string) int {
 		_ = UpdateIndexFile(dir, newIdx)
 	}
 	_ = AppendLog(dir, "link", fromNote.Frontmatter.Title)
+	invalidateKnowledgeCache(dir)
 
 	fmt.Printf("Linked %q to %q.\n", fromNote.Slug, targetNote.Slug)
 	return 0
