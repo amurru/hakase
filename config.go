@@ -60,6 +60,22 @@ type ContextFilesConfig struct {
 	ApplyTo []string `json:"apply_to,omitempty"`
 }
 
+// SystemEnvConfig tunes the runtime-environment block (OS/distro/arch,
+// package manager, toolchains, disk/memory) injected into agent system
+// instructions at session start.
+type SystemEnvConfig struct {
+	// Enabled toggles the environment block. Absent (nil) = enabled, which is
+	// the default. A pointer keeps "absent" distinguishable from "false" so a
+	// missing system_env block cannot accidentally disable the feature.
+	Enabled *bool `json:"enabled,omitempty"`
+	// MaxChars caps the rendered block. 0 uses defaultSystemEnvMaxChars (800).
+	MaxChars int `json:"max_chars,omitempty"`
+	// ApplyTo restricts which agents receive the rendered environment block.
+	// Empty means all agents. Valid names: orchestrator, web_researcher,
+	// code_interpreter, general_purpose.
+	ApplyTo []string `json:"apply_to,omitempty"`
+}
+
 type Config struct {
 	Provider  string `json:"provider"`
 	ModelName string `json:"model_name"`
@@ -80,6 +96,10 @@ type Config struct {
 	// (0 uses 20000), ApplyTo restricts which agents receive the rendered
 	// block (empty = all agents).
 	ContextFiles ContextFilesConfig `json:"context_files,omitempty"`
+	// SystemEnv tunes the runtime-environment block injected into agent
+	// instructions. Absent = enabled with default caps. Set enabled:false to
+	// disable, max_chars to cap the rendered block.
+	SystemEnv SystemEnvConfig `json:"system_env,omitempty"`
 	MCPServerURL string             `json:"mcp_server_url"`
 	// MCPServers configures MCP servers (see mcp_config.go). Legacy
 	// mcp_server_url is auto-migrated into the "lightpanda" server.
@@ -251,4 +271,23 @@ func loadConfig(filePath string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// systemEnvEnabled reports whether the runtime-environment block should be
+// injected. Absent config or absent `enabled` field means enabled (default);
+// an explicit enabled:false opts out.
+func systemEnvEnabled(cfg *Config) bool {
+	if cfg == nil || cfg.SystemEnv.Enabled == nil {
+		return true
+	}
+	return *cfg.SystemEnv.Enabled
+}
+
+// systemEnvMaxChars returns the configured block cap, falling back to the
+// default when unset.
+func systemEnvMaxChars(cfg *Config) int {
+	if cfg != nil && cfg.SystemEnv.MaxChars > 0 {
+		return cfg.SystemEnv.MaxChars
+	}
+	return defaultSystemEnvMaxChars
 }

@@ -42,6 +42,8 @@ hakase/
 ├── debug_log.go             # Structured JSON debug logging (info/warn/error levels)
 ├── skill_discovery.go       # Markdown & Python skill discovery/loading
 ├── instruction_context.go   # Project context files (AGENTS.md) discovery & rendering
+├── env.go                   # Runtime environment detection (OS/distro/arch, package manager, toolchains)
+├── env_cli.go               # hakase env CLI (print the detected environment block)
 ├── rule_cli.go              # hakase rules CLI (list/show project context files)
 ├── ui.go                    # Bubble Tea TUI — split-pane layout with chat, log, and input views
 ├── config.go                # Config loader (reads config.json)
@@ -243,6 +245,72 @@ Preview the active context without running the agent:
 hakase rules list    # list the context files that would be loaded (render order + scope)
 hakase rules show AGENTS.md   # show one file's content (path or basename)
 ```
+
+### 🖥️ Runtime Environment Awareness
+
+At session start hakase detects the environment it runs on and injects a compact
+block into every agent's system instruction, so the model acts on facts instead
+of assumptions - e.g. it knows `pacman` is the package manager on Arch rather
+than guessing `apt`, and which compilers/interpreters actually exist before
+choosing an execution strategy.
+
+The block reports (detected once at startup, omitted line-by-line when
+undetectable):
+
+- **OS / architecture / distro** - e.g. `linux/amd64 (Arch Linux)`, plus the
+  kernel release on Linux
+- **Package manager** - resolved by PATH availability first (handles hybrids
+  like Nix-on-Ubuntu), with a distro-ID map fallback (`pacman`, `apt`, `dnf`,
+  `zypper`, `apk`, `brew`, ...)
+- **Shell, locale, timezone** - `$SHELL`, `$LC_ALL`/`$LANG`, and the current
+  zone + UTC offset
+- **User, home, workspace** - identity and the workspace root
+- **Disk & memory** - free space on the workspace filesystem and total memory
+- **Toolchains** - available compilers/interpreters/VCS with their versions
+  (`go`, `gcc`, `clang`, `rustc`, `python3`, `node`, `git`, `docker`), probed
+  with a 1s timeout and never fatal
+
+The block is labeled a startup snapshot; the model is directed to use
+`system_exec` for live system state (processes, current disk/memory, network).
+Two safeguards keep the snapshot honest:
+
+- **Staleness refresh** - if disk free or available memory drifts materially
+  (>= 1 GiB or >= 5%) since the startup snapshot, hakase injects a one-shot
+  `ENVIRONMENT UPDATE` notice into the running session (checked before each
+  model call, same mechanism as the context-file live reconcile) so the model
+  re-checks live state instead of trusting stale values.
+- **Sandbox note** - when the sandbox is `bubblewrap` (subprocess isolation),
+  the block carries a note that host-detected toolchains may be unreachable
+  inside the sandbox, steering code execution to `python_interpreter`.
+
+The `hakase env` CLI prints the exact block without running the agent:
+
+```bash
+hakase env
+```
+
+Tuning via `config.json` (defaults shown; the block is enabled by default):
+
+```json
+{
+  "system_env": {
+    "enabled": true,
+    "max_chars": 800,
+    "apply_to": []
+  }
+}
+```
+
+- `enabled` - `false` disables the block entirely.
+- `max_chars` - caps the rendered block (0 uses the 800-char default). The
+  block's token size is accounted for in the context-compaction budget.
+- `apply_to` - restricts which agents receive the block; empty means all four
+  agents (`orchestrator`, `web_researcher`, `code_interpreter`,
+  `general_purpose`), mirroring `context_files.apply_to`.
+
+Linux is the primary platform: on other OSes the portable fields (OS, arch,
+shell, locale, timezone, user, toolchains) are still reported and the
+Linux-specific ones (kernel, distro, disk, memory) degrade gracefully.
 
 ### 📥 File Download
 
@@ -463,6 +531,7 @@ When `model_name` is empty, the provider's default model is used.
 - `instruction` - Optional, additional customization rendered into the agent instructions as a `USER CONFIG INSTRUCTION` section (alongside the discovered `AGENTS.md` context). It is not a replacement for the built-in system prompts - it only adds.
 - `instruction_files` - Optional list of extra context files merged into the project context (see [Project Context Files](#-project-context-files-agentsmd)): absolute paths, `~/`-prefixed paths, project-relative paths, or `http(s)://` URLs.
 - `context_files` - Optional tuning for the project context files: `max_chars` (per-file truncation cap, default `20000`) and `apply_to` (restrict which agents receive the block; empty = all).
+- `system_env` - Optional tuning for the runtime-environment block (see [Runtime Environment Awareness](#-runtime-environment-awareness)): `enabled` (default `true`), `max_chars` (block cap, default `800`), and `apply_to` (restrict which agents receive the block; empty = all).
 - `mcp_server_url` - Legacy single MCP server URL (Lightpanda browser automation). Auto-migrated to a server named `lightpanda` in the `mcp` block.
 - `mcp` - Optional MCP server configuration (see [MCP Integration](#-mcp-integration)): `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).

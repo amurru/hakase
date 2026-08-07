@@ -1492,6 +1492,22 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
 	initContextState(cwd, cfg, instructionFiles)
 
+	// Detect the runtime environment once per session and render a compact
+	// system-reminder block (OS/distro/arch, package manager, toolchains,
+	// disk/memory) injected into every agent's instruction next to the time
+	// reminder. Disabled via system_env.enabled=false. The rendered size feeds
+	// the compaction reserve via systemEnvBlockTokens (context.go).
+	var envBlock string
+	if systemEnvEnabled(cfg) {
+		sysInfo := detectSystemInfo(cwd, log)
+		currentSystemInfo = sysInfo
+		envBlock = buildEnvironmentReminder(sysInfo, systemEnvMaxChars(cfg))
+		systemEnvBlockTokens = EstimateTokens(envBlock)
+		if envBlock != "" && log != nil {
+			log(fmt.Sprintf("🧭 Environment: %s", sysInfo.Summary()))
+		}
+	}
+
 	provider, err := ProviderFactory(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create provider: %w", err)
@@ -1594,7 +1610,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:                  "web_researcher",
 		Description:           "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction:           HakaseSystemInstruction + contextBlockFor("web_researcher", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
+		Instruction:           HakaseSystemInstruction + contextBlockFor("web_researcher", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder() + contextBlockFor("web_researcher", envBlock, cfg.SystemEnv.ApplyTo),
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              []tool.Toolset{mcpManager},
@@ -1650,7 +1666,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 ### SKILL REUSE & EVOLUTION RULES:
 1. REUSE FIRST: Check the "AVAILABLE PRE-LEARNED SKILLS" list above before writing code. If a skill exists that can solve or assist in the task, write a Python script that imports and calls it!
 2. SAVE NOVEL SKILLS: If you solve a new problem with fresh code, test it with python_interpreter, then call save_skill to store it for future reuse.
-3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.` + "\n\n" + buildTimeReminder(),
+3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.` + "\n\n" + buildTimeReminder() + contextBlockFor("code_interpreter", envBlock, cfg.SystemEnv.ApplyTo),
 		Model: model,
 		Tools: []tool.Tool{
 			pythonTool,
@@ -1676,7 +1692,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "general_purpose",
 		Description:           "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
-		Instruction:           GeneralPurposeSystemInstruction + contextBlockFor("general_purpose", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder(),
+		Instruction:           GeneralPurposeSystemInstruction + contextBlockFor("general_purpose", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder() + contextBlockFor("general_purpose", envBlock, cfg.SystemEnv.ApplyTo),
 		Model:                 model,
 		Tools:                 append(fileOpsTools, visionTool),
 		GenerateContentConfig: genCfg,
@@ -1748,7 +1764,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:                  "orchestrator",
 		Description:           "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction:           buildOrchestratorInstruction(installedSkills) + contextBlockFor("orchestrator", ctxBlock, cfg.ContextFiles.ApplyTo),
+		Instruction:           buildOrchestratorInstruction(installedSkills) + contextBlockFor("orchestrator", ctxBlock, cfg.ContextFiles.ApplyTo) + contextBlockFor("orchestrator", envBlock, cfg.SystemEnv.ApplyTo),
 		Model:                 model,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{

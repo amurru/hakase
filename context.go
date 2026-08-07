@@ -109,6 +109,16 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		req.Contents = append(append(append([]*genai.Content{}, history...), noticeContent), current...)
 	}
 
+	// Environment staleness: if disk free or available memory drifted
+	// materially since the startup snapshot, inject a one-shot notice so the
+	// model re-checks live state instead of trusting stale values. Follows
+	// the same pattern as the context update notice above.
+	if notice := envStalenessNotice(); notice != "" {
+		h.logfSafe("⚠ system state changed; environment update notice injected")
+		noticeContent := genai.NewContentFromText(notice, genai.RoleUser)
+		req.Contents = append(append(append([]*genai.Content{}, history...), noticeContent), current...)
+	}
+
 	// Steer queued user messages (typed while the agent was busy) into the
 	// tail of the request as the most recent user intent. Injected on every
 	// model call: ADK rebuilds req.Contents fresh per call from session
@@ -230,11 +240,12 @@ func (h *HistoryBuilder) fitToBudget(session *Session, history []*genai.Content,
 
 	// Reserve budget for the system prompt + tool schemas + current run
 	// contents, plus the rendered project-context block (contextBlockTokens,
-	// set in setupRunner from the discovered AGENTS.md files). The flat
-	// baseline plus the block is a conservative approximation since we cannot
-	// see the fully rendered prompt.
+	// set in setupRunner from the discovered AGENTS.md files) and the
+	// runtime-environment block (systemEnvBlockTokens, set in setupRunner).
+	// The flat baseline plus the blocks is a conservative approximation since
+	// we cannot see the fully rendered prompt.
 	const baseReserveTokens = 8000
-	reserveTokens := baseReserveTokens + contextBlockTokens
+	reserveTokens := baseReserveTokens + contextBlockTokens + systemEnvBlockTokens
 
 	currentTokens := EstimateContentsTokens(current)
 	trigger := int64(effectiveMax * 9 / 10)

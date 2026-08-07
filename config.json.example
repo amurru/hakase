@@ -9,6 +9,11 @@
     "max_chars": 20000,
     "apply_to": []
   },
+  "system_env": {
+    "enabled": true,
+    "max_chars": 800,
+    "apply_to": []
+  },
   "mcp_server_url": "http://localhost:9223/mcp",
   "mcp": {
     "servers": {

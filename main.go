@@ -31,6 +31,10 @@ func main() {
 		os.Exit(runRulesCLI(os.Args[2:]))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "env" {
+		os.Exit(runEnvCLI(os.Args[2:]))
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "cron" {
 		os.Exit(runCronCLI(os.Args[2:]))
 	}
