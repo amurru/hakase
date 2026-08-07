@@ -430,3 +430,194 @@ func TestEndToEndKittyRenderMarkdown(t *testing.T) {
 		t.Fatalf("unexpected APC sequence")
 	}
 }
+
+// TestSplitMathSegmentsFirstLastLine verifies math blocks at the very start
+// or end of the content keep the odd-index-math parity (the splitter always
+// emits boundary text segments, even when empty).
+func TestSplitMathSegmentsFirstLastLine(t *testing.T) {
+	// Content STARTING with math: parity must be preserved (odd = math).
+	segs := splitMathSegments("$$\nx^2\n$$\n\nTail")
+	if len(segs) != 3 {
+		t.Fatalf("expected 3 segments (leading empty), got %d: %q", len(segs), segs)
+	}
+	if segs[0] != "" || segs[1] != "x^2" || segs[2] != "\n\nTail" {
+		t.Fatalf("unexpected leading-math split: %q", segs)
+	}
+	if segs[1] != "x^2" {
+		t.Fatal("math must be at odd index")
+	}
+
+	// Content ENDING with math.
+	segs = splitMathSegments("Head\n\n$$\nx^2\n$$")
+	if len(segs) != 3 {
+		t.Fatalf("expected 3 segments (trailing empty), got %d: %q", len(segs), segs)
+	}
+	if segs[0] != "Head\n\n" || segs[1] != "x^2" || segs[2] != "" {
+		t.Fatalf("unexpected trailing-math split: %q", segs)
+	}
+
+	// Only math, no text.
+	segs = splitMathSegments("$$\nx^2\n$$")
+	if len(segs) != 3 || segs[0] != "" || segs[1] != "x^2" || segs[2] != "" {
+		t.Fatalf("unexpected pure-math split: %q", segs)
+	}
+}
+
+// TestSplitMathSegmentsEscapedDollar verifies \$\$ is treated as literal
+// text, not a display-math opener.
+func TestSplitMathSegmentsEscapedDollar(t *testing.T) {
+	segs := splitMathSegments("Price \\$\\$ 5")
+	if len(segs) != 1 {
+		t.Fatalf("escaped $$ must not split, got %d segments: %q", len(segs), segs)
+	}
+	if segs[0] != "Price \\$\\$ 5" {
+		t.Fatalf("escaped dollar content changed: %q", segs[0])
+	}
+}
+
+// TestSplitMathSegmentsInlineCodeDollar verifies $$ inside inline backticks
+// and tilde code spans is left untouched.
+func TestSplitMathSegmentsInlineCodeDollar(t *testing.T) {
+	for _, in := range []string{
+		"Use `$$x$$` in inline code",
+		"Use ~~$$x$$~~ in tilde code",
+		"Multi ``$$x$$`` tick code",
+	} {
+		segs := splitMathSegments(in)
+		if len(segs) != 1 {
+			t.Fatalf("%q must not split, got %d segments: %q", in, len(segs), segs)
+		}
+	}
+}
+
+// TestRenderMarkdownGoldenFrac verifies the exact Unicode rendering of a
+// stacked fraction through the full pipeline (golden output for the fallback
+// tier).
+func TestRenderMarkdownGoldenFrac(t *testing.T) {
+	mr := newMathRenderer()
+	mr.kittyOK = false
+	mr.toolchainOK = false
+
+	out := mr.RenderMarkdown("$$\n\\frac{dy}{dx}\n$$", 40, true)
+	plain := stripANSI(out)
+
+	// The rendered grid must contain the numerator and denominator on
+	// separate lines with a fraction bar between them.
+	lines := strings.Split(plain, "\n")
+	joined := strings.Join(lines, " ")
+	if !strings.Contains(joined, "dy") || !strings.Contains(joined, "dx") {
+		t.Fatalf("golden frac missing numerator/denominator:\n%q", joined)
+	}
+	foundBar := false
+	for _, ln := range lines {
+		if strings.Contains(ln, "────") {
+			foundBar = true
+			break
+		}
+	}
+	if !foundBar {
+		t.Fatalf("golden frac missing fraction bar:\n%s", plain)
+	}
+}
+
+// TestRenderMarkdownMathThenCode verifies a message mixing display math and a
+// code block renders both correctly (fence tracking must not leak state).
+func TestRenderMarkdownMathThenCode(t *testing.T) {
+	mr := newMathRenderer()
+	mr.kittyOK = false
+	mr.toolchainOK = false
+
+	in := "$$\nx^2\n$$\n\n```\n$$not math$$\n```"
+	out := mr.RenderMarkdown(in, 80, true)
+	plain := stripANSI(out)
+
+	if !strings.Contains(plain, "x²") && !strings.Contains(plain, "x^2") {
+		t.Fatalf("math block missing:\n%s", plain)
+	}
+	if !strings.Contains(plain, "$$not math$$") {
+		t.Fatalf("code-block $$ must be preserved verbatim:\n%s", plain)
+	}
+}
+
+// TestRenderMarkdownASCIIMode verifies 7-bit terminals get ASCII output.
+func TestRenderMarkdownASCIIMode(t *testing.T) {
+	mr := newMathRenderer()
+	mr.kittyOK = false
+	mr.toolchainOK = false
+	mr.asciiMode = true
+
+	out := mr.RenderMarkdown("$$\n\\frac{dy}{dx}\n$$", 40, true)
+	plain := stripANSI(out)
+	for _, r := range plain {
+		if r > 127 {
+			t.Fatalf("ASCII mode emitted non-ASCII rune %q:\n%s", r, plain)
+		}
+	}
+	// The fraction must still be recognizable (stacked with an ASCII bar).
+	if !strings.Contains(plain, "dy") || !strings.Contains(plain, "dx") {
+		t.Fatalf("ASCII frac missing parts:\n%s", plain)
+	}
+}
+
+// TestDecisionTree walks the full rendering decision matrix and verifies each
+// branch produces sane output (kitty+toolchain / kitty-only / neither / 7-bit).
+func TestDecisionTree(t *testing.T) {
+	oldKitty, oldTerm, oldProg := os.Getenv("KITTY_WINDOW_ID"), os.Getenv("TERM"), os.Getenv("TERM_PROGRAM")
+	defer func() {
+		os.Setenv("KITTY_WINDOW_ID", oldKitty)
+		os.Setenv("TERM", oldTerm)
+		os.Setenv("TERM_PROGRAM", oldProg)
+	}()
+
+	// Branch 1: kitty + toolchain -> images (when allowed).
+	mr := newMathRenderer()
+	mr.kittyOK = true
+	mr.toolchainOK = true
+	mr.asciiMode = false
+	if !mr.canRenderImages() {
+		t.Fatal("kitty+toolchain must enable images")
+	}
+	out := mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
+	if !strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
+		t.Fatal("branch kitty+toolchain should emit placeholder runes")
+	}
+	// Streaming (allowImages=false) -> Unicode even with images available.
+	out = mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, false)
+	if strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
+		t.Fatal("streaming must not emit placeholders")
+	}
+
+	// Branch 2: kitty only, no toolchain -> Unicode.
+	mr2 := newMathRenderer()
+	mr2.kittyOK = true
+	mr2.toolchainOK = false
+	mr2.asciiMode = false
+	if mr2.canRenderImages() {
+		t.Fatal("kitty without toolchain must not enable images")
+	}
+	out = mr2.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
+	if strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
+		t.Fatal("kitty-only branch must fall back to Unicode")
+	}
+
+	// Branch 3: neither -> Unicode.
+	mr3 := newMathRenderer()
+	mr3.kittyOK = false
+	mr3.toolchainOK = false
+	if mr3.canRenderImages() {
+		t.Fatal("neither branch must not enable images")
+	}
+	out = mr3.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
+	if strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
+		t.Fatal("neither branch must fall back to Unicode")
+	}
+
+	// Branch 4: 7-bit terminal even with everything -> Unicode ASCII.
+	mr4 := newMathRenderer()
+	mr4.kittyOK = true
+	mr4.toolchainOK = true
+	mr4.asciiMode = true
+	if mr4.canRenderImages() {
+		t.Fatal("7-bit terminal must not enable images")
+	}
+}

@@ -73,6 +73,7 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 - **Mid-run messaging** — Type and send while the agent is working: your message is queued (shown as `N queued` in the hint bar), steered into the running session at the next model-call boundary as a `USER INTERJECTION`, then processed as its own turn when the current run completes
 - **Mid-run questions** — The agent can pause and ask you a question mid-task via the `clarify` tool; choose from up to 4 options or type a free-text answer, [esc] to dismiss
 - **Help overlay** — Press `Ctrl+/` (`?` when not typing) for a full keyboard shortcut reference
+- **Inline math rendering** — LaTeX math in agent responses renders natively in the chat pane: display math (`$$...$$`) compiles to a transparent PNG via tectonic + poppler and displays through the kitty graphics protocol in kitty/WezTerm/ghostty terminals; everywhere else it degrades to a Unicode character grid (stacked fractions, `∑`/`∫` limits, matrix delimiters) via the pure-Go termtex parser. Inline math (`$...$`) always uses Unicode. Streaming shows Unicode math that upgrades to images when the message completes; no terminal or toolchain is required for the fallback to work.
 
 ### Keyboard Shortcuts
 
@@ -708,6 +709,17 @@ qmd, gitnexus-explorer) are documented there with rationale - generic web
 search is covered by the `web_researcher` sub-agent, and qmd's retrieval
 ideas were folded into the knowledge-search quality work (relevance ranking,
 query expansion, `hakase knowledge bench`).
+
+#### LaTeX / math skill (original)
+
+`latex-math` (`.agents/skills/latex-math/`) is an original doctrine skill for
+LaTeX typesetting and mathematical documents: mode classification
+(document/snippet/beamer), a verbatim preamble catalog (`references/`),
+notation conventions, a compile-verify-fix loop with a 40-entry error
+playbook, quality checklists, no-fabrication rules, and `scripts/compile.sh`
+(.tex -> PDF + transparent PNG via tectonic + poppler) + `scripts/lint.sh`
+(structural and `.bib` lint). It pairs with the TUI's built-in math
+rendering (see [Terminal TUI](#-terminal-tui)).
 
 #### Coexistence with Python Skills
 

@@ -48,6 +48,7 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - **Context management** - history building with budget math and optional cheap-model summarization (`summary_model`); manual `/compact [focus]` triggers the same compaction cascade on demand.
 - **Message attachments** - `@` file mention menu and `Ctrl+V` image paste; text files embed as text parts, images as inline data parts; attachments persist by path+MIME and re-read on resume.
 - **Mid-run messaging & interrupt** - messages typed while the agent is busy are queued and steered into the running session as a `USER INTERJECTION`; `Esc Esc` (within 2s) interrupts the running agent.
+- **Inline math rendering** - LaTeX math in agent responses renders in the chat pane: display math (`$$...$$`) compiles to a transparent PNG (tectonic + poppler) and displays via the kitty graphics protocol in kitty/WezTerm/ghostty; otherwise a Unicode character grid (termtex, pure Go, zero deps) - stacked fractions, `∑`/`∫` limits, matrix delimiters. Inline `$...$` always uses Unicode. Streaming shows Unicode, upgrading to images on message completion. No terminal/toolchain needed for the fallback. Pair with the `latex-math` skill for document typesetting.
 - **Slash commands** - local command menu (`/board`, `/compact`, `/new`, `/sessions`, `/help`, `/exit`) that never reaches the model.
 
 ### Scheduled tasks (cronjob)
