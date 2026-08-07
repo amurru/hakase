@@ -95,14 +95,17 @@ func detectKittyCapable() bool {
 	return false
 }
 
-// detectMathToolchain reports whether both tectonic (LaTeX engine) and
-// pdftoppm (poppler-utils PDF-to-PNG) are available on PATH.
+// detectMathToolchain reports whether both tectonic (LaTeX engine) and a
+// poppler PDF-to-PNG converter (pdftocairo preferred, pdftoppm fallback) are
+// available on PATH.
 func detectMathToolchain() bool {
 	if _, err := exec.LookPath("tectonic"); err != nil {
 		return false
 	}
-	if _, err := exec.LookPath("pdftoppm"); err != nil {
-		return false
+	if _, err := exec.LookPath("pdftocairo"); err != nil {
+		if _, err2 := exec.LookPath("pdftoppm"); err2 != nil {
+			return false
+		}
 	}
 	return true
 }
@@ -239,9 +242,11 @@ func mathHash(src string) string {
 
 // compileEquationPNG compiles a LaTeX math expression to a transparent PNG.
 //
-// Pipeline: standalone .tex -> tectonic (PDF) -> pdftoppm (transparent PNG).
-// The work runs in a temp dir that is always cleaned up. Errors are returned
-// wrapped so the caller can log the underlying toolchain output.
+// Pipeline: standalone .tex -> tectonic (PDF) -> pdftocairo (transparent PNG,
+// alpha channel). pdftocairo is preferred because recent poppler builds
+// removed -transp from pdftoppm; pdftoppm -transp is tried as a fallback for
+// older poppler. The work runs in a temp dir that is always cleaned up.
+// Errors are returned wrapped so the caller can log the toolchain output.
 func compileEquationPNG(latex string) ([]byte, error) {
 	dir, err := os.MkdirTemp("", "hakase-math-*")
 	if err != nil {
@@ -263,13 +268,22 @@ func compileEquationPNG(latex string) ([]byte, error) {
 
 	pdfPath := filepath.Join(dir, "eqn.pdf")
 
-	// pdftoppm -png -r 300 -transp eqn.pdf eqn -> eqn-1.png (transparent).
-	ppm := exec.Command("pdftoppm", "-png", "-r", "300", "-transp", pdfPath, filepath.Join(dir, "eqn"))
-	if out, err := ppm.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("math: pdftoppm failed: %v: %s", err, truncateBytes(out, 800))
+	// Prefer pdftocairo (transparent PNG with alpha, -singlefile naming).
+	pngPath := filepath.Join(dir, "eqn.png")
+	if _, err := exec.LookPath("pdftocairo"); err == nil {
+		cairo := exec.Command("pdftocairo", "-png", "-singlefile", "-transp", "-r", "300", pdfPath, pngPath[:len(pngPath)-4])
+		if out, err := cairo.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("math: pdftocairo failed: %v: %s", err, truncateBytes(out, 800))
+		}
+	} else {
+		// Fallback: pdftoppm -transp writes <prefix>-1.png on older poppler.
+		ppm := exec.Command("pdftoppm", "-png", "-r", "300", "-transp", pdfPath, filepath.Join(dir, "eqn"))
+		if out, err := ppm.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("math: pdftoppm failed: %v: %s", err, truncateBytes(out, 800))
+		}
+		pngPath = filepath.Join(dir, "eqn-1.png")
 	}
 
-	pngPath := filepath.Join(dir, "eqn-1.png")
 	png, err := os.ReadFile(pngPath)
 	if err != nil {
 		return nil, fmt.Errorf("math: read png: %w", err)

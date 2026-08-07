@@ -387,3 +387,46 @@ func TestStreamingUsesUnicode(t *testing.T) {
 		t.Fatal("streaming must not queue kitty transmissions")
 	}
 }
+
+// TestEndToEndCompilePNG verifies the real tectonic + poppler pipeline
+// produces a valid PNG. Skips when the toolchain is not installed.
+func TestEndToEndCompilePNG(t *testing.T) {
+	if !detectMathToolchain() {
+		t.Skip("tectonic+poppler not installed")
+	}
+	png, err := compileEquationPNG(mathFrac)
+	if err != nil {
+		t.Fatalf("compileEquationPNG failed: %v", err)
+	}
+	if len(png) < 100 {
+		t.Fatalf("suspiciously small PNG: %d bytes", len(png))
+	}
+	if png[0] != 0x89 || png[1] != 'P' || png[2] != 'N' || png[3] != 'G' {
+		t.Fatalf("not a PNG signature: % x", png[:8])
+	}
+}
+
+// TestEndToEndKittyRenderMarkdown verifies RenderMarkdown queues a real
+// transmission when the toolchain is present. Skips when not installed.
+func TestEndToEndKittyRenderMarkdown(t *testing.T) {
+	if !detectMathToolchain() {
+		t.Skip("tectonic+poppler not installed")
+	}
+	mr := newMathRenderer()
+	mr.kittyOK = true
+	mr.toolchainOK = true
+
+	out := mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
+	plain := stripANSI(out)
+	if !strings.ContainsRune(plain, '\U0010EEEE') {
+		t.Fatalf("expected kitty placeholder in output:\n%q", plain)
+	}
+	raw := mr.FlushRaw()
+	if len(raw) == 0 {
+		t.Fatal("expected a queued APC transmission")
+	}
+	seq := raw[0]
+	if !strings.HasPrefix(seq, "\x1b_G") || !strings.Contains(seq, "f=100") {
+		t.Fatalf("unexpected APC sequence")
+	}
+}
