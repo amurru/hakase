@@ -595,3 +595,43 @@ func boardClaim(m *appModel, args string) tea.Cmd {
 	m.refreshTaskBoard()
 	return nil
 }
+
+// prioritySymbol returns an emoji symbol for the given task priority.
+func prioritySymbol(p TaskPriority) string {
+	switch p {
+	case TaskPriorityCritical:
+		return "🔴"
+	case TaskPriorityHigh:
+		return "🟠"
+	case TaskPriorityMedium:
+		return "🟡"
+	case TaskPriorityLow:
+		return "🟢"
+	default:
+		return "⚪"
+	}
+}
+
+// statusSymbol returns an emoji symbol for the given task status.
+func statusSymbol(s TaskStatus) string {
+	switch s {
+	case TaskStatusPending:
+		return "⏳"
+	case TaskStatusInProgress:
+		return "▶️"
+	case TaskStatusCompleted:
+		return "✅"
+	case TaskStatusFailed:
+		return "❌"
+	case TaskStatusCancelled:
+		return "🚫"
+	case TaskStatusSkipped:
+		return "⏭️"
+	case TaskStatusBlocked:
+		return "🔒"
+	case TaskStatusArchived:
+		return "🗄️"
+	default:
+		return "❓"
+	}
+}

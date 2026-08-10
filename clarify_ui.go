@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/agent"
 	"fmt"
 	"strings"
 	"time"
@@ -43,8 +44,8 @@ const (
 // clarifyPromptMsg carries a clarify request from a tool handler to the TUI.
 // The Resp channel is written by the Update handler when the user answers.
 type clarifyPromptMsg struct {
-	Req  ClarifyRequest
-	Resp chan ClarifyResponse
+	Req  agent.ClarifyRequest
+	Resp chan agent.ClarifyResponse
 }
 
 // clarifyTimeoutMsg tells the TUI that a pending clarify question expired, so
@@ -55,12 +56,12 @@ type clarifyTimeoutMsg struct{}
 // waitForClarify blocks on the response channel until the user answers or the
 // expiry timer fires. Returns a timed-out response on expiry. Extracted so the
 // select logic is unit-testable without a tea.Program.
-func waitForClarify(resp chan ClarifyResponse, expiry time.Duration) ClarifyResponse {
+func waitForClarify(resp chan agent.ClarifyResponse, expiry time.Duration) agent.ClarifyResponse {
 	select {
 	case r := <-resp:
 		return r
 	case <-time.After(expiry):
-		return ClarifyResponse{TimedOut: true}
+		return agent.ClarifyResponse{TimedOut: true}
 	}
 }
 

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"encoding/json"
 	"os"
@@ -53,11 +54,11 @@ func withPathsSandbox(t *testing.T, dir string, readRoots []string) {
 // ActionAsk (RiskUnknown or risk >= threshold).
 func withApproval(t *testing.T, approved bool) {
 	t.Helper()
-	saved := askApproval
-	askApproval = func(req ApprovalRequest) (bool, error) {
+	saved := sandbox.ApproveFunc
+	sandbox.ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
 		return approved, nil
 	}
-	t.Cleanup(func() { askApproval = saved })
+	t.Cleanup(func() { sandbox.ApproveFunc = saved })
 }
 
 // TestBuildExecCommandShellRouting verifies that when args is empty the

@@ -5,6 +5,7 @@ package main
 
 import (
 	"amurru/hakase/internal/config"
+	mcp "amurru/hakase/internal/mcp"
 	"strings"
 	"testing"
 )
@@ -62,7 +63,7 @@ func TestMCPSlashModalNavigation(t *testing.T) {
 		t.Fatalf("disable returned unexpected cmd %v", cmd)
 	}
 	selected := mm.mcpListFiltered[mm.mcpListIndex]
-	st, _ := currentMCPManager.ServerStatus(selected.Name)
+	st, _ := mcp.MCPManager.ServerStatus(selected.Name)
 	if !st.Disabled {
 		t.Fatalf("server %q should be disabled after modal 'd', got %+v", selected.Name, st)
 	}
@@ -107,7 +108,7 @@ func TestMCPSlashDisableArgForm(t *testing.T) {
 	if !strings.Contains(strings.Join(mm.logLines, "\n"), "disabled") {
 		t.Fatalf("/mcp disable must log the result, got: %v", mm.logLines)
 	}
-	st, ok := currentMCPManager.ServerStatus("github")
+	st, ok := mcp.MCPManager.ServerStatus("github")
 	if !ok || !st.Disabled {
 		t.Fatalf("github should be disabled after /mcp disable, got %+v", st)
 	}
@@ -120,7 +121,7 @@ func TestMCPSlashDisableArgForm(t *testing.T) {
 	if cmd2 != nil {
 		t.Fatalf("/mcp enable returned unexpected cmd %v", cmd2)
 	}
-	st, _ = currentMCPManager.ServerStatus("github")
+	st, _ = mcp.MCPManager.ServerStatus("github")
 	if st.Disabled {
 		t.Fatal("github should be re-enabled after /mcp enable")
 	}
@@ -145,8 +146,24 @@ func TestMCPSlashUnknownSubcommand(t *testing.T) {
 	}
 }
 
+// mcpTestConfig returns a config.Config with the given project-scope MCP servers.
+func mcpTestConfig(servers map[string]*config.MCPServerConfig) *config.Config {
+	return &config.Config{MCPServers: config.MCPConfig{Servers: servers}}
+}
+
+// mcpTestIsolate points the user registry at a fresh temp HAKASE_HOME and
+// resets the cached registry path, mirroring the persist-test convention.
+func mcpTestIsolate(t *testing.T) {
+	t.Helper()
+	t.Setenv("HAKASE_HOME", t.TempDir())
+	config.MCPRegistryFile = ""
+	t.Cleanup(func() { config.MCPRegistryFile = "" })
+	mcp.MCPManager = nil
+	t.Cleanup(func() { mcp.MCPManager = nil })
+}
+
 // setupTestMCPManager installs a manager with two servers (github stdio,
-// slack disabled) as currentMCPManager.
+// slack disabled) as mcp.MCPManager.
 func setupTestMCPManager(t *testing.T) {
 	t.Helper()
 	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
@@ -160,10 +177,10 @@ func setupTestMCPManager(t *testing.T) {
 			Disabled: true,
 		},
 	})
-	m, err := NewMCPServerManager(cfg, nil)
+	m, err := mcp.NewMCPServerManager(cfg, nil)
 	if err != nil {
 		t.Fatalf("NewMCPServerManager: %v", err)
 	}
-	currentMCPManager = m
-	t.Cleanup(func() { currentMCPManager = nil })
+	mcp.MCPManager = m
+	t.Cleanup(func() { mcp.MCPManager = nil })
 }

@@ -1,7 +1,9 @@
 package main
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	hctx "amurru/hakase/internal/context"
+	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
 	"context"
@@ -227,7 +229,7 @@ type escArmTimeoutMsg struct{ at time.Time }
 // approvalPromptMsg carries an approval request from a tool handler to the TUI.
 // The Resp channel is written to by the Update handler when the user answers.
 type approvalPromptMsg struct {
-	Req  ApprovalRequest
+	Req  hakaseagent.ApprovalRequest
 	Resp chan bool
 }
 
@@ -243,7 +245,7 @@ type agentStreamMsg struct {
 // ModelInfoMsg carries the provider-reported model capabilities once the
 // async model-info fetch completes.
 type ModelInfoMsg struct {
-	Info *ModelInfo
+	Info *hakaseagent.ModelInfo
 }
 
 // UsageUpdateMsg carries the token usage of the most recent completed turn.
@@ -258,7 +260,7 @@ type StatusLogMsg struct {
 
 // TaskUpdateMsg represents a task board update
 type TaskUpdateMsg struct {
-	Task   TaskMeta
+	Task   hakaseagent.TaskMeta
 	Action string // "created", "updated", "completed", "failed", "claimed"
 }
 
@@ -284,7 +286,7 @@ type CronJobMsg struct {
 
 // TaskBoardMsg represents a full task board refresh
 type TaskBoardMsg struct {
-	Tasks []TaskMeta
+	Tasks []hakaseagent.TaskMeta
 }
 
 type ChatMessage struct {
@@ -356,7 +358,7 @@ type appModel struct {
 	// async OnMouse path (which made drag-selection lag the pointer).
 	compositor *lipgloss.Compositor
 
-	modelInfo     *ModelInfo
+	modelInfo     *hakaseagent.ModelInfo
 	modelName     string
 	thinkingLevel string
 	usage         *genai.GenerateContentResponseUsageMetadata
@@ -372,7 +374,7 @@ type appModel struct {
 	// MCP server list modal state (/mcp).
 	showMCPList     bool
 	mcpListIndex    int
-	mcpListFiltered []MCPServerStatus
+	mcpListFiltered []mcp.MCPServerStatus
 
 	// Slash command menu state (visibility is derived from the input value).
 	commandMenuIndex int
@@ -634,7 +636,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.clarifySelection = toggleInt(m.clarifySelection, idx)
 						} else {
 							m.clarifySelection = nil
-							q.Resp <- ClarifyResponse{Answer: []string{q.Req.Choices[idx]}}
+							q.Resp <- hakaseagent.ClarifyResponse{Answer: []string{q.Req.Choices[idx]}}
 							m.closeClarify()
 						}
 					}
@@ -646,14 +648,14 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								ans = append(ans, q.Req.Choices[idx])
 							}
 						}
-						q.Resp <- ClarifyResponse{Answer: ans}
+						q.Resp <- hakaseagent.ClarifyResponse{Answer: ans}
 						m.closeClarify()
 					}
 				case "esc":
-					q.Resp <- ClarifyResponse{Canceled: true}
+					q.Resp <- hakaseagent.ClarifyResponse{Canceled: true}
 					m.closeClarify()
 				case "ctrl+c":
-					q.Resp <- ClarifyResponse{Canceled: true}
+					q.Resp <- hakaseagent.ClarifyResponse{Canceled: true}
 					m.closeClarify()
 					if m.runCtrl != nil {
 						m.runCtrl.Interrupt()
@@ -667,13 +669,13 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch key {
 				case "enter":
 					ans := strings.TrimSpace(m.clarifyInput.Value())
-					q.Resp <- ClarifyResponse{Answer: []string{ans}}
+					q.Resp <- hakaseagent.ClarifyResponse{Answer: []string{ans}}
 					m.closeClarify()
 				case "esc":
-					q.Resp <- ClarifyResponse{Canceled: true}
+					q.Resp <- hakaseagent.ClarifyResponse{Canceled: true}
 					m.closeClarify()
 				case "ctrl+c":
-					q.Resp <- ClarifyResponse{Canceled: true}
+					q.Resp <- hakaseagent.ClarifyResponse{Canceled: true}
 					m.closeClarify()
 					if m.runCtrl != nil {
 						m.runCtrl.Interrupt()
@@ -1485,7 +1487,7 @@ func (m *appModel) renderChatViewport() {
 }
 
 func (m *appModel) refreshTaskBoard() {
-	registry, err := loadTaskRegistry()
+	registry, err := hakaseagent.LoadTaskRegistry()
 	if err != nil {
 		m.taskLines = []string{"Error loading tasks: " + err.Error()}
 		m.renderTaskViewport()
@@ -1496,33 +1498,33 @@ func (m *appModel) refreshTaskBoard() {
 	lines = append(lines, "📋 Task Board")
 	lines = append(lines, strings.Repeat("─", 30))
 
-	statusOrder := []TaskStatus{
-		TaskStatusPending,
-		TaskStatusInProgress,
-		TaskStatusCompleted,
-		TaskStatusFailed,
-		TaskStatusCancelled,
-		TaskStatusSkipped,
-		TaskStatusBlocked,
+	statusOrder := []hakaseagent.TaskStatus{
+		hakaseagent.TaskStatusPending,
+		hakaseagent.TaskStatusInProgress,
+		hakaseagent.TaskStatusCompleted,
+		hakaseagent.TaskStatusFailed,
+		hakaseagent.TaskStatusCancelled,
+		hakaseagent.TaskStatusSkipped,
+		hakaseagent.TaskStatusBlocked,
 	}
-	statusSymbols := map[TaskStatus]string{
-		TaskStatusPending:    "⏳",
-		TaskStatusInProgress: "▶️",
-		TaskStatusCompleted:  "✅",
-		TaskStatusFailed:     "❌",
-		TaskStatusCancelled:  "🚫",
-		TaskStatusSkipped:    "⏭️",
-		TaskStatusBlocked:    "🔒",
+	statusSymbols := map[hakaseagent.TaskStatus]string{
+		hakaseagent.TaskStatusPending:    "⏳",
+		hakaseagent.TaskStatusInProgress: "▶️",
+		hakaseagent.TaskStatusCompleted:  "✅",
+		hakaseagent.TaskStatusFailed:     "❌",
+		hakaseagent.TaskStatusCancelled:  "🚫",
+		hakaseagent.TaskStatusSkipped:    "⏭️",
+		hakaseagent.TaskStatusBlocked:    "🔒",
 	}
-	prioritySymbols := map[TaskPriority]string{
-		TaskPriorityCritical: "🔴",
-		TaskPriorityHigh:     "🟠",
-		TaskPriorityMedium:   "🟡",
-		TaskPriorityLow:      "🟢",
+	prioritySymbols := map[hakaseagent.TaskPriority]string{
+		hakaseagent.TaskPriorityCritical: "🔴",
+		hakaseagent.TaskPriorityHigh:     "🟠",
+		hakaseagent.TaskPriorityMedium:   "🟡",
+		hakaseagent.TaskPriorityLow:      "🟢",
 	}
 
 	for _, status := range statusOrder {
-		var statusTasks []TaskMeta
+		var statusTasks []hakaseagent.TaskMeta
 		for _, task := range registry.Tasks {
 			if task.Status == status {
 				statusTasks = append(statusTasks, task)
@@ -1556,7 +1558,7 @@ func (m *appModel) refreshTaskBoard() {
 
 	activeCount := 0
 	for _, task := range registry.Tasks {
-		if task.Status != TaskStatusArchived {
+		if task.Status != hakaseagent.TaskStatusArchived {
 			activeCount++
 		}
 	}
@@ -2123,7 +2125,7 @@ outer:
 						// chunk independent of the TUI plumbing, so a headless
 						// run is guarded too.
 						if !part.Thought {
-							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
+							if reason := guard.Feed(part.FunctionCall != nil, part.Text); reason != "" {
 								runCancel()
 								util.DebugError("guard_abort", "reason", reason)
 								if p != nil {

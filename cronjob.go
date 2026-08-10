@@ -8,8 +8,10 @@
 package main
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/config"
+	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/vision"
@@ -423,7 +425,7 @@ func notifyCronJob(status, jobID, name, summary, outputPath string) {
 // createCronjobTool builds and returns the cronjob function tool registered
 // via util.NewDocTool so the doc:"..." struct tags are reflected into the JSON
 // schema the model sees.
-func createCronjobTool(log LogFunc) (tool.Tool, error) {
+func createCronjobTool(log hakaseagent.LogFunc) (tool.Tool, error) {
 	return util.NewDocTool(functiontool.Config{
 		Name: "cronjob",
 		Description: "Manage scheduled one-shot and recurring tasks. " +
@@ -458,7 +460,7 @@ func createCronjobTool(log LogFunc) (tool.Tool, error) {
 	})
 }
 
-func handleCronCreate(input CronjobInput, log LogFunc) (CronjobOutput, error) {
+func handleCronCreate(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutput, error) {
 	if input.Schedule == "" {
 		return CronjobOutput{Success: false, Message: "schedule is required for create"}, nil
 	}
@@ -556,7 +558,7 @@ func handleCronList() (CronjobOutput, error) {
 	return CronjobOutput{Success: true, Message: fmt.Sprintf("%d job(s)", len(jobs)), Jobs: jobs}, nil
 }
 
-func handleCronUpdate(input CronjobInput, log LogFunc) (CronjobOutput, error) {
+func handleCronUpdate(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutput, error) {
 	reg, err := loadCronRegistry()
 	if err != nil {
 		return CronjobOutput{}, err
@@ -642,7 +644,7 @@ func handleCronPause(input CronjobInput) (CronjobOutput, error) {
 	return CronjobOutput{Success: true, Message: fmt.Sprintf("Job paused: %s", job.ID), Job: job}, nil
 }
 
-func handleCronResume(input CronjobInput, log LogFunc) (CronjobOutput, error) {
+func handleCronResume(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutput, error) {
 	reg, err := loadCronRegistry()
 	if err != nil {
 		return CronjobOutput{}, err
@@ -690,7 +692,7 @@ func handleCronRemove(input CronjobInput) (CronjobOutput, error) {
 	return CronjobOutput{Success: true, Message: fmt.Sprintf("Job removed: %s", job.ID), Job: &removed}, nil
 }
 
-func handleCronRun(input CronjobInput, log LogFunc) (CronjobOutput, error) {
+func handleCronRun(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutput, error) {
 	reg, err := loadCronRegistry()
 	if err != nil {
 		return CronjobOutput{}, err
@@ -727,7 +729,7 @@ var cronRunning = make(map[string]bool)
 
 // startCronScheduler launches a background goroutine that ticks every 30s and
 // fires any due jobs in their own goroutine. Safe to call once.
-func startCronScheduler(log LogFunc) {
+func startCronScheduler(log hakaseagent.LogFunc) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -737,7 +739,7 @@ func startCronScheduler(log LogFunc) {
 	}()
 }
 
-func cronTick(log LogFunc) {
+func cronTick(log hakaseagent.LogFunc) {
 	reg, err := loadCronRegistry()
 	if err != nil {
 		util.DebugWarn("cron_tick", "error", err)
@@ -787,7 +789,7 @@ func markJobRunning(id string) {
 // builds the task prompt (with skill injection), constructs a restricted
 // sub-agent with an isolated session, runs it with a watchdog + loop guard,
 // writes an output artifact, and updates the registry.
-func runCronJob(job CronJob, log LogFunc) {
+func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 	cronRunningMu.Lock()
 	cronRunning[job.ID] = true
 	cronRunningMu.Unlock()
@@ -930,7 +932,7 @@ func runCronJob(job CronJob, log LogFunc) {
 					if part.Text != "" {
 						summary.WriteString(part.Text)
 						if !part.Thought {
-							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
+							if reason := guard.Feed(part.FunctionCall != nil, part.Text); reason != "" {
 								guardCancel()
 								util.DebugWarn("cron_guard_abort", "job_id", job.ID, "reason", reason)
 								finalErr = fmt.Errorf("cron job %s aborted: %s", job.ID, reason)
@@ -981,7 +983,7 @@ func runCronJob(job CronJob, log LogFunc) {
 }
 
 // buildCronPrompt assembles the full task prompt with optional skill injection.
-func buildCronPrompt(job CronJob, log LogFunc) string {
+func buildCronPrompt(job CronJob, log hakaseagent.LogFunc) string {
 	if len(job.Skills) == 0 {
 		return job.Prompt
 	}
@@ -1018,7 +1020,7 @@ func buildCronInstruction(name string) string {
 // native cron jobs because the model is typically already bootstrapped in
 // the headless run context; the A/B gate and .bak preservation keep the
 // change reversible.
-func runNativeCronJob(job CronJob, log LogFunc) {
+func runNativeCronJob(job CronJob, log hakaseagent.LogFunc) {
 	switch job.Native {
 	case "evolve":
 		reportPath := filepath.Join("outputs", "cron", fmt.Sprintf("evolve-%s-%s.md", job.ID, time.Now().UTC().Format("20060102-150405")))
@@ -1120,7 +1122,7 @@ func updateCronJobAfterRun(job CronJob, status string, summaryText, outputPath s
 // match the requested names (case-insensitive on frontmatter name). Returns
 // the resolved skills, the set of missing names, and an error listing missing
 // names when any are not found.
-func resolveCronSkills(names []string, log LogFunc) ([]MarkdownSkill, map[string]bool, error) {
+func resolveCronSkills(names []string, log hakaseagent.LogFunc) ([]MarkdownSkill, map[string]bool, error) {
 	cwd, _ := os.Getwd()
 	all := DiscoverMarkdownSkills(cwd, currentConfig.SkillDirs, log)
 
@@ -1199,11 +1201,11 @@ func cronModelBootstrap() error {
 	// type. We create it here so sub-agent toolsets resolve correctly. A
 	// broken MCP config is a warning, not a blocker: cron runs without MCP
 	// tools rather than failing entirely.
-	mcpManager, err := NewMCPServerManager(cfg, func(string) {})
+	mcpManager, err := mcp.NewMCPServerManager(cfg, func(string) {})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hakase: warning: mcp servers unavailable: %v\n", err)
 	} else {
-		currentMCPManager = mcpManager
+		mcp.MCPManager = mcpManager
 	}
 
 	return nil
@@ -1224,7 +1226,7 @@ func dueCronJobs(now time.Time, reg CronRegistry) []CronJob {
 // triggerCronJob loads the registry, resolves the job by ID or name, spawns a
 // background run goroutine, and returns the resolved job. The caller receives
 // the job immediately; execution is asynchronous.
-func triggerCronJob(idOrName string, log LogFunc) (CronJob, error) {
+func triggerCronJob(idOrName string, log hakaseagent.LogFunc) (CronJob, error) {
 	reg, err := loadCronRegistry()
 	if err != nil {
 		return CronJob{}, err

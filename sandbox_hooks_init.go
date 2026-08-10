@@ -14,10 +14,10 @@ import (
 func init() {
 	sandbox.SubdirContextHintFunc = hctx.SubdirContextHint
 
-	// evaluateCommand returns root's GateDecision; sandbox expects sandbox.GateDecision.
+	// EvaluateCommand returns root's GateDecision; sandbox expects sandbox.GateDecision.
 	// Both structs have identical fields.
 	sandbox.EvaluateCommandFunc = func(sb *sandbox.SandboxConfig, command string, args []string) sandbox.GateDecision {
-		d := evaluateCommand(sb, command, args)
+		d := EvaluateCommand(sb, command, args)
 		return sandbox.GateDecision{
 			Action: sandbox.GateAction(d.Action),
 			Risk:   sandbox.CommandRisk(d.Risk),
@@ -25,9 +25,9 @@ func init() {
 		}
 	}
 
-	// approveExec takes root's ApprovalRequest; sandbox expects interfaces.ApprovalRequest.
+	// ApproveExec takes root's ApprovalRequest; sandbox expects interfaces.ApprovalRequest.
 	sandbox.ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
-		return approveExec(ApprovalRequest{
+		return ApproveExec(ApprovalRequest{
 			Tool:      req.Tool,
 			Command:   req.Command,
 			Args:      req.Args,
@@ -38,11 +38,11 @@ func init() {
 		})
 	}
 
-	sandbox.ApprovalExpiryFunc = approvalExpiry
+	sandbox.ApprovalExpiryFunc = ApprovalExpiry
 
-	// auditCommandExec takes root's CommandAuditEntry; sandbox expects sandbox.CommandAuditEntry.
+	// AuditCommandExec takes root's CommandAuditEntry; sandbox expects sandbox.CommandAuditEntry.
 	sandbox.AuditCommandFunc = func(entry sandbox.CommandAuditEntry) {
-		auditCommandExec(CommandAuditEntry{
+		AuditCommandExec(CommandAuditEntry{
 			Timestamp:   entry.Timestamp,
 			Tool:        entry.Tool,
 			Command:     entry.Command,

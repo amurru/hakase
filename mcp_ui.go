@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	mcp "amurru/hakase/internal/mcp"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -31,11 +32,11 @@ func (m *appModel) toggleMCPList() tea.Cmd {
 // refreshMCPList reloads server statuses from the live manager. Safe to call
 // from slash handlers and modal keys; no-op when the manager is unavailable.
 func (m *appModel) refreshMCPList() {
-	if currentMCPManager == nil {
+	if mcp.MCPManager == nil {
 		m.mcpListFiltered = nil
 		return
 	}
-	m.mcpListFiltered = currentMCPManager.ListServers()
+	m.mcpListFiltered = mcp.MCPManager.ListServers()
 	if m.mcpListIndex >= len(m.mcpListFiltered) {
 		m.mcpListIndex = len(m.mcpListFiltered) - 1
 		if m.mcpListIndex < 0 {
@@ -72,11 +73,11 @@ func (m *appModel) handleMCPListKey(key string) tea.Cmd {
 
 // mcpToggleSelected enables (disable=false) or disables the highlighted server.
 func (m *appModel) mcpToggleSelected(disable bool) tea.Cmd {
-	if currentMCPManager == nil || len(m.mcpListFiltered) == 0 || m.mcpListIndex >= len(m.mcpListFiltered) {
+	if mcp.MCPManager == nil || len(m.mcpListFiltered) == 0 || m.mcpListIndex >= len(m.mcpListFiltered) {
 		return nil
 	}
 	srv := m.mcpListFiltered[m.mcpListIndex]
-	if err := currentMCPManager.SetDisabled(srv.Name, disable); err != nil {
+	if err := mcp.MCPManager.SetDisabled(srv.Name, disable); err != nil {
 		m.appendLog(fmt.Sprintf("⚠ failed to %s %q: %v", toggleVerb(disable), srv.Name, err))
 		return nil
 	}
@@ -87,11 +88,11 @@ func (m *appModel) mcpToggleSelected(disable bool) tea.Cmd {
 
 // mcpReconnectSelected forces a reconnect of the highlighted server.
 func (m *appModel) mcpReconnectSelected() tea.Cmd {
-	if currentMCPManager == nil || len(m.mcpListFiltered) == 0 || m.mcpListIndex >= len(m.mcpListFiltered) {
+	if mcp.MCPManager == nil || len(m.mcpListFiltered) == 0 || m.mcpListIndex >= len(m.mcpListFiltered) {
 		return nil
 	}
 	srv := m.mcpListFiltered[m.mcpListIndex]
-	if err := currentMCPManager.Reconnect(srv.Name); err != nil {
+	if err := mcp.MCPManager.Reconnect(srv.Name); err != nil {
 		m.appendLog(fmt.Sprintf("⚠ failed to reconnect %q: %v", srv.Name, err))
 		return nil
 	}

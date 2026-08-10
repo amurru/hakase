@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/config"
@@ -21,7 +22,7 @@ func main() {
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "task" {
-		os.Exit(runTaskCLI(os.Args[2:]))
+		os.Exit(cli.RunTaskCLI(os.Args[2:]))
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "knowledge" {

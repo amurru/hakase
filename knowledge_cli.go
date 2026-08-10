@@ -108,7 +108,7 @@ func runKnowledgeList(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -192,7 +192,7 @@ func runKnowledgeRead(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -283,7 +283,7 @@ func runKnowledgeSearch(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -297,7 +297,7 @@ func runKnowledgeSearch(args []string) int {
 
 	for _, s := range results {
 		n := s.Note
-		snippet := firstSnippet(n.Body, query)
+		snippet := FirstSnippet(n.Body, query)
 		fmt.Printf("  %s (%s) [%s] - %s\n    %s\n",
 			n.Frontmatter.Title, n.Slug, n.Frontmatter.Status, n.Frontmatter.Summary, snippet)
 	}
@@ -344,15 +344,15 @@ func runKnowledgeBench(args []string) int {
 
 	evalPath := evalFlag
 	if evalPath == "" {
-		evalPath = filepath.Join(knowledgeDir(dir), "bench.json")
+		evalPath = filepath.Join(KnowledgeDir(dir), "bench.json")
 	}
-	set, err := loadBenchSet(evalPath)
+	set, err := LoadBenchSet(evalPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot load bench set: %v\n", err)
 		return 1
 	}
 
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -459,7 +459,7 @@ func runKnowledgeLint(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -496,7 +496,7 @@ func runKnowledgeLint(args []string) int {
 	}
 
 	brokenIndex := false
-	resolvedDir := knowledgeDir(dir)
+	resolvedDir := KnowledgeDir(dir)
 	if _, statErr := os.Stat(resolvedDir + "/index.md"); os.IsNotExist(statErr) {
 		brokenIndex = true
 	}
@@ -599,7 +599,7 @@ func runKnowledgeCreate(args []string) int {
 	}
 
 	// Check if note already exists.
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -618,7 +618,7 @@ func runKnowledgeCreate(args []string) int {
 		body = fmt.Sprintf("# %s\n\n", title)
 	}
 
-	// Build the note content directly (avoiding serializeNote so we use
+	// Build the note content directly (avoiding SerializeNote so we use
 	// single-quoted YAML scalars as the spec requires).
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -642,7 +642,7 @@ func runKnowledgeCreate(args []string) int {
 
 	note := &KnowledgeNote{
 		Slug:        slug,
-		Path:        notePath(dir, slug),
+		Path:        NotePath(dir, slug),
 		Raw:         b.String(),
 		Frontmatter: KnowledgeFrontmatter{Title: title, Tags: tags, Created: today, Updated: today, Status: "draft"},
 		Body:        body,
@@ -659,7 +659,7 @@ func runKnowledgeCreate(args []string) int {
 		_ = UpdateIndexFile(dir, newIdx)
 	}
 	_ = AppendLog(dir, "create", title)
-	invalidateKnowledgeCache(dir)
+	InvalidateKnowledgeCache(dir)
 
 	fmt.Printf("Created note %q at %s\n", slug, note.Path)
 	return 0
@@ -718,7 +718,7 @@ func runKnowledgeLink(args []string) int {
 		dir = loadKnowledgeDir()
 	}
 
-	idx, err := getKnowledgeIndex(dir)
+	idx, err := GetKnowledgeIndex(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building index: %v\n", err)
 		return 1
@@ -747,14 +747,14 @@ func runKnowledgeLink(args []string) int {
 	}
 
 	if strings.Contains(fromNote.Body, "## Related") {
-		fromNote.Body = appendAfterSection(fromNote.Body, "## Related", linkLine)
+		fromNote.Body = AppendAfterSection(fromNote.Body, "## Related", linkLine)
 	} else {
 		fromNote.Body += "\n\n## Related\n\n" + linkLine + "\n"
 	}
 
 	today := time.Now().Format("2006-01-02")
 	fromNote.Frontmatter.Updated = today
-	serializeNote(fromNote)
+	SerializeNote(fromNote)
 
 	if err := UpdateNote(dir, fromNote); err != nil {
 		fmt.Fprintf(os.Stderr, "error updating note: %v\n", err)
@@ -765,7 +765,7 @@ func runKnowledgeLink(args []string) int {
 		_ = UpdateIndexFile(dir, newIdx)
 	}
 	_ = AppendLog(dir, "link", fromNote.Frontmatter.Title)
-	invalidateKnowledgeCache(dir)
+	InvalidateKnowledgeCache(dir)
 
 	fmt.Printf("Linked %q to %q.\n", fromNote.Slug, targetNote.Slug)
 	return 0

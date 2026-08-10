@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	mcp "amurru/hakase/internal/mcp"
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -40,12 +41,12 @@ func runMCPCommand(m *appModel, args string) tea.Cmd {
 }
 
 // mcpManager returns the live manager, logging a hint when it is unavailable.
-func mcpManager(m *appModel) *MCPServerManager {
-	if currentMCPManager == nil {
+func mcpManager(m *appModel) *mcp.MCPServerManager {
+	if mcp.MCPManager == nil {
 		m.appendLog("⚠ MCP manager is not available (no usable MCP config)")
 		return nil
 	}
-	return currentMCPManager
+	return mcp.MCPManager
 }
 
 // mcpListCmd mirrors the interactive modal as plain log lines.
@@ -122,7 +123,7 @@ func mcpReconnectCmd(m *appModel, args string) tea.Cmd {
 
 // mcpStatusGlyph returns the status glyph for a server status: ● connected,
 // ○ disabled, ✗ failed, ◌ idle (not yet connected this run).
-func mcpStatusGlyph(s MCPServerStatus) string {
+func mcpStatusGlyph(s mcp.MCPServerStatus) string {
 	switch s.Status {
 	case "connected":
 		return "●"

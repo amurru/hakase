@@ -323,7 +323,7 @@ func TestApprovalUIWaitForApprovalTimeoutAutoDeny(t *testing.T) {
 	}
 }
 
-// TestApprovalUINilAskApprovalFailsClosed verifies that approveExec returns
+// TestApprovalUINilAskApprovalFailsClosed verifies that ApproveExec returns
 // an error when askApproval is nil (headless mode).
 func TestApprovalUINilAskApprovalFailsClosed(t *testing.T) {
 	saved := askApproval
@@ -331,14 +331,14 @@ func TestApprovalUINilAskApprovalFailsClosed(t *testing.T) {
 
 	askApproval = nil
 
-	approved, err := approveExec(ApprovalRequest{
+	approved, err := ApproveExec(ApprovalRequest{
 		Tool: "system_exec", Command: "ls", Risk: "LOW", Reason: "test",
 	})
 	if approved {
-		t.Error("approveExec should return false when askApproval is nil")
+		t.Error("ApproveExec should return false when askApproval is nil")
 	}
 	if err == nil {
-		t.Error("approveExec should return error when askApproval is nil")
+		t.Error("ApproveExec should return error when askApproval is nil")
 	}
 }
 

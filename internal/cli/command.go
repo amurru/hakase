@@ -118,7 +118,7 @@ func init() {
 	registerCommand(Command{
 		Name:        "task",
 		Description: "manage the task board (summary, list, new, update, done, ...)",
-		Handler:     notMigrated("task"),
+		Handler:     RunTaskCLI,
 	})
 	registerCommand(Command{
 		Name:        "knowledge",
