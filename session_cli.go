@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/session"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,12 +14,12 @@ func runSessionCLI(args []string) int {
 		return 1
 	}
 
-	store, err := NewSessionStore(sessionsDir)
+	store, err := session.NewSessionStore(session.Dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-	svc, err := NewSessionService(store)
+	svc, err := session.NewSessionService(store)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -39,7 +40,7 @@ func runSessionCLI(args []string) int {
 	}
 }
 
-func sessionList(svc *SessionService, args []string) int {
+func sessionList(svc *session.SessionService, args []string) int {
 	format := "table"
 	maxCount := 0
 	includeArchived := false
@@ -61,7 +62,7 @@ func sessionList(svc *SessionService, args []string) int {
 		}
 	}
 
-	var summaries []SessionSummary
+	var summaries []session.SessionSummary
 	var err error
 	if includeArchived {
 		summaries, err = svc.ListArchivedSessions()
@@ -114,7 +115,7 @@ func sessionList(svc *SessionService, args []string) int {
 	return 0
 }
 
-func sessionDelete(svc *SessionService, args []string) int {
+func sessionDelete(svc *session.SessionService, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: hakase session delete <sessionID>\n")
 		return 1
@@ -138,7 +139,7 @@ func sessionDelete(svc *SessionService, args []string) int {
 	return 0
 }
 
-func sessionArchive(svc *SessionService, args []string) int {
+func sessionArchive(svc *session.SessionService, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: hakase session archive <sessionID>\n")
 		return 1
@@ -153,7 +154,7 @@ func sessionArchive(svc *SessionService, args []string) int {
 	return 0
 }
 
-func sessionUnarchive(svc *SessionService, args []string) int {
+func sessionUnarchive(svc *session.SessionService, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: hakase session unarchive <sessionID>\n")
 		return 1
@@ -170,12 +171,12 @@ func sessionUnarchive(svc *SessionService, args []string) int {
 
 // sessionCleanup removes stale sessions older than the given duration.
 func sessionCleanup(maxAge time.Duration) int {
-	store, err := NewSessionStore(sessionsDir)
+	store, err := session.NewSessionStore(session.Dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-	svc, err := NewSessionService(store)
+	svc, err := session.NewSessionService(store)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1

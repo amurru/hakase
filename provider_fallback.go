@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"context"
 	"fmt"
 	"iter"
@@ -26,7 +27,7 @@ import (
 //	    }
 //	}
 type FallbackModel struct {
-	cfg       *Config
+	cfg       *config.Config
 	providers []LLMProvider // primary first, then optional fallbacks in order
 }
 
@@ -36,7 +37,7 @@ type FallbackModel struct {
 // is swapped). A broken optional fallback logs a warning and is skipped - it
 // never fails startup. An error is returned only when no provider can be
 // built at all.
-func NewFallbackModel(cfg *Config) (*FallbackModel, error) {
+func NewFallbackModel(cfg *config.Config) (*FallbackModel, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("fallback: nil config")
 	}

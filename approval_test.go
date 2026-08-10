@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"errors"
 	"testing"
 	"time"
@@ -124,7 +125,7 @@ func TestApproveExecPropagatesRequest(t *testing.T) {
 
 func TestApprovalExpiryDefault(t *testing.T) {
 	saved := currentApproval
-	currentApproval = ApprovalConfig{}
+	currentApproval = config.ApprovalConfig{}
 	t.Cleanup(func() { currentApproval = saved })
 
 	d := approvalExpiry()
@@ -135,7 +136,7 @@ func TestApprovalExpiryDefault(t *testing.T) {
 
 func TestApprovalExpiryConfigured(t *testing.T) {
 	saved := currentApproval
-	currentApproval = ApprovalConfig{ExpirySeconds: 30}
+	currentApproval = config.ApprovalConfig{ExpirySeconds: 30}
 	t.Cleanup(func() { currentApproval = saved })
 
 	d := approvalExpiry()
@@ -146,7 +147,7 @@ func TestApprovalExpiryConfigured(t *testing.T) {
 
 func TestApprovalExpiryZeroFallsBack(t *testing.T) {
 	saved := currentApproval
-	currentApproval = ApprovalConfig{ExpirySeconds: 0}
+	currentApproval = config.ApprovalConfig{ExpirySeconds: 0}
 	t.Cleanup(func() { currentApproval = saved })
 
 	d := approvalExpiry()

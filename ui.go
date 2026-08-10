@@ -1,6 +1,9 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/session"
+	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
 	"strings"
@@ -359,12 +362,12 @@ type appModel struct {
 	usage         *genai.GenerateContentResponseUsageMetadata
 
 	// Session management
-	sessionService      *SessionService
+	sessionService      *session.SessionService
 	showSessionList     bool
 	sessionListIndex    int
 	sessionListFilter   string
-	sessionListSessions []SessionSummary
-	sessionListFiltered []SessionSummary
+	sessionListSessions []session.SessionSummary
+	sessionListFiltered []session.SessionSummary
 
 	// MCP server list modal state (/mcp).
 	showMCPList     bool
@@ -394,11 +397,11 @@ type appModel struct {
 	// Mid-run message queue: prompts typed while the agent is busy. Steered
 	// into the running session by the HistoryBuilder callback, drained into
 	// fresh runs at agentDoneMsg.
-	pendingQueue *pendingQueue
+	pendingQueue *util.PendingQueue
 
 	// runCtrl shares the active run's cancel func and interrupt flag across
 	// the TUI goroutine (Esc / Ctrl+C) and the runAgentTask goroutine.
-	runCtrl *runControl
+	runCtrl *util.RunControl
 
 	// escArmedAt records when the first Esc press happened while the agent
 	// was busy. A second press within escInterruptWindow cancels the run;
@@ -410,7 +413,7 @@ type appModel struct {
 func newModel(
 	ctx context.Context,
 	r *runner.Runner,
-	sessionSvc *SessionService,
+	sessionSvc *session.SessionService,
 	chatBufferSize int,
 	showThinking bool,
 	modelName string,
@@ -460,8 +463,8 @@ func newModel(
 		sessionService:  sessionSvc,
 		mentionFiltered: make([]string, 0),
 		attachments:     make([]attachment, 0),
-		pendingQueue:    newPendingQueue(),
-		runCtrl:         newRunControl(),
+		pendingQueue:    util.NewPendingQueue(),
+		runCtrl:         util.NewRunControl(),
 		clarifyInput:    ci,
 		math:            newMathRenderer(),
 	}
@@ -653,7 +656,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					q.Resp <- ClarifyResponse{Canceled: true}
 					m.closeClarify()
 					if m.runCtrl != nil {
-						m.runCtrl.interrupt()
+						m.runCtrl.Interrupt()
 					}
 					return m, m.quitCmd()
 				}
@@ -673,7 +676,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					q.Resp <- ClarifyResponse{Canceled: true}
 					m.closeClarify()
 					if m.runCtrl != nil {
-						m.runCtrl.interrupt()
+						m.runCtrl.Interrupt()
 					}
 					return m, m.quitCmd()
 				default:
@@ -699,7 +702,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingApproval.Resp <- false
 				m.pendingApproval = nil
 				if m.runCtrl != nil {
-					m.runCtrl.interrupt()
+					m.runCtrl.Interrupt()
 				}
 				return m, m.quitCmd()
 			}
@@ -711,7 +714,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "ctrl+c":
 				if m.runCtrl != nil {
-					m.runCtrl.interrupt()
+					m.runCtrl.Interrupt()
 				}
 				return m, m.quitCmd()
 			case "esc", "ctrl+/", "ctrl+_", "ctrl+?", "?":
@@ -766,7 +769,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Second press within the window: cancel the run.
 				m.escArmedAt = time.Time{}
-				m.runCtrl.interrupt()
+				m.runCtrl.Interrupt()
 				m.appendLog("⏹ interrupt requested (Esc) - stopping agent")
 				return m, nil
 			}
@@ -775,7 +778,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cancel the running agent goroutine so it cannot outlive the
 			// program (goroutine leak fix).
 			if m.runCtrl != nil {
-				m.runCtrl.interrupt()
+				m.runCtrl.Interrupt()
 			}
 			return m, m.quitCmd()
 		// Ctrl+/ sends byte 0x1F, decoded as "ctrl+_" on standard terminals,
@@ -838,8 +841,8 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					attached := m.attachments
 					m.input.Reset()
 					m.attachments = nil
-					m.pendingQueue.push(queuedPrompt{text: prompt, attach: attached})
-					m.appendLog(fmt.Sprintf("⏳ queued: %s (%d pending)", prompt, m.pendingQueue.len()))
+					m.pendingQueue.Push(util.QueuedPrompt{Text: prompt, Attach: attachmentsToUtil(attached)})
+					m.appendLog(fmt.Sprintf("⏳ queued: %s (%d pending)", prompt, m.pendingQueue.Len()))
 					return m, nil
 				}
 
@@ -871,11 +874,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// prompt text is persisted raw; attachment content is rebuilt
 				// from Message.Attachments on resume and history rebuilds.
 				if m.sessionService != nil {
-					tokens := EstimateTokens(prompt)
-					refs := make([]AttachmentRef, 0, len(attached))
+					tokens := util.EstimateTokens(prompt)
+					refs := make([]session.AttachmentRef, 0, len(attached))
 					for _, a := range attached {
 						tokens += attachmentTokens(a)
-						refs = append(refs, AttachmentRef{
+						refs = append(refs, session.AttachmentRef{
 							Name:  a.Name,
 							Path:  a.Path,
 							MIME:  a.MIME,
@@ -896,7 +899,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// (a run may now emit several: one per thinking block).
 				m.streamingThinking = false
 				m.runStartHistoryLen = len(m.chatHistory)
-				go m.runAgentTask(content, GenerateTaskID())
+				go m.runAgentTask(content, session.GenerateTaskID())
 			}
 		case "up", "k":
 			if m.focus == chatFocus {
@@ -1153,7 +1156,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TaskBoardMsg:
 		m.refreshTaskBoard()
 	case agentDoneMsg:
-		interrupted := m.runCtrl.consumeInterrupt()
+		interrupted := m.runCtrl.ConsumeInterrupt()
 		// A run ended: clear any armed double-Esc state so a stray Esc can't
 		// cancel the next run within the window.
 		m.escArmedAt = time.Time{}
@@ -1186,7 +1189,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.Role != "agent" {
 					continue
 				}
-				msgTokens := EstimateTokens(msg.Content) + EstimateTokens(msg.Thinking)
+				msgTokens := util.EstimateTokens(msg.Content) + util.EstimateTokens(msg.Thinking)
 				if i == lastAgent && tokens > 0 {
 					msgTokens = tokens
 				}
@@ -1210,14 +1213,14 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// prompts. On an Esc interrupt all pending steers merge into a single
 		// turn (Codex semantics); otherwise FIFO, one run per prompt, with
 		// isProcessing staying true until the queue drains.
-		if m.pendingQueue.len() > 0 {
+		if m.pendingQueue.Len() > 0 {
 			if interrupted {
-				text, attached := mergeQueued(m.pendingQueue.popAll())
+				text, attached := mergeQueued(m.pendingQueue.PopAll())
 				m.launchTurn(text, attached)
 				return m, nil
 			}
-			if next, ok := m.pendingQueue.pop(); ok {
-				m.launchTurn(next.text, next.attach)
+			if next, ok := m.pendingQueue.Pop(); ok {
+				m.launchTurn(next.Text, utilAttachmentsToRoot(next.Attach))
 				return m, nil
 			}
 		}
@@ -1741,7 +1744,7 @@ func (m *appModel) hintBar() string {
 	if m.isProcessing {
 		status += " ⏳ working"
 	}
-	if n := m.pendingQueue.len(); n > 0 {
+	if n := m.pendingQueue.Len(); n > 0 {
 		status += fmt.Sprintf(" · %d queued", n)
 	}
 	if m.showThinking {
@@ -1804,7 +1807,10 @@ func (m *appModel) usagePercent() (int, int64) {
 // relative to the model's effective input budget (0.9 * window). This drives
 // the status-bar warning and the pre-send compaction notice.
 func (m *appModel) sessionFillPercent() (int, int64) {
-	limit := MaxInputTokens(m.modelInfo)
+	var limit int64
+	if m.modelInfo != nil {
+		limit = util.MaxInputTokens(&util.ModelBudget{ContextWindow: m.modelInfo.ContextWindow, MaxInputTokens: m.modelInfo.MaxInputTokens})
+	}
 	if limit <= 0 || m.sessionService == nil {
 		return 0, 0
 	}
@@ -2008,11 +2014,11 @@ func (m *appModel) launchTurn(text string, attached []attachment) {
 	// Persist the user message before the run starts so it lands in the
 	// right session even if the agent never completes.
 	if m.sessionService != nil {
-		tokens := EstimateTokens(text)
-		refs := make([]AttachmentRef, 0, len(attached))
+		tokens := util.EstimateTokens(text)
+		refs := make([]session.AttachmentRef, 0, len(attached))
 		for _, a := range attached {
 			tokens += attachmentTokens(a)
-			refs = append(refs, AttachmentRef{
+			refs = append(refs, session.AttachmentRef{
 				Name:  a.Name,
 				Path:  a.Path,
 				MIME:  a.MIME,
@@ -2029,20 +2035,38 @@ func (m *appModel) launchTurn(text string, attached []attachment) {
 	m.showStartupLogo = false
 	m.runStartHistoryLen = len(m.chatHistory)
 	m.isProcessing = true
-	go m.runAgentTask(content, GenerateTaskID())
+	go m.runAgentTask(content, session.GenerateTaskID())
+}
+
+// utilAttachmentsToRoot converts util.Attachment to root attachment.
+func utilAttachmentsToRoot(ua []util.Attachment) []attachment {
+	out := make([]attachment, len(ua))
+	for i, a := range ua {
+		out[i] = attachment{ID: a.ID, Kind: a.Kind, Name: a.Name, Path: a.Path, MIME: a.MIME, Data: a.Data, Label: a.Label}
+	}
+	return out
+}
+
+// attachmentsToUtil converts root attachment to util.Attachment.
+func attachmentsToUtil(atts []attachment) []util.Attachment {
+	out := make([]util.Attachment, len(atts))
+	for i, a := range atts {
+		out[i] = util.Attachment{ID: a.ID, Kind: a.Kind, Name: a.Name, Path: a.Path, MIME: a.MIME, Data: a.Data, Label: a.Label}
+	}
+	return out
 }
 
 // mergeQueued joins multiple queued prompts into a single turn: texts joined
 // with blank lines, attachments concatenated. Used for the Esc-interrupt
 // drain (Codex semantics: all pending steers become one turn).
-func mergeQueued(qs []queuedPrompt) (string, []attachment) {
+func mergeQueued(qs []util.QueuedPrompt) (string, []attachment) {
 	var texts []string
 	var atts []attachment
 	for _, q := range qs {
-		if strings.TrimSpace(q.text) != "" {
-			texts = append(texts, q.text)
+		if strings.TrimSpace(q.Text) != "" {
+			texts = append(texts, q.Text)
 		}
-		atts = append(atts, q.attach...)
+		atts = append(atts, utilAttachmentsToRoot(q.Attach)...)
 	}
 	return strings.Join(texts, "\n\n"), atts
 }
@@ -2053,14 +2077,14 @@ func (m *appModel) runAgentTask(content *genai.Content, taskID string) {
 	}
 	p := m.program
 	msg := content
-	debugEvent("user_prompt", "task_id", taskID, "text", contentText(content))
+	util.DebugEvent("user_prompt", "task_id", taskID, "text", hctx.ContentText(content))
 
 	// Wrap the passed context so the degeneration watchdogs can abort the run.
 	runCtx, runCancel := context.WithCancel(m.ctx)
 	defer runCancel()
 	// Expose the cancel func to the TUI so Esc / Ctrl+C can interrupt.
-	m.runCtrl.setCancel(runCancel)
-	defer m.runCtrl.setCancel(nil)
+	m.runCtrl.SetCancel(runCancel)
+	defer m.runCtrl.SetCancel(nil)
 
 	guard := guardDefaults(currentGuard)
 
@@ -2074,16 +2098,16 @@ outer:
 					parseErr = err
 					break
 				}
-				if m.runCtrl.wasInterrupted() {
+				if m.runCtrl.WasInterrupted() {
 					// User-initiated interrupt (Esc): not an error, and the
 					// agentDoneMsg handler will drain queued messages.
-					debugEvent("agent_interrupted", "task_id", taskID)
+					util.DebugEvent("agent_interrupted", "task_id", taskID)
 					break outer
 				}
 				if p != nil {
 					p.Send(agentLogMsg(fmt.Sprintf("❌ Error: %v", err)))
 				}
-				debugError("agent_error", "error", fmt.Sprintf("%v", err))
+				util.DebugError("agent_error", "error", fmt.Sprintf("%v", err))
 				break outer
 			}
 			if ev == nil {
@@ -2101,7 +2125,7 @@ outer:
 						if !part.Thought {
 							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
 								runCancel()
-								debugError("guard_abort", "reason", reason)
+								util.DebugError("guard_abort", "reason", reason)
 								if p != nil {
 									p.Send(agentLogMsg(fmt.Sprintf("⚠ %s", guardReasonLog(reason))))
 								}
@@ -2120,7 +2144,7 @@ outer:
 						}
 					}
 					if part.Text != "" {
-						debugEvent("agent_text", "thought", part.Thought, "text", part.Text)
+						util.DebugEvent("agent_text", "thought", part.Thought, "text", part.Text)
 					}
 					if part.FunctionCall != nil && p != nil {
 						p.Send(
@@ -2134,19 +2158,19 @@ outer:
 						)
 					}
 					if part.FunctionCall != nil {
-						debugEvent("agent_tool_call", "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
+						util.DebugEvent("agent_tool_call", "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
 					}
 					if part.FunctionResponse != nil && p != nil {
 						p.Send(agentLogMsg(fmt.Sprintf("📥 Response: %s", part.FunctionResponse.Name)))
 					}
 					if part.FunctionResponse != nil {
-						debugEvent("agent_tool_response", "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
+						util.DebugEvent("agent_tool_response", "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
 					}
 				}
 			}
 		}
 		if parseErr != nil {
-			debugWarn("tool_call_repair", "task_id", taskID, "attempt", attempt+1, "error", parseErr)
+			util.DebugWarn("tool_call_repair", "task_id", taskID, "attempt", attempt+1, "error", parseErr)
 			msg = toolCallRepairMessage(parseErr, attempt)
 			continue
 		}
@@ -2156,10 +2180,10 @@ outer:
 	if p != nil {
 		p.Send(agentStreamMsg{})
 		if lastUsage != nil {
-			debugEvent("usage", "prompt_tokens", lastUsage.PromptTokenCount, "candidates_tokens", lastUsage.CandidatesTokenCount, "total_tokens", lastUsage.TotalTokenCount)
+			util.DebugEvent("usage", "prompt_tokens", lastUsage.PromptTokenCount, "candidates_tokens", lastUsage.CandidatesTokenCount, "total_tokens", lastUsage.TotalTokenCount)
 			p.Send(UsageUpdateMsg{Usage: lastUsage})
 		}
-		debugEvent("agent_done", "task_id", taskID)
+		util.DebugEvent("agent_done", "task_id", taskID)
 		p.Send(agentDoneMsg{})
 	}
 }
@@ -2204,11 +2228,11 @@ func (m *appModel) compactSession(focus string) tea.Cmd {
 	before, _ := m.sessionFillPercent()
 
 	// Deterministic snip: archive oldest messages, keep the last 2 turns.
-	currentHistoryBuilder.stageBSnip(session, nil, "", 0, 8000, 0)
+	currentHistoryBuilder.StageBSnip(session, nil, "", 0, 8000, 0)
 
 	// Async LLM summarization of the surviving transcript (falls back to the
 	// deterministic snip on failure).
-	currentHistoryBuilder.scheduleSummarize(session.ID, focus)
+	currentHistoryBuilder.ScheduleSummarize(session.ID, focus)
 
 	after, _ := m.sessionFillPercent()
 	m.appendLog(fmt.Sprintf("compacted: %d%% -> %d%% (summary generating)", before, after))
@@ -2239,7 +2263,7 @@ func (m *appModel) toggleSessionList() tea.Cmd {
 // filterSessionList filters the session list by the current filter text.
 func (m *appModel) filterSessionList() {
 	filter := strings.ToLower(m.sessionListFilter)
-	var filtered []SessionSummary
+	var filtered []session.SessionSummary
 	for _, s := range m.sessionListSessions {
 		if filter == "" || strings.Contains(strings.ToLower(s.Title), filter) {
 			filtered = append(filtered, s)
@@ -2456,7 +2480,7 @@ func (m *appModel) sessionListView() string {
 			break
 		}
 		indicator := " "
-		if s.ID == m.sessionService.activeSessionID {
+		if s.ID == m.sessionService.ActiveSessionID() {
 			indicator = ">"
 		}
 		archivedMark := ""

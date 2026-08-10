@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/session"
 	"context"
 	"regexp"
 	"strings"
@@ -260,13 +261,13 @@ func (m *appModel) sendInput(text string) (*appModel, tea.Cmd) {
 // for /new and other session-touching commands).
 func newModelWithSvc(t *testing.T) *appModel {
 	t.Helper()
-	store, err := NewSessionStore(t.TempDir() + "/sessions")
+	store, err := session.NewSessionStore(t.TempDir() + "/sessions")
 	if err != nil {
-		t.Fatalf("NewSessionStore: %v", err)
+		t.Fatalf("session.NewSessionStore: %v", err)
 	}
-	svc, err := NewSessionService(store)
+	svc, err := session.NewSessionService(store)
 	if err != nil {
-		t.Fatalf("NewSessionService: %v", err)
+		t.Fatalf("session.NewSessionService: %v", err)
 	}
 	m := newModel(context.Background(), nil, svc, 100, true, "test-model", "")
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

@@ -8,6 +8,8 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/config"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,10 +48,10 @@ func rulesCLIUsage() {
 // loadRulesConfig loads config.json for context-related fields. A config
 // error degrades to a zero config so discovery still runs with defaults; the
 // command always succeeds unless the filesystem itself fails.
-func loadRulesConfig() *Config {
-	cfg, err := loadConfig(resolveConfigPath("config.json"))
+func loadRulesConfig() *config.Config {
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
 	if err != nil {
-		return &Config{}
+		return &config.Config{}
 	}
 	return cfg
 }
@@ -88,14 +90,14 @@ func runRulesList(args []string) int {
 		return 1
 	}
 	cfg := loadRulesConfig()
-	files := DiscoveredInstructionFiles(cwd, cfg, nil)
+	files := hctx.DiscoveredInstructionFiles(cwd, cfg, nil)
 
 	if len(files) == 0 && strings.TrimSpace(cfg.Instruction) == "" {
 		fmt.Println("No project context files found (no AGENTS.md above this directory and no ~/.hakase/AGENTS.md).")
 		return 0
 	}
 
-	maxChars := effectiveMaxChars(cfg)
+	maxChars := hctx.EffectiveMaxChars(cfg)
 	fmt.Println("Project context files (render order):")
 	for _, f := range files {
 		status := ""
@@ -135,9 +137,9 @@ func runRulesShow(args []string) int {
 		return 1
 	}
 	cfg := loadRulesConfig()
-	files := DiscoveredInstructionFiles(cwd, cfg, nil)
+	files := hctx.DiscoveredInstructionFiles(cwd, cfg, nil)
 
-	var match *InstructionFile
+	var match *hctx.InstructionFile
 	for i := range files {
 		f := &files[i]
 		if f.Path == target || filepath.Base(f.Path) == target {
@@ -151,9 +153,9 @@ func runRulesShow(args []string) int {
 	}
 
 	fmt.Printf("Instructions from: %s\n\n", match.Path)
-	fmt.Print(truncateContextFile(match.Content, effectiveMaxChars(cfg)))
-	if len(match.Content) > effectiveMaxChars(cfg) {
-		fmt.Printf("\n\n[file is %d chars; shown truncated to %d]\n", len(match.Content), effectiveMaxChars(cfg))
+	fmt.Print(hctx.TruncateContextFile(match.Content, hctx.EffectiveMaxChars(cfg)))
+	if len(match.Content) > hctx.EffectiveMaxChars(cfg) {
+		fmt.Printf("\n\n[file is %d chars; shown truncated to %d]\n", len(match.Content), hctx.EffectiveMaxChars(cfg))
 	}
 	fmt.Println()
 	return 0

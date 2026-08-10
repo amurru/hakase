@@ -5,6 +5,7 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
 	"context"
 	"fmt"
 	"strings"
@@ -17,9 +18,9 @@ import (
 // text. Returns an error when no model is available (CLI/tests) or the call
 // fails - callers decide how to degrade.
 func modelPromptFn(ctx context.Context, prompt string) (string, error) {
-	llm := summarizeModel
-	if llm == nil {
-		llm = currentModel
+	llm := hctx.SummarizeModel
+	if llm == nil && hctx.CurrentModelFunc != nil {
+		llm = hctx.CurrentModelFunc()
 	}
 	if llm == nil {
 		return "", fmt.Errorf("no model available")

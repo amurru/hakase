@@ -3,6 +3,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func DiscoverMarkdownSkills(cwd string, extraDirs []string, log LogFunc) []Markd
 	// d) User level. hakase's own user home (~/.hakase/skills, or
 	// $HAKASE_HOME/skills) is checked first, then the cross-tool standard
 	// user dirs. Project-level locations above always win on name collision.
-	if home := hakaseHome(); home != "" {
+	if home := config.HakaseHome(); home != "" {
 		addCandidate(filepath.Join(home, "skills"))
 	}
 	if home, err := os.UserHomeDir(); err == nil {

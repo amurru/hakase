@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"amurru/hakase/internal/config"
+	"strings"
+)
 
 // Defaults for the anti-degeneration guardrails. Applied when the config
 // leaves a knob at zero.
@@ -18,7 +21,7 @@ const (
 
 // loopGuardConfig returns the effective guard settings, filling zero values
 // with the defaults above.
-func loopGuardConfig(c LoopGuardConfig) LoopGuardConfig {
+func loopGuardConfig(c config.LoopGuardConfig) config.LoopGuardConfig {
 	if c.MaxOutputTokens <= 0 {
 		c.MaxOutputTokens = defaultMaxOutputTokens
 	}
@@ -56,7 +59,7 @@ type degenerationGuard struct {
 
 // guardDefaults builds a degenerationGuard from the effective config settings
 // (zero-value loops are enabled with the package defaults).
-func guardDefaults(c LoopGuardConfig) degenerationGuard {
+func guardDefaults(c config.LoopGuardConfig) degenerationGuard {
 	c = loopGuardConfig(c)
 	return degenerationGuard{
 		maxOutputTokens:    c.MaxOutputTokens,

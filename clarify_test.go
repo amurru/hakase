@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"testing"
 	"time"
 
@@ -211,7 +212,7 @@ func TestClarifyHandlerMultiSelectPassthrough(t *testing.T) {
 
 func TestClarifyTimeoutDefault(t *testing.T) {
 	saved := currentClarify
-	currentClarify = ClarifyConfig{}
+	currentClarify = config.ClarifyConfig{}
 	t.Cleanup(func() { currentClarify = saved })
 
 	d := clarifyTimeout()
@@ -222,7 +223,7 @@ func TestClarifyTimeoutDefault(t *testing.T) {
 
 func TestClarifyTimeoutConfigured(t *testing.T) {
 	saved := currentClarify
-	currentClarify = ClarifyConfig{ExpirySeconds: 30}
+	currentClarify = config.ClarifyConfig{ExpirySeconds: 30}
 	t.Cleanup(func() { currentClarify = saved })
 
 	d := clarifyTimeout()
@@ -233,7 +234,7 @@ func TestClarifyTimeoutConfigured(t *testing.T) {
 
 func TestClarifyTimeoutZeroFallsBack(t *testing.T) {
 	saved := currentClarify
-	currentClarify = ClarifyConfig{ExpirySeconds: 0}
+	currentClarify = config.ClarifyConfig{ExpirySeconds: 0}
 	t.Cleanup(func() { currentClarify = saved })
 
 	d := clarifyTimeout()

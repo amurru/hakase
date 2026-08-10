@@ -8,6 +8,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"errors"
 	"flag"
 	"fmt"
@@ -62,7 +63,7 @@ func knowledgeCLIUsage() {
 // loadKnowledgeDir returns the knowledge directory from config or the default.
 // config errors are non-fatal: a warning is printed and the default is used.
 func loadKnowledgeDir() string {
-	cfg, err := loadConfig("config.json")
+	cfg, err := config.LoadConfig("config.json")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cannot load config.json: %v (using ./knowledge)\n", err)
 		return "./knowledge"

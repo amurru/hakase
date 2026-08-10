@@ -1,6 +1,11 @@
 package main
 
 import (
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/util"
+	"amurru/hakase/internal/vision"
+	hakasesession "amurru/hakase/internal/session"
 	"context"
 	"fmt"
 	"os"
@@ -90,7 +95,7 @@ func delegationCachePut(norm string, r DelegateTaskResult) {
 var delegationProgressNotify func(status string, taskID, agent, message string)
 
 func notifyDelegation(status string, taskID, agent, message string) {
-	debugEvent("delegation_progress", "task_id", taskID, "agent", agent, "status", status, "message", message)
+	util.DebugEvent("delegation_progress", "task_id", taskID, "agent", agent, "status", status, "message", message)
 	if delegationProgressNotify != nil {
 		delegationProgressNotify(status, taskID, agent, message)
 	}
@@ -217,7 +222,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	// 1. Generate or resolve task_id
 	taskID := input.TaskID
 	if taskID == "" {
-		taskID = GenerateTaskID()
+		taskID = hakasesession.GenerateTaskID()
 	}
 
 	agentLabel := input.AgentName
@@ -229,8 +234,8 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	// can inherit it even if the ADK runner strips env vars.
 	parentEnv := os.Environ()
 
-	// 2. Create SessionManager entry for this task_id
-	sessionMgr := NewSessionManager(5 * time.Minute)
+	// 2. Create hakasesession.SessionManager entry for this task_id
+	sessionMgr := hakasesession.NewSessionManager(5 * time.Minute)
 	defer sessionMgr.StopCleanup()
 
 	cwd, _ := os.Getwd()
@@ -256,7 +261,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback},
 	})
 	if err != nil {
 		reporter.finish("failed", err, "")
@@ -352,7 +357,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		for ev, runErr := range subRunner.Run(guardCtx, "delegator", taskID, msg, agent.RunConfig{}) {
 			if runErr != nil {
 				if isToolCallJSONErr(runErr) && attempt < maxToolCallRepairAttempts {
-					debugWarn("tool_call_repair", "agent", agentLabel, "attempt", attempt+1, "error", runErr)
+					util.DebugWarn("tool_call_repair", "agent", agentLabel, "attempt", attempt+1, "error", runErr)
 					msg = toolCallRepairMessage(runErr, attempt)
 					attempt++
 					repaired = true
@@ -369,11 +374,11 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 				for _, part := range ev.Content.Parts {
 					if part.Text != "" {
 						summary.WriteString(part.Text)
-						debugEvent("subagent_text", "task_id", taskID, "agent", agentLabel, "thought", part.Thought, "text", part.Text)
+						util.DebugEvent("subagent_text", "task_id", taskID, "agent", agentLabel, "thought", part.Thought, "text", part.Text)
 						if !part.Thought {
 							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
 								guardCancel()
-								debugWarn("subagent_guard_abort", "task_id", taskID, "agent", agentLabel, "reason", reason, "error", guardReasonLog(reason))
+								util.DebugWarn("subagent_guard_abort", "task_id", taskID, "agent", agentLabel, "reason", reason, "error", guardReasonLog(reason))
 								finalErr = fmt.Errorf("sub-agent %s aborted: %s", agentLabel, reason)
 								break
 							}
@@ -389,11 +394,11 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 							filesModified = append(filesModified, extractFilePath(part.FunctionCall.Args))
 						}
 						reporter.toolCall(part.FunctionCall.Name, part.FunctionCall.Args)
-						debugEvent("subagent_tool_call", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
+						util.DebugEvent("subagent_tool_call", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
 					}
 					if part.FunctionResponse != nil {
 						reporter.toolResult(part.FunctionResponse.Name)
-						debugEvent("subagent_tool_response", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
+						util.DebugEvent("subagent_tool_response", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
 					}
 				}
 			}
@@ -413,9 +418,9 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		status = "failed"
 	}
 	if status == "timed_out" {
-		debugWarn("delegation_timed_out", "task_id", taskID, "agent", agentLabel, "error", finalErr)
+		util.DebugWarn("delegation_timed_out", "task_id", taskID, "agent", agentLabel, "error", finalErr)
 	} else if status == "failed" {
-		debugError("delegation_failed", "task_id", taskID, "agent", agentLabel, "error", finalErr)
+		util.DebugError("delegation_failed", "task_id", taskID, "agent", agentLabel, "error", finalErr)
 	}
 
 	// 5. Clean up session entry
@@ -474,7 +479,7 @@ func extractFilePath(args map[string]interface{}) string {
 // through so the sub-agent's tools can use it even if the ADK runner strips
 // env vars.
 func buildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]tool.Tool, []tool.Toolset) {
-	visionTool, _ := createVisionTool()
+	visionTool, _ := vision.CreateVisionTool()
 
 	// MCP toolsets are shared with sub-agents via the manager (nil when no
 	// usable MCP config). A nil toolset element would panic in the ADK
@@ -492,7 +497,7 @@ func buildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]to
 		dlTool, _ := createDownloadTool()
 		return []tool.Tool{dlTool, visionTool}, mcpToolsets
 	case "general_purpose":
-		fileTools, _ := createFileOpsTools(log, nil, "")
+		fileTools, _ := sandbox.CreateFileOpsTools(interfaces.LogFunc(log), nil, "")
 		return append(fileTools, visionTool), nil
 	default:
 		allTools, _ := createAllTools(log, parentEnv)
@@ -514,17 +519,17 @@ func createAllTools(log LogFunc, parentEnv []string) ([]tool.Tool, error) {
 		tools = append(tools, pyTool)
 	}
 
-	fileTools, err := createFileOpsTools(log, nil, "")
+	fileTools, err := sandbox.CreateFileOpsTools(interfaces.LogFunc(log), nil, "")
 	if err == nil {
 		tools = append(tools, fileTools...)
 	}
 
-	sysTools, err := createSystemExecTools(log, nil, "")
+	sysTools, err := sandbox.CreateSystemExecTools(interfaces.LogFunc(log), nil, "")
 	if err == nil {
 		tools = append(tools, sysTools...)
 	}
 
-	visionTool, err := createVisionTool()
+	visionTool, err := vision.CreateVisionTool()
 	if err == nil {
 		tools = append(tools, visionTool)
 	}
@@ -547,7 +552,7 @@ func buildSubAgentInstruction(agentName string, context string) string {
 // orchestrator agent and returns the tool for inclusion in the agent's
 // tool list.
 func registerDelegateTaskTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "delegate_task",
 		Description: "Delegates a task to an isolated sub-agent with its own task-scoped session, restricted toolset, and environment isolation. Use when a task requires a different specialist agent or when you want to run work in an isolated context. The sub-agent cannot call delegate_task, clarify, memory, send_message, or cronjob.",
 	}, delegateTaskHandler)

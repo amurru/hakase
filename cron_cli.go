@@ -2,6 +2,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,7 +132,7 @@ func runCronList(args []string) int {
 // ------------------- status --------------------------------------------------
 
 func runCronStatus(args []string) int {
-	path := filepath.Join(hakaseHome(), "cronjobs.json")
+	path := filepath.Join(config.HakaseHome(), "cronjobs.json")
 	reg, err := loadCronRegistry()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load cron registry: %v\n", err)

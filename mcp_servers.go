@@ -12,6 +12,8 @@
 package main
 
 import (
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/config"
 	"fmt"
 	"net/http"
 	"os"
@@ -50,7 +52,7 @@ type MCPServerStatus struct {
 // MCPServerManager implements tool.Toolset for all configured MCP servers.
 type MCPServerManager struct {
 	mu      sync.Mutex // guards servers map
-	cfg     *Config
+	cfg     *config.Config
 	servers map[string]*managedServer
 	log     LogFunc
 }
@@ -61,7 +63,7 @@ type MCPServerManager struct {
 // MCP connect happening in Tools().
 type managedServer struct {
 	name    string
-	cfg     *MCPServerConfig
+	cfg     *config.MCPServerConfig
 	toolset tool.Toolset // nil when disabled or the toolset failed to build
 
 	mu        sync.Mutex
@@ -72,7 +74,7 @@ type managedServer struct {
 
 // NewMCPServerManager builds a manager from the effective MCP registry
 // (project config + legacy mcp_server_url + user registry).
-func NewMCPServerManager(cfg *Config, log LogFunc) (*MCPServerManager, error) {
+func NewMCPServerManager(cfg *config.Config, log LogFunc) (*MCPServerManager, error) {
 	m := &MCPServerManager{cfg: cfg, log: log}
 	if err := m.reload(); err != nil {
 		return nil, err
@@ -83,7 +85,7 @@ func NewMCPServerManager(cfg *Config, log LogFunc) (*MCPServerManager, error) {
 // reload rebuilds the effective registry and per-server toolsets from config
 // plus the user registry. Called at construction and after every TUI mutation.
 func (m *MCPServerManager) reload() error {
-	reg, err := LoadMCPRegistry(m.cfg)
+	reg, err := config.LoadMCPRegistry(m.cfg)
 	if err != nil {
 		return err
 	}
@@ -201,7 +203,7 @@ func (m *MCPServerManager) ServerStatus(name string) (MCPServerStatus, bool) {
 // next run. Project-config servers can be disabled this way too - the user
 // registry's disabled list overrides the project's enabled default.
 func (m *MCPServerManager) SetDisabled(name string, disabled bool) error {
-	err := updateMCPUserRegistry(func(reg *MCPUserRegistry) error {
+	err := config.UpdateMCPUserRegistry(func(reg *config.MCPUserRegistry) error {
 		idx := indexOfString(reg.Disabled, name)
 		switch {
 		case disabled && idx < 0:
@@ -238,12 +240,12 @@ func (m *MCPServerManager) Reconnect(name string) error {
 // servers run the configured command with HAKASE_*-scrubbed env plus the
 // server's env block; http servers use a streamable HTTP transport with
 // optional headers. Connection is lazy: nothing spawns or dials here.
-func buildMCPServerToolset(name string, cfg *MCPServerConfig) (tool.Toolset, error) {
+func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Toolset, error) {
 	switch {
 	case cfg.Type == "http" || (cfg.Type == "" && cfg.URL != "" && len(cfg.Command) == 0):
 		client := &http.Client{}
 		if len(cfg.Headers) > 0 {
-			client.Transport = &headerTransport{headers: ExpandEnvMap(cfg.Headers)}
+			client.Transport = &headerTransport{headers: config.ExpandEnvMap(cfg.Headers)}
 		}
 		return mcptoolset.New(mcptoolset.Config{
 			Transport: &mcp.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: client},
@@ -251,7 +253,7 @@ func buildMCPServerToolset(name string, cfg *MCPServerConfig) (tool.Toolset, err
 	case cfg.Type == "stdio" || len(cfg.Command) > 0:
 		argv := make([]string, 0, len(cfg.Command))
 		for _, a := range cfg.Command {
-			argv = append(argv, ExpandEnv(a))
+			argv = append(argv, config.ExpandEnv(a))
 		}
 		if len(argv) == 0 || argv[0] == "" {
 			return nil, fmt.Errorf("mcp server %q has an empty stdio command", name)
@@ -272,8 +274,8 @@ func buildMCPServerToolset(name string, cfg *MCPServerConfig) (tool.Toolset, err
 // server's configured env block (values env-expanded, so explicit server
 // config wins over any scrubbed ambient variable).
 func buildMCPChildEnv(serverEnv map[string]string) []string {
-	env := scrubEnv(os.Environ())
-	for k, v := range ExpandEnvMap(serverEnv) {
+	env := sandbox.ScrubEnv(os.Environ())
+	for k, v := range config.ExpandEnvMap(serverEnv) {
 		env = append(env, k+"="+v)
 	}
 	return env
@@ -302,13 +304,13 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // mcp_<server>_<tool>, both parts sanitized for provider tool-name rules
 // (Gemini-style single underscores; see the MCP design plan).
 func MCPToolName(serverName, toolName string) string {
-	return "mcp_" + SanitizeMCPServerName(serverName) + "_" + SanitizeMCPServerName(toolName)
+	return "mcp_" + config.SanitizeMCPServerName(serverName) + "_" + config.SanitizeMCPServerName(toolName)
 }
 
 // allowsMCPTool applies a server's include/exclude lists to a namespaced tool
 // name. Include (when non-empty) is an allow-list; exclude is a deny-list that
 // wins over include.
-func allowsMCPTool(cfg *MCPServerConfig, nsName string) bool {
+func allowsMCPTool(cfg *config.MCPServerConfig, nsName string) bool {
 	if cfg.Tools == nil {
 		return true
 	}

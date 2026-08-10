@@ -1,12 +1,13 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"strings"
 	"testing"
 )
 
 func TestGuardDefaultsFill(t *testing.T) {
-	c := loopGuardConfig(LoopGuardConfig{})
+	c := loopGuardConfig(config.LoopGuardConfig{})
 	if c.MaxOutputTokens != defaultMaxOutputTokens {
 		t.Errorf("MaxOutputTokens default = %d, want %d", c.MaxOutputTokens, defaultMaxOutputTokens)
 	}
@@ -18,14 +19,14 @@ func TestGuardDefaultsFill(t *testing.T) {
 	}
 
 	// Explicit nonzero values are preserved.
-	c2 := loopGuardConfig(LoopGuardConfig{MaxOutputTokens: 100, RepetitionLimit: 2, MaxTextWithoutTool: 50})
+	c2 := loopGuardConfig(config.LoopGuardConfig{MaxOutputTokens: 100, RepetitionLimit: 2, MaxTextWithoutTool: 50})
 	if c2.MaxOutputTokens != 100 || c2.RepetitionLimit != 2 || c2.MaxTextWithoutTool != 50 {
 		t.Errorf("explicit values not preserved: %+v", c2)
 	}
 }
 
 func TestGuardRepetitionLoop(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{RepetitionLimit: 4, MaxTextWithoutTool: 1000000})
+	g := guardDefaults(config.LoopGuardConfig{RepetitionLimit: 4, MaxTextWithoutTool: 1000000})
 	sentence := "Let me load the skill and search the knowledge base."
 	for i := 0; i < 3; i++ {
 		if reason := g.feed(false, sentence); reason != "" {
@@ -39,7 +40,7 @@ func TestGuardRepetitionLoop(t *testing.T) {
 }
 
 func TestGuardRepetitionDifferentTextDoesNotTrigger(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{RepetitionLimit: 4, MaxTextWithoutTool: 1000000})
+	g := guardDefaults(config.LoopGuardConfig{RepetitionLimit: 4, MaxTextWithoutTool: 1000000})
 	for i := 0; i < 20; i++ {
 		if reason := g.feed(false, "distinct sentence "+strings.Repeat("x", i)); reason != "" {
 			t.Fatalf("feed %d triggered unexpectedly: %q", i+1, reason)
@@ -48,7 +49,7 @@ func TestGuardRepetitionDifferentTextDoesNotTrigger(t *testing.T) {
 }
 
 func TestGuardRepetitionNormalizesWhitespace(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{RepetitionLimit: 3, MaxTextWithoutTool: 1000000})
+	g := guardDefaults(config.LoopGuardConfig{RepetitionLimit: 3, MaxTextWithoutTool: 1000000})
 	g.feed(false, " identical ")
 	g.feed(false, "identical")
 	// Whitespace variants trim to the same sentence, so they still count as a
@@ -59,7 +60,7 @@ func TestGuardRepetitionNormalizesWhitespace(t *testing.T) {
 }
 
 func TestGuardToolCallResetsRepetition(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{RepetitionLimit: 3, MaxTextWithoutTool: 1000000})
+	g := guardDefaults(config.LoopGuardConfig{RepetitionLimit: 3, MaxTextWithoutTool: 1000000})
 	g.feed(false, "repeated")
 	g.feed(false, "repeated")
 	g.feed(true, "") // tool call resets repetition
@@ -71,7 +72,7 @@ func TestGuardToolCallResetsRepetition(t *testing.T) {
 }
 
 func TestGuardNoToolCallBloat(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{MaxTextWithoutTool: 100, RepetitionLimit: 1000000})
+	g := guardDefaults(config.LoopGuardConfig{MaxTextWithoutTool: 100, RepetitionLimit: 1000000})
 	var total int
 	for total < 90 {
 		chunk := strings.Repeat("a", 30)
@@ -84,7 +85,7 @@ func TestGuardNoToolCallBloat(t *testing.T) {
 }
 
 func TestGuardToolCallDisablesNoToolWatchdog(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{MaxTextWithoutTool: 50, RepetitionLimit: 1000000})
+	g := guardDefaults(config.LoopGuardConfig{MaxTextWithoutTool: 50, RepetitionLimit: 1000000})
 	g.feed(true, "") // a tool call happens early
 	for i := 0; i < 10; i++ {
 		if reason := g.feed(false, strings.Repeat("b", 40)); reason != "" {
@@ -94,7 +95,7 @@ func TestGuardToolCallDisablesNoToolWatchdog(t *testing.T) {
 }
 
 func TestGuardEmptyTextIgnored(t *testing.T) {
-	g := guardDefaults(LoopGuardConfig{MaxTextWithoutTool: 1, RepetitionLimit: 2})
+	g := guardDefaults(config.LoopGuardConfig{MaxTextWithoutTool: 1, RepetitionLimit: 2})
 	if reason := g.feed(false, "   "); reason != "" {
 		t.Errorf("whitespace-only text should not trigger: %q", reason)
 	}
@@ -115,7 +116,7 @@ func TestGuardZeroValueDisabled(t *testing.T) {
 func TestBuildGenerationConfigCapsOutput(t *testing.T) {
 	old := currentGuard
 	defer func() { currentGuard = old }()
-	currentGuard = LoopGuardConfig{MaxOutputTokens: 4096}
+	currentGuard = config.LoopGuardConfig{MaxOutputTokens: 4096}
 
 	gc := buildGenerationConfig("")
 	if gc == nil {

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/vision"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -76,24 +79,24 @@ func pngToDataURL(data []byte) string {
 }
 
 // saveRestoreGlobals captures and restores package-level globals.
-func saveRestoreGlobals(t *testing.T, oldMI *ModelInfo, oldCfg *Config, oldVM model.LLM) {
+func saveRestoreGlobalsForTest(t *testing.T, oldMI *ModelInfo, oldCfg *config.Config, oldVM model.LLM) {
 	t.Helper()
 	t.Cleanup(func() {
 		currentModelInfo = oldMI
 		currentConfig = oldCfg
-		visionModel = oldVM
+		vision.VisionModelLLM = oldVM
 	})
 }
 
 // clearVisionGlobals zeroes vision globals for a clean test slate and returns
 // restore functions.
-func clearVisionGlobals(t *testing.T) {
+func clearVisionGlobalsForTest(t *testing.T) {
 	t.Helper()
-	oldMI, oldCfg, oldVM := currentModelInfo, currentConfig, visionModel
+	oldMI, oldCfg, oldVM := currentModelInfo, currentConfig, vision.VisionModelLLM
 	currentModelInfo = nil
 	currentConfig = nil
-	visionModel = nil
-	saveRestoreGlobals(t, oldMI, oldCfg, oldVM)
+	vision.VisionModelLLM = nil
+	saveRestoreGlobalsForTest(t, oldMI, oldCfg, oldVM)
 }
 
 // ---------------------------------------------------------------------------
@@ -134,8 +137,8 @@ func TestVisionModelNameMatch(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := visionModelNameMatch(tc.name); got != tc.want {
-				t.Errorf("visionModelNameMatch(%q) = %v, want %v", tc.name, got, tc.want)
+			if got := vision.VisionModelNameMatch(tc.name); got != tc.want {
+				t.Errorf("vision.VisionModelNameMatch(%q) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -175,7 +178,7 @@ func TestDetectImageMime(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.label, func(t *testing.T) {
-			mime, ok := detectImageMime(tc.data)
+			mime, ok := vision.DetectImageMime(tc.data)
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -188,13 +191,13 @@ func TestDetectImageMime(t *testing.T) {
 
 func TestIsEmbedSupported(t *testing.T) {
 	for _, mime := range []string{"image/jpeg", "image/png", "image/gif", "image/webp"} {
-		if !isEmbedSupported(mime) {
-			t.Errorf("isEmbedSupported(%q) = false, want true", mime)
+		if !vision.IsEmbedSupported(mime) {
+			t.Errorf("vision.IsEmbedSupported(%q) = false, want true", mime)
 		}
 	}
 	for _, mime := range []string{"image/bmp", "image/tiff", "image/svg+xml", "text/plain", ""} {
-		if isEmbedSupported(mime) {
-			t.Errorf("isEmbedSupported(%q) = true, want false", mime)
+		if vision.IsEmbedSupported(mime) {
+			t.Errorf("vision.IsEmbedSupported(%q) = true, want false", mime)
 		}
 	}
 }
@@ -213,7 +216,7 @@ func TestNormalizeImage(t *testing.T) {
 	bmpBytes := bmpBuf.Bytes()
 
 	t.Run("PNG passthrough", func(t *testing.T) {
-		got, mime, err := normalizeImage(pngBytes, "image/png")
+		got, mime, err := vision.NormalizeImage(pngBytes, "image/png")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -228,7 +231,7 @@ func TestNormalizeImage(t *testing.T) {
 	t.Run("JPEG passthrough", func(t *testing.T) {
 		// Build a tiny real JPEG
 		jpgBuf := encodeJPEG(bmpImg, 85)
-		got, mime, err := normalizeImage(jpgBuf, "image/jpeg")
+		got, mime, err := vision.NormalizeImage(jpgBuf, "image/jpeg")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -242,7 +245,7 @@ func TestNormalizeImage(t *testing.T) {
 
 	t.Run("GIF passthrough", func(t *testing.T) {
 		gifBytes := []byte("GIF89a\x01\x00\x01\x00\x00\x00\x00;")
-		got, mime, err := normalizeImage(gifBytes, "image/gif")
+		got, mime, err := vision.NormalizeImage(gifBytes, "image/gif")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -255,7 +258,7 @@ func TestNormalizeImage(t *testing.T) {
 	})
 
 	t.Run("BMP to PNG", func(t *testing.T) {
-		got, mime, err := normalizeImage(bmpBytes, "image/bmp")
+		got, mime, err := vision.NormalizeImage(bmpBytes, "image/bmp")
 		if err != nil {
 			t.Fatalf("normalize BMP: %v", err)
 		}
@@ -270,7 +273,7 @@ func TestNormalizeImage(t *testing.T) {
 
 	t.Run("SVG rasterized to PNG", func(t *testing.T) {
 		svgData := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>`)
-		got, mime, err := normalizeImage(svgData, "image/svg+xml")
+		got, mime, err := vision.NormalizeImage(svgData, "image/svg+xml")
 		if err != nil {
 			// If rasterizer is absent, the error should mention SVG.
 			if !strings.Contains(err.Error(), "SVG") {
@@ -287,7 +290,7 @@ func TestNormalizeImage(t *testing.T) {
 	})
 
 	t.Run("unknown format returns error", func(t *testing.T) {
-		_, _, err := normalizeImage([]byte("not-an-image"), "application/pdf")
+		_, _, err := vision.NormalizeImage([]byte("not-an-image"), "application/pdf")
 		if err == nil {
 			t.Fatal("expected error for unknown format, got nil")
 		}
@@ -297,7 +300,7 @@ func TestNormalizeImage(t *testing.T) {
 func TestEmbedReadyImage(t *testing.T) {
 	t.Run("under limits returns unchanged", func(t *testing.T) {
 		pngBytes := new1x1PNG()
-		got, mime, err := embedReadyImage(pngBytes, "image/png", 1<<20, 8000)
+		got, mime, err := vision.EmbedReadyImage(pngBytes, "image/png", 1<<20, 8000)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -316,7 +319,7 @@ func TestEmbedReadyImage(t *testing.T) {
 		if len(pngBytes) < 5000 {
 			t.Skipf("noise PNG too small (%d bytes) for this test", len(pngBytes))
 		}
-		got, mime, err := embedReadyImage(pngBytes, "image/png", 1000, 64)
+		got, mime, err := vision.EmbedReadyImage(pngBytes, "image/png", 1000, 64)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -357,7 +360,7 @@ func TestEmbedReadyImage(t *testing.T) {
 		if len(jpgBytes) < 500000 {
 			t.Skipf("test fixture too small (%d bytes) to trigger byte limit; need >= 500KB", len(jpgBytes))
 		}
-		got, _, err := embedReadyImage(jpgBytes, "image/jpeg", 200000, 8000)
+		got, _, err := vision.EmbedReadyImage(jpgBytes, "image/jpeg", 200000, 8000)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -375,7 +378,7 @@ func TestEmbedReadyImage(t *testing.T) {
 		if len(pngBytes) < 50000 {
 			t.Skipf("noise PNG too small (%d bytes) for aspect-ratio test", len(pngBytes))
 		}
-		got, _, err := embedReadyImage(pngBytes, "image/png", 20000, 200)
+		got, _, err := vision.EmbedReadyImage(pngBytes, "image/png", 20000, 200)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -395,10 +398,10 @@ func TestEmbedReadyImage(t *testing.T) {
 	})
 
 	t.Run("hard ceiling rejects huge image", func(t *testing.T) {
-		// Create bytes > visionHardCeilingBytes (20MB). We do not need a real
+		// Create bytes > vision.VisionHardCeilingBytes (20MB). We do not need a real
 		// image; the hard-ceiling check happens before decoding.
-		huge := make([]byte, visionHardCeilingBytes+1)
-		_, _, err := embedReadyImage(huge, "image/png", 100, 100)
+		huge := make([]byte, vision.VisionHardCeilingBytes+1)
+		_, _, err := vision.EmbedReadyImage(huge, "image/png", 100, 100)
 		if err == nil {
 			t.Fatal("expected error for image exceeding hard ceiling, got nil")
 		}
@@ -411,7 +414,7 @@ func TestEmbedReadyImage(t *testing.T) {
 		// garbage bytes > maxBytes but < hard ceiling, not a valid image
 		garbage := make([]byte, 4096)
 		copy(garbage, []byte("not an image"))
-		got, mime, err := embedReadyImage(garbage, "image/png", 2048, 100)
+		got, mime, err := vision.EmbedReadyImage(garbage, "image/png", 2048, 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -425,132 +428,132 @@ func TestEmbedReadyImage(t *testing.T) {
 }
 
 func TestResolveMainModelVision(t *testing.T) {
-	t.Run("cfg nil -> VisionUnsupported", func(t *testing.T) {
-		clearVisionGlobals(t)
-		if got := resolveMainModelVision(nil, nil); got != VisionUnsupported {
-			t.Errorf("got %v, want VisionUnsupported", got)
+	t.Run("cfg nil -> vision.VisionUnsupported", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		if got := vision.ResolveMainModelVision(nil, nil); got != vision.VisionUnsupported {
+			t.Errorf("got %v, want vision.VisionUnsupported", got)
 		}
 	})
 
-	t.Run("openai-compatible + SupportsVision true -> VisionLegacy", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "openai-compatible", VisionModel: "some-vision-model"}
+	t.Run("openai-compatible + SupportsVision true -> vision.VisionLegacy", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "openai-compatible", VisionModel: "some-vision-model"}
 		mi := &ModelInfo{SupportsVision: boolPtr(true)}
-		if got := resolveMainModelVision(mi, cfg); got != VisionLegacy {
-			t.Errorf("got %v, want VisionLegacy (provider blocks native)", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
+			t.Errorf("got %v, want vision.VisionLegacy (provider blocks native)", got)
 		}
 	})
 
-	t.Run("openai-compatible + ModelVision yes -> VisionLegacy", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "openai-compatible", ModelVision: "yes", VisionModel: "some-vision-model"}
-		if got := resolveMainModelVision(nil, cfg); got != VisionLegacy {
-			t.Errorf("got %v, want VisionLegacy (provider blocks native even with yes)", got)
+	t.Run("openai-compatible + ModelVision yes -> vision.VisionLegacy", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "openai-compatible", ModelVision: "yes", VisionModel: "some-vision-model"}
+		if got := vision.ResolveMainModelVision(nil, cfg); got != vision.VisionLegacy {
+			t.Errorf("got %v, want vision.VisionLegacy (provider blocks native even with yes)", got)
 		}
 	})
 
-	t.Run("gemini + ModelVision no + usable -> VisionLegacy", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "gemini", ModelVision: "no", VisionModel: "some-vision-model"}
-		if got := resolveMainModelVision(nil, cfg); got != VisionLegacy {
-			t.Errorf("got %v, want VisionLegacy", got)
+	t.Run("gemini + ModelVision no + usable -> vision.VisionLegacy", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "gemini", ModelVision: "no", VisionModel: "some-vision-model"}
+		if got := vision.ResolveMainModelVision(nil, cfg); got != vision.VisionLegacy {
+			t.Errorf("got %v, want vision.VisionLegacy", got)
 		}
 	})
 
-	t.Run("gemini + ModelVision no + not usable -> VisionUnsupported", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "gemini", ModelVision: "no", VisionModel: ""}
-		if got := resolveMainModelVision(nil, cfg); got != VisionUnsupported {
-			t.Errorf("got %v, want VisionUnsupported", got)
+	t.Run("gemini + ModelVision no + not usable -> vision.VisionUnsupported", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "gemini", ModelVision: "no", VisionModel: ""}
+		if got := vision.ResolveMainModelVision(nil, cfg); got != vision.VisionUnsupported {
+			t.Errorf("got %v, want vision.VisionUnsupported", got)
 		}
 	})
 
-	t.Run("gemini + ModelVision yes -> VisionNative", func(t *testing.T) {
-		clearVisionGlobals(t)
-		cfg := &Config{Provider: "gemini", ModelVision: "yes"}
-		if got := resolveMainModelVision(nil, cfg); got != VisionNative {
-			t.Errorf("got %v, want VisionNative", got)
+	t.Run("gemini + ModelVision yes -> vision.VisionNative", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		cfg := &config.Config{Provider: "gemini", ModelVision: "yes"}
+		if got := vision.ResolveMainModelVision(nil, cfg); got != vision.VisionNative {
+			t.Errorf("got %v, want vision.VisionNative", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision true -> VisionNative", func(t *testing.T) {
-		clearVisionGlobals(t)
-		cfg := &Config{Provider: "gemini"}
+	t.Run("gemini + SupportsVision true -> vision.VisionNative", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		cfg := &config.Config{Provider: "gemini"}
 		mi := &ModelInfo{SupportsVision: boolPtr(true)}
-		if got := resolveMainModelVision(mi, cfg); got != VisionNative {
-			t.Errorf("got %v, want VisionNative", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionNative {
+			t.Errorf("got %v, want vision.VisionNative", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision false + usable -> VisionLegacy", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "gemini", VisionModel: "some-vision-model"}
+	t.Run("gemini + SupportsVision false + usable -> vision.VisionLegacy", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "gemini", VisionModel: "some-vision-model"}
 		mi := &ModelInfo{SupportsVision: boolPtr(false)}
-		if got := resolveMainModelVision(mi, cfg); got != VisionLegacy {
-			t.Errorf("got %v, want VisionLegacy", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
+			t.Errorf("got %v, want vision.VisionLegacy", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision false + not usable -> VisionUnsupported", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "gemini", VisionModel: ""}
+	t.Run("gemini + SupportsVision false + not usable -> vision.VisionUnsupported", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "gemini", VisionModel: ""}
 		mi := &ModelInfo{SupportsVision: boolPtr(false)}
-		if got := resolveMainModelVision(mi, cfg); got != VisionUnsupported {
-			t.Errorf("got %v, want VisionUnsupported", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionUnsupported {
+			t.Errorf("got %v, want vision.VisionUnsupported", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision nil + name match -> VisionNative", func(t *testing.T) {
-		clearVisionGlobals(t)
-		cfg := &Config{Provider: "gemini"}
+	t.Run("gemini + SupportsVision nil + name match -> vision.VisionNative", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		cfg := &config.Config{Provider: "gemini"}
 		mi := &ModelInfo{Name: "gpt-4o-2024", SupportsVision: nil}
-		if got := resolveMainModelVision(mi, cfg); got != VisionNative {
-			t.Errorf("got %v, want VisionNative (name allowlist match)", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionNative {
+			t.Errorf("got %v, want vision.VisionNative (name allowlist match)", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision nil + gemini name match -> VisionNative", func(t *testing.T) {
-		clearVisionGlobals(t)
-		cfg := &Config{Provider: "gemini"}
+	t.Run("gemini + SupportsVision nil + gemini name match -> vision.VisionNative", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		cfg := &config.Config{Provider: "gemini"}
 		mi := &ModelInfo{Name: "gemini-2.5-flash", SupportsVision: nil}
-		if got := resolveMainModelVision(mi, cfg); got != VisionNative {
-			t.Errorf("got %v, want VisionNative (gemini model name match)", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionNative {
+			t.Errorf("got %v, want vision.VisionNative (gemini model name match)", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision nil + unknown name + no vision_model -> VisionUnsupported", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "gemini", VisionModel: ""}
+	t.Run("gemini + SupportsVision nil + unknown name + no vision_model -> vision.VisionUnsupported", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "gemini", VisionModel: ""}
 		mi := &ModelInfo{Name: "foo-model", SupportsVision: nil}
-		if got := resolveMainModelVision(mi, cfg); got != VisionUnsupported {
-			t.Errorf("got %v, want VisionUnsupported", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionUnsupported {
+			t.Errorf("got %v, want vision.VisionUnsupported", got)
 		}
 	})
 
-	t.Run("gemini + SupportsVision nil + unknown name + vision_model cfg -> VisionLegacy", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "gemini", VisionModel: "some-vision-model"}
+	t.Run("gemini + SupportsVision nil + unknown name + vision_model cfg -> vision.VisionLegacy", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "gemini", VisionModel: "some-vision-model"}
 		mi := &ModelInfo{Name: "foo-model", SupportsVision: nil}
-		if got := resolveMainModelVision(mi, cfg); got != VisionLegacy {
-			t.Errorf("got %v, want VisionLegacy (cfg.VisionModel set)", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
+			t.Errorf("got %v, want vision.VisionLegacy (cfg.VisionModel set)", got)
 		}
 	})
 
-	t.Run("openai + SupportsVision true -> VisionLegacy", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{Provider: "openai", VisionModel: "some-vision-model"}
+	t.Run("openai + SupportsVision true -> vision.VisionLegacy", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{Provider: "openai", VisionModel: "some-vision-model"}
 		mi := &ModelInfo{SupportsVision: boolPtr(true)}
-		if got := resolveMainModelVision(mi, cfg); got != VisionLegacy {
-			t.Errorf("got %v, want VisionLegacy (openai blocks native)", got)
+		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
+			t.Errorf("got %v, want vision.VisionLegacy (openai blocks native)", got)
 		}
 	})
 }
@@ -561,7 +564,7 @@ func TestParseDataURL(t *testing.T) {
 
 	t.Run("valid data URL", func(t *testing.T) {
 		raw := "data:image/png;base64," + b64
-		got, mime, err := parseDataURL(raw)
+		got, mime, err := vision.ParseDataURL(raw)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -575,7 +578,7 @@ func TestParseDataURL(t *testing.T) {
 
 	t.Run("valid with custom mime", func(t *testing.T) {
 		raw := "data:image/jpeg;base64," + b64
-		_, mime, err := parseDataURL(raw)
+		_, mime, err := vision.ParseDataURL(raw)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -585,21 +588,21 @@ func TestParseDataURL(t *testing.T) {
 	})
 
 	t.Run("malformed no data: prefix", func(t *testing.T) {
-		_, _, err := parseDataURL("not a data URL")
+		_, _, err := vision.ParseDataURL("not a data URL")
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
 
 	t.Run("malformed missing comma", func(t *testing.T) {
-		_, _, err := parseDataURL("data:image/png;base64")
+		_, _, err := vision.ParseDataURL("data:image/png;base64")
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
 
 	t.Run("malformed bad base64", func(t *testing.T) {
-		_, _, err := parseDataURL("data:image/png;base64,!!!not base64!!!")
+		_, _, err := vision.ParseDataURL("data:image/png;base64,!!!not base64!!!")
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -624,12 +627,12 @@ func TestCheckHostPublic(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.host, func(t *testing.T) {
-			err := checkHostPublic(tc.host)
+			err := vision.CheckHostPublic(tc.host)
 			if tc.wantErr && err == nil {
-				t.Errorf("checkHostPublic(%q) = nil, want error", tc.host)
+				t.Errorf("vision.CheckHostPublic(%q) = nil, want error", tc.host)
 			}
 			if !tc.wantErr && err != nil {
-				t.Errorf("checkHostPublic(%q) = %v, want nil", tc.host, err)
+				t.Errorf("vision.CheckHostPublic(%q) = %v, want nil", tc.host, err)
 			}
 		})
 	}
@@ -641,7 +644,7 @@ func TestResolveImageSource(t *testing.T) {
 	t.Run("data URL", func(t *testing.T) {
 		pngBytes := new1x1PNG()
 		dataURL := pngToDataURL(pngBytes)
-		got, mime, err := resolveImageSource(ctx, dataURL)
+		got, mime, err := vision.ResolveImageSource(ctx, dataURL)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -654,10 +657,10 @@ func TestResolveImageSource(t *testing.T) {
 	})
 
 	t.Run("local file", func(t *testing.T) {
-		// Save and restore currentSandbox so we do not hit sandbox path resolution.
-		oldSb := currentSandbox
-		currentSandbox = nil
-		t.Cleanup(func() { currentSandbox = oldSb })
+		// Save and restore sandbox.CurrentSandbox so we do not hit sandbox path resolution.
+		oldSb := sandbox.CurrentSandbox
+		sandbox.CurrentSandbox = nil
+		t.Cleanup(func() { sandbox.CurrentSandbox = oldSb })
 
 		pngBytes := new1x1PNG()
 		tmpDir := t.TempDir()
@@ -665,7 +668,7 @@ func TestResolveImageSource(t *testing.T) {
 		if err := os.WriteFile(p, pngBytes, 0644); err != nil {
 			t.Fatal(err)
 		}
-		got, mime, err := resolveImageSource(ctx, p)
+		got, mime, err := vision.ResolveImageSource(ctx, p)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -678,11 +681,11 @@ func TestResolveImageSource(t *testing.T) {
 	})
 
 	t.Run("local file missing", func(t *testing.T) {
-		oldSb := currentSandbox
-		currentSandbox = nil
-		t.Cleanup(func() { currentSandbox = oldSb })
+		oldSb := sandbox.CurrentSandbox
+		sandbox.CurrentSandbox = nil
+		t.Cleanup(func() { sandbox.CurrentSandbox = oldSb })
 
-		_, _, err := resolveImageSource(ctx, filepath.Join(t.TempDir(), "nope.png"))
+		_, _, err := vision.ResolveImageSource(ctx, filepath.Join(t.TempDir(), "nope.png"))
 		if err == nil {
 			t.Fatal("expected error for missing file, got nil")
 		}
@@ -695,8 +698,8 @@ func TestVisionInjectionCallback(t *testing.T) {
 	testID := fmt.Sprintf("test-callback-%d", time.Now().UnixNano())
 
 	t.Run("injects image content on first call", func(t *testing.T) {
-		t.Cleanup(func() { visionInjected.Delete(testID) })
-		visionInjected.Delete(testID) // ensure clean slate
+		t.Cleanup(func() { vision.VisionInjected.Delete(testID) })
+		vision.VisionInjected.Delete(testID) // ensure clean slate
 
 		fr := &genai.FunctionResponse{
 			Name: "vision",
@@ -711,7 +714,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 		req := &model.LLMRequest{Contents: []*genai.Content{content}}
 
 		ctx := agent.NewContext(&agent.ContextMock{})
-		resp, err := visionInjectionCallback(ctx, req)
+		resp, err := vision.VisionInjectionCallback(ctx, req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -753,8 +756,8 @@ func TestVisionInjectionCallback(t *testing.T) {
 	})
 
 	t.Run("idempotent on second call with same ID", func(t *testing.T) {
-		t.Cleanup(func() { visionInjected.Delete(testID + "2") })
-		visionInjected.Delete(testID + "2")
+		t.Cleanup(func() { vision.VisionInjected.Delete(testID + "2") })
+		vision.VisionInjected.Delete(testID + "2")
 
 		id := testID + "2"
 		fr := &genai.FunctionResponse{
@@ -770,7 +773,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 		req1 := &model.LLMRequest{Contents: []*genai.Content{
 			{Parts: []*genai.Part{{FunctionResponse: fr}}},
 		}}
-		_, err := visionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req1)
+		_, err := vision.VisionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req1)
 		if err != nil {
 			t.Fatalf("first call error: %v", err)
 		}
@@ -791,7 +794,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 		req2 := &model.LLMRequest{Contents: []*genai.Content{
 			{Parts: []*genai.Part{{FunctionResponse: fr2}}},
 		}}
-		_, err = visionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req2)
+		_, err = vision.VisionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req2)
 		if err != nil {
 			t.Fatalf("second call error: %v", err)
 		}
@@ -812,7 +815,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 		req := &model.LLMRequest{Contents: []*genai.Content{
 			{Parts: []*genai.Part{{FunctionResponse: fr}}},
 		}}
-		_, err := visionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
+		_, err := vision.VisionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -840,7 +843,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 		req := &model.LLMRequest{Contents: []*genai.Content{
 			{Parts: []*genai.Part{{FunctionResponse: fr}}},
 		}}
-		_, err := visionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
+		_, err := vision.VisionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -862,7 +865,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 			nil,
 			{Parts: []*genai.Part{nil, {FunctionResponse: nil}}},
 		}}
-		_, err := visionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
+		_, err := vision.VisionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
 		if err != nil {
 			t.Fatalf("unexpected error with nil content/part: %v", err)
 		}
@@ -877,7 +880,7 @@ func TestVisionInjectionCallback(t *testing.T) {
 		req := &model.LLMRequest{Contents: []*genai.Content{
 			{Parts: []*genai.Part{{FunctionResponse: fr}}},
 		}}
-		_, err := visionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
+		_, err := vision.VisionInjectionCallback(agent.NewContext(&agent.ContextMock{}), req)
 		if err != nil {
 			t.Fatalf("unexpected error with nil response: %v", err)
 		}
@@ -885,41 +888,41 @@ func TestVisionInjectionCallback(t *testing.T) {
 }
 
 func TestVisionModelUsable(t *testing.T) {
-	t.Run("visionModel global set", func(t *testing.T) {
-		oldVM := visionModel
-		t.Cleanup(func() { visionModel = oldVM })
+	t.Run("vision.VisionModelLLM global set", func(t *testing.T) {
+		oldVM := vision.VisionModelLLM
+		t.Cleanup(func() { vision.VisionModelLLM = oldVM })
 
-		// visionModel is an interface; use a non-nil concrete type.
+		// vision.VisionModelLLM is an interface; use a non-nil concrete type.
 		// We cannot easily create a real model.LLM, but we can test the cfg path.
 		// For the global path, we need a non-nil model. Since model.LLM is an
 		// interface, assign a non-nil value. The test just needs to verify
-		// visionModelUsable returns true when visionModel != nil.
+		// vision.VisionModelLLMUsable returns true when vision.VisionModelLLM != nil.
 		// We cannot create a model.LLM easily, but we can test the cfg branch
 		// and the nil global branch.
 	})
 
 	t.Run("cfg.VisionModel set", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		cfg := &Config{VisionModel: "some-model"}
-		if !visionModelUsable(cfg) {
-			t.Error("visionModelUsable should be true when cfg.VisionModel is set")
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		cfg := &config.Config{VisionModel: "some-model"}
+		if !vision.VisionModelUsable(cfg) {
+			t.Error("vision.VisionModelLLMUsable should be true when cfg.VisionModel is set")
 		}
 	})
 
-	t.Run("cfg nil, no visionModel -> false", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		if visionModelUsable(nil) {
-			t.Error("visionModelUsable should be false when cfg is nil and visionModel is nil")
+	t.Run("cfg nil, no vision.VisionModelLLM -> false", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		if vision.VisionModelUsable(nil) {
+			t.Error("vision.VisionModelLLMUsable should be false when cfg is nil and vision.VisionModelLLM is nil")
 		}
 	})
 
-	t.Run("no visionModel, cfg.VisionModel empty -> false", func(t *testing.T) {
-		clearVisionGlobals(t)
-		visionModel = nil
-		if visionModelUsable(&Config{}) {
-			t.Error("visionModelUsable should be false when both are empty")
+	t.Run("no vision.VisionModelLLM, cfg.VisionModel empty -> false", func(t *testing.T) {
+		clearVisionGlobalsForTest(t)
+		vision.VisionModelLLM = nil
+		if vision.VisionModelUsable(&config.Config{}) {
+			t.Error("vision.VisionModelLLMUsable should be false when both are empty")
 		}
 	})
 }
@@ -946,16 +949,16 @@ func TestResolveVisionProvider(t *testing.T) {
 	cases := []struct {
 		name string
 		main LLMProvider
-		cfg  *Config
+		cfg  *config.Config
 		want result
 	}{
-		{"inherit main gemini", mainGemini, &Config{}, result{kind: "gemini"}},
-		{"inherit main openai-compatible", mainOpenAI, &Config{}, result{kind: "openai", baseURL: "https://main.example/v1"}},
-		{"gemini for vision only from openai main", mainOpenAI, &Config{VisionProvider: "gemini"}, result{kind: "gemini"}},
-		{"openai-compatible override", mainGemini, &Config{VisionProvider: "openai-compatible", VisionBaseURL: "https://vis.example/v1"}, result{kind: "openai", baseURL: "https://vis.example/v1"}},
-		{"openai override without base url", mainGemini, &Config{VisionProvider: "openai"}, result{kind: "openai", baseURL: ""}},
-		{"base url alone forces openai", mainGemini, &Config{VisionBaseURL: "https://vis.example/v1"}, result{kind: "openai", baseURL: "https://vis.example/v1"}},
-		{"unknown vision_provider inherits", mainOpenAI, &Config{VisionProvider: "bogus"}, result{kind: "openai", baseURL: "https://main.example/v1"}},
+		{"inherit main gemini", mainGemini, &config.Config{}, result{kind: "gemini"}},
+		{"inherit main openai-compatible", mainOpenAI, &config.Config{}, result{kind: "openai", baseURL: "https://main.example/v1"}},
+		{"gemini for vision only from openai main", mainOpenAI, &config.Config{VisionProvider: "gemini"}, result{kind: "gemini"}},
+		{"openai-compatible override", mainGemini, &config.Config{VisionProvider: "openai-compatible", VisionBaseURL: "https://vis.example/v1"}, result{kind: "openai", baseURL: "https://vis.example/v1"}},
+		{"openai override without base url", mainGemini, &config.Config{VisionProvider: "openai"}, result{kind: "openai", baseURL: ""}},
+		{"base url alone forces openai", mainGemini, &config.Config{VisionBaseURL: "https://vis.example/v1"}, result{kind: "openai", baseURL: "https://vis.example/v1"}},
+		{"unknown vision_provider inherits", mainOpenAI, &config.Config{VisionProvider: "bogus"}, result{kind: "openai", baseURL: "https://main.example/v1"}},
 		{"nil cfg inherits", mainGemini, nil, result{kind: "gemini"}},
 	}
 	for _, tc := range cases {
@@ -972,7 +975,7 @@ func TestLoadDataURL(t *testing.T) {
 	t.Run("valid png data URL", func(t *testing.T) {
 		pngBytes := new1x1PNG()
 		raw := pngToDataURL(pngBytes)
-		got, mime, err := loadDataURL(raw)
+		got, mime, err := vision.LoadDataURL(raw)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -985,24 +988,24 @@ func TestLoadDataURL(t *testing.T) {
 	})
 
 	t.Run("too large data URL", func(t *testing.T) {
-		// Payload exceeds visionMaxDownloadBytes*2 in the pre-check.
-		bigPayload := strings.Repeat("A", visionMaxDownloadBytes*2+1)
+		// Payload exceeds vision.VisionMaxDownloadBytes*2 in the pre-check.
+		bigPayload := strings.Repeat("A", vision.VisionMaxDownloadBytes*2+1)
 		raw := "data:image/png;base64," + bigPayload
-		_, _, err := loadDataURL(raw)
+		_, _, err := vision.LoadDataURL(raw)
 		if err == nil {
 			t.Fatal("expected error for too-large data URL, got nil")
 		}
 	})
 
 	t.Run("too large decoded", func(t *testing.T) {
-		// Payload decodes to > visionMaxDownloadBytes.
-		big := make([]byte, visionMaxDownloadBytes+1)
+		// Payload decodes to > vision.VisionMaxDownloadBytes.
+		big := make([]byte, vision.VisionMaxDownloadBytes+1)
 		for i := range big {
 			big[i] = 0x41 // 'A'
 		}
 		b64 := base64.StdEncoding.EncodeToString(big)
 		raw := "data:image/png;base64," + b64
-		_, _, err := loadDataURL(raw)
+		_, _, err := vision.LoadDataURL(raw)
 		if err == nil {
 			t.Fatal("expected error for too-large decoded data, got nil")
 		}
@@ -1013,7 +1016,7 @@ func TestLoadDataURL(t *testing.T) {
 
 	t.Run("unrecognized format in data URL", func(t *testing.T) {
 		raw := "data:application/octet-stream;base64," + base64.StdEncoding.EncodeToString([]byte("garbage"))
-		_, _, err := loadDataURL(raw)
+		_, _, err := vision.LoadDataURL(raw)
 		if err == nil {
 			t.Fatal("expected error for unrecognized format, got nil")
 		}
@@ -1099,7 +1102,7 @@ func TestRewriteAttachedImages(t *testing.T) {
 	pngBytes := new1x1PNG()
 
 	t.Run("unsupported mode replaces image with warning text", func(t *testing.T) {
-		clearVisionGlobals(t)
+		clearVisionGlobalsForTest(t)
 		imgPart := &genai.Part{InlineData: &genai.Blob{Data: pngBytes, MIMEType: "image/png"}}
 		content := &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{
 			genai.NewPartFromText("what do you see here?"),
@@ -1107,7 +1110,7 @@ func TestRewriteAttachedImages(t *testing.T) {
 		}}
 		req := &model.LLMRequest{Contents: []*genai.Content{content}}
 
-		rewriteAttachedImages(context.Background(), req, VisionUnsupported)
+		vision.RewriteAttachedImages(context.Background(), req, vision.VisionUnsupported)
 
 		// Text part stays, image part replaced by a warning text part.
 		if len(content.Parts) != 2 {
@@ -1126,12 +1129,12 @@ func TestRewriteAttachedImages(t *testing.T) {
 	})
 
 	t.Run("native mode leaves image parts untouched", func(t *testing.T) {
-		clearVisionGlobals(t)
+		clearVisionGlobalsForTest(t)
 		imgPart := &genai.Part{InlineData: &genai.Blob{Data: pngBytes, MIMEType: "image/png"}}
 		content := &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{imgPart}}
 		req := &model.LLMRequest{Contents: []*genai.Content{content}}
 
-		rewriteAttachedImages(context.Background(), req, VisionNative)
+		vision.RewriteAttachedImages(context.Background(), req, vision.VisionNative)
 
 		if len(content.Parts) != 1 || content.Parts[0].InlineData == nil {
 			t.Fatal("native mode must keep the image part")
@@ -1139,18 +1142,18 @@ func TestRewriteAttachedImages(t *testing.T) {
 	})
 
 	t.Run("legacy mode uses cached description when available", func(t *testing.T) {
-		clearVisionGlobals(t)
+		clearVisionGlobalsForTest(t)
 		// Pre-seed the cache so no vision model call is attempted.
 		sum := sha256.Sum256(pngBytes)
 		key := hex.EncodeToString(sum[:])
-		visionDescribeCache.Store(key, "cached fake description")
-		t.Cleanup(func() { visionDescribeCache.Delete(key) })
+		vision.VisionDescribeCache.Store(key, "cached fake description")
+		t.Cleanup(func() { vision.VisionDescribeCache.Delete(key) })
 
 		imgPart := &genai.Part{InlineData: &genai.Blob{Data: pngBytes, MIMEType: "image/png"}}
 		content := &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{imgPart}}
 		req := &model.LLMRequest{Contents: []*genai.Content{content}}
 
-		rewriteAttachedImages(context.Background(), req, VisionLegacy)
+		vision.RewriteAttachedImages(context.Background(), req, vision.VisionLegacy)
 
 		if len(content.Parts) != 1 || content.Parts[0].InlineData != nil {
 			t.Fatal("legacy mode must replace the image part")
@@ -1161,13 +1164,13 @@ func TestRewriteAttachedImages(t *testing.T) {
 	})
 
 	t.Run("non-user and non-image parts untouched", func(t *testing.T) {
-		clearVisionGlobals(t)
+		clearVisionGlobalsForTest(t)
 		imgPart := &genai.Part{InlineData: &genai.Blob{Data: pngBytes, MIMEType: "image/png"}}
 		modelContent := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{imgPart}}
 		textContent := &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{genai.NewPartFromText("plain text")}}
 		req := &model.LLMRequest{Contents: []*genai.Content{modelContent, textContent}}
 
-		rewriteAttachedImages(context.Background(), req, VisionUnsupported)
+		vision.RewriteAttachedImages(context.Background(), req, vision.VisionUnsupported)
 
 		if modelContent.Parts[0].InlineData == nil {
 			t.Error("model-role image part must not be rewritten")
@@ -1178,28 +1181,28 @@ func TestRewriteAttachedImages(t *testing.T) {
 	})
 
 	t.Run("nil req is safe", func(t *testing.T) {
-		clearVisionGlobals(t)
-		rewriteAttachedImages(context.Background(), nil, VisionUnsupported) // must not panic
+		clearVisionGlobalsForTest(t)
+		vision.RewriteAttachedImages(context.Background(), nil, vision.VisionUnsupported) // must not panic
 	})
 }
 
 func TestDescribeOrWarnImageUnavailable(t *testing.T) {
-	clearVisionGlobals(t)
+	clearVisionGlobalsForTest(t)
 	pngBytes := new1x1PNG()
 
-	// Legacy mode with a nil visionModel global: the vision call fails and
+	// Legacy mode with a nil vision.VisionModelLLM global: the vision call fails and
 	// the failure text is cached (warn-and-continue, not a hard error).
-	text := describeOrWarnImage(context.Background(), pngBytes, "image/png", "what is this?", VisionLegacy)
+	text := vision.DescribeOrWarnImage(context.Background(), pngBytes, "image/png", "what is this?", vision.VisionLegacy)
 	if !strings.Contains(text, "vision model could not describe") {
 		t.Errorf("expected failure warning, got: %q", text)
 	}
 
 	// A second call must hit the cache (no repeated vision attempt).
-	second := describeOrWarnImage(context.Background(), pngBytes, "image/png", "what is this?", VisionLegacy)
+	second := vision.DescribeOrWarnImage(context.Background(), pngBytes, "image/png", "what is this?", vision.VisionLegacy)
 	if second != text {
 		t.Errorf("cache miss: second call returned %q, want %q", second, text)
 	}
 
 	sum := sha256.Sum256(pngBytes)
-	visionDescribeCache.Delete(hex.EncodeToString(sum[:]))
+	vision.VisionDescribeCache.Delete(hex.EncodeToString(sum[:]))
 }

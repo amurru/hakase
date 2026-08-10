@@ -1,6 +1,8 @@
 package main
 
 import (
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/util"
 	"fmt"
 	"io/fs"
 	"mime"
@@ -112,7 +114,7 @@ func attachmentTokens(a attachment) int {
 	if imageMimes[a.MIME] {
 		return 1200
 	}
-	return EstimateTokens(string(a.Data))
+	return util.EstimateTokens(string(a.Data))
 }
 
 // currentWord returns the word being typed at the end of the input (the text
@@ -268,8 +270,8 @@ func (m *appModel) attachMention(path string) {
 	// Resolve through the sandbox so out-of-workspace paths are rejected
 	// before the file is read.
 	resolved := path
-	if currentSandbox != nil {
-		r, err := currentSandbox.resolveScopedPath(path, false)
+	if sandbox.CurrentSandbox != nil {
+		r, err := sandbox.CurrentSandbox.ResolveScopedPath(path, false)
 		if err != nil {
 			m.appendLog("⚠ cannot attach " + path + ": " + err.Error())
 			return

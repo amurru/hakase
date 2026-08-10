@@ -1,7 +1,11 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/session"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,9 +15,9 @@ import (
 // modelWithSession builds a TUI model backed by a real session service and a
 // HistoryBuilder wired as the current builder, so compactSession exercises
 // the production compaction path.
-func modelWithSession(t *testing.T) (*appModel, *HistoryBuilder, *SessionService) {
+func modelWithSession(t *testing.T) (*appModel, *hctx.HistoryBuilder, *session.SessionService) {
 	t.Helper()
-	b, svc := newTestBuilder(t)
+	b, svc := newTestBuilderForCompact(t)
 	old := currentHistoryBuilder
 	currentHistoryBuilder = b
 	t.Cleanup(func() { currentHistoryBuilder = old })
@@ -21,6 +25,22 @@ func modelWithSession(t *testing.T) (*appModel, *HistoryBuilder, *SessionService
 	m := newModel(context.Background(), nil, svc, 100, true, "test-model", "")
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return model.(*appModel), b, svc
+}
+
+// newTestBuilderForCompact creates a HistoryBuilder backed by a temp session store.
+func newTestBuilderForCompact(t *testing.T) (*hctx.HistoryBuilder, *session.SessionService) {
+	t.Helper()
+	store, err := session.NewSessionStore(filepath.Join(t.TempDir(), "sessions"))
+	if err != nil {
+		t.Fatalf("session.NewSessionStore: %v", err)
+	}
+	svc, err := session.NewSessionService(store)
+	if err != nil {
+		t.Fatalf("session.NewSessionService: %v", err)
+	}
+	b := hctx.NewHistoryBuilder(svc)
+	b.SetModelInfo(&interfaces.ModelInfo{ContextWindow: 100_000, MaxInputTokens: 90_000})
+	return b, svc
 }
 
 func TestCompactSessionSnipsToLastTwoTurns(t *testing.T) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/util"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -149,8 +150,8 @@ func TestAuditCommandExecLongValuesTruncated(t *testing.T) {
 	auditLogDir = t.TempDir()
 	t.Cleanup(func() { auditLogDir = oldDir })
 
-	longCmd := strings.Repeat("A", maxLogField+100)
-	longReason := strings.Repeat("B", maxLogField+100)
+	longCmd := strings.Repeat("A", util.MaxLogField+100)
+	longReason := strings.Repeat("B", util.MaxLogField+100)
 
 	entry := CommandAuditEntry{
 		Timestamp: time.Now(),
@@ -180,7 +181,7 @@ func TestAuditCommandExecLongValuesTruncated(t *testing.T) {
 	}
 
 	// Command should be truncated.
-	if len([]rune(parsed.Command)) > maxLogField+50 {
+	if len([]rune(parsed.Command)) > util.MaxLogField+50 {
 		t.Errorf("Command not truncated: len=%d (%d runes)", len(parsed.Command), len([]rune(parsed.Command)))
 	}
 	if !strings.Contains(parsed.Command, "truncated 100 runes") {
@@ -188,7 +189,7 @@ func TestAuditCommandExecLongValuesTruncated(t *testing.T) {
 	}
 
 	// Reason should be truncated.
-	if len([]rune(parsed.Reason)) > maxLogField+50 {
+	if len([]rune(parsed.Reason)) > util.MaxLogField+50 {
 		t.Errorf("Reason not truncated: len=%d (%d runes)", len(parsed.Reason), len([]rune(parsed.Reason)))
 	}
 	if !strings.Contains(parsed.Reason, "truncated 100 runes") {
@@ -278,7 +279,7 @@ func TestAuditCommandExecJSONParsesBack(t *testing.T) {
 		t.Errorf("Decision = %q, want %q", parsed.Decision, entry.Decision)
 	}
 	if parsed.SandboxMode != entry.SandboxMode {
-		t.Errorf("SandboxMode = %q, want %q", parsed.SandboxMode, entry.SandboxMode)
+		t.Errorf("sandbox.SandboxMode = %q, want %q", parsed.SandboxMode, entry.SandboxMode)
 	}
 	if len(parsed.Args) != len(entry.Args) {
 		t.Errorf("Args len = %d, want %d", len(parsed.Args), len(entry.Args))

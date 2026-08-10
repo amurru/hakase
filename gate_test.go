@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/sandbox"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,8 +302,8 @@ func TestHardDenyBypassForms(t *testing.T) {
 // ---- Allowlist Tests ---- //
 
 func TestEvaluateCommandAllowlist(t *testing.T) {
-	sb := &SandboxConfig{
-		Mode:            SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode:            sandbox.SandboxModePaths,
 		Permissions:     map[string]string{"system_exec": "ask"},
 		AllowedCommands: []string{"ls", "cat", "echo"},
 	}
@@ -327,8 +328,8 @@ func TestEvaluateCommandAllowlist(t *testing.T) {
 
 func TestEvaluateCommandPermissionPrecedence(t *testing.T) {
 	// Deny permission overrides all.
-	sb := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "deny"},
 	}
 	dec := evaluateCommand(sb, "ls", nil)
@@ -337,8 +338,8 @@ func TestEvaluateCommandPermissionPrecedence(t *testing.T) {
 	}
 
 	// Hard-deny overrides allow.
-	sb = &SandboxConfig{
-		Mode:        SandboxModePaths,
+	sb = &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "allow"},
 	}
 	dec = evaluateCommand(sb, "rm -rf /", nil)
@@ -347,8 +348,8 @@ func TestEvaluateCommandPermissionPrecedence(t *testing.T) {
 	}
 
 	// Allow permission on safe command -> allow.
-	sb = &SandboxConfig{
-		Mode:        SandboxModePaths,
+	sb = &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "allow"},
 	}
 	dec = evaluateCommand(sb, "ls", nil)
@@ -362,8 +363,8 @@ func TestEvaluateCommandPermissionPrecedence(t *testing.T) {
 func TestEvaluateCommandThreshold(t *testing.T) {
 	// Paths mode default -> RiskMedium threshold.
 	// LOW commands (like ls) should be allowed.
-	sb := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 	dec := evaluateCommand(sb, "ls", nil)
@@ -379,8 +380,8 @@ func TestEvaluateCommandThreshold(t *testing.T) {
 
 	// Bubblewrap mode default -> RiskHigh threshold.
 	// MEDIUM commands should be allowed under bubblewrap.
-	sb = &SandboxConfig{
-		Mode:        SandboxModeBubblewrap,
+	sb = &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModeBubblewrap,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 	dec = evaluateCommand(sb, "curl https://example.com", nil)
@@ -395,8 +396,8 @@ func TestEvaluateCommandThreshold(t *testing.T) {
 	}
 
 	// Explicit threshold "low".
-	sb = &SandboxConfig{
-		Mode:          SandboxModePaths,
+	sb = &sandbox.SandboxConfig{
+		Mode:          sandbox.SandboxModePaths,
 		Permissions:   map[string]string{"system_exec": "ask"},
 		RiskThreshold: "low",
 	}
@@ -408,8 +409,8 @@ func TestEvaluateCommandThreshold(t *testing.T) {
 	// Explicit threshold "unknown" - only RiskUnknown commands ask, lower risks
 	// pass through because RiskLow(0) < RiskUnknown(3). The "unknown always asks"
 	// semantic is handled by step 5 (RiskUnknown -> ActionAsk), not by threshold.
-	sb = &SandboxConfig{
-		Mode:          SandboxModePaths,
+	sb = &sandbox.SandboxConfig{
+		Mode:          sandbox.SandboxModePaths,
 		Permissions:   map[string]string{"system_exec": "ask"},
 		RiskThreshold: "unknown",
 	}
@@ -419,8 +420,8 @@ func TestEvaluateCommandThreshold(t *testing.T) {
 	}
 
 	// Off mode -> RiskMedium threshold.
-	sb = &SandboxConfig{
-		Mode:        SandboxModeOff,
+	sb = &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModeOff,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 	dec = evaluateCommand(sb, "ls", nil)
@@ -438,8 +439,8 @@ func TestEvaluateCommandThreshold(t *testing.T) {
 // ---- UNKNOWN Always Asks ---- //
 
 func TestEvaluateCommandUnknownAlwaysAsks(t *testing.T) {
-	sb := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "allow"},
 	}
 
@@ -453,7 +454,7 @@ func TestEvaluateCommandUnknownAlwaysAsks(t *testing.T) {
 	}
 
 	// Even with bubblewrap (threshold=high), unknown still asks.
-	sb.Mode = SandboxModeBubblewrap
+	sb.Mode = sandbox.SandboxModeBubblewrap
 	dec = evaluateCommand(sb, "custom_script.sh", nil)
 	if dec.Action != ActionAsk {
 		t.Errorf("unknown binary should ask even under bubblewrap, got %s", dec.Action)
@@ -469,8 +470,8 @@ func TestEvaluateCommandUnknownAlwaysAsks(t *testing.T) {
 // ---- DenyPatterns Tests ---- //
 
 func TestEvaluateCommandDenyPatterns(t *testing.T) {
-	sb := &SandboxConfig{
-		Mode:         SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode:         sandbox.SandboxModePaths,
 		Permissions:  map[string]string{"system_exec": "ask"},
 		DenyPatterns: []string{"reboot", "shutdown"},
 	}
@@ -604,43 +605,43 @@ func TestEffectiveRiskThreshold(t *testing.T) {
 	}
 
 	// Off mode -> RiskMedium.
-	sb := &SandboxConfig{Mode: SandboxModeOff}
+	sb := &sandbox.SandboxConfig{Mode: sandbox.SandboxModeOff}
 	if got := effectiveRiskThreshold(sb); got != RiskMedium {
 		t.Errorf("off mode -> RiskMedium, got %s", got)
 	}
 
 	// Paths mode -> RiskMedium.
-	sb = &SandboxConfig{Mode: SandboxModePaths}
+	sb = &sandbox.SandboxConfig{Mode: sandbox.SandboxModePaths}
 	if got := effectiveRiskThreshold(sb); got != RiskMedium {
 		t.Errorf("paths mode -> RiskMedium, got %s", got)
 	}
 
 	// Bubblewrap mode -> RiskHigh.
-	sb = &SandboxConfig{Mode: SandboxModeBubblewrap}
+	sb = &sandbox.SandboxConfig{Mode: sandbox.SandboxModeBubblewrap}
 	if got := effectiveRiskThreshold(sb); got != RiskHigh {
 		t.Errorf("bubblewrap mode -> RiskHigh, got %s", got)
 	}
 
 	// Explicit "low" overrides mode.
-	sb = &SandboxConfig{Mode: SandboxModeBubblewrap, RiskThreshold: "low"}
+	sb = &sandbox.SandboxConfig{Mode: sandbox.SandboxModeBubblewrap, RiskThreshold: "low"}
 	if got := effectiveRiskThreshold(sb); got != RiskLow {
 		t.Errorf("explicit low > RiskLow, got %s", got)
 	}
 
 	// Explicit "high" overrides mode.
-	sb = &SandboxConfig{Mode: SandboxModePaths, RiskThreshold: "high"}
+	sb = &sandbox.SandboxConfig{Mode: sandbox.SandboxModePaths, RiskThreshold: "high"}
 	if got := effectiveRiskThreshold(sb); got != RiskHigh {
 		t.Errorf("explicit high > RiskHigh, got %s", got)
 	}
 
 	// Explicit "unknown".
-	sb = &SandboxConfig{Mode: SandboxModePaths, RiskThreshold: "unknown"}
+	sb = &sandbox.SandboxConfig{Mode: sandbox.SandboxModePaths, RiskThreshold: "unknown"}
 	if got := effectiveRiskThreshold(sb); got != RiskUnknown {
 		t.Errorf("explicit unknown > RiskUnknown, got %s", got)
 	}
 
 	// Invalid explicit threshold -> RiskMedium.
-	sb = &SandboxConfig{Mode: SandboxModePaths, RiskThreshold: "invalid"}
+	sb = &sandbox.SandboxConfig{Mode: sandbox.SandboxModePaths, RiskThreshold: "invalid"}
 	if got := effectiveRiskThreshold(sb); got != RiskMedium {
 		t.Errorf("invalid explicit threshold -> RiskMedium, got %s", got)
 	}
@@ -662,8 +663,8 @@ func TestEvaluateCommandEdgeCases(t *testing.T) {
 	}
 
 	// Explicit args form - deny beats allow.
-	sb := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "allow"},
 	}
 	dec = evaluateCommand(sb, "rm", []string{"-rf", "/"})
@@ -701,21 +702,21 @@ func TestSymlinkBypass(t *testing.T) {
 	}
 
 	// Helper sandboxes.
-	paths := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	paths := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
-	bwrap := &SandboxConfig{
-		Mode:        SandboxModeBubblewrap,
+	bwrap := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModeBubblewrap,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
-	off := &SandboxConfig{
-		Mode:        SandboxModeOff,
+	off := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModeOff,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 	sandboxes := []struct {
 		name string
-		sb   *SandboxConfig
+		sb   *sandbox.SandboxConfig
 	}{
 		{"off", off},
 		{"paths", paths},
@@ -760,12 +761,12 @@ func TestSymlinkBypass(t *testing.T) {
 
 // TestInterpreterEscalation verifies interpreter opaque-code escalation (12.2).
 func TestInterpreterEscalation(t *testing.T) {
-	paths := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	paths := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
-	bwrap := &SandboxConfig{
-		Mode:        SandboxModeBubblewrap,
+	bwrap := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModeBubblewrap,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 
@@ -859,8 +860,8 @@ func TestInterpreterEscalation(t *testing.T) {
 
 // TestScriptContentScan verifies heuristic script-content scanning (12.3).
 func TestScriptContentScan(t *testing.T) {
-	paths := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	paths := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 
@@ -1035,12 +1036,12 @@ func TestResolveBinaryBase(t *testing.T) {
 
 // TestGateRegression verifies existing behavior is preserved after hardening.
 func TestGateRegression(t *testing.T) {
-	paths := &SandboxConfig{
-		Mode:        SandboxModePaths,
+	paths := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
-	bwrap := &SandboxConfig{
-		Mode:        SandboxModeBubblewrap,
+	bwrap := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModeBubblewrap,
 		Permissions: map[string]string{"system_exec": "ask"},
 	}
 
@@ -1113,15 +1114,15 @@ func TestGateRegression(t *testing.T) {
 	}
 
 	// Permission precedence: deny > hard-deny > allow.
-	sb := &SandboxConfig{Mode: SandboxModePaths, Permissions: map[string]string{"system_exec": "deny"}}
+	sb := &sandbox.SandboxConfig{Mode: sandbox.SandboxModePaths, Permissions: map[string]string{"system_exec": "deny"}}
 	dec = evaluateCommand(sb, "ls", nil)
 	if dec.Action != ActionDeny {
 		t.Errorf("deny permission should deny ls, got %s", dec.Action)
 	}
 
 	// Allowlist.
-	sb = &SandboxConfig{
-		Mode:            SandboxModePaths,
+	sb = &sandbox.SandboxConfig{
+		Mode:            sandbox.SandboxModePaths,
 		Permissions:     map[string]string{"system_exec": "ask"},
 		AllowedCommands: []string{"ls", "cat"},
 	}
@@ -1135,8 +1136,8 @@ func TestGateRegression(t *testing.T) {
 	}
 
 	// DenyPatterns.
-	sb = &SandboxConfig{
-		Mode:         SandboxModePaths,
+	sb = &sandbox.SandboxConfig{
+		Mode:         sandbox.SandboxModePaths,
 		Permissions:  map[string]string{"system_exec": "ask"},
 		DenyPatterns: []string{"reboot"},
 	}

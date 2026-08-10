@@ -12,6 +12,7 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
 	"math"
 	"sort"
 	"strings"
@@ -95,8 +96,8 @@ func buildBM25Corpus(idx *KnowledgeIndex) *bm25Corpus {
 	for _, note := range idx.BySlug {
 		docTerms := make(map[string]bool)
 		for _, f := range searchFields {
-			counts := tokenCounts(fieldText(note, f.name))
-			fieldTotals[f.name] += len(tokenize(fieldText(note, f.name)))
+			counts := hctx.TokenCounts(fieldText(note, f.name))
+			fieldTotals[f.name] += len(hctx.Tokenize(fieldText(note, f.name)))
 			for t := range counts {
 				docTerms[t] = true
 			}
@@ -119,7 +120,7 @@ func buildBM25Corpus(idx *KnowledgeIndex) *bm25Corpus {
 func noteFieldCounts(n *KnowledgeNote) map[string]int {
 	counts := make(map[string]int, len(searchFields))
 	for _, f := range searchFields {
-		counts[f.name] = len(tokenize(fieldText(n, f.name)))
+		counts[f.name] = len(hctx.Tokenize(fieldText(n, f.name)))
 	}
 	return counts
 }
@@ -129,7 +130,7 @@ func noteFieldCounts(n *KnowledgeNote) map[string]int {
 func noteTermCounts(n *KnowledgeNote) map[string]map[string]int {
 	byField := make(map[string]map[string]int, len(searchFields))
 	for _, f := range searchFields {
-		byField[f.name] = tokenCounts(fieldText(n, f.name))
+		byField[f.name] = hctx.TokenCounts(fieldText(n, f.name))
 	}
 	return byField
 }
@@ -139,7 +140,7 @@ func noteTermCounts(n *KnowledgeNote) map[string]map[string]int {
 // the note title as tiebreaker. When the query tokenizes to nothing, all
 // scores are 0 and the order is purely alphabetical (matches the old sort).
 func scoreKnowledge(idx *KnowledgeIndex, query string, notes []KnowledgeNote) []ScoredKnowledgeNote {
-	terms := tokenize(query)
+	terms := hctx.Tokenize(query)
 	out := make([]ScoredKnowledgeNote, 0, len(notes))
 	if len(terms) == 0 {
 		for _, n := range notes {

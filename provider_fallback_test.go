@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"context"
 	"fmt"
 	"iter"
@@ -28,11 +29,11 @@ func (s *stubProvider) CreateModel(ctx context.Context, modelName, apiKey string
 	return s, nil
 }
 
-func (s *stubProvider) ValidateConfig(cfg *Config) error { return nil }
+func (s *stubProvider) ValidateConfig(cfg *config.Config) error { return nil }
 
 func (s *stubProvider) GetDefaultModel() string { return "stub-model" }
 
-func (s *stubProvider) GetModelInfo(ctx context.Context, cfg *Config, modelName string) (*ModelInfo, error) {
+func (s *stubProvider) GetModelInfo(ctx context.Context, cfg *config.Config, modelName string) (*ModelInfo, error) {
 	return &ModelInfo{Name: modelName, ContextWindow: 128000}, nil
 }
 
@@ -77,7 +78,7 @@ func TestFallbackOnFirstError(t *testing.T) {
 	fallbackResp := resp()
 	primary := &stubProvider{name: "primary", genErr: fmt.Errorf("primary down")}
 	fallback := &stubProvider{name: "fallback", responses: []*model.LLMResponse{fallbackResp}}
-	fm := &FallbackModel{cfg: &Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
+	fm := &FallbackModel{cfg: &config.Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
 
 	responses, err := collectFallback(fm, false)
 	if err != nil {
@@ -103,7 +104,7 @@ func TestNoFallbackWhenPrimarySucceeds(t *testing.T) {
 	fallbackResp := resp()
 	primary := &stubProvider{name: "primary", responses: []*model.LLMResponse{p1, p2}}
 	fallback := &stubProvider{name: "fallback", responses: []*model.LLMResponse{fallbackResp}}
-	fm := &FallbackModel{cfg: &Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
+	fm := &FallbackModel{cfg: &config.Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
 
 	responses, err := collectFallback(fm, true)
 	if err != nil {
@@ -122,7 +123,7 @@ func TestNoFallbackWhenPrimarySucceeds(t *testing.T) {
 func TestAllProvidersFailed(t *testing.T) {
 	primary := &stubProvider{name: "primary", genErr: fmt.Errorf("primary down")}
 	fallback := &stubProvider{name: "fallback", genErr: fmt.Errorf("fallback down")}
-	fm := &FallbackModel{cfg: &Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
+	fm := &FallbackModel{cfg: &config.Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
 
 	responses, err := collectFallback(fm, false)
 	if err == nil {
@@ -144,7 +145,7 @@ func TestFallbackOnCreateModelError(t *testing.T) {
 	fallbackResp := resp()
 	primary := &stubProvider{name: "primary", err: fmt.Errorf("create failed")}
 	fallback := &stubProvider{name: "fallback", responses: []*model.LLMResponse{fallbackResp}}
-	fm := &FallbackModel{cfg: &Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
+	fm := &FallbackModel{cfg: &config.Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
 
 	responses, err := collectFallback(fm, false)
 	if err != nil {
@@ -163,7 +164,7 @@ func TestFallbackOnEmptyStream(t *testing.T) {
 	fallbackResp := resp()
 	primary := &stubProvider{name: "primary", responses: nil}
 	fallback := &stubProvider{name: "fallback", responses: []*model.LLMResponse{fallbackResp}}
-	fm := &FallbackModel{cfg: &Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
+	fm := &FallbackModel{cfg: &config.Config{Provider: "gemini"}, providers: []LLMProvider{primary, fallback}}
 
 	responses, err := collectFallback(fm, false)
 	if err != nil {
@@ -180,7 +181,7 @@ func TestFallbackOnEmptyStream(t *testing.T) {
 // NewFallbackModel resolves fallback names through ProviderFactory, skipping
 // broken ones, and errors when nothing can be built.
 func TestNewFallbackModel(t *testing.T) {
-	fm, err := NewFallbackModel(&Config{
+	fm, err := NewFallbackModel(&config.Config{
 		Provider:          "gemini",
 		FallbackProviders: []string{"bogus-provider", "openai"},
 	})
@@ -194,7 +195,7 @@ func TestNewFallbackModel(t *testing.T) {
 		t.Errorf("Name: expected %q, got %q", "fallback(gemini)", got)
 	}
 
-	if _, err := NewFallbackModel(&Config{Provider: "bogus-primary"}); err == nil {
+	if _, err := NewFallbackModel(&config.Config{Provider: "bogus-primary"}); err == nil {
 		t.Error("NewFallbackModel with unsupported primary: expected error, got nil")
 	}
 }

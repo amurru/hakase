@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
 	"strings"
@@ -748,12 +749,12 @@ func TestEnterWhileProcessingQueuesInsteadOfDropping(t *testing.T) {
 	model, _ := m.Update(keyMsg("enter"))
 	mm := model.(*appModel)
 
-	if mm.pendingQueue.len() != 1 {
-		t.Fatalf("pendingQueue len = %d, want 1", mm.pendingQueue.len())
+	if mm.pendingQueue.Len() != 1 {
+		t.Fatalf("pendingQueue len = %d, want 1", mm.pendingQueue.Len())
 	}
-	got := mm.pendingQueue.snapshot()
-	if got[0].text != "steer me" {
-		t.Fatalf("queued text = %q, want %q", got[0].text, "steer me")
+	got := mm.pendingQueue.Snapshot()
+	if got[0].Text != "steer me" {
+		t.Fatalf("queued text = %q, want %q", got[0].Text, "steer me")
 	}
 	if mm.input.Value() != "" {
 		t.Fatalf("input should be cleared after queueing, got %q", mm.input.Value())
@@ -776,8 +777,8 @@ func TestEnterWhileIdleStillSends(t *testing.T) {
 	model, _ := m.Update(keyMsg("enter"))
 	mm := model.(*appModel)
 
-	if mm.pendingQueue.len() != 0 {
-		t.Fatalf("idle Enter must not queue, got %d queued", mm.pendingQueue.len())
+	if mm.pendingQueue.Len() != 0 {
+		t.Fatalf("idle Enter must not queue, got %d queued", mm.pendingQueue.Len())
 	}
 	if len(mm.chatHistory) != 1 || mm.chatHistory[0].Role != "user" {
 		t.Fatalf("chat history should contain the sent user message, got %+v", mm.chatHistory)
@@ -798,29 +799,29 @@ func TestQueuedMessageDrainsIntoFreshRun(t *testing.T) {
 	model, _ = mm.Update(keyMsg("enter"))
 	mm = model.(*appModel)
 
-	if mm.pendingQueue.len() != 2 {
-		t.Fatalf("setup: want 2 queued, got %d", mm.pendingQueue.len())
+	if mm.pendingQueue.Len() != 2 {
+		t.Fatalf("setup: want 2 queued, got %d", mm.pendingQueue.Len())
 	}
 
 	// Run 1 completes: drains "first" into a fresh run, keeps processing.
 	model, _ = mm.Update(agentDoneMsg{})
 	mm = model.(*appModel)
-	if mm.pendingQueue.len() != 1 {
-		t.Fatalf("after first done: queue len = %d, want 1", mm.pendingQueue.len())
+	if mm.pendingQueue.Len() != 1 {
+		t.Fatalf("after first done: queue len = %d, want 1", mm.pendingQueue.Len())
 	}
 	if !mm.isProcessing {
 		t.Fatal("isProcessing must stay true while the queue drains")
 	}
-	got := mm.pendingQueue.snapshot()
-	if got[0].text != "second" {
-		t.Fatalf("FIFO violation: next queued = %q, want %q", got[0].text, "second")
+	got := mm.pendingQueue.Snapshot()
+	if got[0].Text != "second" {
+		t.Fatalf("FIFO violation: next queued = %q, want %q", got[0].Text, "second")
 	}
 
 	// Run 2 completes: drains "second".
 	model, _ = mm.Update(agentDoneMsg{})
 	mm = model.(*appModel)
-	if mm.pendingQueue.len() != 0 {
-		t.Fatalf("after second done: queue len = %d, want 0", mm.pendingQueue.len())
+	if mm.pendingQueue.Len() != 0 {
+		t.Fatalf("after second done: queue len = %d, want 0", mm.pendingQueue.Len())
 	}
 	if !mm.isProcessing {
 		t.Fatal("isProcessing stays true while the chained run is active")
@@ -899,8 +900,8 @@ func TestAgentDonePersistsAllRunMessages(t *testing.T) {
 func TestHintBarShowsQueuedCount(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.pendingQueue.push(queuedPrompt{text: "a"})
-	m.pendingQueue.push(queuedPrompt{text: "b"})
+	m.pendingQueue.Push(util.QueuedPrompt{Text: "a"})
+	m.pendingQueue.Push(util.QueuedPrompt{Text: "b"})
 
 	view := m.hintBar()
 	if !strings.Contains(view, "2 queued") {
@@ -916,11 +917,11 @@ func TestHintBarShowsQueuedCount(t *testing.T) {
 func TestSingleEscArmsWithoutInterrupting(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.runCtrl.setCancel(func() {})
+	m.runCtrl.SetCancel(func() {})
 
 	model, _ := m.Update(keyMsg("esc"))
 	mm := model.(*appModel)
-	if mm.runCtrl.wasInterrupted() {
+	if mm.runCtrl.WasInterrupted() {
 		t.Fatal("single esc must not interrupt - it only arms the double-press")
 	}
 	if mm.escArmedAt.IsZero() {
@@ -933,14 +934,14 @@ func TestSingleEscArmsWithoutInterrupting(t *testing.T) {
 func TestEscInterruptsActiveRunOnDoublePress(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.runCtrl.setCancel(func() {})
+	m.runCtrl.SetCancel(func() {})
 
 	// First press arms; second press within the window interrupts.
 	model, _ := m.Update(keyMsg("esc"))
 	mm := model.(*appModel)
 	model, _ = mm.Update(keyMsg("esc"))
 	mm = model.(*appModel)
-	if !mm.runCtrl.wasInterrupted() {
+	if !mm.runCtrl.WasInterrupted() {
 		t.Fatal("double esc within window should interrupt the run")
 	}
 	if !mm.escArmedAt.IsZero() {
@@ -954,7 +955,7 @@ func TestEscInterruptsActiveRunOnDoublePress(t *testing.T) {
 func TestEscArmTimeoutDisarms(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.runCtrl.setCancel(func() {})
+	m.runCtrl.SetCancel(func() {})
 
 	model, _ := m.Update(keyMsg("esc"))
 	mm := model.(*appModel)
@@ -969,14 +970,14 @@ func TestEscArmTimeoutDisarms(t *testing.T) {
 	if !mm.escArmedAt.IsZero() {
 		t.Fatal("timeout should disarm the armed state")
 	}
-	if mm.runCtrl.wasInterrupted() {
+	if mm.runCtrl.WasInterrupted() {
 		t.Fatal("timeout alone must not interrupt")
 	}
 
 	// A later single Esc re-arms (not interrupt).
 	model, _ = mm.Update(keyMsg("esc"))
 	mm = model.(*appModel)
-	if mm.runCtrl.wasInterrupted() {
+	if mm.runCtrl.WasInterrupted() {
 		t.Fatal("esc after timeout must re-arm, not interrupt")
 	}
 	if mm.escArmedAt.IsZero() {
@@ -990,7 +991,7 @@ func TestEscArmTimeoutDisarms(t *testing.T) {
 func TestEscStaleTimeoutDoesNotClearNewArm(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.runCtrl.setCancel(func() {})
+	m.runCtrl.SetCancel(func() {})
 
 	model, _ := m.Update(keyMsg("esc"))
 	mm := model.(*appModel)
@@ -1002,10 +1003,10 @@ func TestEscStaleTimeoutDoesNotClearNewArm(t *testing.T) {
 	// Interrupt (clears armed), then re-arm with a fresh press.
 	model, _ = mm.Update(keyMsg("esc"))
 	mm = model.(*appModel)
-	if !mm.runCtrl.wasInterrupted() {
+	if !mm.runCtrl.WasInterrupted() {
 		t.Fatal("test setup: second esc should interrupt")
 	}
-	mm.runCtrl.consumeInterrupt() // simulate agentDoneMsg consuming the flag
+	mm.runCtrl.ConsumeInterrupt() // simulate agentDoneMsg consuming the flag
 	model, _ = mm.Update(keyMsg("esc"))
 	mm = model.(*appModel)
 	newArm := mm.escArmedAt
@@ -1026,7 +1027,7 @@ func TestEscStaleTimeoutDoesNotClearNewArm(t *testing.T) {
 func TestEscAgentDoneClearsArmedState(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.runCtrl.setCancel(func() {})
+	m.runCtrl.SetCancel(func() {})
 
 	model, _ := m.Update(keyMsg("esc"))
 	mm := model.(*appModel)
@@ -1046,7 +1047,7 @@ func TestEscIdleIsNoOp(t *testing.T) {
 	m := newTestModel(t)
 	model, cmd := m.Update(keyMsg("esc"))
 	mm := model.(*appModel)
-	if mm.runCtrl.wasInterrupted() {
+	if mm.runCtrl.WasInterrupted() {
 		t.Fatal("esc with idle agent must not interrupt")
 	}
 	if cmd != nil {
@@ -1059,16 +1060,16 @@ func TestEscIdleIsNoOp(t *testing.T) {
 func TestInterruptWithQueueMergesIntoOneTurn(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.pendingQueue.push(queuedPrompt{text: "stop X"})
-	m.pendingQueue.push(queuedPrompt{text: "do Y"})
+	m.pendingQueue.Push(util.QueuedPrompt{Text: "stop X"})
+	m.pendingQueue.Push(util.QueuedPrompt{Text: "do Y"})
 
 	// Simulate the interrupt flag set by Esc, then the run completing.
-	m.runCtrl.interrupt()
+	m.runCtrl.Interrupt()
 	model, _ := m.Update(agentDoneMsg{})
 	mm := model.(*appModel)
 
-	if mm.pendingQueue.len() != 0 {
-		t.Fatalf("interrupt drain must empty the queue, got %d", mm.pendingQueue.len())
+	if mm.pendingQueue.Len() != 0 {
+		t.Fatalf("interrupt drain must empty the queue, got %d", mm.pendingQueue.Len())
 	}
 	// The merged turn is launched as a fresh run (isProcessing stays true).
 	if !mm.isProcessing {
@@ -1092,7 +1093,7 @@ func TestInterruptWithQueueMergesIntoOneTurn(t *testing.T) {
 func TestInterruptEmptyQueueShowsNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.isProcessing = true
-	m.runCtrl.interrupt()
+	m.runCtrl.Interrupt()
 
 	model, _ := m.Update(agentDoneMsg{})
 	mm := model.(*appModel)

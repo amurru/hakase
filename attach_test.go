@@ -1,6 +1,9 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/session"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -172,10 +175,10 @@ func TestAttachMentionRejectsMissingFile(t *testing.T) {
 
 func TestAttachMentionRejectsOutsideSandbox(t *testing.T) {
 	root := t.TempDir()
-	sb := LoadSandboxConfig(&SandboxJSON{Mode: "paths", WorkspaceRoots: []string{root}})
-	old := currentSandbox
-	currentSandbox = sb
-	t.Cleanup(func() { currentSandbox = old })
+	sb := sandbox.LoadSandboxConfig(&sandbox.SandboxJSON{Mode: "paths", WorkspaceRoots: []string{root}})
+	old := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = sb
+	t.Cleanup(func() { sandbox.CurrentSandbox = old })
 
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	writeFileOrFail(t, outside, "s")
@@ -290,10 +293,10 @@ func TestMessageToContentWithAttachments(t *testing.T) {
 	txt := filepath.Join(dir, "note.txt")
 	writeFileOrFail(t, txt, "file text")
 
-	c := messageToContent(Message{
+	c := hctx.MessageToContent(session.Message{
 		Role:    "user",
 		Content: "see",
-		Attachments: []AttachmentRef{
+		Attachments: []session.AttachmentRef{
 			{Name: "img.png", Path: img, MIME: "image/png", Label: "[image 1]"},
 			{Name: "note.txt", Path: txt, MIME: "text/plain", Label: "@note.txt"},
 		},
@@ -313,10 +316,10 @@ func TestMessageToContentWithAttachments(t *testing.T) {
 }
 
 func TestMessageToContentSkipsMissingAttachmentFile(t *testing.T) {
-	c := messageToContent(Message{
+	c := hctx.MessageToContent(session.Message{
 		Role:        "user",
 		Content:     "hi",
-		Attachments: []AttachmentRef{{Name: "gone.png", Path: filepath.Join(t.TempDir(), "gone.png"), MIME: "image/png"}},
+		Attachments: []session.AttachmentRef{{Name: "gone.png", Path: filepath.Join(t.TempDir(), "gone.png"), MIME: "image/png"}},
 	})
 	if len(c.Parts) != 1 || c.Parts[0].Text != "hi" {
 		t.Fatalf("missing attachment file must be skipped, got %+v", c.Parts)
@@ -324,22 +327,22 @@ func TestMessageToContentSkipsMissingAttachmentFile(t *testing.T) {
 }
 
 func TestCurrentUserMessageMatches(t *testing.T) {
-	att := []AttachmentRef{{Name: "x", Path: "/x", MIME: "image/png"}}
+	att := []session.AttachmentRef{{Name: "x", Path: "/x", MIME: "image/png"}}
 
 	cases := []struct {
-		msg  Message
+		msg  session.Message
 		text string
 		want bool
 	}{
-		{Message{Role: "user", Content: "hi"}, "hi", true},
-		{Message{Role: "user", Content: "hi"}, "hi\nattached", false}, // different text, no attachments
-		{Message{Role: "user", Content: "hi", Attachments: att}, "hi\nfile content", true},
-		{Message{Role: "user", Content: "", Attachments: att}, "", true}, // image-only
-		{Message{Role: "user", Content: "old"}, "new", false},
-		{Message{Role: "user", Content: "old", Attachments: att}, "different", false},
+		{session.Message{Role: "user", Content: "hi"}, "hi", true},
+		{session.Message{Role: "user", Content: "hi"}, "hi\nattached", false}, // different text, no attachments
+		{session.Message{Role: "user", Content: "hi", Attachments: att}, "hi\nfile content", true},
+		{session.Message{Role: "user", Content: "", Attachments: att}, "", true}, // image-only
+		{session.Message{Role: "user", Content: "old"}, "new", false},
+		{session.Message{Role: "user", Content: "old", Attachments: att}, "different", false},
 	}
 	for _, c := range cases {
-		if got := currentUserMessageMatches(c.msg, c.text); got != c.want {
+		if got := hctx.CurrentUserMessageMatches(c.msg, c.text); got != c.want {
 			t.Fatalf("currentUserMessageMatches(%q, %q) = %v, want %v", c.msg.Content, c.text, got, c.want)
 		}
 	}

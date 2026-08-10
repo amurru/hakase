@@ -1,6 +1,8 @@
 package main
 
 import (
+	"amurru/hakase/internal/util"
+	"amurru/hakase/internal/config"
 	"fmt"
 	"time"
 
@@ -24,7 +26,7 @@ type ClarifyResponse struct {
 }
 
 // ClarifyInput is the schema for the clarify tool as seen by the model.
-// doc tags are injected into the inferred JSON schema by newDocTool.
+// doc tags are injected into the inferred JSON schema by util.NewDocTool.
 type ClarifyInput struct {
 	Question    string   `json:"question" doc:"The question to ask the user (required)."`
 	Choices     []string `json:"choices,omitempty" doc:"Optional predefined answer choices (up to 4). Omit for an open-ended question."`
@@ -46,7 +48,7 @@ var askClarify func(req ClarifyRequest) (ClarifyResponse, error)
 
 // currentClarify holds the runtime clarify configuration, set in setupRunner
 // like currentApproval. Zero value is safe: defaults to 120s expiry.
-var currentClarify ClarifyConfig
+var currentClarify config.ClarifyConfig
 
 // clarifyTimeout returns the configured clarify expiry duration. Defaults to
 // 120 seconds when not configured (0/negative). A question deserves longer than
@@ -70,7 +72,7 @@ func clarifyExec(req ClarifyRequest) (ClarifyResponse, error) {
 // registerClarifyTool creates the clarify function tool registered on the
 // orchestrator agent. The model calls it to ask the user a mid-task question.
 func registerClarifyTool() (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name: "clarify",
 		Description: "Pause and ask the user a question mid-task. Use when you need " +
 			"user input, a preference, or a decision that you cannot infer. Provide up " +

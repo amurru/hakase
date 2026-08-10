@@ -8,6 +8,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -269,7 +270,7 @@ func runSkillList(args []string) int {
 
 	// Custom skill dirs come from config.json. A config error only degrades
 	// discovery to the standard locations; the command still succeeds.
-	cfg, err := loadConfig("config.json")
+	cfg, err := config.LoadConfig("config.json")
 	var skillDirs []string
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cannot load config.json: %v (continuing with default skill dirs)\n", err)

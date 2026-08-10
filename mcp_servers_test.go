@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"context"
 	"encoding/json"
 	"os"
@@ -28,9 +29,9 @@ func (mcpTestCtx) AppName() string                      { return "hakase" }
 func (mcpTestCtx) SessionID() string                    { return "test" }
 func (mcpTestCtx) Branch() string                       { return "" }
 
-// mcpTestConfig returns a Config with the given project-scope MCP servers.
-func mcpTestConfig(servers map[string]*MCPServerConfig) *Config {
-	return &Config{MCPServers: MCPConfig{Servers: servers}}
+// mcpTestConfig returns a config.Config with the given project-scope MCP servers.
+func mcpTestConfig(servers map[string]*config.MCPServerConfig) *config.Config {
+	return &config.Config{MCPServers: config.MCPConfig{Servers: servers}}
 }
 
 // mcpTestIsolate points the user registry at a fresh temp HAKASE_HOME and
@@ -38,15 +39,15 @@ func mcpTestConfig(servers map[string]*MCPServerConfig) *Config {
 func mcpTestIsolate(t *testing.T) {
 	t.Helper()
 	t.Setenv("HAKASE_HOME", t.TempDir())
-	mcpRegistryFile = ""
-	t.Cleanup(func() { mcpRegistryFile = "" })
+	config.MCPRegistryFile = ""
+	t.Cleanup(func() { config.MCPRegistryFile = "" })
 	currentMCPManager = nil
 	t.Cleanup(func() { currentMCPManager = nil })
 }
 
 func TestMCPServerManagerListServers(t *testing.T) {
 	mcpTestIsolate(t)
-	cfg := mcpTestConfig(map[string]*MCPServerConfig{
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
 		"github": {
 			Type:    "stdio",
 			Command: []string{"npx", "-y", "@github/mcp-server"},
@@ -92,7 +93,7 @@ func TestMCPServerManagerToolsResilience(t *testing.T) {
 	// A stdio server whose command does not exist must not fail the model
 	// call: Tools returns no error and the server is marked failed.
 	mcpTestIsolate(t)
-	cfg := mcpTestConfig(map[string]*MCPServerConfig{
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
 		"broken": {
 			Type:    "stdio",
 			Command: []string{"/nonexistent/mcp-server-binary"},
@@ -126,7 +127,7 @@ func TestMCPServerManagerToolsResilience(t *testing.T) {
 
 func TestMCPServerManagerDisabledServerYieldsNoTools(t *testing.T) {
 	mcpTestIsolate(t)
-	cfg := mcpTestConfig(map[string]*MCPServerConfig{
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
 		"off": {
 			Type:     "stdio",
 			Command:  []string{"/nonexistent/mcp-server-binary"},
@@ -155,7 +156,7 @@ func TestMCPServerManagerDisabledServerYieldsNoTools(t *testing.T) {
 
 func TestMCPServerManagerSetDisabled(t *testing.T) {
 	mcpTestIsolate(t)
-	cfg := mcpTestConfig(map[string]*MCPServerConfig{
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
 		"github": {
 			Type:    "stdio",
 			Command: []string{"npx", "-y", "@github/mcp-server"},
@@ -203,7 +204,7 @@ func TestMCPServerManagerSetDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading user registry: %v", err)
 	}
-	var reg MCPUserRegistry
+	var reg config.MCPUserRegistry
 	if err := json.Unmarshal(data, &reg); err != nil {
 		t.Fatalf("parsing user registry: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestMCPToolName(t *testing.T) {
 }
 
 func TestAllowsMCPTool(t *testing.T) {
-	exclude := &MCPServerConfig{Tools: &MCPServerToolsConfig{Exclude: []string{"mcp_github_delete_repo"}}}
+	exclude := &config.MCPServerConfig{Tools: &config.MCPServerToolsConfig{Exclude: []string{"mcp_github_delete_repo"}}}
 	if allowsMCPTool(exclude, "mcp_github_list_repos") != true {
 		t.Error("non-excluded tool should pass")
 	}
@@ -247,7 +248,7 @@ func TestAllowsMCPTool(t *testing.T) {
 		t.Error("excluded tool should be blocked")
 	}
 
-	include := &MCPServerConfig{Tools: &MCPServerToolsConfig{Include: []string{"mcp_github_list_repos"}}}
+	include := &config.MCPServerConfig{Tools: &config.MCPServerToolsConfig{Include: []string{"mcp_github_list_repos"}}}
 	if allowsMCPTool(include, "mcp_github_list_repos") != true {
 		t.Error("included tool should pass")
 	}
@@ -255,7 +256,7 @@ func TestAllowsMCPTool(t *testing.T) {
 		t.Error("non-included tool should be blocked")
 	}
 
-	both := &MCPServerConfig{Tools: &MCPServerToolsConfig{
+	both := &config.MCPServerConfig{Tools: &config.MCPServerToolsConfig{
 		Include: []string{"mcp_github_*"},
 		Exclude: []string{"mcp_github_delete_repo"},
 	}}

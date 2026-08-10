@@ -3,6 +3,7 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
 	"context"
 	"os"
 	"strings"
@@ -24,14 +25,14 @@ func TestTokenize(t *testing.T) {
 		{"C++ & Go!", []string{"go"}}, // single-rune tokens are dropped by design
 	}
 	for _, c := range cases {
-		got := tokenize(c.in)
+		got := hctx.Tokenize(c.in)
 		if len(got) != len(c.want) {
-			t.Errorf("tokenize(%q) = %v, want %v", c.in, got, c.want)
+			t.Errorf("hctx.Tokenize(%q) = %v, want %v", c.in, got, c.want)
 			continue
 		}
 		for i := range got {
 			if got[i] != c.want[i] {
-				t.Errorf("tokenize(%q) = %v, want %v", c.in, got, c.want)
+				t.Errorf("hctx.Tokenize(%q) = %v, want %v", c.in, got, c.want)
 				break
 			}
 		}
@@ -39,7 +40,7 @@ func TestTokenize(t *testing.T) {
 }
 
 func TestTokenCounts(t *testing.T) {
-	counts := tokenCounts("quantum quantum mechanics")
+	counts := hctx.TokenCounts("quantum quantum mechanics")
 	if counts["quantum"] != 2 || counts["mechanics"] != 1 {
 		t.Errorf("tokenCounts = %v", counts)
 	}

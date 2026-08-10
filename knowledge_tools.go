@@ -3,6 +3,8 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/util"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -257,7 +259,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	var tools []tool.Tool
 
 	// 1. save_knowledge
-	saveTool, err := newDocTool(functiontool.Config{
+	saveTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "save_knowledge",
 		Description: "Save a new knowledge note. The title is slugified into a filename. The note is enriched automatically: the configured summarization model produces structured data (summary, excerpt, tags, aliases, related notes, and metadata) in a strict JSON shape, with deterministic extraction as fallback. Existing notes that are genuinely related are auto-linked under a Related section (related frontmatter plus [[wikilinks]]). If the content or sources reference a GitHub repository (github.com/owner/repo), project metadata (owner, maintainers, stars, language, license) is captured from the GitHub API best-effort and stored in the note frontmatter. [[wikilinks]] in the content are resolved against existing notes; unresolved targets are reported as dangling links.",
 	}, func(ctx agent.Context, input SaveKnowledgeInput) (SaveKnowledgeOutput, error) {
@@ -403,7 +405,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, saveTool)
 
 	// 2. recall_knowledge
-	recallTool, err := newDocTool(functiontool.Config{
+	recallTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "recall_knowledge",
 		Description: "Recall a knowledge note by slug, basename, or alias. Returns full body, backlinks, related notes, and any dangling [[wikilinks]] in the note body.",
 	}, func(ctx agent.Context, input RecallKnowledgeInput) (RecallKnowledgeOutput, error) {
@@ -441,7 +443,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 		return RecallKnowledgeOutput{
 			Title:         note.Frontmatter.Title,
 			Slug:          note.Slug,
-			Content:       sanitizeContextContent(note.Body),
+			Content:       hctx.SanitizeContextContent(note.Body),
 			Summary:       note.Frontmatter.Summary,
 			Backlinks:     idx.Backlinks[note.Slug],
 			Related:       note.Frontmatter.Related,
@@ -459,7 +461,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, recallTool)
 
 	// 3. search_knowledge
-	searchTool, err := newDocTool(functiontool.Config{
+	searchTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "search_knowledge",
 		Description: "Search knowledge notes by case-insensitive substring over title, aliases, tags, summary, and body, ranked by relevance (BM25; title matches outrank body matches). Optional tag filter requires ALL tags to match. When search_expansion is enabled in config, the query is expanded via the summarization model into alternative phrasings (HyDE-lite) and results are fused.",
 	}, func(ctx agent.Context, input SearchKnowledgeInput) (SearchKnowledgeOutput, error) {
@@ -509,7 +511,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 				Tags:    n.Frontmatter.Tags,
 				Updated: n.Frontmatter.Updated,
 				Status:  n.Frontmatter.Status,
-				Snippet: sanitizeContextContent(snippet),
+				Snippet: hctx.SanitizeContextContent(snippet),
 			})
 		}
 
@@ -521,7 +523,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, searchTool)
 
 	// 4. update_knowledge
-	updateTool, err := newDocTool(functiontool.Config{
+	updateTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "update_knowledge",
 		Description: "Update an existing knowledge note. Replaces body and/or frontmatter fields. If content is empty and append_text is set, append_text is appended to the existing body.",
 	}, func(ctx agent.Context, input UpdateKnowledgeInput) (UpdateKnowledgeOutput, error) {
@@ -603,7 +605,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, updateTool)
 
 	// 5. link_knowledge
-	linkTool, err := newDocTool(functiontool.Config{
+	linkTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "link_knowledge",
 		Description: "Link two knowledge notes by adding a [[wikilink]] from one to the other. If the target does not exist, the link is NOT written and the target is reported as dangling.",
 	}, func(ctx agent.Context, input LinkKnowledgeInput) (LinkKnowledgeOutput, error) {
@@ -684,7 +686,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, linkTool)
 
 	// 6. cite_knowledge
-	citeTool, err := newDocTool(functiontool.Config{
+	citeTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "cite_knowledge",
 		Description: "Generate an anthropic-style footnote citation for a knowledge note.",
 	}, func(ctx agent.Context, input CiteKnowledgeInput) (CiteKnowledgeOutput, error) {
@@ -734,7 +736,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, citeTool)
 
 	// 7. list_knowledge
-	listTool, err := newDocTool(functiontool.Config{
+	listTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "list_knowledge",
 		Description: "List all knowledge notes sorted by title, with a summary of dangling links across all notes.",
 	}, func(ctx agent.Context, input ListKnowledgeInput) (ListKnowledgeOutput, error) {
@@ -785,7 +787,7 @@ func createKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	tools = append(tools, listTool)
 
 	// 8. lint_knowledge
-	lintTool, err := newDocTool(functiontool.Config{
+	lintTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "lint_knowledge",
 		Description: "Health check for the knowledge base. Reports orphan notes (no backlinks AND no outlinks), dangling links, archived notes, and index file integrity.",
 	}, func(ctx agent.Context, input LintKnowledgeInput) (LintKnowledgeOutput, error) {
@@ -873,7 +875,7 @@ func firstSnippet(body, query string) string {
 			return centerSnippet(body, idx, len(query), snippetWindow)
 		}
 		// No full-query hit in the body: fall back to the first token.
-		if tokens := tokenize(query); len(tokens) > 0 {
+		if tokens := hctx.Tokenize(query); len(tokens) > 0 {
 			if tidx := strings.Index(lower, tokens[0]); tidx >= 0 {
 				return centerSnippet(body, tidx, len(tokens[0]), snippetWindow)
 			}

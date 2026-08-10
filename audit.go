@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/util"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -36,8 +37,8 @@ var auditMu sync.Mutex
 // Concurrent-safe via auditMu.
 func auditCommandExec(entry CommandAuditEntry) {
 	// Truncate long string fields to keep the audit log bounded.
-	entry.Command = truncateStr(entry.Command)
-	entry.Reason = truncateStr(entry.Reason)
+	entry.Command = util.TruncateStr(entry.Command)
+	entry.Reason = util.TruncateStr(entry.Reason)
 
 	b, err := json.Marshal(entry)
 	if err != nil {

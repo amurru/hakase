@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"context"
 	"strings"
 	"testing"
@@ -9,11 +10,11 @@ import (
 func TestGeminiProvider(t *testing.T) {
 	p := &GeminiProvider{}
 
-	if err := p.ValidateConfig(&Config{}); err == nil {
+	if err := p.ValidateConfig(&config.Config{}); err == nil {
 		t.Errorf("ValidateConfig with empty API key: expected error, got nil")
 	}
 
-	if err := p.ValidateConfig(&Config{APIKey: "test-key"}); err != nil {
+	if err := p.ValidateConfig(&config.Config{APIKey: "test-key"}); err != nil {
 		t.Errorf("ValidateConfig with API key: unexpected error: %v", err)
 	}
 
@@ -25,11 +26,11 @@ func TestGeminiProvider(t *testing.T) {
 func TestOpenAIProvider(t *testing.T) {
 	p := &OpenAIProvider{BaseURL: "https://example.com/v1"}
 
-	if err := p.ValidateConfig(&Config{}); err == nil {
+	if err := p.ValidateConfig(&config.Config{}); err == nil {
 		t.Errorf("ValidateConfig with empty API key: expected error, got nil")
 	}
 
-	if err := p.ValidateConfig(&Config{APIKey: "test-key"}); err != nil {
+	if err := p.ValidateConfig(&config.Config{APIKey: "test-key"}); err != nil {
 		t.Errorf("ValidateConfig with API key: unexpected error: %v", err)
 	}
 
@@ -56,7 +57,7 @@ func TestProviderFactory(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		cfg := &Config{Provider: tc.provider, BaseURL: "https://example.com/v1"}
+		cfg := &config.Config{Provider: tc.provider, BaseURL: "https://example.com/v1"}
 		got, err := ProviderFactory(cfg)
 		if tc.wantErr {
 			if err == nil {

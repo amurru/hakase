@@ -1,6 +1,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,9 @@ import (
 // matching a config, isolating backend-specific APIs behind one interface.
 type LLMProvider interface {
 	CreateModel(ctx context.Context, modelName, apiKey string) (model.LLM, error)
-	ValidateConfig(cfg *Config) error
+	ValidateConfig(cfg *config.Config) error
 	GetDefaultModel() string
-	GetModelInfo(ctx context.Context, cfg *Config, modelName string) (*ModelInfo, error)
+	GetModelInfo(ctx context.Context, cfg *config.Config, modelName string) (*ModelInfo, error)
 }
 
 // GeminiProvider creates models through the Google Gemini backend.
@@ -34,7 +35,7 @@ func (p *GeminiProvider) CreateModel(ctx context.Context, modelName, apiKey stri
 }
 
 // ValidateConfig returns an error when no API key is configured.
-func (p *GeminiProvider) ValidateConfig(cfg *Config) error {
+func (p *GeminiProvider) ValidateConfig(cfg *config.Config) error {
 	if cfg.APIKey == "" {
 		return fmt.Errorf("gemini provider requires an api_key")
 	}
@@ -48,7 +49,7 @@ func (p *GeminiProvider) GetDefaultModel() string {
 
 // GetModelInfo queries the Gemini API for the model's context window and
 // thinking support via the models.get endpoint.
-func (p *GeminiProvider) GetModelInfo(ctx context.Context, cfg *Config, modelName string) (*ModelInfo, error) {
+func (p *GeminiProvider) GetModelInfo(ctx context.Context, cfg *config.Config, modelName string) (*ModelInfo, error) {
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: cfg.APIKey})
 	if err != nil {
 		return nil, err
@@ -86,7 +87,7 @@ func (p *OpenAIProvider) CreateModel(ctx context.Context, modelName, apiKey stri
 }
 
 // ValidateConfig returns an error when no API key is configured.
-func (p *OpenAIProvider) ValidateConfig(cfg *Config) error {
+func (p *OpenAIProvider) ValidateConfig(cfg *config.Config) error {
 	if cfg.APIKey == "" {
 		return fmt.Errorf("openai provider requires an api_key")
 	}
@@ -169,7 +170,7 @@ func (m *openAIModelInfo) thinkingLevel() string {
 // context window and reasoning support. It tries the per-model endpoint first
 // (GET /models/{name}) and falls back to scanning the full model list when the
 // endpoint does not exist.
-func (p *OpenAIProvider) GetModelInfo(ctx context.Context, cfg *Config, modelName string) (*ModelInfo, error) {
+func (p *OpenAIProvider) GetModelInfo(ctx context.Context, cfg *config.Config, modelName string) (*ModelInfo, error) {
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	if base == "" {
 		base = "https://api.openai.com/v1"
@@ -273,7 +274,7 @@ func fetchRaw(client *http.Client, ctx context.Context, base, path, apiKey strin
 
 // ProviderFactory returns the provider matching cfg.Provider, defaulting to
 // Gemini when the field is empty.
-func ProviderFactory(cfg *Config) (LLMProvider, error) {
+func ProviderFactory(cfg *config.Config) (LLMProvider, error) {
 	switch cfg.Provider {
 	case "gemini", "":
 		return &GeminiProvider{}, nil

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/sandbox"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,14 +17,14 @@ import (
 	"google.golang.org/adk/v2/tool"
 )
 
-// withNilSandbox ensures currentSandbox is nil for the test and restores
+// withNilSandbox ensures sandbox.CurrentSandbox is nil for the test and restores
 // the prior value on cleanup so tests are hermetic regardless of what
 // other plan items set at package init.
 func withNilSandbox(t *testing.T) {
 	t.Helper()
-	saved := currentSandbox
-	currentSandbox = nil
-	t.Cleanup(func() { currentSandbox = saved })
+	saved := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = nil
+	t.Cleanup(func() { sandbox.CurrentSandbox = saved })
 }
 
 // withPathsSandbox installs a paths-mode sandbox rooted at dir (with the
@@ -38,13 +39,13 @@ func withPathsSandbox(t *testing.T, dir string, readRoots []string) {
 	if len(readRoots) == 0 {
 		readRoots = []string{abs}
 	}
-	saved := currentSandbox
-	currentSandbox = &SandboxConfig{
-		Mode:           SandboxModePaths,
+	saved := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = &sandbox.SandboxConfig{
+		Mode:           sandbox.SandboxModePaths,
 		WorkspaceRoots: []string{abs},
 		ReadRoots:      readRoots,
 	}
-	t.Cleanup(func() { currentSandbox = saved })
+	t.Cleanup(func() { sandbox.CurrentSandbox = saved })
 }
 
 // withApproval installs a stub askApproval that returns the given decision
@@ -66,9 +67,9 @@ func TestBuildExecCommandShellRouting(t *testing.T) {
 	withNilSandbox(t)
 
 	// No args -> sh -c <command>.
-	cmd, err := buildExecCommand("ls -la /tmp", nil, "", nil)
+	cmd, err := sandbox.BuildExecCommand("ls -la /tmp", nil, "", nil)
 	if err != nil {
-		t.Fatalf("buildExecCommand: %v", err)
+		t.Fatalf("sandbox.BuildExecCommand: %v", err)
 	}
 	wantArgs := []string{"sh", "-c", "ls -la /tmp"}
 	if len(cmd.Args) != len(wantArgs) {
@@ -86,9 +87,9 @@ func TestBuildExecCommandShellRouting(t *testing.T) {
 func TestBuildExecCommandExplicitArgs(t *testing.T) {
 	withNilSandbox(t)
 
-	cmd, err := buildExecCommand("/bin/ls", []string{"-la", "/tmp"}, "", nil)
+	cmd, err := sandbox.BuildExecCommand("/bin/ls", []string{"-la", "/tmp"}, "", nil)
 	if err != nil {
-		t.Fatalf("buildExecCommand: %v", err)
+		t.Fatalf("sandbox.BuildExecCommand: %v", err)
 	}
 	wantArgs := []string{"/bin/ls", "-la", "/tmp"}
 	if len(cmd.Args) != len(wantArgs) {
@@ -105,7 +106,7 @@ func TestBuildExecCommandExplicitArgs(t *testing.T) {
 func TestBuildExecCommandEmpty(t *testing.T) {
 	withNilSandbox(t)
 
-	_, err := buildExecCommand("", nil, "", nil)
+	_, err := sandbox.BuildExecCommand("", nil, "", nil)
 	if err == nil {
 		t.Fatal("expected error for empty command, got nil")
 	}
@@ -114,7 +115,7 @@ func TestBuildExecCommandEmpty(t *testing.T) {
 	}
 
 	// Whitespace-only also counts as empty.
-	_, err = buildExecCommand("   ", nil, "", nil)
+	_, err = sandbox.BuildExecCommand("   ", nil, "", nil)
 	if err == nil {
 		t.Fatal("expected error for whitespace-only command, got nil")
 	}
@@ -139,9 +140,9 @@ func TestBuildExecCommandEnvOverride(t *testing.T) {
 	}
 
 	override := "/nonexistent-test-override"
-	cmd, err := buildExecCommand("true", nil, "", map[string]string{key: override})
+	cmd, err := sandbox.BuildExecCommand("true", nil, "", map[string]string{key: override})
 	if err != nil {
-		t.Fatalf("buildExecCommand: %v", err)
+		t.Fatalf("sandbox.BuildExecCommand: %v", err)
 	}
 
 	// The env merge appends overrides after os.Environ(); in Go's exec
@@ -162,9 +163,9 @@ func TestBuildExecCommandEnvOverride(t *testing.T) {
 func TestBuildExecCommandSysProcAttr(t *testing.T) {
 	withNilSandbox(t)
 
-	cmd, err := buildExecCommand("true", nil, "", nil)
+	cmd, err := sandbox.BuildExecCommand("true", nil, "", nil)
 	if err != nil {
-		t.Fatalf("buildExecCommand: %v", err)
+		t.Fatalf("sandbox.BuildExecCommand: %v", err)
 	}
 	if cmd.SysProcAttr == nil {
 		t.Fatal("SysProcAttr is nil")
@@ -182,7 +183,7 @@ func TestBuildExecCommandSysProcAttr(t *testing.T) {
 
 // runSystemExecTool invokes the system_exec tool (index 0) with the given
 // args map and returns the deserialized output.
-func runSystemExecTool(t *testing.T, tools []tool.Tool, args map[string]any) (SystemExecOutput, error) {
+func runSystemExecTool(t *testing.T, tools []tool.Tool, args map[string]any) (sandbox.SystemExecOutput, error) {
 	t.Helper()
 	// tools[0] is system_exec.
 	type runnable interface {
@@ -195,13 +196,13 @@ func runSystemExecTool(t *testing.T, tools []tool.Tool, args map[string]any) (Sy
 	ctx := agent.NewContext(&agent.ContextMock{})
 	result, err := rt.Run(ctx, args)
 	if err != nil {
-		return SystemExecOutput{}, err
+		return sandbox.SystemExecOutput{}, err
 	}
 	data, err := json.Marshal(result)
 	if err != nil {
 		t.Fatalf("marshal result: %v", err)
 	}
-	var out SystemExecOutput
+	var out sandbox.SystemExecOutput
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
@@ -213,9 +214,9 @@ func runSystemExecTool(t *testing.T, tools []tool.Tool, args map[string]any) (Sy
 func TestSystemExecSyncEcho(t *testing.T) {
 	withNilSandbox(t)
 
-	tools, err := createSystemExecTools(nil, nil, "")
+	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createSystemExecTools: %v", err)
+		t.Fatalf("sandbox.CreateSystemExecTools: %v", err)
 	}
 
 	out, err := runSystemExecTool(t, tools, map[string]any{
@@ -238,9 +239,9 @@ func TestSystemExecSyncEcho(t *testing.T) {
 func TestSystemExecSyncFalse(t *testing.T) {
 	withNilSandbox(t)
 
-	tools, err := createSystemExecTools(nil, nil, "")
+	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createSystemExecTools: %v", err)
+		t.Fatalf("sandbox.CreateSystemExecTools: %v", err)
 	}
 
 	out, err := runSystemExecTool(t, tools, map[string]any{
@@ -260,9 +261,9 @@ func TestSystemExecSyncFalse(t *testing.T) {
 func TestSystemExecSyncNonexistent(t *testing.T) {
 	withNilSandbox(t)
 
-	tools, err := createSystemExecTools(nil, nil, "")
+	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createSystemExecTools: %v", err)
+		t.Fatalf("sandbox.CreateSystemExecTools: %v", err)
 	}
 
 	out, err := runSystemExecTool(t, tools, map[string]any{
@@ -307,9 +308,9 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := auditSystemCommandPaths(currentSandbox, tc.cmd, tc.args)
+			err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, tc.cmd, tc.args)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("auditSystemCommandPaths(%q, %v) err = %v, wantErr %v", tc.cmd, tc.args, err, tc.wantErr)
+				t.Fatalf("sandbox.AuditSystemCommandPaths(%q, %v) err = %v, wantErr %v", tc.cmd, tc.args, err, tc.wantErr)
 			}
 		})
 	}
@@ -323,14 +324,14 @@ func TestAuditSystemCommandPathsDenyRoot(t *testing.T) {
 	withPathsSandbox(t, dir, []string{dir, "/usr"})
 
 	// Add a deny root under the (otherwise allowed) workspace.
-	currentSandbox.DenyRoots = []string{secret}
-	t.Cleanup(func() { currentSandbox.DenyRoots = nil })
+	sandbox.CurrentSandbox.DenyRoots = []string{secret}
+	t.Cleanup(func() { sandbox.CurrentSandbox.DenyRoots = nil })
 
-	if err := auditSystemCommandPaths(currentSandbox, "cat "+secret, nil); err == nil {
+	if err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, "cat "+secret, nil); err == nil {
 		t.Errorf("expected deny root rejection for %q, got nil", secret)
 	}
 	// A sibling path under the read root stays allowed.
-	if err := auditSystemCommandPaths(currentSandbox, "cat "+filepath.Join(dir, "other.txt"), nil); err != nil {
+	if err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, "cat "+filepath.Join(dir, "other.txt"), nil); err != nil {
 		t.Errorf("expected sibling path to be allowed, got %v", err)
 	}
 }
@@ -338,20 +339,20 @@ func TestAuditSystemCommandPathsDenyRoot(t *testing.T) {
 // TestAuditSystemCommandPathsDisabled verifies the audit is a no-op when the
 // sandbox is nil or explicitly off.
 func TestAuditSystemCommandPathsDisabled(t *testing.T) {
-	if err := auditSystemCommandPaths(nil, "find / -type d", nil); err != nil {
+	if err := sandbox.AuditSystemCommandPaths(nil, "find / -type d", nil); err != nil {
 		t.Errorf("nil sandbox: expected no error, got %v", err)
 	}
-	if err := auditSystemCommandPaths(&SandboxConfig{Mode: SandboxModeOff}, "find / -type d", nil); err != nil {
+	if err := sandbox.AuditSystemCommandPaths(&sandbox.SandboxConfig{Mode: sandbox.SandboxModeOff}, "find / -type d", nil); err != nil {
 		t.Errorf("sandbox off: expected no error, got %v", err)
 	}
 }
 
 // TestSplitCommandTokens verifies the tokenizer keeps quoted paths intact.
 func TestSplitCommandTokens(t *testing.T) {
-	got := splitCommandTokens(`find / -type d -name "my dir" -o -name 'x'`)
+	got := sandbox.SplitCommandTokens(`find / -type d -name "my dir" -o -name 'x'`)
 	want := []string{"find", "/", "-type", "d", "-name", "my dir", "-o", "-name", "x"}
 	if len(got) != len(want) {
-		t.Fatalf("splitCommandTokens: got %v, want %v", got, want)
+		t.Fatalf("sandbox.SplitCommandTokens: got %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -363,18 +364,18 @@ func TestSplitCommandTokens(t *testing.T) {
 // TestEffectiveExecTimeout verifies the default timeout kicks in when the
 // caller omits or passes a non-positive timeout.
 func TestEffectiveExecTimeout(t *testing.T) {
-	if got := effectiveExecTimeout(0); got != defaultSystemExecTimeout {
-		t.Errorf("omitted: got %v, want %v", got, defaultSystemExecTimeout)
+	if got := sandbox.EffectiveExecTimeout(0); got != sandbox.DefaultSystemExecTimeout {
+		t.Errorf("omitted: got %v, want %v", got, sandbox.DefaultSystemExecTimeout)
 	}
-	if got := effectiveExecTimeout(-5); got != defaultSystemExecTimeout {
-		t.Errorf("negative: got %v, want %v", got, defaultSystemExecTimeout)
+	if got := sandbox.EffectiveExecTimeout(-5); got != sandbox.DefaultSystemExecTimeout {
+		t.Errorf("negative: got %v, want %v", got, sandbox.DefaultSystemExecTimeout)
 	}
-	if got := effectiveExecTimeout(30); got != 30*time.Second {
+	if got := sandbox.EffectiveExecTimeout(30); got != 30*time.Second {
 		t.Errorf("explicit: got %v, want %v", got, 30*time.Second)
 	}
 }
 
-// TestBuildExecCommandSandboxAudit verifies buildExecCommand enforces the
+// TestBuildExecCommandSandboxAudit verifies sandbox.BuildExecCommand enforces the
 // path audit: whole-filesystem scans are rejected with an actionable error,
 // while relative commands still build.
 func TestBuildExecCommandSandboxAudit(t *testing.T) {
@@ -382,7 +383,7 @@ func TestBuildExecCommandSandboxAudit(t *testing.T) {
 	withPathsSandbox(t, dir, nil)
 	withApproval(t, true) // "find" is RiskUnknown -> ActionAsk
 
-	_, err := buildExecCommand("find / -type d -name skills", nil, "", nil)
+	_, err := sandbox.BuildExecCommand("find / -type d -name skills", nil, "", nil)
 	if err == nil {
 		t.Fatal("expected sandbox rejection for 'find /', got nil")
 	}
@@ -390,15 +391,15 @@ func TestBuildExecCommandSandboxAudit(t *testing.T) {
 		t.Errorf("expected actionable error mentioning the sandbox, got %v", err)
 	}
 
-	if _, err := buildExecCommand("find . -name '*.go'", nil, "", nil); err != nil {
+	if _, err := sandbox.BuildExecCommand("find . -name '*.go'", nil, "", nil); err != nil {
 		t.Errorf("expected relative 'find .' to be allowed, got %v", err)
 	}
 
 	// Off/nil sandbox: no audit, but gate still runs.
 	// "find" is RiskUnknown; need approval for the gate.
-	currentSandbox = &SandboxConfig{Mode: SandboxModeOff}
-	t.Cleanup(func() { currentSandbox = nil })
-	if _, err := buildExecCommand("find / -type d -name skills", nil, "", nil); err != nil {
+	sandbox.CurrentSandbox = &sandbox.SandboxConfig{Mode: sandbox.SandboxModeOff}
+	t.Cleanup(func() { sandbox.CurrentSandbox = nil })
+	if _, err := sandbox.BuildExecCommand("find / -type d -name skills", nil, "", nil); err != nil {
 		t.Errorf("sandbox off: expected 'find /' to build, got %v", err)
 	}
 }
@@ -409,7 +410,7 @@ func TestBuildExecCommandGateDeny(t *testing.T) {
 	withNilSandbox(t)
 	withApproval(t, true) // approval stub installed, but hard-deny runs first
 
-	_, err := buildExecCommand("rm -rf /", nil, "", nil)
+	_, err := sandbox.BuildExecCommand("rm -rf /", nil, "", nil)
 	if err == nil {
 		t.Fatal("expected gate deny for 'rm -rf /', got nil")
 	}
@@ -425,7 +426,7 @@ func TestBuildExecCommandGateAskApproved(t *testing.T) {
 	withNilSandbox(t)
 	withApproval(t, true)
 
-	cmd, err := buildExecCommand("nonexistent", nil, "", nil)
+	cmd, err := sandbox.BuildExecCommand("nonexistent", nil, "", nil)
 	if err != nil {
 		t.Fatalf("expected gate to allow with approval, got %v", err)
 	}
@@ -444,7 +445,7 @@ func TestBuildExecCommandGateAskDenied(t *testing.T) {
 	withNilSandbox(t)
 	withApproval(t, false)
 
-	_, err := buildExecCommand("nonexistent", nil, "", nil)
+	_, err := sandbox.BuildExecCommand("nonexistent", nil, "", nil)
 	if err == nil {
 		t.Fatal("expected gate to deny when approval is refused, got nil")
 	}
@@ -462,17 +463,17 @@ func TestBuildExecCommandBwrapFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abs: %v", err)
 	}
-	saved := currentSandbox
-	currentSandbox = &SandboxConfig{
-		Mode:           SandboxModeBubblewrap,
+	saved := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = &sandbox.SandboxConfig{
+		Mode:           sandbox.SandboxModeBubblewrap,
 		WorkspaceRoots: []string{abs},
 		ReadRoots:      []string{abs},
 		AllowFallback:  false,
 	}
-	t.Cleanup(func() { currentSandbox = saved })
+	t.Cleanup(func() { sandbox.CurrentSandbox = saved })
 	withApproval(t, true)
 
-	_, err = buildExecCommand("echo hello", nil, "", nil)
+	_, err = sandbox.BuildExecCommand("echo hello", nil, "", nil)
 	if err != nil {
 		// If bwrap is not installed, we expect the fail-closed error.
 		if !strings.Contains(err.Error(), "bubblewrap sandbox unavailable") &&
@@ -494,17 +495,17 @@ func TestBuildExecCommandBwrapFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abs: %v", err)
 	}
-	saved := currentSandbox
-	currentSandbox = &SandboxConfig{
-		Mode:           SandboxModeBubblewrap,
+	saved := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = &sandbox.SandboxConfig{
+		Mode:           sandbox.SandboxModeBubblewrap,
 		WorkspaceRoots: []string{abs},
 		ReadRoots:      []string{abs},
 		AllowFallback:  true,
 	}
-	t.Cleanup(func() { currentSandbox = saved })
+	t.Cleanup(func() { sandbox.CurrentSandbox = saved })
 	withApproval(t, true)
 
-	cmd, err := buildExecCommand("echo hello", nil, "", nil)
+	cmd, err := sandbox.BuildExecCommand("echo hello", nil, "", nil)
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got %v", err)
 	}
@@ -529,12 +530,12 @@ func TestBuildExecCommandEnvScrubOffMode(t *testing.T) {
 	withApproval(t, true)
 
 	// Set a sensitive env var via the env map.
-	cmd, err := buildExecCommand("echo hello", nil, "", map[string]string{
+	cmd, err := sandbox.BuildExecCommand("echo hello", nil, "", map[string]string{
 		"AWS_SECRET_ACCESS_KEY": "test-secret",
 		"PATH":                  "/usr/bin",
 	})
 	if err != nil {
-		t.Fatalf("buildExecCommand: %v", err)
+		t.Fatalf("sandbox.BuildExecCommand: %v", err)
 	}
 
 	for _, kv := range cmd.Env {
@@ -561,9 +562,9 @@ func TestSystemExecStartTimeout(t *testing.T) {
 	withNilSandbox(t)
 	withApproval(t, true)
 
-	tools, err := createSystemExecTools(nil, nil, "")
+	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createSystemExecTools: %v", err)
+		t.Fatalf("sandbox.CreateSystemExecTools: %v", err)
 	}
 
 	// tools[1] is system_exec_start.
@@ -588,7 +589,7 @@ func TestSystemExecStartTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var startOut SystemExecStartOutput
+	var startOut sandbox.SystemExecStartOutput
 	if err := json.Unmarshal(data, &startOut); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -618,7 +619,7 @@ func TestSystemExecStartTimeout(t *testing.T) {
 				t.Fatalf("status: %v", serr)
 			}
 			sdata, _ := json.Marshal(statusResult)
-			var statusOut SystemExecStatusOutput
+			var statusOut sandbox.SystemExecStatusOutput
 			json.Unmarshal(sdata, &statusOut)
 
 			if statusOut.Finished {

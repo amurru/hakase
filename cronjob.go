@@ -8,6 +8,11 @@
 package main
 
 import (
+	"amurru/hakase/internal/util"
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
+	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/vision"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -265,7 +270,7 @@ func resolveCronJobsFile() string {
 	if cronJobsFile != "" {
 		return cronJobsFile
 	}
-	home := hakaseHome()
+	home := config.HakaseHome()
 	if home == "" {
 		home = "."
 	}
@@ -409,17 +414,17 @@ var cronJobNotify func(status, jobID, name, summary, outputPath string)
 
 // notifyCronJob emits a lifecycle event to the TUI listener and debug log.
 func notifyCronJob(status, jobID, name, summary, outputPath string) {
-	debugEvent("cronjob", "status", status, "job_id", jobID, "name", name)
+	util.DebugEvent("cronjob", "status", status, "job_id", jobID, "name", name)
 	if cronJobNotify != nil {
 		cronJobNotify(status, jobID, name, summary, outputPath)
 	}
 }
 
 // createCronjobTool builds and returns the cronjob function tool registered
-// via newDocTool so the doc:"..." struct tags are reflected into the JSON
+// via util.NewDocTool so the doc:"..." struct tags are reflected into the JSON
 // schema the model sees.
 func createCronjobTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name: "cronjob",
 		Description: "Manage scheduled one-shot and recurring tasks. " +
 			"Actions: create (schedule a new job), list (all jobs), " +
@@ -502,7 +507,7 @@ func handleCronCreate(input CronjobInput, log LogFunc) (CronjobOutput, error) {
 	}
 
 	job := CronJob{
-		ID:        GenerateTaskID(),
+		ID:        hakasesession.GenerateTaskID(),
 		Name:      input.Name,
 		Prompt:    input.Prompt,
 		Schedule:  input.Schedule,
@@ -735,7 +740,7 @@ func startCronScheduler(log LogFunc) {
 func cronTick(log LogFunc) {
 	reg, err := loadCronRegistry()
 	if err != nil {
-		debugWarn("cron_tick", "error", err)
+		util.DebugWarn("cron_tick", "error", err)
 		return
 	}
 	now := time.Now().UTC()
@@ -826,7 +831,7 @@ func runCronJob(job CronJob, log LogFunc) {
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback},
 	})
 	if err != nil {
 		log(fmt.Sprintf("[cron] job %s failed to create sub-agent: %v", job.ID, err))
@@ -907,7 +912,7 @@ func runCronJob(job CronJob, log LogFunc) {
 		for ev, runErr := range subRunner.Run(guardCtx, "cron_scheduler", taskID, msg, agent.RunConfig{}) {
 			if runErr != nil {
 				if isToolCallJSONErr(runErr) && attempt < maxToolCallRepairAttempts {
-					debugWarn("tool_call_repair", "cron_job", job.ID, "attempt", attempt+1, "error", runErr)
+					util.DebugWarn("tool_call_repair", "cron_job", job.ID, "attempt", attempt+1, "error", runErr)
 					msg = toolCallRepairMessage(runErr, attempt)
 					attempt++
 					repaired = true
@@ -927,7 +932,7 @@ func runCronJob(job CronJob, log LogFunc) {
 						if !part.Thought {
 							if reason := guard.feed(part.FunctionCall != nil, part.Text); reason != "" {
 								guardCancel()
-								debugWarn("cron_guard_abort", "job_id", job.ID, "reason", reason)
+								util.DebugWarn("cron_guard_abort", "job_id", job.ID, "reason", reason)
 								finalErr = fmt.Errorf("cron job %s aborted: %s", job.ID, reason)
 								break
 							}
@@ -1157,11 +1162,11 @@ func resolveCronSkills(names []string, log LogFunc) ([]MarkdownSkill, map[string
 // CLI can run jobs headless. It mirrors the top of setupRunner (lines
 // 1467-1530) without duplicating the full runner setup.
 func cronModelBootstrap() error {
-	cfg, err := loadConfig(resolveConfigPath("config.json"))
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 	currentApproval = cfg.Approval
 	currentClarify = cfg.Clarify
 	currentGuard = loopGuardConfig(cfg.LoopGuard)

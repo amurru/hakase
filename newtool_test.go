@@ -1,8 +1,10 @@
-// newtool_test.go - verifies newDocTool injects doc:"..." tag text into the
+// newtool_test.go - verifies util.NewDocTool injects doc:"..." tag text into the
 // generated input schema so the LLM actually sees parameter descriptions.
 package main
 
 import (
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/util"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -40,7 +42,7 @@ func propDescription(t *testing.T, tl declarer, name string) string {
 // with a doc:"..." tag in the file-ops input structs appears as a property
 // description in the tool declaration sent to the model.
 func TestNewDocToolInjectsDescriptions(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +89,9 @@ func TestNewDocToolInjectsDescriptions(t *testing.T) {
 // an explicitly provided InputSchema: descriptions from doc tags are only
 // injected when the schema is inferred.
 func TestNewDocToolPreservesExistingSchema(t *testing.T) {
-	// Reuse WriteFileInput with an explicit override that has its own
+	// Reuse sandbox.WriteFileInput with an explicit override that has its own
 	// description; the wrapper must leave it untouched.
-	tl, err := newDocTool(functiontool.Config{
+	tl, err := util.NewDocTool(functiontool.Config{
 		Name:        "write_file_custom",
 		Description: "custom",
 		InputSchema: &jsonschema.Schema{
@@ -98,8 +100,8 @@ func TestNewDocToolPreservesExistingSchema(t *testing.T) {
 				"content": {Type: "string", Description: "custom doc"},
 			},
 		},
-	}, func(ctx agent.Context, input WriteFileInput) (WriteFileOutput, error) {
-		return WriteFileOutput{}, nil
+	}, func(ctx agent.Context, input sandbox.WriteFileInput) (sandbox.WriteFileOutput, error) {
+		return sandbox.WriteFileOutput{}, nil
 	})
 	if err != nil {
 		t.Fatal(err)

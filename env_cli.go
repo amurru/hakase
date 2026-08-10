@@ -6,6 +6,9 @@
 package main
 
 import (
+	"amurru/hakase/internal/env"
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,21 +37,21 @@ func runEnvCLI(args []string) int {
 		fmt.Fprintf(os.Stderr, "cannot determine current directory: %v\n", err)
 		return 1
 	}
-	cfg, err := loadConfig(resolveConfigPath("config.json"))
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
 	if err != nil {
-		cfg = &Config{}
+		cfg = &config.Config{}
 	}
-	if !systemEnvEnabled(cfg) {
+	if !config.SystemEnvEnabled(cfg) {
 		fmt.Println("Runtime environment block is disabled (system_env.enabled = false).")
 		return 0
 	}
 
 	// Resolve the sandbox mode so the rendered block carries the bubblewrap
 	// exec note exactly as the running agent would.
-	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 
-	info := detectSystemInfo(cwd, nil)
-	block := buildEnvironmentReminder(info, systemEnvMaxChars(cfg))
+	info := env.DetectSystemInfo(cwd, nil)
+	block := env.BuildEnvironmentReminder(info, config.SystemEnvMaxChars(cfg))
 	if strings.TrimSpace(block) == "" {
 		fmt.Println("No runtime environment facts detected.")
 		return 0

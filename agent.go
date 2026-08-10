@@ -1,6 +1,14 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/env"
+	"amurru/hakase/internal/sandbox"
+	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/util"
+	"amurru/hakase/internal/vision"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -127,7 +135,8 @@ When writing code intended to be saved as a skill via 'save_skill':
 `
 
 // LogFunc is a thread-safe callback function to send status logs to the TUI
-type LogFunc func(msg string)
+type LogFunc = interfaces.LogFunc
+
 
 type PythonExecInput struct {
 	Code string `json:"code" doc:"Python code snippet to execute"`
@@ -166,12 +175,12 @@ func getVenvPython(log LogFunc) (string, error) {
 //
 // The gate runs BEFORE getVenvPython (which has side effects - creates .venv) so
 // denied code never triggers venv creation.
-func checkPythonGate(sb *SandboxConfig, code string) error {
+func checkPythonGate(sb *sandbox.SandboxConfig, code string) error {
 	sandboxMode := "off"
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
 	}
-	perm, _ := sb.permitted("python_interpreter")
+	perm, _ := sb.Permitted("python_interpreter")
 	if perm == "deny" {
 		auditCommandExec(CommandAuditEntry{
 			Timestamp: time.Now(), Tool: "python_interpreter",
@@ -193,7 +202,7 @@ func checkPythonGate(sb *SandboxConfig, code string) error {
 	// is out of scope for the initial implementation.
 	approved, aerr := approveExec(ApprovalRequest{
 		Tool:      "python_interpreter",
-		Command:   truncateStr(code),
+		Command:   util.TruncateStr(code),
 		Risk:      "high",
 		Reason:    "arbitrary Python code execution",
 		Source:    "direct",
@@ -202,7 +211,7 @@ func checkPythonGate(sb *SandboxConfig, code string) error {
 	if aerr != nil || !approved {
 		auditCommandExec(CommandAuditEntry{
 			Timestamp: time.Now(), Tool: "python_interpreter",
-			Command:  truncateStr(code),
+			Command:  util.TruncateStr(code),
 			Decision: "not_approved", Risk: "high",
 			Reason:      "python code execution not approved by user",
 			SandboxMode: sandboxMode,
@@ -211,7 +220,7 @@ func checkPythonGate(sb *SandboxConfig, code string) error {
 	}
 	auditCommandExec(CommandAuditEntry{
 		Timestamp: time.Now(), Tool: "python_interpreter",
-		Command:  truncateStr(code),
+		Command:  util.TruncateStr(code),
 		Decision: "approved", Risk: "high",
 		Reason:      "arbitrary Python code execution",
 		SandboxMode: sandboxMode,
@@ -221,7 +230,7 @@ func checkPythonGate(sb *SandboxConfig, code string) error {
 
 // pipAllowed returns true when pip install is permitted by the sandbox config.
 // nil sandbox -> false (fail closed; config must explicitly allow pip).
-func pipAllowed(sb *SandboxConfig) bool {
+func pipAllowed(sb *sandbox.SandboxConfig) bool {
 	return sb != nil && sb.AllowPipInstall
 }
 
@@ -234,7 +243,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		// Harmful-command protection gate: runs BEFORE getVenvPython so
 		// denied code never triggers venv creation side effects.
-		if err := checkPythonGate(currentSandbox, input.Code); err != nil {
+		if err := checkPythonGate(sandbox.CurrentSandbox, input.Code); err != nil {
 			return PythonExecOutput{}, err
 		}
 
@@ -250,8 +259,8 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 		var scriptPath string
 		var tmpDir string
 		var tmpIsSandbox bool
-		if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
-			root := currentSandbox.workspaceRoot()
+		if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
+			root := sandbox.CurrentSandbox.WorkspaceRoot()
 			if root != "" {
 				tmpDir = filepath.Join(root, ".hakase-tmp")
 				if err := os.MkdirAll(tmpDir, 0755); err != nil {
@@ -283,8 +292,8 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			}
 			// Sandbox: pin cmd.Dir to the workspace root so the script
 			// runs inside the approved workspace.
-			if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
-				if root := currentSandbox.workspaceRoot(); root != "" {
+			if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
+				if root := sandbox.CurrentSandbox.WorkspaceRoot(); root != "" {
 					cmd.Dir = root
 				}
 			}
@@ -320,10 +329,10 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 
 				// Pip install gate: controlled by sandbox.AllowPipInstall.
 				// fail closed (nil sandbox → not allowed).
-				if !pipAllowed(currentSandbox) {
+				if !pipAllowed(sandbox.CurrentSandbox) {
 					sandboxMode := "off"
-					if currentSandbox != nil {
-						sandboxMode = string(currentSandbox.Mode)
+					if sandbox.CurrentSandbox != nil {
+						sandboxMode = string(sandbox.CurrentSandbox.Mode)
 					}
 					auditCommandExec(CommandAuditEntry{
 						Timestamp: time.Now(), Tool: "pip",
@@ -335,8 +344,8 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 					return PythonExecOutput{Stdout: stdout, Stderr: stderr}, nil
 				}
 				sandboxMode := "off"
-				if currentSandbox != nil {
-					sandboxMode = string(currentSandbox.Mode)
+				if sandbox.CurrentSandbox != nil {
+					sandboxMode = string(sandbox.CurrentSandbox.Mode)
 				}
 				auditCommandExec(CommandAuditEntry{
 					Timestamp: time.Now(), Tool: "pip",
@@ -365,8 +374,8 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 					installCmd.Env = append(parentEnv[0], installCmd.Env...)
 				}
 				// Sandbox: pin pip's working dir to the workspace root.
-				if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
-					if root := currentSandbox.workspaceRoot(); root != "" {
+				if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
+					if root := sandbox.CurrentSandbox.WorkspaceRoot(); root != "" {
 						installCmd.Dir = root
 					}
 				}
@@ -399,7 +408,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 		}, nil
 	}
 
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "python_interpreter",
 		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution. Execution may require user approval depending on sandbox permissions.",
 	}, execHandler)
@@ -463,8 +472,8 @@ func createDownloadTool() (tool.Tool, error) {
 		// download is confined to the approved workspace. The error
 		// propagates to the model, which can correct its request.
 		var filePath string
-		if currentSandbox != nil && currentSandbox.Mode != SandboxModeOff {
-			resolved, err := currentSandbox.resolveScopedPath(filepath.Join("./downloads", filename), true)
+		if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
+			resolved, err := sandbox.CurrentSandbox.ResolveScopedPath(filepath.Join("./downloads", filename), true)
 			if err != nil {
 				return FileDownloadOutput{}, fmt.Errorf("download path outside approved workspace: %w", err)
 			}
@@ -495,7 +504,7 @@ func createDownloadTool() (tool.Tool, error) {
 		}, nil
 	}
 
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "download_file",
 		Description: "Downloads PDFs, images, dataset binaries, or documents from a web URL and saves them to the ./downloads directory.",
 	}, execHandler)
@@ -504,7 +513,11 @@ func createDownloadTool() (tool.Tool, error) {
 // Skills and auto-learning
 
 // currentConfig holds the loaded configuration for checkpoint access
-var currentConfig *Config
+var currentConfig *config.Config
+
+// currentModelInfo holds the main model's capabilities from the async
+// FetchModelInfo fetch, consumed by the vision tool and context budget logic.
+var currentModelInfo *interfaces.ModelInfo
 
 // currentModel holds the provider model instance for sub-agent delegation.
 // Set during setupRunner so delegate_task can create sub-agents with the
@@ -518,12 +531,12 @@ var currentModel model.LLM
 // currentGuard holds the effective anti-degeneration limit settings derived
 // from config at startup. buildGenerationConfig consults it to cap
 // maxOutputTokens; the run loops construct degenerationGuards from it.
-var currentGuard LoopGuardConfig
+var currentGuard config.LoopGuardConfig
 
 // currentHistoryBuilder holds the HistoryBuilder wired into the root
-// orchestrator. It is created in setupRunner with the SessionService and
+// orchestrator. It is created in setupRunner with the hakasesession.SessionService and
 // receives ModelInfo updates from the async fetch in main.
-var currentHistoryBuilder *HistoryBuilder
+var currentHistoryBuilder *hctx.HistoryBuilder
 
 // taskBoardNotify is set by main and pushes TaskUpdateMsg to the TUI on task mutations.
 var taskBoardNotify func(action string, task TaskMeta)
@@ -759,7 +772,7 @@ func createSaveSkillTool() (tool.Tool, error) {
 		}, nil
 	}
 
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "save_skill",
 		Description: "Persists a tested, working Python script into the local ./skills library for future reuse.",
 	}, execHandler)
@@ -799,7 +812,7 @@ func createListSkillsTool(cwd string, extraDirs []string, log LogFunc) (tool.Too
 		return ListSkillsOutput{Skills: registry.Skills, MarkdownSkills: mdMeta}, nil
 	}
 
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "list_skills",
 		Description: "Lists all previously saved Python skills and discovered markdown skills (SKILL.md) with their descriptions.",
 	}, execHandler)
@@ -914,13 +927,13 @@ func createLoadMarkdownSkillTool(skills []MarkdownSkill, cwd string, extraDirs [
 		return LoadMarkdownSkillOutput{
 			Name:        skill.Frontmatter.Name,
 			Description: skill.Frontmatter.Description,
-			Content:     sanitizeContextContent(skill.Body),
+			Content:     hctx.SanitizeContextContent(skill.Body),
 			Location:    skill.Path,
 			Scripts:     skill.Scripts,
 		}, nil
 	}
 
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "load_markdown_skill",
 		Description: "Loads the full instructions and scripts of a markdown skill (SKILL.md) by name. Use this when the AVAILABLE PRE-LEARNED SKILLS list references a markdown skill.",
 	}, execHandler)
@@ -1317,7 +1330,7 @@ func writeTaskCheckpoint(registry *TaskRegistry) error {
 // Task management tools
 
 func createTaskTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "create_task",
 		Description: "Create a new task in the task board",
 	}, func(ctx agent.Context, input CreateTaskInput) (CreateTaskOutput, error) {
@@ -1334,7 +1347,7 @@ func createTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func updateTaskTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "update_task",
 		Description: "Update task status, assignee, or result. Status is transition-validated; a newly created (pending) task may be marked completed or failed directly, or moved to in_progress first.",
 	}, func(ctx agent.Context, input UpdateTaskInput) (UpdateTaskOutput, error) {
@@ -1351,7 +1364,7 @@ func updateTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func listTasksTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "list_tasks",
 		Description: "List tasks with optional filters",
 	}, func(ctx agent.Context, input ListTasksInput) (ListTasksOutput, error) {
@@ -1361,7 +1374,7 @@ func listTasksTool(log LogFunc) (tool.Tool, error) {
 }
 
 func getTaskTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "get_task",
 		Description: "Get task details by ID",
 	}, func(ctx agent.Context, input GetTaskInput) (GetTaskOutput, error) {
@@ -1371,7 +1384,7 @@ func getTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func deleteTaskTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "delete_task",
 		Description: "Delete a task by ID. Any task can be deleted, including completed or archived tasks, upon user request.",
 	}, func(ctx agent.Context, input DeleteTaskInput) (DeleteTaskOutput, error) {
@@ -1388,7 +1401,7 @@ func deleteTaskTool(log LogFunc) (tool.Tool, error) {
 }
 
 func archiveTaskTool(log LogFunc) (tool.Tool, error) {
-	return newDocTool(functiontool.Config{
+	return util.NewDocTool(functiontool.Config{
 		Name:        "archive_task",
 		Description: "Archive a completed task to keep it for reference and remove it from the active board. Only completed tasks can be archived.",
 	}, func(ctx agent.Context, input ArchiveTaskInput) (ArchiveTaskOutput, error) {
@@ -1489,10 +1502,10 @@ func contextBlockFor(agent, block string, applyTo []string) string {
 	return ""
 }
 
-func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *SessionService) (*runner.Runner, error) {
+func setupRunner(ctx context.Context, cfg *config.Config, log LogFunc, sessionSvc *hakasesession.SessionService) (*runner.Runner, error) {
 	// Load sandbox config before any tool creation so createPythonTool,
 	// createDownloadTool, and buildExecCommand can consult it.
-	currentSandbox = LoadSandboxConfig(cfg.Sandbox)
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 	currentApproval = cfg.Approval
 	currentClarify = cfg.Clarify
 	currentGuard = loopGuardConfig(cfg.LoopGuard)
@@ -1503,24 +1516,24 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	// root; user-global CLAUDE.md is never loaded. The rendered block size
 	// feeds the compaction reserve in context.go via contextBlockTokens.
 	cwd, _ := os.Getwd()
-	instructionFiles := DiscoveredInstructionFiles(cwd, cfg, log)
-	ctxBlock := RenderInstructionBlock(instructionFiles, cfg.Instruction, cfg.ContextFiles.MaxChars)
-	contextBlockTokens = EstimateTokens(ctxBlock)
+	instructionFiles := hctx.DiscoveredInstructionFiles(cwd, cfg, log)
+	ctxBlock := hctx.RenderInstructionBlock(instructionFiles, cfg.Instruction, cfg.ContextFiles.MaxChars)
+	hctx.ContextBlockTokens = util.EstimateTokens(ctxBlock)
 	// Record session-scoped state for progressive subdirectory context hints
 	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
-	initContextState(cwd, cfg, instructionFiles)
+	hctx.InitContextState(cwd, cfg, instructionFiles)
 
 	// Detect the runtime environment once per session and render a compact
 	// system-reminder block (OS/distro/arch, package manager, toolchains,
 	// disk/memory) injected into every agent's instruction next to the time
 	// reminder. Disabled via system_env.enabled=false. The rendered size feeds
-	// the compaction reserve via systemEnvBlockTokens (context.go).
+	// the compaction reserve via env.SystemEnvBlockTokens (context.go).
 	var envBlock string
-	if systemEnvEnabled(cfg) {
-		sysInfo := detectSystemInfo(cwd, log)
-		currentSystemInfo = sysInfo
-		envBlock = buildEnvironmentReminder(sysInfo, systemEnvMaxChars(cfg))
-		systemEnvBlockTokens = EstimateTokens(envBlock)
+	if config.SystemEnvEnabled(cfg) {
+		sysInfo := env.DetectSystemInfo(cwd, interfaces.LogFunc(log))
+		env.CurrentSystemInfo = sysInfo
+		envBlock = env.BuildEnvironmentReminder(sysInfo, config.SystemEnvMaxChars(cfg))
+		env.SystemEnvBlockTokens = util.EstimateTokens(envBlock)
 		if envBlock != "" && log != nil {
 			log(fmt.Sprintf("🧭 Environment: %s", sysInfo.Summary()))
 		}
@@ -1549,7 +1562,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	// summarization just uses the primary model.
 	if cfg.SummaryModel != "" && cfg.SummaryModel != modelName {
 		if sm, err := provider.CreateModel(ctx, cfg.SummaryModel, cfg.APIKey); err == nil {
-			summarizeModel = sm
+			hctx.SummarizeModel = sm
 		}
 	}
 
@@ -1594,7 +1607,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			vKey = cfg.VisionAPIKey
 		}
 		if vm, err := vp.CreateModel(ctx, cfg.VisionModel, vKey); err == nil {
-			visionModel = vm
+			vision.VisionModelLLM = vm
 		}
 	}
 
@@ -1614,7 +1627,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 	}
 
 	// vision tool: loads an image (URL/path/data URL) natively or via vision_model.
-	visionTool, err := createVisionTool()
+	visionTool, err := vision.CreateVisionTool()
 	if err != nil {
 		return nil, err
 	}
@@ -1630,7 +1643,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              []tool.Toolset{mcpManager},
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback},
 	})
 
 	// Code Inpterpreter agent/ data analyst
@@ -1691,7 +1704,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 			visionTool,
 		}, // 👈 Attached skill tools here!
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback},
 	})
 	if err != nil {
 		return nil, err
@@ -1699,7 +1712,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 
 	// File operation tools (read/write/patch/search), shared between
 	// the orchestrator (direct use) and the general-purpose sub-agent (delegation).
-	fileOpsTools, err := createFileOpsTools(log, nil, "")
+	fileOpsTools, err := sandbox.CreateFileOpsTools(interfaces.LogFunc(log), nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1711,14 +1724,14 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		Model:                 model,
 		Tools:                 append(fileOpsTools, visionTool),
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{visionInjectionCallback},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback},
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// Host system execution tools (arbitrary command/executable execution).
-	systemExecTools, err := createSystemExecTools(log, nil, "")
+	systemExecTools, err := sandbox.CreateSystemExecTools(interfaces.LogFunc(log), nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1770,7 +1783,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 
 	// Context management: build history for the root orchestrator only.
 	// Sub-agents keep isolated context by design (delegate.go untouched).
-	historyBuilder := NewHistoryBuilder(sessionSvc)
+	historyBuilder := hctx.NewHistoryBuilder(sessionSvc)
 	historyBuilder.SetLogFunc(func(format string, args ...any) {
 		log(fmt.Sprintf(format, args...))
 	})
@@ -1784,7 +1797,7 @@ func setupRunner(ctx context.Context, cfg *Config, log LogFunc, sessionSvc *Sess
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			historyBuilder.BeforeModelCallback,
-			visionInjectionCallback,
+			vision.VisionInjectionCallback,
 		},
 		Tools: append([]tool.Tool{
 			listSkillsTool,

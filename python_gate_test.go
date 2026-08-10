@@ -1,6 +1,9 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/util"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,13 +15,13 @@ func TestPipAllowed(t *testing.T) {
 	if pipAllowed(nil) {
 		t.Error("pipAllowed(nil) should be false (fail closed)")
 	}
-	if pipAllowed(&SandboxConfig{}) {
+	if pipAllowed(&sandbox.SandboxConfig{}) {
 		t.Error("pipAllowed with zero-value AllowPipInstall should be false")
 	}
-	if pipAllowed(&SandboxConfig{AllowPipInstall: false}) {
+	if pipAllowed(&sandbox.SandboxConfig{AllowPipInstall: false}) {
 		t.Error("pipAllowed with AllowPipInstall:false should be false")
 	}
-	if !pipAllowed(&SandboxConfig{AllowPipInstall: true}) {
+	if !pipAllowed(&sandbox.SandboxConfig{AllowPipInstall: true}) {
 		t.Error("pipAllowed with AllowPipInstall:true should be true")
 	}
 }
@@ -66,8 +69,8 @@ func TestPythonGateDeny(t *testing.T) {
 	auditLogDir = t.TempDir()
 	defer func() { auditLogDir = origAuditDir }()
 
-	sb := &SandboxConfig{
-		Mode: SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode: sandbox.SandboxModePaths,
 		Permissions: map[string]string{
 			"python_interpreter": "deny",
 		},
@@ -113,8 +116,8 @@ func TestPythonGateAskApproved(t *testing.T) {
 		return true, nil
 	}
 
-	sb := &SandboxConfig{
-		Mode: SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode: sandbox.SandboxModePaths,
 		Permissions: map[string]string{
 			"python_interpreter": "ask",
 		},
@@ -154,8 +157,8 @@ func TestPythonGateAskNotApproved(t *testing.T) {
 		return false, nil
 	}
 
-	sb := &SandboxConfig{
-		Mode: SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode: sandbox.SandboxModePaths,
 		Permissions: map[string]string{
 			"python_interpreter": "ask",
 		},
@@ -217,8 +220,8 @@ func TestPythonGateAllow(t *testing.T) {
 	auditLogDir = t.TempDir()
 	defer func() { auditLogDir = origAuditDir }()
 
-	sb := &SandboxConfig{
-		Mode: SandboxModeBubblewrap,
+	sb := &sandbox.SandboxConfig{
+		Mode: sandbox.SandboxModeBubblewrap,
 		Permissions: map[string]string{
 			"python_interpreter": "allow",
 		},
@@ -251,16 +254,16 @@ func TestPythonGateCodeTruncatedInAudit(t *testing.T) {
 		auditLogDir = origAuditDir
 	}()
 
-	// Build a string longer than maxLogField runes BEFORE the closure.
+	// Build a string longer than util.MaxLogField runes BEFORE the closure.
 	longCode := ""
-	for i := 0; i < maxLogField+500; i++ {
+	for i := 0; i < util.MaxLogField+500; i++ {
 		longCode += "x"
 	}
 
 	hasTruncationMarker := false
 	askApproval = func(req ApprovalRequest) (bool, error) {
 		// Verify the code passed to approval is the truncated version.
-		// truncateStr appends a truncation marker, so it's shorter than the original.
+		// util.TruncateStr appends a truncation marker, so it's shorter than the original.
 		reqRunes := len([]rune(req.Command))
 		origRunes := len([]rune(longCode))
 		if reqRunes >= origRunes {
@@ -273,8 +276,8 @@ func TestPythonGateCodeTruncatedInAudit(t *testing.T) {
 		return true, nil
 	}
 
-	sb := &SandboxConfig{
-		Mode: SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode: sandbox.SandboxModePaths,
 		Permissions: map[string]string{
 			"python_interpreter": "ask",
 		},
@@ -292,7 +295,7 @@ func TestPythonGateCodeTruncatedInAudit(t *testing.T) {
 func TestCheckPythonGateExpiresAt(t *testing.T) {
 	origAsk := askApproval
 	origConfig := currentApproval
-	currentApproval = ApprovalConfig{ExpirySeconds: 30}
+	currentApproval = config.ApprovalConfig{ExpirySeconds: 30}
 	defer func() {
 		askApproval = origAsk
 		currentApproval = origConfig
@@ -304,8 +307,8 @@ func TestCheckPythonGateExpiresAt(t *testing.T) {
 		return true, nil
 	}
 
-	sb := &SandboxConfig{
-		Mode: SandboxModePaths,
+	sb := &sandbox.SandboxConfig{
+		Mode: sandbox.SandboxModePaths,
 		Permissions: map[string]string{
 			"python_interpreter": "ask",
 		},

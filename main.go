@@ -1,6 +1,11 @@
 package main
 
 import (
+	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/util"
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/session"
+	"amurru/hakase/internal/vision"
 	"context"
 	"fmt"
 	"log"
@@ -41,7 +46,7 @@ func main() {
 
 	ctx := context.Background()
 
-	cfg, err := loadConfig(resolveConfigPath("config.json"))
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -49,14 +54,14 @@ func main() {
 	var p *tea.Program
 
 	// Dev-mode structured JSON logging (feature flag from config or env).
-	if p := initDebugLogging(cfg.Debug); p != "" {
-		debugEvent("startup", "log_file", p, "debug", true)
+	if p := util.InitDebugLogging(cfg.Debug); p != "" {
+		util.DebugEvent("startup", "log_file", p, "debug", true)
 	}
-	defer closeDebugLogging()
+	defer util.CloseDebugLogging()
 
 	// Define thread-safe logger function
 	logToUI := func(msg string) {
-		debugEvent("status_log", "msg", msg)
+		util.DebugEvent("status_log", "msg", msg)
 		if p != nil {
 			p.Send(StatusLogMsg{Text: msg})
 		}
@@ -85,9 +90,9 @@ func main() {
 
 	// Create the session service up front so the same instance backs both the
 	// TUI (persistence) and the runner's HistoryBuilder (history injection).
-	var sessionSvc *SessionService
-	if store, err := NewSessionStore(sessionsDir); err == nil {
-		if svc, err := NewSessionService(store); err == nil {
+	var sessionSvc *session.SessionService
+	if store, err := session.NewSessionStore(session.Dir); err == nil {
+		if svc, err := session.NewSessionService(store); err == nil {
 			sessionSvc = svc
 		}
 	}
@@ -178,6 +183,7 @@ func main() {
 			currentHistoryBuilder.SetModelInfo(info)
 		}
 		currentModelInfo = info
+		vision.CurrentModelInfo = func() *interfaces.ModelInfo { return currentModelInfo }
 		if p != nil {
 			p.Send(ModelInfoMsg{Info: info})
 		}
@@ -186,5 +192,5 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
-	debugEvent("shutdown")
+	util.DebugEvent("shutdown")
 }

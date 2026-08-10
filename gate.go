@@ -1,6 +1,8 @@
 package main
 
 import (
+	"amurru/hakase/internal/util"
+	"amurru/hakase/internal/sandbox"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -901,7 +903,7 @@ func scanScriptContent(argv []string) (string, CommandRisk) {
 // effectiveRiskThreshold returns the ask-threshold for the given sandbox:
 // - explicit sb.RiskThreshold ("low"|"medium"|"high"|"unknown") when set
 // - otherwise bubblewrap mode -> RiskHigh, paths/off/nil -> RiskMedium
-func effectiveRiskThreshold(sb *SandboxConfig) CommandRisk {
+func effectiveRiskThreshold(sb *sandbox.SandboxConfig) CommandRisk {
 	if sb != nil && sb.RiskThreshold != "" {
 		switch strings.ToLower(sb.RiskThreshold) {
 		case "low":
@@ -916,7 +918,7 @@ func effectiveRiskThreshold(sb *SandboxConfig) CommandRisk {
 			return RiskMedium
 		}
 	}
-	if sb == nil || sb.Mode == SandboxModeOff || sb.Mode == SandboxModePaths {
+	if sb == nil || sb.Mode == sandbox.SandboxModeOff || sb.Mode == sandbox.SandboxModePaths {
 		return RiskMedium
 	}
 	// Bubblewrap -> RiskHigh.
@@ -926,7 +928,7 @@ func effectiveRiskThreshold(sb *SandboxConfig) CommandRisk {
 // evaluateCommand applies the full policy to one system command.
 // argv is parseCommandArgv(command) when len(args)==0, else
 // append([]string{command}, args...).
-func evaluateCommand(sb *SandboxConfig, command string, args []string) GateDecision {
+func evaluateCommand(sb *sandbox.SandboxConfig, command string, args []string) GateDecision {
 	var argv []string
 	if len(args) == 0 {
 		argv = parseCommandArgv(command)
@@ -940,9 +942,9 @@ func evaluateCommand(sb *SandboxConfig, command string, args []string) GateDecis
 		argv = append(argv, args...)
 	}
 
-	// 1. Permission: sb.permitted("system_exec") == "deny" -> ActionDeny.
+	// 1. Permission: sb.Permitted("system_exec") == "deny" -> ActionDeny.
 	if sb != nil {
-		if action, ok := sb.permitted("system_exec"); ok && action == "deny" {
+		if action, ok := sb.Permitted("system_exec"); ok && action == "deny" {
 			return GateDecision{Action: ActionDeny, Risk: RiskUnknown, Reason: "system_exec is denied by sandbox permissions"}
 		}
 	}
@@ -951,7 +953,7 @@ func evaluateCommand(sb *SandboxConfig, command string, args []string) GateDecis
 	if reason := hardDenyReason(command, argv); reason != "" {
 		// Determine risk for logging; use HIGH for hard-denied commands.
 		risk := classifyRisk(argv)
-		debugWarn("gate_hard_deny", "command", command, "reason", reason, "risk", risk.String())
+		util.DebugWarn("gate_hard_deny", "command", command, "reason", reason, "risk", risk.String())
 		return GateDecision{Action: ActionDeny, Risk: risk, Reason: reason}
 	}
 
@@ -1017,7 +1019,7 @@ func evaluateCommand(sb *SandboxConfig, command string, args []string) GateDecis
 
 	// 6. Permission "allow" -> ActionAllow (hard-deny still applied at step 2).
 	if sb != nil {
-		if action, ok := sb.permitted("system_exec"); ok && action == "allow" {
+		if action, ok := sb.Permitted("system_exec"); ok && action == "allow" {
 			return GateDecision{Action: ActionAllow, Risk: risk, Reason: ""}
 		}
 	}

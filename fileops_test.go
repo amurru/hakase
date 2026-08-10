@@ -3,6 +3,9 @@
 package main
 
 import (
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,9 +42,9 @@ func writeTempFile(t *testing.T, dir, name, content string) string {
 }
 
 func TestReadFileToolFull(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	path := writeTempFile(t, t.TempDir(), "sample.txt", "line1\nline2\nline3\nline4\nline5\n")
 
@@ -64,9 +67,9 @@ func TestReadFileToolFull(t *testing.T) {
 }
 
 func TestReadFileToolRange(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	path := writeTempFile(t, t.TempDir(), "sample.txt", "line1\nline2\nline3\nline4\nline5\n")
 
@@ -95,9 +98,9 @@ func TestReadFileToolRange(t *testing.T) {
 }
 
 func TestReadFileToolMissing(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	_, err = runTool(t, tools[0], map[string]any{"path": filepath.Join(t.TempDir(), "nope.txt")})
 	if err == nil {
@@ -109,9 +112,9 @@ func TestReadFileToolMissing(t *testing.T) {
 }
 
 func TestReadFileToolAttachesSubdirContext(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 
 	// Workspace: git root with root AGENTS.md (in the prompt) and a subdir
@@ -124,7 +127,7 @@ func TestReadFileToolAttachesSubdirContext(t *testing.T) {
 	subAgents := filepath.Join(sub, "AGENTS.md")
 	writeContextFile(t, filepath.Join(root, "AGENTS.md"), "# root rules\n")
 	writeContextFile(t, subAgents, "# sub rules\n")
-	initContextState(root, &Config{}, []InstructionFile{{Path: filepath.Join(root, "AGENTS.md"), Content: "# root rules\n"}})
+	hctx.InitContextState(root, &config.Config{}, []hctx.InstructionFile{{Path: filepath.Join(root, "AGENTS.md"), Content: "# root rules\n"}})
 
 	file := writeTempFile(t, sub, "x.go", "package sub\n")
 
@@ -149,9 +152,9 @@ func TestReadFileToolAttachesSubdirContext(t *testing.T) {
 }
 
 func TestSearchFilesToolAttachesSubdirContext(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 
 	root := makeGitDir(t, t.TempDir())
@@ -162,7 +165,7 @@ func TestSearchFilesToolAttachesSubdirContext(t *testing.T) {
 	writeContextFile(t, filepath.Join(root, "AGENTS.md"), "# root rules\n")
 	writeContextFile(t, filepath.Join(sub, "AGENTS.md"), "# pkg rules\n")
 	writeTempFile(t, sub, "x.go", "package pkg\n// TODO marker\n")
-	initContextState(root, &Config{}, []InstructionFile{{Path: filepath.Join(root, "AGENTS.md"), Content: "# root rules\n"}})
+	hctx.InitContextState(root, &config.Config{}, []hctx.InstructionFile{{Path: filepath.Join(root, "AGENTS.md"), Content: "# root rules\n"}})
 
 	out, err := runTool(t, tools[3], map[string]any{"pattern": "TODO", "path": sub})
 	if err != nil {
@@ -175,9 +178,9 @@ func TestSearchFilesToolAttachesSubdirContext(t *testing.T) {
 }
 
 func TestWriteFileToolCreates(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "nested", "new.txt")
@@ -202,9 +205,9 @@ func TestWriteFileToolCreates(t *testing.T) {
 }
 
 func TestWriteFileToolOverwriteGuard(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	path := writeTempFile(t, t.TempDir(), "existing.txt", "original")
 
@@ -232,9 +235,9 @@ func TestWriteFileToolOverwriteGuard(t *testing.T) {
 }
 
 func TestPatchToolReplaceFirst(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	path := writeTempFile(t, t.TempDir(), "patch.txt", "foo bar foo baz")
 
@@ -255,9 +258,9 @@ func TestPatchToolReplaceFirst(t *testing.T) {
 }
 
 func TestPatchToolReplaceAll(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	path := writeTempFile(t, t.TempDir(), "patch.txt", "foo bar foo baz")
 
@@ -275,9 +278,9 @@ func TestPatchToolReplaceAll(t *testing.T) {
 }
 
 func TestPatchToolNotFound(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	path := writeTempFile(t, t.TempDir(), "patch.txt", "hello world")
 
@@ -305,9 +308,9 @@ func buildSearchSandbox(t *testing.T) string {
 }
 
 func TestSearchFilesToolContent(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := buildSearchSandbox(t)
 
@@ -338,9 +341,9 @@ func TestSearchFilesToolContent(t *testing.T) {
 }
 
 func TestSearchFilesToolFilesWithMatches(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := buildSearchSandbox(t)
 
@@ -358,9 +361,9 @@ func TestSearchFilesToolFilesWithMatches(t *testing.T) {
 }
 
 func TestSearchFilesToolCount(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := t.TempDir()
 	writeTempFile(t, dir, "a.go", "main main main\n")
@@ -384,9 +387,9 @@ func TestSearchFilesToolCount(t *testing.T) {
 }
 
 func TestSearchFilesToolIncludeFilter(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := buildSearchSandbox(t)
 
@@ -408,9 +411,9 @@ func TestSearchFilesToolIncludeFilter(t *testing.T) {
 }
 
 func TestSearchFilesToolHeadLimit(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := t.TempDir()
 	for i := 0; i < 5; i++ {
@@ -434,9 +437,9 @@ func TestSearchFilesToolHeadLimit(t *testing.T) {
 }
 
 func TestSearchFilesToolErrors(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := buildSearchSandbox(t)
 
@@ -456,9 +459,9 @@ func TestSearchFilesToolErrors(t *testing.T) {
 }
 
 func TestFileOpsToolsetNames(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	want := []string{"read_file", "write_file", "patch", "search_files"}
 	if len(tools) != len(want) {
@@ -474,9 +477,9 @@ func TestFileOpsToolsetNames(t *testing.T) {
 // TestSearchFilesDefaultHeadLimit verifies that when head_limit is 0/unset,
 // the handler defaults to 100 and marks the result Truncated.
 func TestSearchFilesDefaultHeadLimit(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := t.TempDir()
 	// Create 150 matching files - more than the default head_limit of 100.
@@ -500,13 +503,13 @@ func TestSearchFilesDefaultHeadLimit(t *testing.T) {
 	}
 }
 
-// TestSearchFilesTimeout verifies that a tiny searchTimeout causes the walk
+// TestSearchFilesTimeout verifies that a tiny sandbox.SearchTimeout causes the walk
 // to stop gracefully, returning partial results with Truncated=true and no
 // error, even when the tree has many files.
 func TestSearchFilesTimeout(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 	dir := t.TempDir()
 	// Create ~3000 small files so the walk takes long enough to hit a
@@ -516,9 +519,9 @@ func TestSearchFilesTimeout(t *testing.T) {
 	}
 
 	// Inject a tiny deadline.
-	origTimeout := searchTimeout
-	searchTimeout = 1 * time.Millisecond
-	t.Cleanup(func() { searchTimeout = origTimeout })
+	origTimeout := sandbox.SearchTimeout
+	sandbox.SearchTimeout = 1 * time.Millisecond
+	t.Cleanup(func() { sandbox.SearchTimeout = origTimeout })
 
 	out, err := runTool(t, tools[3], map[string]any{"pattern": "main", "path": dir})
 	if err != nil {
@@ -538,21 +541,21 @@ func TestSearchFilesTimeout(t *testing.T) {
 	// that's still a valid graceful partial result.
 }
 
-// TestSearchFilesSandboxConfinement verifies that when currentSandbox is
+// TestSearchFilesSandboxConfinement verifies that when sandbox.CurrentSandbox is
 // active with mode "paths", write_file to a path inside the workspace root
 // succeeds, write_file to /etc/passwd fails with "outside approved
 // workspace", and read_file of a file inside the root succeeds.
 func TestSearchFilesSandboxConfinement(t *testing.T) {
-	tools, err := createFileOpsTools(nil, nil, "")
+	tools, err := sandbox.CreateFileOpsTools(nil, nil, "")
 	if err != nil {
-		t.Fatalf("createFileOpsTools: %v", err)
+		t.Fatalf("sandbox.CreateFileOpsTools: %v", err)
 	}
 
 	// Activate sandbox confinement with a temp dir as the workspace root.
 	root := t.TempDir()
-	origSandbox := currentSandbox
-	currentSandbox = LoadSandboxConfig(&SandboxJSON{Mode: "paths", WorkspaceRoots: []string{root}})
-	t.Cleanup(func() { currentSandbox = origSandbox })
+	origSandbox := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(&sandbox.SandboxJSON{Mode: "paths", WorkspaceRoots: []string{root}})
+	t.Cleanup(func() { sandbox.CurrentSandbox = origSandbox })
 
 	// write_file inside the root succeeds.
 	innerPath := filepath.Join(root, "hello.txt")

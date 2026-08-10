@@ -4,6 +4,7 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
 	"strings"
 	"testing"
 )
@@ -148,7 +149,7 @@ func TestMCPSlashUnknownSubcommand(t *testing.T) {
 // slack disabled) as currentMCPManager.
 func setupTestMCPManager(t *testing.T) {
 	t.Helper()
-	cfg := mcpTestConfig(map[string]*MCPServerConfig{
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
 		"github": {
 			Type:    "stdio",
 			Command: []string{"npx", "-y", "@github/mcp-server"},

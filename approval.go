@@ -1,20 +1,15 @@
 package main
 
 import (
+	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/interfaces"
 	"fmt"
 	"time"
 )
 
 // ApprovalRequest describes a tool invocation needing user approval.
-type ApprovalRequest struct {
-	Tool      string // "system_exec" | "python_interpreter"
-	Command   string // full command line (or code preview for python, truncated to 2000 runes)
-	Args      []string
-	Risk      string // Risk* name
-	Reason    string // why approval is required
-	Source    string // "direct" | "delegated"
-	ExpiresAt time.Time
-}
+// It is a type alias for the shared interface contract.
+type ApprovalRequest = interfaces.ApprovalRequest
 
 // askApproval is the interactive approval gate. The TUI installs it at
 // startup (main.go). When nil (headless mode), approval is DENIED - fail
@@ -22,8 +17,8 @@ type ApprovalRequest struct {
 var askApproval func(req ApprovalRequest) (bool, error)
 
 // currentApproval holds the runtime approval configuration, set in setupRunner
-// like currentSandbox. Zero value is safe: defaults to deny mode with 60s expiry.
-var currentApproval ApprovalConfig
+// like sandbox.CurrentSandbox. Zero value is safe: defaults to deny mode with 60s expiry.
+var currentApproval config.ApprovalConfig
 
 // approvalExpiry returns the configured approval expiry duration. Defaults to
 // 60 seconds when not explicitly configured (ExpirySeconds <= 0).
