@@ -235,9 +235,16 @@ func ContentText(c *genai.Content) string {
 // trimmed history slice; stage c (LLM summarization) is scheduled async and
 // never runs in the callback's hot path.
 func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.Content, current []*genai.Content, info *interfaces.ModelInfo) []*genai.Content {
+	// No model info yet (async fetch not complete or failed): don't truncate,
+	// but log the near-limit condition only when the session history is
+	// suspiciously large. This is a legitimate state (e.g. web mode before
+	// the model-info fetch lands), not an error.
+	if info == nil {
+		return history
+	}
 	effectiveMax := util.MaxInputTokens(&util.ModelBudget{ContextWindow: info.ContextWindow, MaxInputTokens: info.MaxInputTokens})
 	if effectiveMax <= 0 {
-		// No model info yet; don't truncate, but log the near-limit condition
+		// No usable budget; don't truncate, but log the near-limit condition
 		// only when the session history is suspiciously large.
 		return history
 	}
