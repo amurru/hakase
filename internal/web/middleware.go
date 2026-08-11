@@ -185,6 +185,7 @@ func RequestLogger() func(http.Handler) http.Handler {
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code.
+// Implements http.Flusher so SSE endpoints work through the middleware chain.
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -193,6 +194,29 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Flush delegates to the underlying ResponseWriter if it supports flushing.
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Push delegates to the underlying ResponseWriter if it supports HTTP/2 push.
+func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// Hijack delegates to the underlying ResponseWriter if it supports hijacking.
+func (rw *responseWriter) Hijack() (interface{}, interface{}, error) {
+	if hijacker, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("hijacking not supported")
 }
 
 // writeJSONError writes a JSON error response.

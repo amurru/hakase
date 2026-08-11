@@ -625,6 +625,77 @@ hakase migrated from the ADK v1 stack to the ADK v2 stack (`google.golang.org/ad
 
 ---
 
+## Web Interface
+
+hakase ships two HTTP server modes for browser access:
+
+- **`hakase web`** - serves the full web UI (single-page app + API) at `http://127.0.0.1:8080` by default. Open the printed URL (`Hakase web UI: http://...`) in a browser and log in.
+- **`hakase serve`** - API-only mode at `http://127.0.0.1:8081` by default. No SPA is served; useful when you run your own frontend or script against the API directly.
+
+Both modes share the same flags:
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--port <n>` | `8080` (web) / `8081` (serve) | Port to listen on |
+| `--host <addr>` | `127.0.0.1` | Host address to bind to |
+
+```bash
+hakase web                 # SPA + API on http://127.0.0.1:8080
+hakase serve               # API-only on http://127.0.0.1:8081
+hakase web --port 9000     # custom port
+hakase web --host 0.0.0.0  # bind all interfaces (see warning)
+```
+
+`--host 0.0.0.0` exposes the server on every network interface. hakase prints a warning and recommends putting a reverse proxy in front for TLS termination instead (see [Reverse Proxy (Caddy)](#reverse-proxy-caddy)).
+
+## Authentication
+
+Before the server will start, you must create the admin credentials:
+
+```bash
+hakase auth set-password
+```
+
+The command prompts for a username and a password, hashes the password with **argon2id**, and writes the credentials to `~/.hakase/credentials.json` (mode `0600`, never stored in cleartext). If the file already exists, the current password must be entered before it can be changed.
+
+- **Web UI** - log in through the browser; the server issues a JWT stored in an HttpOnly cookie.
+- **API** - authenticate with a bearer token (the same JWT) on each request.
+
+The JWT signing secret lives at `~/.hakase/jwt-secret` (generated on first run, mode `0600`).
+
+## Reverse Proxy (Caddy)
+
+The hakase HTTP server does **not** handle TLS. Terminate HTTPS at a reverse proxy. [Caddy](https://caddyserver.com) is the easiest option because it obtains and renews Let's Encrypt certificates automatically:
+
+```
+hakase.example.com {
+    reverse_proxy localhost:8080
+}
+```
+
+Point your domain's DNS at the machine, run Caddy, and the site is served over HTTPS automatically. Caddy also handles the domain name, and you can layer on optional protection:
+
+```
+hakase.example.com {
+    reverse_proxy localhost:8080
+    basic_auth {
+        user hashed-password
+    }
+}
+```
+
+Generate the hashed password with `caddy hash-password`. An IP allowlist works too (for example `@blocked not remote_ip 192.0.2.0/24` with `respond @blocked 403`) - see the [Caddy docs](https://caddyserver.com/docs). nginx or any other reverse proxy works the same way.
+
+## Production Deployment
+
+- **Use a strong password** for the admin account set with `hakase auth set-password`.
+- **Bind to localhost and proxy** - keep the default `--host 127.0.0.1` and let the reverse proxy forward to it. Never expose the Go server directly to the internet.
+- **Protect `~/.hakase/credentials.json`** - the server enforces mode `0600`; keep the file owned by the hakase user and out of backups or repositories.
+- **Rotate the JWT secret** - `~/.hakase/jwt-secret` signs every session. Regenerate it periodically to invalidate outstanding tokens (existing sessions will need to log in again).
+- **TLS is the proxy's job** - hakase serves plain HTTP only. Always terminate HTTPS at the reverse proxy, and never run `--host 0.0.0.0` without one.
+
+---
+
 ## Example Workflows
 
 ### Research a Topic

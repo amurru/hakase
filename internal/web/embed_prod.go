@@ -15,9 +15,9 @@ import (
 //go:embed all:dist
 var distFS embed.FS
 
-// getFrontendAssets returns the embedded frontend asset filesystem.
+// FrontendAssets returns the embedded frontend asset filesystem.
 // Production builds use this to serve the SPA from inside the binary.
-func getFrontendAssets() http.FileSystem {
+func FrontendAssets() http.FileSystem {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
 		log.Printf("web: failed to sub embedded dist: %v", err)

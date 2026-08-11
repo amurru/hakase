@@ -7,10 +7,10 @@ import (
 	"os"
 )
 
-// getFrontendAssets returns a live filesystem pointing to webui/dist
+// FrontendAssets returns a live filesystem pointing to webui/dist
 // so frontend changes are reflected immediately in development.
 // Served via os.DirFS -> http.FS by the SPA handler.
-func getFrontendAssets() http.FileSystem {
+func FrontendAssets() http.FileSystem {
 	dir := "webui/dist"
 	if _, err := os.Stat(dir); err != nil {
 		// Fallback: try relative to current working directory

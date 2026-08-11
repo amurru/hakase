@@ -28,9 +28,16 @@ import (
 )
 
 func main() {
-	// CLI dispatch: if any subcommand is given, hand off to the unified
-	// command framework. The CLI path never starts the TUI.
+	// Intercept web/serve subcommands before CLI dispatch.
+	// These live in package main because handlers/cron.go imports internal/cli,
+	// preventing a shared bootstrap package (import cycle).
 	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "web":
+			os.Exit(runWeb(os.Args[2:]))
+		case "serve":
+			os.Exit(runServe(os.Args[2:]))
+		}
 		os.Exit(cli.Dispatch(os.Args[1:]))
 	}
 

@@ -67,6 +67,7 @@ func (s *Server) Router() chi.Router {
 
 // RegisterDefaults configures the router with default middleware, API routes,
 // and SPA handler. assets is the filesystem providing the frontend assets.
+// Pass nil for API-only mode (hakase serve) - the SPA catch-all is skipped.
 func (s *Server) RegisterDefaults(assets http.FileSystem) {
 	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.approvalGate, s.clarifyGate)
 }

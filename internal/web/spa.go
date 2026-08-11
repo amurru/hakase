@@ -65,8 +65,11 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterCronRoutes(r)
 	})
 
-	// SPA handler: serves static assets with cache control, falls back to index.html
-	r.Get("/*", spaHandler(assets))
+	// SPA handler: serves static assets with cache control, falls back to index.html.
+	// Only mounted when assets are provided (nil = API-only mode, skip SPA).
+	if assets != nil {
+		r.Get("/*", spaHandler(assets))
+	}
 }
 
 // spaHandler returns an http.HandlerFunc that serves the SPA.
