@@ -24,6 +24,7 @@ import (
 	"amurru/hakase/internal/mcp"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/vision"
 	"amurru/hakase/internal/web"
 	"amurru/hakase/internal/web/handlers"
 	"amurru/hakase/internal/web/sse"
@@ -177,6 +178,23 @@ func runServer(args []string, serveSPA bool) int {
 		fmt.Fprintf(os.Stderr, "hakase: failed to setup agent runner: %v\n", err)
 		return 1
 	}
+
+	// Fetch model capabilities (context window, thinking support) in the
+	// background and feed them to the HistoryBuilder for budget math and to
+	// the vision package for main-model vision detection (mirrors runTUI in
+	// main.go). Without this the HistoryBuilder has no budget limits; the
+	// defensive nil guard in fitToBudget keeps runs safe until it lands.
+	go func() {
+		info, err := agent.FetchModelInfo(ctx, cfg)
+		if err != nil {
+			log.Printf("web: model info unavailable: %v", err)
+			return
+		}
+		if deps.HistoryBuilder != nil {
+			deps.HistoryBuilder.SetModelInfo(info)
+		}
+		vision.CurrentModelInfo = func() *interfaces.ModelInfo { return info }
+	}()
 
 	// Build the web server.
 	srv := web.NewServer(jwtKey, sessionSvc)
