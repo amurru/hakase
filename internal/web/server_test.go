@@ -185,6 +185,32 @@ func TestAPIHealthUnauthenticated(t *testing.T) {
 	}
 }
 
+func TestConfigRouteRequiresAuth(t *testing.T) {
+	srv := newTestServer()
+
+	req := httptest.NewRequest("GET", "/api/config", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /api/config, got %d", w.Code)
+	}
+}
+
+func TestConfigRouteAuthed(t *testing.T) {
+	srv := newTestServer()
+	token := newTestToken(srv.jwtKey)
+
+	req := httptest.NewRequest("GET", "/api/config", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for authenticated /api/config, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAPIRouteNotSPAFallback(t *testing.T) {
 	srv := newTestServer()
 	token := newTestToken(srv.jwtKey)

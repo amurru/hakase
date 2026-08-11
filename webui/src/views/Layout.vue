@@ -19,6 +19,7 @@ import {
   Puzzle,
   Clock,
   Files,
+  Settings,
   LogOut,
   Bot,
   Loader2,
@@ -55,6 +56,7 @@ const navItems = [
   { to: '/mcp', label: 'MCP', icon: Puzzle },
   { to: '/cron', label: 'Cron', icon: Clock },
   { to: '/files', label: 'Files', icon: Files },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
 function isActive(path: string) {

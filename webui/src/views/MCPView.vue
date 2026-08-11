@@ -1,9 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { apiFetch } from '@/lib/api'
+import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog'
 import {
   RefreshCw,
   Power,
@@ -13,7 +23,21 @@ import {
   AlertCircle,
   Plug,
   Wrench,
+  Plus,
+  Pencil,
+  Trash2,
+  Loader2,
 } from '@lucide/vue'
+
+interface MCPServerConfig {
+  type?: string
+  url?: string
+  command?: string[]
+  env?: Record<string, string>
+  headers?: Record<string, string>
+  disabled?: boolean
+  timeout_ms?: number
+}
 
 interface MCPServer {
   name: string
@@ -23,12 +47,41 @@ interface MCPServer {
   toolCount: number
   status: string
   error?: string
+  config?: MCPServerConfig
+}
+
+// Editable server form
+interface ServerForm {
+  name: string
+  type: string
+  url: string
+  command: string
+  env: string
+  headers: string
+  disabled: boolean
 }
 
 const servers = ref<MCPServer[]>([])
 const loading = ref(false)
 const error = ref('')
 const actionPending = ref<string | null>(null)
+const savingServer = ref(false)
+
+// Add/Edit dialog state
+const dialogOpen = ref(false)
+const editingName = ref('') // empty = add mode
+const form = ref<ServerForm>({
+  name: '',
+  type: 'http',
+  url: '',
+  command: '',
+  env: '',
+  headers: '',
+  disabled: false,
+})
+const formError = ref('')
+
+const dialogTitle = computed(() => (editingName.value ? `Edit server ${editingName.value}` : 'Add MCP server'))
 
 async function loadServers() {
   loading.value = true
@@ -73,6 +126,117 @@ async function reconnectServer(name: string) {
     await loadServers()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to reconnect server'
+  } finally {
+    actionPending.value = null
+  }
+}
+
+// -- add/edit dialog ------------------------------------------------------
+
+function openAdd() {
+  editingName.value = ''
+  form.value = { name: '', type: 'http', url: '', command: '', env: '', headers: '', disabled: false }
+  formError.value = ''
+  dialogOpen.value = true
+}
+
+function openEdit(server: MCPServer) {
+  editingName.value = server.name
+  const c = server.config || {}
+  form.value = {
+    name: server.name,
+    type: c.type || server.type || 'http',
+    url: c.url || '',
+    command: (c.command || []).join(' '),
+    env: mapToLines(c.env),
+    headers: mapToLines(c.headers),
+    disabled: c.disabled || server.disabled,
+  }
+  formError.value = ''
+  dialogOpen.value = true
+}
+
+function mapToLines(m?: Record<string, string>): string {
+  if (!m) return ''
+  return Object.entries(m)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n')
+}
+
+function linesToMap(s: string): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const line of s.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const idx = trimmed.indexOf('=')
+    if (idx <= 0) {
+      throw new Error(`invalid key=value line: "${trimmed}"`)
+    }
+    out[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim()
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+async function saveServer() {
+  formError.value = ''
+  const name = form.value.name.trim()
+  if (!name) {
+    formError.value = 'Server name is required'
+    return
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    formError.value = 'Server name may only contain letters, numbers, _ and -'
+    return
+  }
+
+  let env: Record<string, string> | undefined
+  let headers: Record<string, string> | undefined
+  try {
+    env = linesToMap(form.value.env)
+    headers = linesToMap(form.value.headers)
+  } catch (e: unknown) {
+    formError.value = e instanceof Error ? e.message : 'Invalid env/headers format'
+    return
+  }
+
+  const body = {
+    type: form.value.type,
+    url: form.value.url.trim(),
+    command: form.value.command.trim() ? form.value.command.trim().split(/\s+/) : undefined,
+    env,
+    headers,
+    disabled: form.value.disabled,
+  }
+
+  savingServer.value = true
+  try {
+    if (editingName.value) {
+      await apiFetch(`/mcp/servers/${encodeURIComponent(editingName.value)}`, { method: 'PUT', body })
+      toast.success(`Server ${editingName.value} updated`)
+    } else {
+      await apiFetch('/mcp/servers', { method: 'POST', body: { ...body, name } })
+      toast.success(`Server ${name} added`)
+    }
+    dialogOpen.value = false
+    await loadServers()
+  } catch (e: unknown) {
+    formError.value = e instanceof Error ? e.message : 'Failed to save server'
+    toast.error(formError.value)
+  } finally {
+    savingServer.value = false
+  }
+}
+
+async function removeServer(server: MCPServer) {
+  if (!confirm(`Remove MCP server "${server.name}"?`)) return
+  actionPending.value = server.name
+  try {
+    await apiFetch(`/mcp/servers/${encodeURIComponent(server.name)}`, { method: 'DELETE' })
+    toast.success(`Server ${server.name} removed`)
+    await loadServers()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : 'Failed to remove server'
+    toast.error(error.value)
   } finally {
     actionPending.value = null
   }
@@ -124,6 +288,10 @@ onMounted(loadServers)
         <Button variant="ghost" size="sm" @click="loadServers">
           <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" />
         </Button>
+        <Button size="sm" @click="openAdd">
+          <Plus class="mr-1 h-4 w-4" />
+          Add Server
+        </Button>
       </div>
     </div>
 
@@ -149,7 +317,11 @@ onMounted(loadServers)
       <div v-else-if="servers.length === 0" class="flex h-40 flex-col items-center justify-center text-muted-foreground">
         <Server class="mb-2 h-8 w-8 opacity-50" />
         <p class="text-sm">No MCP servers configured</p>
-        <p class="mt-1 text-xs">Add servers in config.json under the "mcp" block</p>
+        <p class="mt-1 text-xs">Add a server with the button above, or configure the "mcp" block in config.json</p>
+        <Button size="sm" class="mt-3" @click="openAdd">
+          <Plus class="mr-1 h-4 w-4" />
+          Add Server
+        </Button>
       </div>
 
       <!-- Server list -->
@@ -213,6 +385,26 @@ onMounted(loadServers)
                 <!-- Actions -->
                 <div class="flex shrink-0 items-center gap-1">
                   <Button
+                    variant="ghost"
+                    size="sm"
+                    class="h-7 px-2"
+                    :disabled="actionPending === server.name"
+                    @click="openEdit(server)"
+                  >
+                    <Pencil class="mr-1 h-3 w-3" />
+                    Edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="h-7 px-2 text-destructive"
+                    :disabled="actionPending === server.name"
+                    @click="removeServer(server)"
+                  >
+                    <Trash2 class="mr-1 h-3 w-3" />
+                    Remove
+                  </Button>
+                  <Button
                     v-if="!server.disabled"
                     variant="ghost"
                     size="sm"
@@ -269,5 +461,89 @@ onMounted(loadServers)
         </Button>
       </div>
     </div>
+
+    <!-- Add/Edit dialog -->
+    <Dialog v-model:open="dialogOpen">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{{ dialogTitle }}</DialogTitle>
+        </DialogHeader>
+
+        <div class="grid gap-4 py-2">
+          <div v-if="formError" class="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            <AlertCircle class="h-3.5 w-3.5 shrink-0" />
+            <span>{{ formError }}</span>
+          </div>
+
+          <div class="grid gap-2">
+            <Label for="srv-name">Name</Label>
+            <Input
+              id="srv-name"
+              v-model="form.name"
+              :disabled="!!editingName"
+              placeholder="e.g. lightpanda"
+            />
+            <p v-if="editingName" class="text-xs text-muted-foreground">Name cannot be changed after creation.</p>
+          </div>
+
+          <div class="grid gap-2">
+            <Label for="srv-type">Type</Label>
+            <select
+              id="srv-type"
+              v-model="form.type"
+              class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3"
+            >
+              <option value="http">http (streamable endpoint)</option>
+              <option value="stdio">stdio (local process)</option>
+            </select>
+          </div>
+
+          <div v-if="form.type === 'http'" class="grid gap-2">
+            <Label for="srv-url">URL</Label>
+            <Input id="srv-url" v-model="form.url" placeholder="http://localhost:9223/mcp" />
+          </div>
+
+          <div v-else class="grid gap-2">
+            <Label for="srv-command">Command</Label>
+            <Input id="srv-command" v-model="form.command" placeholder="npx -y @github/mcp-server" />
+          </div>
+
+          <div class="grid gap-2">
+            <Label for="srv-env">Environment (key=value per line)</Label>
+            <textarea
+              id="srv-env"
+              v-model="form.env"
+              rows="2"
+              class="w-full resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              placeholder="GITHUB_PAT=${GITHUB_PAT}"
+            />
+          </div>
+
+          <div class="grid gap-2">
+            <Label for="srv-headers">HTTP headers (key=value per line)</Label>
+            <textarea
+              id="srv-headers"
+              v-model="form.headers"
+              rows="2"
+              class="w-full resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              placeholder="Authorization=Bearer ${MCP_TOKEN}"
+            />
+          </div>
+
+          <label class="flex items-center gap-2 text-sm">
+            <input v-model="form.disabled" type="checkbox" class="h-4 w-4 rounded border-input" />
+            Disabled
+          </label>
+        </div>
+
+        <DialogFooter class="flex-row justify-end gap-2">
+          <Button variant="ghost" size="sm" @click="dialogOpen = false">Cancel</Button>
+          <Button size="sm" :disabled="savingServer" @click="saveServer">
+            <Loader2 v-if="savingServer" class="mr-1 h-4 w-4 animate-spin" />
+            {{ editingName ? 'Save' : 'Add' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

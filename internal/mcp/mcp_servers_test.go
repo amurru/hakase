@@ -213,6 +213,152 @@ func TestMCPServerManagerSetDisabled(t *testing.T) {
 	}
 }
 
+func TestMCPServerManagerUpsertAddsNewServer(t *testing.T) {
+	mcpTestIsolate(t)
+	cfg := mcpTestConfig(nil)
+
+	m, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+
+	if len(m.ListServers()) != 0 {
+		t.Fatal("expected no servers initially")
+	}
+
+	if err := m.UpsertServer("web", &config.MCPServerConfig{
+		Type: "http",
+		URL:  "http://localhost:9333/mcp",
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	servers := m.ListServers()
+	if len(servers) != 1 || servers[0].Name != "web" {
+		t.Fatalf("expected one server 'web', got %+v", servers)
+	}
+	if servers[0].Type != "http" || servers[0].Transport != "http://localhost:9333/mcp" {
+		t.Fatalf("unexpected server: %+v", servers[0])
+	}
+
+	// Must survive a fresh manager built from the same config (user registry).
+	m2, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("reload manager: %v", err)
+	}
+	if len(m2.ListServers()) != 1 || m2.ListServers()[0].Name != "web" {
+		t.Fatalf("upsert did not persist: %+v", m2.ListServers())
+	}
+}
+
+func TestMCPServerManagerUpsertOverridesProjectServer(t *testing.T) {
+	mcpTestIsolate(t)
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
+		"web": {Type: "http", URL: "http://project:9000/mcp"},
+	})
+
+	m, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+
+	// Replace the project definition with a user definition.
+	if err := m.UpsertServer("web", &config.MCPServerConfig{
+		Type: "http",
+		URL:  "http://user:9001/mcp",
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	if got, _ := m.ServerConfig("web"); got.URL != "http://user:9001/mcp" {
+		t.Fatalf("expected user URL to override project, got %q", got.URL)
+	}
+
+	// After removal, the project definition must come back (no removed entry).
+	if err := m.RemoveServer("web"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	if got, ok := m.ServerConfig("web"); !ok || got.URL != "http://project:9000/mcp" {
+		t.Fatalf("expected project server restored after removing user override, got %+v ok=%v", got, ok)
+	}
+}
+
+func TestMCPServerManagerRemoveHidesProjectServer(t *testing.T) {
+	mcpTestIsolate(t)
+	cfg := mcpTestConfig(map[string]*config.MCPServerConfig{
+		"github": {Type: "stdio", Command: []string{"npx", "@github/mcp-server"}},
+		"web":    {Type: "http", URL: "http://localhost:9223/mcp"},
+	})
+
+	m, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+	if len(m.ListServers()) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(m.ListServers()))
+	}
+
+	if err := m.RemoveServer("github"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+
+	if len(m.ListServers()) != 1 || m.ListServers()[0].Name != "web" {
+		t.Fatalf("expected only 'web' after removal, got %+v", m.ListServers())
+	}
+
+	// Removal of a project server must persist (via the removed list).
+	m2, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("reload manager: %v", err)
+	}
+	if len(m2.ListServers()) != 1 {
+		t.Fatalf("removal did not persist: %+v", m2.ListServers())
+	}
+
+	// Re-adding via UpsertServer undoes the removal.
+	if err := m2.UpsertServer("github", &config.MCPServerConfig{Type: "stdio", Command: []string{"npx", "@github/mcp-server"}}); err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	if len(m2.ListServers()) != 2 {
+		t.Fatalf("expected 2 servers after re-add, got %+v", m2.ListServers())
+	}
+}
+
+func TestMCPServerManagerUpsertValidates(t *testing.T) {
+	mcpTestIsolate(t)
+	m, err := NewMCPServerManager(mcpTestConfig(nil), nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+
+	// Empty name is rejected.
+	if err := m.UpsertServer("", &config.MCPServerConfig{Type: "http", URL: "http://x/mcp"}); err == nil {
+		t.Fatal("expected error for empty name")
+	}
+	// Server without command or url is rejected.
+	if err := m.UpsertServer("bad", &config.MCPServerConfig{Type: "http"}); err == nil {
+		t.Fatal("expected error for server without url/command")
+	}
+	if len(m.ListServers()) != 0 {
+		t.Fatal("no servers should have been added")
+	}
+}
+
+func TestMCPServerManagerRemoveUnknownServer(t *testing.T) {
+	mcpTestIsolate(t)
+	m, err := NewMCPServerManager(mcpTestConfig(nil), nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+	// Removing a non-existent server records it in the removed list; no error.
+	if err := m.RemoveServer("ghost"); err != nil {
+		t.Fatalf("RemoveServer(ghost): %v", err)
+	}
+	if len(m.ListServers()) != 0 {
+		t.Fatal("expected no servers")
+	}
+}
+
 func TestMCPToolName(t *testing.T) {
 	cases := []struct{ server, tool, want string }{
 		{"github", "list_repos", "mcp_github_list_repos"},
