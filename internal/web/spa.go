@@ -3,6 +3,7 @@ package web
 import (
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -123,6 +124,15 @@ func serveFile(w http.ResponseWriter, r *http.Request, assets http.FileSystem, n
 		return
 	}
 	defer f.Close()
+
+	// Set Content-Type from the file extension. Go's content sniffing
+	// (http.DetectContentType, applied on first write when no header is set)
+	// classifies JavaScript as text/plain, which browsers reject for ES
+	// module scripts. All SPA asset types (js, css, svg, html) are in Go's
+	// builtin MIME table, so this does not depend on the host system.
+	if ctype := mime.TypeByExtension(filepath.Ext(name)); ctype != "" {
+		w.Header().Set("Content-Type", ctype)
+	}
 
 	// Get file info for size
 	info, err := f.Stat()
