@@ -1,7 +1,8 @@
 const BASE_URL = '/api'
 
-interface RequestOptions extends Omit<RequestInit, 'body'> {
+interface RequestOptions extends Omit<RequestInit, 'body' | 'method'> {
   body?: unknown
+  method?: string
 }
 
 export class ApiError extends Error {
@@ -14,6 +15,12 @@ export class ApiError extends Error {
     this.status = status
     this.data = data
   }
+}
+
+let onUnauthorized: (() => void) | null = null
+
+export function setOnUnauthorized(handler: () => void) {
+  onUnauthorized = handler
 }
 
 export async function apiFetch<T = unknown>(
@@ -40,15 +47,28 @@ export async function apiFetch<T = unknown>(
 
   if (res.status === 401) {
     localStorage.removeItem('hakase_token')
-    window.location.href = '/login'
+    if (onUnauthorized) {
+      onUnauthorized()
+    } else {
+      window.location.href = '/login'
+    }
     throw new ApiError(401, 'Unauthorized')
   }
 
   const data = await res.json().catch(() => null)
 
   if (!res.ok) {
-    throw new ApiError(res.status, `API error: ${res.statusText}`, data)
+    const message = (data as Record<string, string>)?.error || `API error: ${res.statusText}`
+    throw new ApiError(res.status, message, data)
   }
 
   return data as T
+}
+
+export function apiGet<T = unknown>(path: string): Promise<T> {
+  return apiFetch<T>(path, { method: 'GET' })
+}
+
+export function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
+  return apiFetch<T>(path, { method: 'POST', body })
 }

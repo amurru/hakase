@@ -12,19 +12,49 @@ const router = createRouter({
     },
     {
       path: '/',
-      redirect: '/chat',
-    },
-    {
-      path: '/chat',
-      name: 'chat',
-      component: () => import('@/views/ChatView.vue'),
+      component: () => import('@/views/Layout.vue'),
       meta: { requiresAuth: true },
-    },
-    {
-      path: '/settings',
-      name: 'settings',
-      component: () => import('@/views/SettingsView.vue'),
-      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          redirect: '/chat',
+        },
+        {
+          path: 'chat',
+          name: 'chat',
+          component: () => import('@/views/ChatView.vue'),
+        },
+        {
+          path: 'sessions',
+          name: 'sessions',
+          component: () => import('@/views/SessionsView.vue'),
+        },
+        {
+          path: 'tasks',
+          name: 'tasks',
+          component: () => import('@/views/TasksView.vue'),
+        },
+        {
+          path: 'knowledge',
+          name: 'knowledge',
+          component: () => import('@/views/KnowledgeView.vue'),
+        },
+        {
+          path: 'mcp',
+          name: 'mcp',
+          component: () => import('@/views/MCPView.vue'),
+        },
+        {
+          path: 'cron',
+          name: 'cron',
+          component: () => import('@/views/CronView.vue'),
+        },
+        {
+          path: 'files',
+          name: 'files',
+          component: () => import('@/views/FilesView.vue'),
+        },
+      ],
     },
   ],
 })
@@ -32,7 +62,7 @@ const router = createRouter({
 router.beforeEach((to, _from, next) => {
   const authStore = useAuthStore()
   if (to.meta.requiresAuth && !authStore.isLoggedIn) {
-    next({ name: 'login' })
+    next({ path: '/login', query: { redirect: to.fullPath } })
   } else {
     next()
   }

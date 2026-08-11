@@ -117,6 +117,10 @@ func (a *chiRouterAdapter) Delete(pattern string, handlerFn http.HandlerFunc) {
 	a.r.Delete(pattern, handlerFn)
 }
 
+func (a *chiRouterAdapter) Patch(pattern string, handlerFn http.HandlerFunc) {
+	a.r.Patch(pattern, handlerFn)
+}
+
 func (a *chiRouterAdapter) Route(pattern string, fn func(r chiRouter)) {
 	a.r.Route(pattern, func(r chi.Router) {
 		fn(&chiRouterAdapter{r})

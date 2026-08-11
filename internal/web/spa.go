@@ -49,6 +49,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		if clarifyGate != nil {
 			handlers.RegisterClarifyRoutes(r, clarifyGate)
 		}
+		// Task API routes (task 27)
+		handlers.RegisterTaskRoutes(r)
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html
@@ -158,6 +160,7 @@ type chiRouter interface {
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
+	Patch(pattern string, handlerFn http.HandlerFunc)
 	Route(pattern string, fn func(r chiRouter))
 }
 
