@@ -4,6 +4,7 @@
 package main
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	"os"
 	"strings"
 	"testing"
@@ -27,14 +28,14 @@ func chdirTemp(t *testing.T) {
 // markCompleted walks the legal status path (pending -> in_progress -> completed).
 func markCompleted(t *testing.T, id string) {
 	t.Helper()
-	if _, err := updateTask(UpdateTaskInput{ID: id, Status: TaskStatusInProgress}); err != nil {
+	if _, err := hakaseagent.UpdateTask(hakaseagent.UpdateTaskInput{ID: id, Status: hakaseagent.TaskStatusInProgress}); err != nil {
 		t.Fatalf("updateTask (in_progress): %v", err)
 	}
-	completed, err := updateTask(UpdateTaskInput{ID: id, Status: TaskStatusCompleted})
+	completed, err := hakaseagent.UpdateTask(hakaseagent.UpdateTaskInput{ID: id, Status: hakaseagent.TaskStatusCompleted})
 	if err != nil {
 		t.Fatalf("updateTask (completed): %v", err)
 	}
-	if completed.Status != TaskStatusCompleted {
+	if completed.Status != hakaseagent.TaskStatusCompleted {
 		t.Fatalf("expected completed status, got %s", completed.Status)
 	}
 }
@@ -42,30 +43,30 @@ func markCompleted(t *testing.T, id string) {
 func TestArchiveCompletedTask(t *testing.T) {
 	chdirTemp(t)
 
-	created, err := createTask(CreateTaskInput{Title: "t"})
+	created, err := hakaseagent.CreateTask(hakaseagent.CreateTaskInput{Title: "t"})
 	if err != nil {
 		t.Fatalf("createTask: %v", err)
 	}
 
 	markCompleted(t, created.ID)
 
-	archived, err := archiveTask(created.ID)
+	archived, err := hakaseagent.ArchiveTask(created.ID)
 	if err != nil {
 		t.Fatalf("archiveTask: %v", err)
 	}
-	if archived.Status != TaskStatusArchived {
+	if archived.Status != hakaseagent.TaskStatusArchived {
 		t.Errorf("expected archived status, got %s", archived.Status)
 	}
 
 	// The task must still exist (kept for reference) with status archived.
-	got, err := getTask(created.ID)
+	got, err := hakaseagent.GetTask(created.ID)
 	if err != nil {
 		t.Fatalf("getTask: %v", err)
 	}
 	if got == nil {
 		t.Fatal("archived task should still exist in the registry")
 	}
-	if got.Status != TaskStatusArchived {
+	if got.Status != hakaseagent.TaskStatusArchived {
 		t.Errorf("expected stored status archived, got %s", got.Status)
 	}
 }
@@ -73,15 +74,15 @@ func TestArchiveCompletedTask(t *testing.T) {
 func TestArchiveRejectsNonCompleted(t *testing.T) {
 	chdirTemp(t)
 
-	created, err := createTask(CreateTaskInput{Title: "t"})
+	created, err := hakaseagent.CreateTask(hakaseagent.CreateTaskInput{Title: "t"})
 	if err != nil {
 		t.Fatalf("createTask: %v", err)
 	}
-	if created.Status != TaskStatusPending {
+	if created.Status != hakaseagent.TaskStatusPending {
 		t.Fatalf("expected pending status, got %s", created.Status)
 	}
 
-	_, err = archiveTask(created.ID)
+	_, err = hakaseagent.ArchiveTask(created.ID)
 	if err == nil {
 		t.Fatal("expected error archiving a pending task, got nil")
 	}
@@ -90,14 +91,14 @@ func TestArchiveRejectsNonCompleted(t *testing.T) {
 	}
 
 	// The task status must be unchanged.
-	got, err := getTask(created.ID)
+	got, err := hakaseagent.GetTask(created.ID)
 	if err != nil {
 		t.Fatalf("getTask: %v", err)
 	}
 	if got == nil {
 		t.Fatal("task should still exist")
 	}
-	if got.Status != TaskStatusPending {
+	if got.Status != hakaseagent.TaskStatusPending {
 		t.Errorf("expected status unchanged (pending), got %s", got.Status)
 	}
 }
@@ -105,7 +106,7 @@ func TestArchiveRejectsNonCompleted(t *testing.T) {
 func TestArchiveUnknownTask(t *testing.T) {
 	chdirTemp(t)
 
-	_, err := archiveTask("does-not-exist")
+	_, err := hakaseagent.ArchiveTask("does-not-exist")
 	if err == nil {
 		t.Fatal("expected error for unknown task, got nil")
 	}
@@ -117,17 +118,17 @@ func TestArchiveUnknownTask(t *testing.T) {
 func TestDeleteArchivedTask(t *testing.T) {
 	chdirTemp(t)
 
-	created, err := createTask(CreateTaskInput{Title: "t"})
+	created, err := hakaseagent.CreateTask(hakaseagent.CreateTaskInput{Title: "t"})
 	if err != nil {
 		t.Fatalf("createTask: %v", err)
 	}
 	markCompleted(t, created.ID)
-	if _, err := archiveTask(created.ID); err != nil {
+	if _, err := hakaseagent.ArchiveTask(created.ID); err != nil {
 		t.Fatalf("archiveTask: %v", err)
 	}
 
 	// Archived tasks can still be deleted via the existing delete path.
-	success, err := deleteTask(created.ID)
+	success, err := hakaseagent.DeleteTask(created.ID)
 	if err != nil {
 		t.Fatalf("deleteTask: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestDeleteArchivedTask(t *testing.T) {
 		t.Error("deleteTask: expected success for archived task")
 	}
 
-	got, err := getTask(created.ID)
+	got, err := hakaseagent.GetTask(created.ID)
 	if err != nil {
 		t.Fatalf("getTask: %v", err)
 	}
@@ -148,25 +149,25 @@ func TestUpdateTaskToArchivedTransition(t *testing.T) {
 	chdirTemp(t)
 
 	// Completed tasks may transition to archived.
-	created, err := createTask(CreateTaskInput{Title: "t"})
+	created, err := hakaseagent.CreateTask(hakaseagent.CreateTaskInput{Title: "t"})
 	if err != nil {
 		t.Fatalf("createTask: %v", err)
 	}
 	markCompleted(t, created.ID)
-	updated, err := updateTask(UpdateTaskInput{ID: created.ID, Status: TaskStatusArchived})
+	updated, err := hakaseagent.UpdateTask(hakaseagent.UpdateTaskInput{ID: created.ID, Status: hakaseagent.TaskStatusArchived})
 	if err != nil {
 		t.Fatalf("updateTask to archived: %v", err)
 	}
-	if updated.Status != TaskStatusArchived {
+	if updated.Status != hakaseagent.TaskStatusArchived {
 		t.Errorf("expected archived status, got %s", updated.Status)
 	}
 
 	// Pending tasks may NOT transition to archived.
-	created2, err := createTask(CreateTaskInput{Title: "t2"})
+	created2, err := hakaseagent.CreateTask(hakaseagent.CreateTaskInput{Title: "t2"})
 	if err != nil {
 		t.Fatalf("createTask: %v", err)
 	}
-	_, err = updateTask(UpdateTaskInput{ID: created2.ID, Status: TaskStatusArchived})
+	_, err = hakaseagent.UpdateTask(hakaseagent.UpdateTaskInput{ID: created2.ID, Status: hakaseagent.TaskStatusArchived})
 	if err == nil {
 		t.Error("expected invalid transition error for pending -> archived, got nil")
 	}

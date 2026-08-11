@@ -19,11 +19,9 @@ import (
 func modelWithSession(t *testing.T) (*tui.AppModel, *hctx.HistoryBuilder, *session.SessionService) {
 	t.Helper()
 	b, svc := newTestBuilderForCompact(t)
-	old := currentHistoryBuilder
-	currentHistoryBuilder = b
-	t.Cleanup(func() { currentHistoryBuilder = old })
-	// Also set on the tui package so CompactSession can find it.
+	old := tui.CurrentHistoryBuilder
 	tui.CurrentHistoryBuilder = b
+	t.Cleanup(func() { tui.CurrentHistoryBuilder = old })
 
 	m := tui.NewModel(context.Background(), nil, svc, 100, true, "test-model", "")
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

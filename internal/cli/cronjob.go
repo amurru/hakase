@@ -437,7 +437,7 @@ func notifyCronJob(status, jobID, name, summary, outputPath string) {
 // createCronjobTool builds and returns the cronjob function tool registered
 // via util.NewDocTool so the doc:"..." struct tags are reflected into the JSON
 // schema the model sees.
-func createCronjobTool(log hakaseagent.LogFunc) (tool.Tool, error) {
+func CreateCronjobTool(log hakaseagent.LogFunc) (tool.Tool, error) {
 	return util.NewDocTool(functiontool.Config{
 		Name: "cronjob",
 		Description: "Manage scheduled one-shot and recurring tasks. " +
@@ -741,7 +741,7 @@ var cronRunning = make(map[string]bool)
 
 // startCronScheduler launches a background goroutine that ticks every 30s and
 // fires any due jobs in their own goroutine. Safe to call once.
-func startCronScheduler(log hakaseagent.LogFunc) {
+func StartCronScheduler(log hakaseagent.LogFunc) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()

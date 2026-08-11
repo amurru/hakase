@@ -1,7 +1,9 @@
 package main
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/vision"
 	"bytes"
@@ -79,11 +81,11 @@ func pngToDataURL(data []byte) string {
 }
 
 // saveRestoreGlobals captures and restores package-level globals.
-func saveRestoreGlobalsForTest(t *testing.T, oldMI *ModelInfo, oldCfg *config.Config, oldVM model.LLM) {
+func saveRestoreGlobalsForTest(t *testing.T, oldMI *interfaces.ModelInfo, oldCfg *config.Config, oldVM model.LLM) {
 	t.Helper()
 	t.Cleanup(func() {
-		currentModelInfo = oldMI
-		currentConfig = oldCfg
+		vision.CurrentModelInfo = func() *interfaces.ModelInfo { return oldMI }
+		vision.CurrentConfig = func() *config.Config { return oldCfg }
 		vision.VisionModelLLM = oldVM
 	})
 }
@@ -92,9 +94,11 @@ func saveRestoreGlobalsForTest(t *testing.T, oldMI *ModelInfo, oldCfg *config.Co
 // restore functions.
 func clearVisionGlobalsForTest(t *testing.T) {
 	t.Helper()
-	oldMI, oldCfg, oldVM := currentModelInfo, currentConfig, vision.VisionModelLLM
-	currentModelInfo = nil
-	currentConfig = nil
+	oldMI := vision.CurrentModelInfo()
+	oldCfg := vision.CurrentConfig()
+	oldVM := vision.VisionModelLLM
+	vision.CurrentModelInfo = nil
+	vision.CurrentConfig = nil
 	vision.VisionModelLLM = nil
 	saveRestoreGlobalsForTest(t, oldMI, oldCfg, oldVM)
 }
@@ -439,7 +443,7 @@ func TestResolveMainModelVision(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		vision.VisionModelLLM = nil
 		cfg := &config.Config{Provider: "openai-compatible", VisionModel: "some-vision-model"}
-		mi := &ModelInfo{SupportsVision: boolPtr(true)}
+		mi := &interfaces.ModelInfo{SupportsVision: boolPtr(true)}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
 			t.Errorf("got %v, want vision.VisionLegacy (provider blocks native)", got)
 		}
@@ -483,7 +487,7 @@ func TestResolveMainModelVision(t *testing.T) {
 	t.Run("gemini + SupportsVision true -> vision.VisionNative", func(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		cfg := &config.Config{Provider: "gemini"}
-		mi := &ModelInfo{SupportsVision: boolPtr(true)}
+		mi := &interfaces.ModelInfo{SupportsVision: boolPtr(true)}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionNative {
 			t.Errorf("got %v, want vision.VisionNative", got)
 		}
@@ -493,7 +497,7 @@ func TestResolveMainModelVision(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		vision.VisionModelLLM = nil
 		cfg := &config.Config{Provider: "gemini", VisionModel: "some-vision-model"}
-		mi := &ModelInfo{SupportsVision: boolPtr(false)}
+		mi := &interfaces.ModelInfo{SupportsVision: boolPtr(false)}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
 			t.Errorf("got %v, want vision.VisionLegacy", got)
 		}
@@ -503,7 +507,7 @@ func TestResolveMainModelVision(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		vision.VisionModelLLM = nil
 		cfg := &config.Config{Provider: "gemini", VisionModel: ""}
-		mi := &ModelInfo{SupportsVision: boolPtr(false)}
+		mi := &interfaces.ModelInfo{SupportsVision: boolPtr(false)}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionUnsupported {
 			t.Errorf("got %v, want vision.VisionUnsupported", got)
 		}
@@ -512,7 +516,7 @@ func TestResolveMainModelVision(t *testing.T) {
 	t.Run("gemini + SupportsVision nil + name match -> vision.VisionNative", func(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		cfg := &config.Config{Provider: "gemini"}
-		mi := &ModelInfo{Name: "gpt-4o-2024", SupportsVision: nil}
+		mi := &interfaces.ModelInfo{Name: "gpt-4o-2024", SupportsVision: nil}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionNative {
 			t.Errorf("got %v, want vision.VisionNative (name allowlist match)", got)
 		}
@@ -521,7 +525,7 @@ func TestResolveMainModelVision(t *testing.T) {
 	t.Run("gemini + SupportsVision nil + gemini name match -> vision.VisionNative", func(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		cfg := &config.Config{Provider: "gemini"}
-		mi := &ModelInfo{Name: "gemini-2.5-flash", SupportsVision: nil}
+		mi := &interfaces.ModelInfo{Name: "gemini-2.5-flash", SupportsVision: nil}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionNative {
 			t.Errorf("got %v, want vision.VisionNative (gemini model name match)", got)
 		}
@@ -531,7 +535,7 @@ func TestResolveMainModelVision(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		vision.VisionModelLLM = nil
 		cfg := &config.Config{Provider: "gemini", VisionModel: ""}
-		mi := &ModelInfo{Name: "foo-model", SupportsVision: nil}
+		mi := &interfaces.ModelInfo{Name: "foo-model", SupportsVision: nil}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionUnsupported {
 			t.Errorf("got %v, want vision.VisionUnsupported", got)
 		}
@@ -541,7 +545,7 @@ func TestResolveMainModelVision(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		vision.VisionModelLLM = nil
 		cfg := &config.Config{Provider: "gemini", VisionModel: "some-vision-model"}
-		mi := &ModelInfo{Name: "foo-model", SupportsVision: nil}
+		mi := &interfaces.ModelInfo{Name: "foo-model", SupportsVision: nil}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
 			t.Errorf("got %v, want vision.VisionLegacy (cfg.VisionModel set)", got)
 		}
@@ -551,7 +555,7 @@ func TestResolveMainModelVision(t *testing.T) {
 		clearVisionGlobalsForTest(t)
 		vision.VisionModelLLM = nil
 		cfg := &config.Config{Provider: "openai", VisionModel: "some-vision-model"}
-		mi := &ModelInfo{SupportsVision: boolPtr(true)}
+		mi := &interfaces.ModelInfo{SupportsVision: boolPtr(true)}
 		if got := vision.ResolveMainModelVision(mi, cfg); got != vision.VisionLegacy {
 			t.Errorf("got %v, want vision.VisionLegacy (openai blocks native)", got)
 		}
@@ -928,18 +932,18 @@ func TestVisionModelUsable(t *testing.T) {
 }
 
 func TestResolveVisionProvider(t *testing.T) {
-	mainGemini := &GeminiProvider{}
-	mainOpenAI := &OpenAIProvider{BaseURL: "https://main.example/v1"}
+	mainGemini := &hakaseagent.GeminiProvider{}
+	mainOpenAI := &hakaseagent.OpenAIProvider{BaseURL: "https://main.example/v1"}
 
 	type result struct {
 		kind    string // "gemini" or "openai"
 		baseURL string
 	}
-	classify := func(p LLMProvider) result {
+	classify := func(p hakaseagent.LLMProvider) result {
 		switch v := p.(type) {
-		case *GeminiProvider:
+		case *hakaseagent.GeminiProvider:
 			return result{kind: "gemini"}
-		case *OpenAIProvider:
+		case *hakaseagent.OpenAIProvider:
 			return result{kind: "openai", baseURL: v.BaseURL}
 		default:
 			return result{kind: "unknown"}
@@ -948,7 +952,7 @@ func TestResolveVisionProvider(t *testing.T) {
 
 	cases := []struct {
 		name string
-		main LLMProvider
+		main hakaseagent.LLMProvider
 		cfg  *config.Config
 		want result
 	}{

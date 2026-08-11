@@ -1,9 +1,6 @@
-// task_slash.go - the /board slash command: a TUI-facing mirror of the
-// `hakase task` CLI (task_cli.go). All output goes to the log pane via
-// m.appendLog (never stdout/stderr), and mutations refresh the task pane
-// via m.RefreshTaskBoard(). Mutating subcommands are blocked while the
-// agent is processing (m.IsProcessing), matching the convention used by
-// /compact, /new, and /sessions.
+// slash_commands.go - /board and /mcp slash command handlers for the TUI.
+// These were formerly in root (task_slash.go, mcp_slash.go) and referenced
+// root type aliases. Now they import internal packages directly.
 package main
 
 import (
@@ -14,13 +11,144 @@ import (
 	"strings"
 	"time"
 
+	"amurru/hakase/internal/agent"
+	mcp "amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/tui"
+
 	tea "charm.land/bubbletea/v2"
 )
 
-// runBoardCommand dispatches a /board <subcommand> [args] line to the
-// matching handler. It always returns nil (synchronous handlers); it
-// never returns tea.Quit.
-func runBoardCommand(m *appModel, args string) tea.Cmd {
+// =========================================================================
+// /mcp command (formerly mcp_slash.go)
+// =========================================================================
+
+func runMCPCommand(m *tui.AppModel, args string) tea.Cmd {
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		return m.ToggleMCPList()
+	}
+	sub := fields[0]
+	rest := strings.TrimSpace(strings.TrimPrefix(args, sub))
+	switch sub {
+	case "list", "status", "ls":
+		return mcpListCmd(m)
+	case "enable", "on":
+		return mcpSetEnabledCmd(m, rest, false)
+	case "disable", "off":
+		return mcpSetEnabledCmd(m, rest, true)
+	case "reconnect":
+		return mcpReconnectCmd(m, rest)
+	case "help":
+		m.AppendLog("/mcp [list] | /mcp enable <name> | /mcp disable <name> | /mcp reconnect <name>")
+		return nil
+	default:
+		m.AppendLog(fmt.Sprintf("unknown /mcp subcommand %q (try: list, enable, disable, reconnect)", sub))
+		return nil
+	}
+}
+
+func mcpManager(m *tui.AppModel) *mcp.MCPServerManager {
+	if mcp.MCPManager == nil {
+		m.AppendLog("MCP manager is not available (no usable MCP config)")
+		return nil
+	}
+	return mcp.MCPManager
+}
+
+func mcpListCmd(m *tui.AppModel) tea.Cmd {
+	mg := mcpManager(m)
+	if mg == nil {
+		return nil
+	}
+	servers := mg.ListServers()
+	if len(servers) == 0 {
+		m.AppendLog("No MCP servers configured. Add an \"mcp\" block to config.json or ~/.hakase/mcp.json.")
+		return nil
+	}
+	m.AppendLog("MCP Servers")
+	for _, s := range servers {
+		tools := "-"
+		if s.Status == "connected" {
+			tools = fmt.Sprintf("%d tools", s.ToolCount)
+		}
+		line := fmt.Sprintf("  %s %s  %s  %s", mcpStatusGlyph(s), s.Name, s.Transport, tools)
+		if s.Status == "failed" && s.Error != "" {
+			line += fmt.Sprintf("  (%s)", s.Error)
+		}
+		m.AppendLog(line)
+	}
+	return nil
+}
+
+func mcpSetEnabledCmd(m *tui.AppModel, args string, disable bool) tea.Cmd {
+	mg := mcpManager(m)
+	if mg == nil {
+		return nil
+	}
+	fields := strings.Fields(args)
+	if len(fields) != 1 {
+		verb := "enable"
+		if disable {
+			verb = "disable"
+		}
+		m.AppendLog(fmt.Sprintf("Usage: /mcp %s <name>", verb))
+		return nil
+	}
+	name := fields[0]
+	if err := mg.SetDisabled(name, disable); err != nil {
+		m.AppendLog(fmt.Sprintf("failed to %s %q: %v", toggleVerb(disable), name, err))
+		return nil
+	}
+	m.AppendLog(fmt.Sprintf("MCP server %q %s", name, toggleVerb(disable)+"d"))
+	m.RefreshMCPList()
+	return nil
+}
+
+func mcpReconnectCmd(m *tui.AppModel, args string) tea.Cmd {
+	mg := mcpManager(m)
+	if mg == nil {
+		return nil
+	}
+	fields := strings.Fields(args)
+	if len(fields) != 1 {
+		m.AppendLog("Usage: /mcp reconnect <name>")
+		return nil
+	}
+	name := fields[0]
+	if err := mg.Reconnect(name); err != nil {
+		m.AppendLog(fmt.Sprintf("failed to reconnect %q: %v", name, err))
+		return nil
+	}
+	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q on next tool fetch", name))
+	m.RefreshMCPList()
+	return nil
+}
+
+func mcpStatusGlyph(s mcp.MCPServerStatus) string {
+	switch s.Status {
+	case "connected":
+		return "*"
+	case "disabled":
+		return "o"
+	case "failed":
+		return "x"
+	default:
+		return "~"
+	}
+}
+
+func toggleVerb(disable bool) string {
+	if disable {
+		return "disable"
+	}
+	return "enable"
+}
+
+// =========================================================================
+// /board command (formerly task_slash.go)
+// =========================================================================
+
+func runBoardCommand(m *tui.AppModel, args string) tea.Cmd {
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
 		return boardSummary(m)
@@ -56,39 +184,35 @@ func runBoardCommand(m *appModel, args string) tea.Cmd {
 	}
 }
 
-// boardBlockWarn logs the standard "agent is working" warning and returns nil
-// for mutating subcommands invoked while m.IsProcessing is true.
-func boardBlockWarn(m *appModel) tea.Cmd {
-	m.AppendLog("⚠ cannot modify the task board while the agent is working")
+func boardBlockWarn(m *tui.AppModel) tea.Cmd {
+	m.AppendLog("cannot modify the task board while the agent is working")
 	return nil
 }
 
-// boardSummary mirrors runTaskSummary: per-status counts using statusSymbol,
-// in the same statusOrder, then a total line.
-func boardSummary(m *appModel) tea.Cmd {
-	registry, err := loadTaskRegistry()
+func boardSummary(m *tui.AppModel) tea.Cmd {
+	registry, err := agent.LoadTaskRegistry()
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to load tasks: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to load tasks: %v", err))
 		return nil
 	}
-	summary := map[TaskStatus]int{
-		TaskStatusPending:    0,
-		TaskStatusInProgress: 0,
-		TaskStatusCompleted:  0,
-		TaskStatusFailed:     0,
-		TaskStatusCancelled:  0,
-		TaskStatusSkipped:    0,
-		TaskStatusBlocked:    0,
-		TaskStatusArchived:   0,
+	summary := map[agent.TaskStatus]int{
+		agent.TaskStatusPending:    0,
+		agent.TaskStatusInProgress: 0,
+		agent.TaskStatusCompleted:  0,
+		agent.TaskStatusFailed:     0,
+		agent.TaskStatusCancelled:  0,
+		agent.TaskStatusSkipped:    0,
+		agent.TaskStatusBlocked:    0,
+		agent.TaskStatusArchived:   0,
 	}
 	for _, task := range registry.Tasks {
 		summary[task.Status]++
 	}
-	m.AppendLog("📋 Task Board")
-	statusOrder := []TaskStatus{
-		TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted,
-		TaskStatusFailed, TaskStatusCancelled, TaskStatusSkipped,
-		TaskStatusBlocked, TaskStatusArchived,
+	m.AppendLog("Task Board")
+	statusOrder := []agent.TaskStatus{
+		agent.TaskStatusPending, agent.TaskStatusInProgress, agent.TaskStatusCompleted,
+		agent.TaskStatusFailed, agent.TaskStatusCancelled, agent.TaskStatusSkipped,
+		agent.TaskStatusBlocked, agent.TaskStatusArchived,
 	}
 	for _, status := range statusOrder {
 		count := summary[status]
@@ -99,8 +223,7 @@ func boardSummary(m *appModel) tea.Cmd {
 	return nil
 }
 
-// boardList mirrors runTaskList, with flag.FlagSet parsing like the CLI.
-func boardList(m *appModel, args string) tea.Cmd {
+func boardList(m *tui.AppModel, args string) tea.Cmd {
 	fs := flag.NewFlagSet("board list", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -111,16 +234,16 @@ func boardList(m *appModel, args string) tea.Cmd {
 	fs.StringVar(&parentFlag, "parent", "", "filter by parent task ID")
 
 	if err := fs.Parse(strings.Fields(args)); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ invalid /board list arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("invalid /board list arguments: %v", err))
 		return nil
 	}
 
-	var statuses []TaskStatus
+	var statuses []agent.TaskStatus
 	if statusFlag != "" {
 		for _, s := range strings.Split(statusFlag, ",") {
 			s = strings.TrimSpace(s)
 			if s != "" {
-				statuses = append(statuses, TaskStatus(s))
+				statuses = append(statuses, agent.TaskStatus(s))
 			}
 		}
 	}
@@ -134,15 +257,15 @@ func boardList(m *appModel, args string) tea.Cmd {
 		}
 	}
 
-	input := ListTasksInput{
+	input := agent.ListTasksInput{
 		Status:   statuses,
 		Assignee: assigneeFlag,
 		Tags:     tagList,
 		ParentID: parentFlag,
 	}
-	tasks, err := listTasks(input)
+	tasks, err := agent.ListTasks(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to list tasks: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to list tasks: %v", err))
 		return nil
 	}
 	if len(tasks) == 0 {
@@ -168,9 +291,7 @@ func boardList(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardNew mirrors runTaskCreate: title is the remaining positional args
-// joined by space; flags --priority/--assignee/--description/--tags.
-func boardNew(m *appModel, args string) tea.Cmd {
+func boardNew(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -201,7 +322,7 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--description":
 			v, ok := next()
 			if !ok {
-				m.AppendLog("⚠ flag needs an argument: --description")
+				m.AppendLog("flag needs an argument: --description")
 				return nil
 			}
 			description = v
@@ -210,7 +331,7 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--priority":
 			v, ok := next()
 			if !ok {
-				m.AppendLog("⚠ flag needs an argument: --priority")
+				m.AppendLog("flag needs an argument: --priority")
 				return nil
 			}
 			priority = v
@@ -219,7 +340,7 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--assignee":
 			v, ok := next()
 			if !ok {
-				m.AppendLog("⚠ flag needs an argument: --assignee")
+				m.AppendLog("flag needs an argument: --assignee")
 				return nil
 			}
 			assignee = v
@@ -228,14 +349,14 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--tags":
 			v, ok := next()
 			if !ok {
-				m.AppendLog("⚠ flag needs an argument: --tags")
+				m.AppendLog("flag needs an argument: --tags")
 				return nil
 			}
 			tags = v
 		case strings.HasPrefix(arg, "--tags="):
 			tags = strings.TrimPrefix(arg, "--tags=")
 		case strings.HasPrefix(arg, "-"):
-			m.AppendLog(fmt.Sprintf("⚠ unknown flag %q", arg))
+			m.AppendLog(fmt.Sprintf("unknown flag %q", arg))
 			return nil
 		default:
 			titleParts = append(titleParts, arg)
@@ -244,13 +365,13 @@ func boardNew(m *appModel, args string) tea.Cmd {
 
 	title := strings.Join(titleParts, " ")
 	if title == "" {
-		m.AppendLog("⚠ title is required")
+		m.AppendLog("title is required")
 		return nil
 	}
 
 	validPriorities := map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
 	if priority != "" && !validPriorities[priority] {
-		m.AppendLog(fmt.Sprintf("⚠ invalid priority %q (valid: critical, high, medium, low)", priority))
+		m.AppendLog(fmt.Sprintf("invalid priority %q (valid: critical, high, medium, low)", priority))
 		return nil
 	}
 	if priority == "" {
@@ -267,16 +388,16 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		}
 	}
 
-	input := CreateTaskInput{
+	input := agent.CreateTaskInput{
 		Title:       title,
 		Description: description,
-		Priority:    TaskPriority(priority),
+		Priority:    agent.TaskPriority(priority),
 		Assignee:    assignee,
 		Tags:        tagList,
 	}
-	task, err := createTask(input)
+	task, err := agent.CreateTask(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to create task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to create task: %v", err))
 		return nil
 	}
 	m.AppendLog(fmt.Sprintf("Created task %s: %s", task.ID, task.Title))
@@ -284,17 +405,16 @@ func boardNew(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardGet mirrors runTaskGet + printTaskDetail, compacted for the TUI log.
-func boardGet(m *appModel, args string) tea.Cmd {
+func boardGet(m *tui.AppModel, args string) tea.Cmd {
 	fields := strings.Fields(args)
 	if len(fields) != 1 {
 		m.AppendLog("Usage: /board get <id>")
 		return nil
 	}
 	id := fields[0]
-	task, err := getTask(id)
+	task, err := agent.GetTask(id)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to get task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to get task: %v", err))
 		return nil
 	}
 	if task == nil {
@@ -318,8 +438,7 @@ func boardGet(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardUpdate mirrors runTaskUpdate.
-func boardUpdate(m *appModel, args string) tea.Cmd {
+func boardUpdate(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -342,7 +461,7 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 	fs.StringVar(&errorFlag, "error", "", "error message")
 
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ invalid /board update arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("invalid /board update arguments: %v", err))
 		return nil
 	}
 
@@ -352,29 +471,29 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 		"blocked": true, "archived": true,
 	}
 	if statusFlag != "" && !validStatuses[statusFlag] {
-		m.AppendLog(fmt.Sprintf("⚠ invalid status %q", statusFlag))
+		m.AppendLog(fmt.Sprintf("invalid status %q", statusFlag))
 		return nil
 	}
 	validPriorities := map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
 	if priorityFlag != "" && !validPriorities[priorityFlag] {
-		m.AppendLog(fmt.Sprintf("⚠ invalid priority %q", priorityFlag))
+		m.AppendLog(fmt.Sprintf("invalid priority %q", priorityFlag))
 		return nil
 	}
 
 	var result interface{}
 	if resultFlag != "" {
 		if err := json.Unmarshal([]byte(resultFlag), &result); err != nil {
-			m.AppendLog(fmt.Sprintf("⚠ invalid JSON for --result: %v", err))
+			m.AppendLog(fmt.Sprintf("invalid JSON for --result: %v", err))
 			return nil
 		}
 	}
 
-	input := UpdateTaskInput{ID: id}
+	input := agent.UpdateTaskInput{ID: id}
 	if statusFlag != "" {
-		input.Status = TaskStatus(statusFlag)
+		input.Status = agent.TaskStatus(statusFlag)
 	}
 	if priorityFlag != "" {
-		input.Priority = TaskPriority(priorityFlag)
+		input.Priority = agent.TaskPriority(priorityFlag)
 	}
 	if assigneeFlag != "" {
 		input.Assignee = assigneeFlag
@@ -392,23 +511,17 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 		input.Error = errorFlag
 	}
 
-	task, err := updateTask(input)
+	task, err := agent.UpdateTask(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to update task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to update task: %v", err))
 		return nil
 	}
-	statusStr := string(task.Status)
-	if statusFlag == "" {
-		// status unchanged; report the actual current status
-		statusStr = string(task.Status)
-	}
-	m.AppendLog(fmt.Sprintf("Updated task %s: %s (status: %s)", task.ID, task.Title, statusStr))
+	m.AppendLog(fmt.Sprintf("Updated task %s: %s (status: %s)", task.ID, task.Title, task.Status))
 	m.RefreshTaskBoard()
 	return nil
 }
 
-// boardDone mirrors runTaskComplete.
-func boardDone(m *appModel, args string) tea.Cmd {
+func boardDone(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -424,25 +537,25 @@ func boardDone(m *appModel, args string) tea.Cmd {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&resultFlag, "result", "", "result as JSON string")
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ invalid /board done arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("invalid /board done arguments: %v", err))
 		return nil
 	}
 
 	var result interface{}
 	if resultFlag != "" {
 		if err := json.Unmarshal([]byte(resultFlag), &result); err != nil {
-			m.AppendLog(fmt.Sprintf("⚠ invalid JSON for --result: %v", err))
+			m.AppendLog(fmt.Sprintf("invalid JSON for --result: %v", err))
 			return nil
 		}
 	}
 
-	input := UpdateTaskInput{ID: id, Status: TaskStatusCompleted}
+	input := agent.UpdateTaskInput{ID: id, Status: agent.TaskStatusCompleted}
 	if result != nil {
 		input.Result = result
 	}
-	task, err := updateTask(input)
+	task, err := agent.UpdateTask(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to complete task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to complete task: %v", err))
 		return nil
 	}
 	m.AppendLog(fmt.Sprintf("Completed task %s: %s", task.ID, task.Title))
@@ -450,8 +563,7 @@ func boardDone(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardFail mirrors runTaskFail.
-func boardFail(m *appModel, args string) tea.Cmd {
+func boardFail(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -467,14 +579,14 @@ func boardFail(m *appModel, args string) tea.Cmd {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&errorFlag, "error", "task failed", "error message")
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ invalid /board fail arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("invalid /board fail arguments: %v", err))
 		return nil
 	}
 
-	input := UpdateTaskInput{ID: id, Status: TaskStatusFailed, Error: errorFlag}
-	task, err := updateTask(input)
+	input := agent.UpdateTaskInput{ID: id, Status: agent.TaskStatusFailed, Error: errorFlag}
+	task, err := agent.UpdateTask(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to fail task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to fail task: %v", err))
 		return nil
 	}
 	m.AppendLog(fmt.Sprintf("Failed task %s: %s", task.ID, task.Title))
@@ -482,8 +594,7 @@ func boardFail(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardCancel mirrors runTaskCancel.
-func boardCancel(m *appModel, args string) tea.Cmd {
+func boardCancel(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -493,10 +604,10 @@ func boardCancel(m *appModel, args string) tea.Cmd {
 		return nil
 	}
 	id := fields[0]
-	input := UpdateTaskInput{ID: id, Status: TaskStatusCancelled}
-	task, err := updateTask(input)
+	input := agent.UpdateTaskInput{ID: id, Status: agent.TaskStatusCancelled}
+	task, err := agent.UpdateTask(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to cancel task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to cancel task: %v", err))
 		return nil
 	}
 	m.AppendLog(fmt.Sprintf("Cancelled task %s: %s", task.ID, task.Title))
@@ -504,8 +615,7 @@ func boardCancel(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardDelete mirrors runTaskDelete.
-func boardDelete(m *appModel, args string) tea.Cmd {
+func boardDelete(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -515,9 +625,9 @@ func boardDelete(m *appModel, args string) tea.Cmd {
 		return nil
 	}
 	id := fields[0]
-	success, err := deleteTask(id)
+	success, err := agent.DeleteTask(id)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to delete task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to delete task: %v", err))
 		return nil
 	}
 	if !success {
@@ -529,8 +639,7 @@ func boardDelete(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardArchive mirrors runTaskArchive.
-func boardArchive(m *appModel, args string) tea.Cmd {
+func boardArchive(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -540,9 +649,9 @@ func boardArchive(m *appModel, args string) tea.Cmd {
 		return nil
 	}
 	id := fields[0]
-	task, err := archiveTask(id)
+	task, err := agent.ArchiveTask(id)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to archive task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to archive task: %v", err))
 		return nil
 	}
 	m.AppendLog(fmt.Sprintf("Archived task %s: %s", task.ID, task.Title))
@@ -550,8 +659,7 @@ func boardArchive(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// boardClaim mirrors runTaskClaim.
-func boardClaim(m *appModel, args string) tea.Cmd {
+func boardClaim(m *tui.AppModel, args string) tea.Cmd {
 	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
@@ -567,28 +675,28 @@ func boardClaim(m *appModel, args string) tea.Cmd {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&assigneeFlag, "assignee", "agent", "agent/user ID to assign")
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ invalid /board claim arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("invalid /board claim arguments: %v", err))
 		return nil
 	}
 
-	task, err := getTask(id)
+	task, err := agent.GetTask(id)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to get task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to get task: %v", err))
 		return nil
 	}
 	if task == nil {
 		m.AppendLog(fmt.Sprintf("task not found: %s", id))
 		return nil
 	}
-	if task.Status != TaskStatusPending && task.Status != TaskStatusBlocked {
-		m.AppendLog(fmt.Sprintf("⚠ task %s cannot be claimed (status: %s, must be pending or blocked)", id, task.Status))
+	if task.Status != agent.TaskStatusPending && task.Status != agent.TaskStatusBlocked {
+		m.AppendLog(fmt.Sprintf("task %s cannot be claimed (status: %s, must be pending or blocked)", id, task.Status))
 		return nil
 	}
 
-	input := UpdateTaskInput{ID: id, Status: TaskStatusInProgress, Assignee: assigneeFlag}
-	updatedTask, err := updateTask(input)
+	input := agent.UpdateTaskInput{ID: id, Status: agent.TaskStatusInProgress, Assignee: assigneeFlag}
+	updatedTask, err := agent.UpdateTask(input)
 	if err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to claim task: %v", err))
+		m.AppendLog(fmt.Sprintf("failed to claim task: %v", err))
 		return nil
 	}
 	m.AppendLog(fmt.Sprintf("Claimed task %s by %s", updatedTask.ID, assigneeFlag))
@@ -596,42 +704,40 @@ func boardClaim(m *appModel, args string) tea.Cmd {
 	return nil
 }
 
-// prioritySymbol returns an emoji symbol for the given task priority.
-func prioritySymbol(p TaskPriority) string {
+func prioritySymbol(p agent.TaskPriority) string {
 	switch p {
-	case TaskPriorityCritical:
-		return "🔴"
-	case TaskPriorityHigh:
-		return "🟠"
-	case TaskPriorityMedium:
-		return "🟡"
-	case TaskPriorityLow:
-		return "🟢"
+	case agent.TaskPriorityCritical:
+		return "!"
+	case agent.TaskPriorityHigh:
+		return "H"
+	case agent.TaskPriorityMedium:
+		return "M"
+	case agent.TaskPriorityLow:
+		return "L"
 	default:
-		return "⚪"
+		return "?"
 	}
 }
 
-// statusSymbol returns an emoji symbol for the given task status.
-func statusSymbol(s TaskStatus) string {
+func statusSymbol(s agent.TaskStatus) string {
 	switch s {
-	case TaskStatusPending:
-		return "⏳"
-	case TaskStatusInProgress:
-		return "▶️"
-	case TaskStatusCompleted:
-		return "✅"
-	case TaskStatusFailed:
-		return "❌"
-	case TaskStatusCancelled:
-		return "🚫"
-	case TaskStatusSkipped:
-		return "⏭️"
-	case TaskStatusBlocked:
-		return "🔒"
-	case TaskStatusArchived:
-		return "🗄️"
+	case agent.TaskStatusPending:
+		return "[ ]"
+	case agent.TaskStatusInProgress:
+		return "[>]"
+	case agent.TaskStatusCompleted:
+		return "[x]"
+	case agent.TaskStatusFailed:
+		return "[!]"
+	case agent.TaskStatusCancelled:
+		return "[-]"
+	case agent.TaskStatusSkipped:
+		return "[~]"
+	case agent.TaskStatusBlocked:
+		return "[B]"
+	case agent.TaskStatusArchived:
+		return "[A]"
 	default:
-		return "❓"
+		return "[?]"
 	}
 }
