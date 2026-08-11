@@ -84,13 +84,17 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start the agent run in a goroutine.
+	// Start the agent run in a goroutine. The run must NOT be tied to the
+	// request context: net/http cancels r.Context() when the handler returns,
+	// which would kill the agent run the moment the 202 is written. Use a
+	// detached context so the run survives the request lifecycle (the browser
+	// may refresh or reconnect its SSE stream mid-run).
 	if api.runner != nil {
 		content := genai.NewContentFromParts(
 			[]*genai.Part{{Text: req.Content}},
 			genai.RoleUser,
 		)
-		go api.runAgentTask(r.Context(), sessionID, content)
+		go api.runAgentTask(context.Background(), sessionID, content)
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
