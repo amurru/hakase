@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
-import { Send } from '@lucide/vue'
+import { Send, Paperclip } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import AttachmentPicker, { type FileAttachment } from './AttachmentPicker.vue'
 
@@ -92,7 +92,16 @@ onMounted(() => {
       @update:attachments="attachments = $event"
     />
 
-    <div class="flex items-end gap-2 pl-9">
+    <div class="flex items-end gap-2">
+      <Button
+        variant="ghost"
+        size="icon"
+        class="h-10 w-10 shrink-0 rounded-xl text-muted-foreground hover:text-foreground"
+        :disabled="disabled"
+        @click="pickerRef?.openPicker()"
+      >
+        <Paperclip class="h-4 w-4" />
+      </Button>
       <textarea
         ref="textareaRef"
         v-model="content"

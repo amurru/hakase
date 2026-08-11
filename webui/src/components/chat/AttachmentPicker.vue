@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { Paperclip, X, Search } from '@lucide/vue'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -107,7 +106,7 @@ function addImageAttachment(name: string, mime: string, base64: string) {
 }
 
 // Expose for ChatInput to call on backspace and paste
-defineExpose({ removeLastAttachment, addImageAttachment })
+defineExpose({ removeLastAttachment, addImageAttachment, openPicker })
 </script>
 
 <template>
@@ -133,17 +132,7 @@ defineExpose({ removeLastAttachment, addImageAttachment })
       </span>
     </div>
 
-    <!-- @ trigger button + picker dialog -->
-    <Button
-      variant="ghost"
-      size="icon"
-      class="absolute left-2 top-1/2 h-7 w-7 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-      :disabled="disabled"
-      @click="openPicker"
-    >
-      <Paperclip class="h-4 w-4" />
-    </Button>
-
+    <!-- @ trigger dialog -->
     <Dialog v-model:open="pickerOpen">
       <DialogContent class="sm:max-w-md p-0 gap-0">
         <DialogHeader class="px-4 pt-4 pb-2">
