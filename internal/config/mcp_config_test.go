@@ -161,6 +161,81 @@ func TestLoadMCPRegistryDisabledApplies(t *testing.T) {
 	}
 }
 
+func TestLoadMCPRegistryRemovedHidesProjectServer(t *testing.T) {
+	setupMCPConfigTest(t)
+
+	userReg := MCPUserRegistry{
+		Removed: []string{"gone"},
+	}
+	if err := saveMCPUserRegistry(userReg); err != nil {
+		t.Fatalf("save user registry: %v", err)
+	}
+
+	cfg := &Config{
+		MCPServers: MCPConfig{
+			Servers: map[string]*MCPServerConfig{
+				"gone": {
+					Type:    "stdio",
+					Command: []string{"npx", "-y", "gone-server"},
+				},
+				"kept": {
+					Type:    "stdio",
+					Command: []string{"npx", "-y", "kept-server"},
+				},
+			},
+		},
+	}
+	reg, err := LoadMCPRegistry(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := reg.Servers["gone"]; ok {
+		t.Error("removed project server should be hidden")
+	}
+	if _, ok := reg.Servers["kept"]; !ok {
+		t.Error("non-removed project server should remain")
+	}
+}
+
+func TestLoadMCPRegistryRemovedButUserReaddWins(t *testing.T) {
+	setupMCPConfigTest(t)
+
+	userReg := MCPUserRegistry{
+		Removed: []string{"github"},
+		Servers: map[string]*MCPServerConfig{
+			"github": {
+				Type:    "stdio",
+				Command: []string{"npx", "-y", "re-added-server"},
+			},
+		},
+	}
+	if err := saveMCPUserRegistry(userReg); err != nil {
+		t.Fatalf("save user registry: %v", err)
+	}
+
+	cfg := &Config{
+		MCPServers: MCPConfig{
+			Servers: map[string]*MCPServerConfig{
+				"github": {
+					Type:    "stdio",
+					Command: []string{"npx", "-y", "project-server"},
+				},
+			},
+		},
+	}
+	reg, err := LoadMCPRegistry(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv, ok := reg.Servers["github"]
+	if !ok {
+		t.Fatal("re-added user server should win over the removed list")
+	}
+	if srv.Command[2] != "re-added-server" {
+		t.Errorf("expected user re-add to win, got %v", srv.Command)
+	}
+}
+
 func TestLoadMCPRegistryValidationBadType(t *testing.T) {
 	setupMCPConfigTest(t)
 

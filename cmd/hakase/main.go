@@ -97,6 +97,9 @@ func runTUI() {
 			if err != nil {
 				return nil, err
 			}
+			// Share the live manager through the package global so the TUI
+			// (/mcp), slash commands, and other consumers can reach it.
+			mcp.MCPManager = mgr
 			return mgr, nil
 		},
 

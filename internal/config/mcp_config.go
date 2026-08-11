@@ -36,6 +36,7 @@ type MCPConfig struct {
 type MCPUserRegistry struct {
 	Servers  map[string]*MCPServerConfig `json:"servers,omitempty"`  // user-added servers (full config)
 	Disabled []string                    `json:"disabled,omitempty"` // runtime-disabled server names
+	Removed  []string                    `json:"removed,omitempty"`  // project servers the user deleted
 }
 
 // MCPRegistry is the effective merged view consumed by the runtime manager.
@@ -104,6 +105,19 @@ func LoadMCPRegistry(cfg *Config) (*MCPRegistry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading user mcp registry: %w", err)
 	}
+
+	// 3b. Apply removed list: project-config servers the user deleted via the
+	// web/TUI are hidden. User registry re-adds (applied next) win.
+	removedSet := make(map[string]bool, len(userReg.Removed))
+	for _, name := range userReg.Removed {
+		removedSet[name] = true
+	}
+	for name := range merged {
+		if removedSet[name] {
+			delete(merged, name)
+		}
+	}
+
 	for name, srv := range userReg.Servers {
 		copy := *srv
 		merged[name] = &copy

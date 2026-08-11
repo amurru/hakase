@@ -237,6 +237,73 @@ func (m *MCPServerManager) Reconnect(name string) error {
 	return nil
 }
 
+// ServerConfig returns the effective (merged) config for one server.
+func (m *MCPServerManager) ServerConfig(name string) (*config.MCPServerConfig, bool) {
+	m.mu.Lock()
+	ms, ok := m.servers[name]
+	m.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	copy := *ms.cfg
+	return &copy, true
+}
+
+// UpsertServer adds a new server or replaces an existing one. The full entry
+// is persisted to the user registry (which overrides the project config), any
+// prior removal is undone, and the effective registry is reloaded so the
+// change applies on the next tool fetch.
+func (m *MCPServerManager) UpsertServer(name string, srv *config.MCPServerConfig) error {
+	if name == "" {
+		return fmt.Errorf("server name is required")
+	}
+	if err := srv.Validate(); err != nil {
+		return fmt.Errorf("invalid mcp server %q: %w", name, err)
+	}
+	copy := *srv
+	err := config.UpdateMCPUserRegistry(func(reg *config.MCPUserRegistry) error {
+		if reg.Servers == nil {
+			reg.Servers = make(map[string]*config.MCPServerConfig)
+		}
+		reg.Servers[name] = &copy
+		reg.Removed = removeString(reg.Removed, name)
+		reg.Disabled = removeString(reg.Disabled, name)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("persisting mcp server: %w", err)
+	}
+	return m.reload()
+}
+
+// RemoveServer deletes a server entirely. For user-registry servers the entry
+// is dropped (a project definition of the same name comes back); for
+// project-config servers the name is added to the removed list so it stays
+// hidden across restarts. Re-adding via UpsertServer undoes the removal. The
+// effective registry is reloaded immediately.
+func (m *MCPServerManager) RemoveServer(name string) error {
+	err := config.UpdateMCPUserRegistry(func(reg *config.MCPUserRegistry) error {
+		hadUserEntry := false
+		if reg.Servers != nil {
+			if _, ok := reg.Servers[name]; ok {
+				hadUserEntry = true
+				delete(reg.Servers, name)
+			}
+		}
+		// Only hide a project-config server (no user entry) via the removed
+		// list. A user override's deletion just restores the project default.
+		if !hadUserEntry && !containsString(reg.Removed, name) {
+			reg.Removed = append(reg.Removed, name)
+		}
+		reg.Disabled = removeString(reg.Disabled, name)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("persisting mcp server removal: %w", err)
+	}
+	return m.reload()
+}
+
 // buildMCPServerToolset constructs the ADK toolset for one server. stdio
 // servers run the configured command with HAKASE_*-scrubbed env plus the
 // server's env block; http servers use a streamable HTTP transport with
@@ -422,4 +489,20 @@ func indexOfString(list []string, target string) int {
 		}
 	}
 	return -1
+}
+
+// containsString reports whether list contains target.
+func containsString(list []string, target string) bool {
+	return indexOfString(list, target) >= 0
+}
+
+// removeString returns a new slice with every occurrence of target removed.
+func removeString(list []string, target string) []string {
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		if s != target {
+			out = append(out, s)
+		}
+	}
+	return out
 }

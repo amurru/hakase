@@ -125,6 +125,9 @@ func runServer(args []string, serveSPA bool) int {
 			if err != nil {
 				return nil, err
 			}
+			// Share the live manager through the package global so the web
+			// API handlers and other consumers can reach it.
+			mcp.MCPManager = mgr
 			return mgr, nil
 		},
 
