@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -21,11 +22,14 @@ import {
   LogOut,
   Bot,
   Loader2,
+  Sun,
+  Moon,
 } from '@lucide/vue'
 
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const themeStore = useThemeStore()
 
 const contextPercent = computed(() => {
   if (appStore.contextMax === 0) return 0
@@ -139,6 +143,18 @@ function handleLogout() {
         </div>
 
         <div class="flex items-center gap-4">
+          <!-- Theme toggle -->
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-8 w-8 p-0"
+            :aria-label="themeStore.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+            :title="themeStore.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+            @click="themeStore.toggleTheme"
+          >
+            <Sun v-if="themeStore.theme === 'dark'" class="h-4 w-4" />
+            <Moon v-else class="h-4 w-4" />
+          </Button>
           <!-- Context usage -->
           <div class="flex items-center gap-2">
             <span class="text-xs text-muted-foreground whitespace-nowrap">Context</span>

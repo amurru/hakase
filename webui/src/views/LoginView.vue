@@ -2,15 +2,17 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
-import { Loader2 } from '@lucide/vue'
+import { Loader2, Sun, Moon } from '@lucide/vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const themeStore = useThemeStore()
 
 const username = ref('')
 const password = ref('')
@@ -40,7 +42,18 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-background px-4">
+  <div class="relative flex min-h-screen items-center justify-center bg-background px-4">
+    <Button
+      variant="ghost"
+      size="sm"
+      class="absolute right-4 top-4 h-8 w-8 p-0"
+      :aria-label="themeStore.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+      :title="themeStore.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+      @click="themeStore.toggleTheme"
+    >
+      <Sun v-if="themeStore.theme === 'dark'" class="h-4 w-4" />
+      <Moon v-else class="h-4 w-4" />
+    </Button>
     <Card class="w-full max-w-sm">
       <CardHeader class="text-center">
         <CardTitle class="text-xl">Hakase</CardTitle>
