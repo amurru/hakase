@@ -51,6 +51,18 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		}
 		// Task API routes (task 27)
 		handlers.RegisterTaskRoutes(r)
+		// File browsing routes (task 30)
+		handlers.RegisterFileRoutes(r)
+		// Knowledge management routes (task 31)
+		var knowledgeDir string
+		if cfg, err := config.LoadConfig("config.json"); err == nil {
+			knowledgeDir = cfg.KnowledgeDir
+		}
+		handlers.RegisterKnowledgeRoutes(r, knowledgeDir)
+		// MCP server management routes (task 32)
+		handlers.RegisterMCPRoutes(r)
+		// Cron job management routes (task 33)
+		handlers.RegisterCronRoutes(r)
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html

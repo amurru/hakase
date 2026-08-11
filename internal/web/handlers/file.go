@@ -1,0 +1,504 @@
+// Package handlers provides HTTP handlers for the hakase web API.
+package handlers
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"amurru/hakase/internal/sandbox"
+
+	"github.com/google/uuid"
+)
+
+// maxFileContentSize caps text content returned by GET /api/files (1 MB).
+const maxFileContentSize = 1 << 20
+
+// maxImagePreviewSize caps image files for inline preview (10 MB).
+const maxImagePreviewSize = 10 << 20
+
+// maxDirEntries caps directory listing results.
+const maxDirEntries = 1000
+
+// maxBrowseFiles caps the bounded file walk for @ autocomplete.
+const maxBrowseFiles = 500
+
+// maxAttachmentImageBytes caps image attachments uploaded via the API (10 MB).
+const maxAttachmentImageBytes = 10 << 20
+
+// maxAttachmentTextBytes caps text file attachments (200 KB).
+const maxAttachmentTextBytes = 200 * 1024
+
+// FileRouter is the minimum interface needed by RegisterFileRoutes.
+type FileRouter interface {
+	Get(pattern string, handlerFn http.HandlerFunc)
+	Post(pattern string, handlerFn http.HandlerFunc)
+}
+
+// FileAPI wraps file browsing operations for the web API layer.
+type FileAPI struct{}
+
+// RegisterFileRoutes registers file browsing API routes on the given router.
+// Routes are relative to /api (the caller places them inside the /api group).
+// Order matters: more specific routes first to avoid conflicts.
+func RegisterFileRoutes(r FileRouter) {
+	api := &FileAPI{}
+
+	r.Get("/files/browse", api.BrowseFiles)
+	r.Get("/files/list", api.ListDirectory)
+	r.Get("/files/download", api.DownloadFile)
+	r.Get("/files", api.ReadFile)
+	r.Post("/sessions/{id}/attachments", api.UploadAttachment)
+}
+
+// fileEntry is a single entry in a directory listing response.
+type fileEntry struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"is_dir"`
+	Size  int64  `json:"size"`
+}
+
+// fileContentResponse is the response for GET /api/files.
+type fileContentResponse struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Content   string `json:"content,omitempty"`
+	Size      int64  `json:"size"`
+	Mime      string `json:"mime"`
+	IsBinary  bool   `json:"is_binary"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// resolveFilePath resolves a path through the sandbox read roots.
+// Returns the absolute resolved path or an error if outside the sandbox.
+func resolveFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
+		return sandbox.CurrentSandbox.ResolveScopedPath(path, false)
+	}
+	return filepath.Abs(path)
+}
+
+// isBinaryFile checks if data contains a null byte (simple binary detection).
+func isBinaryFile(data []byte) bool {
+	return len(data) > 0 && !utf8.Valid(data)
+}
+
+// detectMIME returns the MIME type for a file based on its extension.
+func detectMIME(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	mimeType := mime.TypeByExtension(ext)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return mimeType
+}
+
+// isImageMIME reports whether the MIME type is an image.
+func isImageMIME(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "image/")
+}
+
+// ReadFile handles GET /api/files?path=<path> - returns file content.
+// For text files, returns the content (capped at 1 MB).
+// For images, returns metadata only (preview via download endpoint).
+// For other binary files, returns metadata with is_binary=true.
+func (api *FileAPI) ReadFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path parameter is required"})
+		return
+	}
+
+	absPath, err := resolveFilePath(path)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("path outside workspace: %v", err)})
+		return
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to stat file: %v", err)})
+		return
+	}
+
+	if info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is a directory, use /api/files/list"})
+		return
+	}
+
+	name := info.Name()
+	size := info.Size()
+	mimeType := detectMIME(absPath)
+	image := isImageMIME(mimeType)
+
+	// For images, return metadata only (don't inline large binary data).
+	if image {
+		if size > maxImagePreviewSize {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "image too large for preview"})
+			return
+		}
+		writeJSON(w, http.StatusOK, fileContentResponse{
+			Path:     absPath,
+			Name:     name,
+			Size:     size,
+			Mime:     mimeType,
+			IsBinary: true,
+		})
+		return
+	}
+
+	// Read file content for text/binary detection.
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to read file: %v", err)})
+		return
+	}
+
+	binary := isBinaryFile(data)
+	if binary {
+		writeJSON(w, http.StatusOK, fileContentResponse{
+			Path:     absPath,
+			Name:     name,
+			Size:     size,
+			Mime:     mimeType,
+			IsBinary: true,
+		})
+		return
+	}
+
+	// Text file: truncate if over limit.
+	truncated := false
+	content := string(data)
+	if len(data) > maxFileContentSize {
+		content = string(data[:maxFileContentSize])
+		truncated = true
+	}
+
+	writeJSON(w, http.StatusOK, fileContentResponse{
+		Path:      absPath,
+		Name:      name,
+		Content:   content,
+		Size:      size,
+		Mime:      mimeType,
+		IsBinary:  false,
+		Truncated: truncated,
+	})
+}
+
+// DownloadFile handles GET /api/files/download?path=<path> - serves the file as attachment.
+func (api *FileAPI) DownloadFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path parameter is required"})
+		return
+	}
+
+	absPath, err := resolveFilePath(path)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("path outside workspace: %v", err)})
+		return
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to stat file: %v", err)})
+		return
+	}
+
+	if info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot download a directory"})
+		return
+	}
+
+	mimeType := detectMIME(absPath)
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, info.Name()))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+
+	f, err := os.Open(absPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to open file: %v", err)})
+		return
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(w, f); err != nil {
+		log.Printf("file: download stream error for %s: %v", absPath, err)
+	}
+}
+
+// ListDirectory handles GET /api/files/list?dir=<path> - lists directory contents.
+// Returns entries sorted by name (dirs first), capped at maxDirEntries.
+func (api *FileAPI) ListDirectory(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get("dir")
+	if dir == "" {
+		// Default to the first read root.
+		dir = "."
+	}
+
+	absPath, err := resolveFilePath(dir)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("path outside workspace: %v", err)})
+		return
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "directory not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to read directory: %v", err)})
+		return
+	}
+
+	result := make([]fileEntry, 0, len(entries))
+	for _, entry := range entries {
+		// Skip hidden files/dirs (starting with .).
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		result = append(result, fileEntry{
+			Name:  entry.Name(),
+			Path:  filepath.Join(absPath, entry.Name()),
+			IsDir: entry.IsDir(),
+			Size:  info.Size(),
+		})
+
+		if len(result) >= maxDirEntries {
+			break
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// browseEntry is a single file entry in the browse autocomplete response.
+type browseEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Mime string `json:"mime"`
+}
+
+// skippedDirNames lists directory basenames to skip during the bounded walk.
+var skippedDirNames = map[string]bool{
+	".git":          true,
+	".hakase-tmp":   true,
+	"node_modules":  true,
+	"vendor":        true,
+	"__pycache__":   true,
+	".venv":         true,
+	".omc":          true,
+	".omo":          true,
+}
+
+// BrowseFiles handles GET /api/files/browse?q=<prefix> - bounded workspace
+// file walk returning files matching the prefix. Used for @ autocomplete.
+// Walks the first read root, skips hidden and heavy directories, caps at
+// maxBrowseFiles results. Paths are returned relative to the workspace root.
+func (api *FileAPI) BrowseFiles(w http.ResponseWriter, r *http.Request) {
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+
+	root, err := resolveFilePath(".")
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("cannot resolve workspace: %v", err)})
+		return
+	}
+
+	var results []browseEntry
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != root {
+				name := d.Name()
+				if strings.HasPrefix(name, ".") || skippedDirNames[name] {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if query == "" || strings.Contains(strings.ToLower(rel), query) {
+			mimeType := detectMIME(path)
+			results = append(results, browseEntry{
+				Name: d.Name(),
+				Path: rel,
+				Mime: mimeType,
+			})
+		}
+		if len(results) >= maxBrowseFiles {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+// attachmentUploadResponse is the response for POST /api/sessions/{id}/attachments.
+type attachmentUploadResponse struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	MIME  string `json:"mime"`
+	Label string `json:"label"`
+}
+
+// UploadAttachment handles POST /api/sessions/{id}/attachments.
+// Accepts multipart/form-data (file field) or JSON with name/mime/base64.
+// Saves the file to .hakase-tmp/attachments/ and returns an AttachmentRef.
+func (api *FileAPI) UploadAttachment(w http.ResponseWriter, r *http.Request) {
+	var (
+		data     []byte
+		name     string
+		mimeType string
+	)
+
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		// Limit body to 10 MB + overhead for form fields.
+		r.Body = http.MaxBytesReader(w, r.Body, int64(maxAttachmentImageBytes)+1024*1024)
+		if err := r.ParseMultipartForm(int64(maxAttachmentImageBytes) + 1024*1024); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse multipart form"})
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing 'file' field in form"})
+			return
+		}
+		defer file.Close()
+		name = header.Filename
+		mimeType = header.Header.Get("Content-Type")
+		if mimeType == "" {
+			mimeType = detectMIME(name)
+		}
+		data, err = io.ReadAll(io.LimitReader(file, int64(maxAttachmentImageBytes)+1))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read uploaded file"})
+			return
+		}
+	} else {
+		// JSON body with base64 content.
+		var req struct {
+			Name string `json:"name"`
+			MIME string `json:"mime"`
+			Data string `json:"data"` // base64-encoded
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		name = req.Name
+		mimeType = req.MIME
+		decoded, err := base64.StdEncoding.DecodeString(req.Data)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid base64 data"})
+			return
+		}
+		data = decoded
+	}
+
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "filename is required"})
+		return
+	}
+
+	// Enforce size limits based on MIME type.
+	if isImageMIME(mimeType) && len(data) > maxAttachmentImageBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": fmt.Sprintf("image too large: %d bytes, max %d bytes", len(data), maxAttachmentImageBytes)})
+		return
+	}
+	if !isImageMIME(mimeType) && len(data) > maxAttachmentTextBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": fmt.Sprintf("file too large: %d bytes, max %d bytes", len(data), maxAttachmentTextBytes)})
+		return
+	}
+
+	// Save to .hakase-tmp/attachments/ inside the workspace.
+	tmpDir := filepath.Join(".", ".hakase-tmp", "attachments")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp directory"})
+		return
+	}
+
+	// Verify the tmp dir is inside the sandbox.
+	resolvedTmp, err := resolveFilePath(tmpDir)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "temp directory outside workspace"})
+		return
+	}
+
+	ext := filepath.Ext(name)
+	if ext == "" && mimeType != "" {
+		// Infer extension from MIME.
+		switch mimeType {
+		case "image/png":
+			ext = ".png"
+		case "image/jpeg":
+			ext = ".jpg"
+		case "image/gif":
+			ext = ".gif"
+		case "image/webp":
+			ext = ".webp"
+		default:
+			ext = ".bin"
+		}
+	}
+	saveName := uuid.New().String() + ext
+	savePath := filepath.Join(resolvedTmp, saveName)
+
+	if err := os.WriteFile(savePath, data, 0o600); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save attachment"})
+		return
+	}
+
+	// Build the relative path for the AttachmentRef.
+	relPath, err := filepath.Rel(".", savePath)
+	if err != nil {
+		relPath = savePath
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	label := "@" + name
+	if isImageMIME(mimeType) {
+		label = name
+	}
+
+	writeJSON(w, http.StatusOK, attachmentUploadResponse{
+		Name:  name,
+		Path:  relPath,
+		MIME:  mimeType,
+		Label: label,
+	})
+}

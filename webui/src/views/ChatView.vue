@@ -5,9 +5,11 @@ import { useAppStore } from '@/stores/app'
 import { useApprovalStore } from '@/stores/approval'
 import { useClarifyStore } from '@/stores/clarify'
 import { useSSE } from '@/composables/useSSE'
+import { useNotifications } from '@/composables/useNotifications'
 import { apiFetch } from '@/lib/api'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
 import { AlertTriangle, Loader2 } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 
@@ -32,6 +34,8 @@ const {
   onApprovalTimeoutEvent,
   onClarifyEvent,
   onClarifyTimeoutEvent,
+  onDelegationEvent,
+  onCronEvent,
 } = useSSE(() => sessionId.value)
 
 // Wire SSE approval/clarify events to their Pinia stores
@@ -39,6 +43,11 @@ onApprovalEvent((data) => approvalStore.handleApprovalEvent(data))
 onApprovalTimeoutEvent((id) => approvalStore.handleApprovalTimeout(id))
 onClarifyEvent((data) => clarifyStore.handleClarifyEvent(data))
 onClarifyTimeoutEvent((data) => clarifyStore.handleClarifyTimeout(data))
+
+// Wire notification handlers for delegation and cron SSE events
+const { handleDelegation, handleCron } = useNotifications()
+onDelegationEvent(handleDelegation)
+onCronEvent(handleCron)
 
 // Context usage warning (>= 80%)
 const contextWarning = computed(() => {
@@ -116,8 +125,17 @@ async function loadSessionHistory(sid: string) {
 }
 
 // Handle send message
-async function handleSend(content: string) {
-  await sendMessage(content)
+async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
+  await sendMessage(
+    content,
+    fileAttachments?.map((a) => ({
+      name: a.name,
+      path: a.path,
+      mime: a.mime,
+      label: a.label,
+      data: a.data,
+    })),
+  )
   // SSE connection will be started by useSSE.sendMessage
 }
 

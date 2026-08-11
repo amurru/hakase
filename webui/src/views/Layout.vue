@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import NotificationContainer from '@/components/NotificationContainer.vue'
 import ApprovalModal from '@/components/approval/ApprovalModal.vue'
 import ClarifyModal from '@/components/clarify/ClarifyModal.vue'
 import {
@@ -65,6 +66,7 @@ function handleLogout() {
 <template>
   <div class="flex h-screen overflow-hidden bg-background text-foreground">
     <!-- Global modals -->
+    <NotificationContainer />
     <ClarifyModal />
     <!-- Approval Modal (global overlay) -->
     <ApprovalModal />

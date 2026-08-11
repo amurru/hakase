@@ -8,6 +8,7 @@ export interface ChatMessage {
   content: string
   thinking: string
   timestamp: number
+  attachments?: Array<{ name: string; path: string; mime: string; label: string }>
 }
 
 export interface SSEApproval {
@@ -246,9 +247,20 @@ export function useSSE(sessionId: () => string | null) {
     }, reconnectDelay)
   }
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, attachments?: Array<{ name: string; path: string; mime: string; label: string; data?: string }>) {
     const sid = sessionId()
-    if (!sid || !content.trim()) return
+    if (!sid || (!content.trim() && (!attachments || attachments.length === 0))) return
+
+    // Build the attachments array for the request body.
+    // Text files: include path so the backend can read them.
+    // Images with data: include base64 data.
+    const atts = attachments?.map((a) => ({
+      name: a.name,
+      path: a.path,
+      mime: a.mime,
+      label: a.label,
+      ...(a.data ? { data: a.data } : {}),
+    }))
 
     // Add user message to the list
     messages.value.push({
@@ -257,12 +269,16 @@ export function useSSE(sessionId: () => string | null) {
       content: content.trim(),
       thinking: '',
       timestamp: Date.now(),
+      ...(atts && atts.length > 0 ? { attachments: atts } : {}),
     })
 
     try {
       await apiFetch(`/sessions/${sid}/messages`, {
         method: 'POST',
-        body: { content: content.trim() },
+        body: {
+          content: content.trim(),
+          ...(atts && atts.length > 0 ? { attachments: atts } : {}),
+        },
       })
 
       // Start SSE connection if not already connected
