@@ -158,7 +158,7 @@ func init() {
 	registerCommand(Command{
 		Name:        "auth",
 		Description: "manage authentication (set-password)",
-		Handler:     notMigrated("auth"),
+		Handler:     RunAuthCLI,
 	})
 	registerCommand(Command{
 		Name:        "tui",

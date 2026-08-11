@@ -75,3 +75,7 @@ logs/
 outputs/
 downloads/
 .venv/
+
+# frontend build output (mirrored by Makefile for embedding)
+webui/dist/
+internal/web/dist/
