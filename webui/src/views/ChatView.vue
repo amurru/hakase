@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useSessionStore } from '@/stores/session'
 import { useApprovalStore } from '@/stores/approval'
 import { useClarifyStore } from '@/stores/clarify'
 import { useSSE } from '@/composables/useSSE'
@@ -14,7 +15,9 @@ import { AlertTriangle, Loader2 } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
+const sessionStore = useSessionStore()
 const approvalStore = useApprovalStore()
 const clarifyStore = useClarifyStore()
 
@@ -126,6 +129,23 @@ async function loadSessionHistory(sid: string) {
 
 // Handle send message
 async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
+  // Lazily create a session on the first message so there is a place to
+  // persist the conversation and an SSE stream to attach to. Without an id,
+  // useSSE.sendMessage bails out silently and the message is dropped.
+  if (!sessionId.value) {
+    const title = content.trim().slice(0, 60) || 'New Session'
+    const created = await sessionStore.createSession(title)
+    if (!created) {
+      console.warn('chat: failed to create session, message not sent')
+      return
+    }
+    sessionId.value = created.id
+    appStore.setActiveSessionTitle(created.title || title)
+    // Keep the URL in sync so a refresh resumes this session. We are already
+    // on /chat, so this is a query-only navigation - no remount, no reload.
+    router.replace({ path: '/chat', query: { session: created.id } })
+  }
+
   await sendMessage(
     content,
     fileAttachments?.map((a) => ({

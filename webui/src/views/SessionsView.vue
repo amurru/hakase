@@ -78,7 +78,8 @@ async function handleCreate() {
 async function handleSwitch(session: SessionSummary) {
   await sessionStore.switchSession(session.id)
   appStore.setActiveSessionTitle(session.title)
-  router.push('/chat')
+  // ChatView reads ?session= on mount to load history and attach the SSE stream.
+  router.push({ path: '/chat', query: { session: session.id } })
 }
 
 async function handleArchive(session: SessionSummary) {
