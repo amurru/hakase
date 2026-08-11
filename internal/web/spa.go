@@ -64,6 +64,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterMCPRoutes(r)
 		// Cron job management routes (task 33)
 		handlers.RegisterCronRoutes(r)
+		// Config file routes (task 34)
+		handlers.RegisterConfigRoutes(r)
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html.
@@ -184,6 +186,7 @@ type chiRouter interface {
 	Use(middlewares ...func(http.Handler) http.Handler)
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
+	Put(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Route(pattern string, fn func(r chiRouter))

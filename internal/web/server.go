@@ -114,6 +114,10 @@ func (a *chiRouterAdapter) Post(pattern string, handlerFn http.HandlerFunc) {
 	a.r.Post(pattern, handlerFn)
 }
 
+func (a *chiRouterAdapter) Put(pattern string, handlerFn http.HandlerFunc) {
+	a.r.Put(pattern, handlerFn)
+}
+
 func (a *chiRouterAdapter) Delete(pattern string, handlerFn http.HandlerFunc) {
 	a.r.Delete(pattern, handlerFn)
 }
