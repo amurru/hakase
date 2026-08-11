@@ -1206,3 +1206,6 @@ func TestDescribeOrWarnImageUnavailable(t *testing.T) {
 	sum := sha256.Sum256(pngBytes)
 	vision.VisionDescribeCache.Delete(hex.EncodeToString(sum[:]))
 }
+
+// boolPtr helper for creating *bool literals.
+func boolPtr(b bool) *bool { return &b }

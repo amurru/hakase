@@ -4,6 +4,7 @@ import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/session"
+	"amurru/hakase/internal/tui"
 	"context"
 	"path/filepath"
 	"strings"
@@ -15,16 +16,19 @@ import (
 // modelWithSession builds a TUI model backed by a real session service and a
 // HistoryBuilder wired as the current builder, so compactSession exercises
 // the production compaction path.
-func modelWithSession(t *testing.T) (*appModel, *hctx.HistoryBuilder, *session.SessionService) {
+func modelWithSession(t *testing.T) (*tui.AppModel, *hctx.HistoryBuilder, *session.SessionService) {
 	t.Helper()
 	b, svc := newTestBuilderForCompact(t)
 	old := currentHistoryBuilder
 	currentHistoryBuilder = b
 	t.Cleanup(func() { currentHistoryBuilder = old })
+	// Also set on the tui package so CompactSession can find it.
+	tui.CurrentHistoryBuilder = b
 
-	m := newModel(context.Background(), nil, svc, 100, true, "test-model", "")
+	m := tui.NewModel(context.Background(), nil, svc, 100, true, "test-model", "")
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	return model.(*appModel), b, svc
+	mm := model.(*tui.AppModel)
+	return mm, b, svc
 }
 
 // newTestBuilderForCompact creates a HistoryBuilder backed by a temp session store.
@@ -57,9 +61,9 @@ func TestCompactSessionSnipsToLastTwoTurns(t *testing.T) {
 		}
 	}
 
-	cmd := mm.compactSession("")
+	cmd := mm.CompactSession("")
 	if cmd != nil {
-		t.Fatalf("compactSession returned unexpected cmd %v", cmd)
+		t.Fatalf("CompactSession returned unexpected cmd %v", cmd)
 	}
 
 	session, err := svc.GetActiveSession()
@@ -81,47 +85,59 @@ func TestCompactSessionSnipsToLastTwoTurns(t *testing.T) {
 	}
 
 	// A confirmation line must have been logged.
+	logLines := mm.LogLines()
 	found := false
-	for _, l := range mm.logLines {
+	for _, l := range logLines {
 		if strings.Contains(l, "compacted:") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("compactSession must log a confirmation, got %v", mm.logLines)
+		t.Fatalf("CompactSession must log a confirmation, got %v", logLines)
 	}
 }
 
 func TestCompactSessionNothingToCompact(t *testing.T) {
 	mm, _, _ := modelWithSession(t)
-	cmd := mm.compactSession("")
+	cmd := mm.CompactSession("")
 	if cmd != nil {
 		t.Fatalf("unexpected cmd %v", cmd)
 	}
+	logLines := mm.LogLines()
 	found := false
-	for _, l := range mm.logLines {
+	for _, l := range logLines {
 		if strings.Contains(l, "nothing to compact") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("empty session must log 'nothing to compact', got %v", mm.logLines)
+		t.Fatalf("empty session must log 'nothing to compact', got %v", logLines)
 	}
 }
 
 func TestCompactSessionUnavailableWithoutBuilder(t *testing.T) {
-	m := newTestModel(t) // sessionService and currentHistoryBuilder are nil
-	cmd := m.compactSession("")
+	// Use tui.NewModel directly - sessionService and historyBuilder are nil.
+	m := newTestModelForRoot(t)
+	cmd := m.CompactSession("")
 	if cmd != nil {
 		t.Fatalf("unexpected cmd %v", cmd)
 	}
+	logLines := m.LogLines()
 	found := false
-	for _, l := range m.logLines {
+	for _, l := range logLines {
 		if strings.Contains(l, "compaction unavailable") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("missing builder must log 'compaction unavailable', got %v", m.logLines)
+		t.Fatalf("missing builder must log 'compaction unavailable', got %v", logLines)
 	}
+}
+
+// newTestModelForRoot creates a minimal TUI model for root tests.
+func newTestModelForRoot(t *testing.T) *tui.AppModel {
+	t.Helper()
+	m := tui.NewModel(context.Background(), nil, nil, 100, true, "test-model", "")
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return model.(*tui.AppModel)
 }

@@ -113,7 +113,7 @@ func init() {
 	registerCommand(Command{
 		Name:        "skill",
 		Description: "manage markdown skills (create, list, validate, evolve)",
-		Handler:     notMigrated("skill"),
+		Handler:     RunSkillCLI,
 	})
 	registerCommand(Command{
 		Name:        "task",
@@ -123,27 +123,27 @@ func init() {
 	registerCommand(Command{
 		Name:        "knowledge",
 		Description: "manage the knowledge base (list, read, search, lint, create, link)",
-		Handler:     notMigrated("knowledge"),
+		Handler:     RunKnowledgeCLI,
 	})
 	registerCommand(Command{
 		Name:        "session",
 		Description: "manage sessions (list, resume, ...)",
-		Handler:     notMigrated("session"),
+		Handler:     RunSessionCLI,
 	})
 	registerCommand(Command{
 		Name:        "rules",
 		Description: "list and show active project context files (AGENTS.md)",
-		Handler:     notMigrated("rules"),
+		Handler:     RunRulesCLI,
 	})
 	registerCommand(Command{
 		Name:        "env",
 		Description: "print the detected runtime environment block",
-		Handler:     notMigrated("env"),
+		Handler:     RunEnvCLI,
 	})
 	registerCommand(Command{
 		Name:        "cron",
 		Description: "manage scheduled tasks (list, status, pause, resume, run, tick)",
-		Handler:     notMigrated("cron"),
+		Handler:     RunCronCLI,
 	})
 	registerCommand(Command{
 		Name:        "web",

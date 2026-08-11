@@ -18,7 +18,7 @@ import (
 func runMCPCommand(m *appModel, args string) tea.Cmd {
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
-		return m.toggleMCPList()
+		return m.ToggleMCPList()
 	}
 	sub := fields[0]
 	rest := strings.TrimSpace(strings.TrimPrefix(args, sub))
@@ -32,10 +32,10 @@ func runMCPCommand(m *appModel, args string) tea.Cmd {
 	case "reconnect":
 		return mcpReconnectCmd(m, rest)
 	case "help":
-		m.appendLog("/mcp [list] | /mcp enable <name> | /mcp disable <name> | /mcp reconnect <name>")
+		m.AppendLog("/mcp [list] | /mcp enable <name> | /mcp disable <name> | /mcp reconnect <name>")
 		return nil
 	default:
-		m.appendLog(fmt.Sprintf("unknown /mcp subcommand %q (try: list, enable, disable, reconnect)", sub))
+		m.AppendLog(fmt.Sprintf("unknown /mcp subcommand %q (try: list, enable, disable, reconnect)", sub))
 		return nil
 	}
 }
@@ -43,7 +43,7 @@ func runMCPCommand(m *appModel, args string) tea.Cmd {
 // mcpManager returns the live manager, logging a hint when it is unavailable.
 func mcpManager(m *appModel) *mcp.MCPServerManager {
 	if mcp.MCPManager == nil {
-		m.appendLog("⚠ MCP manager is not available (no usable MCP config)")
+		m.AppendLog("⚠ MCP manager is not available (no usable MCP config)")
 		return nil
 	}
 	return mcp.MCPManager
@@ -57,10 +57,10 @@ func mcpListCmd(m *appModel) tea.Cmd {
 	}
 	servers := mg.ListServers()
 	if len(servers) == 0 {
-		m.appendLog("No MCP servers configured. Add an \"mcp\" block to config.json or ~/.hakase/mcp.json.")
+		m.AppendLog("No MCP servers configured. Add an \"mcp\" block to config.json or ~/.hakase/mcp.json.")
 		return nil
 	}
-	m.appendLog("🔌 MCP Servers")
+	m.AppendLog("🔌 MCP Servers")
 	for _, s := range servers {
 		tools := "-"
 		if s.Status == "connected" {
@@ -70,7 +70,7 @@ func mcpListCmd(m *appModel) tea.Cmd {
 		if s.Status == "failed" && s.Error != "" {
 			line += fmt.Sprintf("  (%s)", s.Error)
 		}
-		m.appendLog(line)
+		m.AppendLog(line)
 	}
 	return nil
 }
@@ -87,16 +87,16 @@ func mcpSetEnabledCmd(m *appModel, args string, disable bool) tea.Cmd {
 		if disable {
 			verb = "disable"
 		}
-		m.appendLog(fmt.Sprintf("Usage: /mcp %s <name>", verb))
+		m.AppendLog(fmt.Sprintf("Usage: /mcp %s <name>", verb))
 		return nil
 	}
 	name := fields[0]
 	if err := mg.SetDisabled(name, disable); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to %s %q: %v", toggleVerb(disable), name, err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to %s %q: %v", toggleVerb(disable), name, err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("MCP server %q %s", name, toggleVerb(disable)+"d"))
-	m.refreshMCPList()
+	m.AppendLog(fmt.Sprintf("MCP server %q %s", name, toggleVerb(disable)+"d"))
+	m.RefreshMCPList()
 	return nil
 }
 
@@ -108,16 +108,16 @@ func mcpReconnectCmd(m *appModel, args string) tea.Cmd {
 	}
 	fields := strings.Fields(args)
 	if len(fields) != 1 {
-		m.appendLog("Usage: /mcp reconnect <name>")
+		m.AppendLog("Usage: /mcp reconnect <name>")
 		return nil
 	}
 	name := fields[0]
 	if err := mg.Reconnect(name); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to reconnect %q: %v", name, err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to reconnect %q: %v", name, err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Reconnecting MCP server %q on next tool fetch", name))
-	m.refreshMCPList()
+	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q on next tool fetch", name))
+	m.RefreshMCPList()
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	sesspkg "amurru/hakase/internal/session"
+	"amurru/hakase/internal/tui"
 	"amurru/hakase/internal/util"
 	"path/filepath"
 	"strings"
@@ -153,7 +154,7 @@ func TestMergeQueued(t *testing.T) {
 		{Text: "stop doing X"},
 		{Text: "also check Y"},
 	}
-	text, atts := mergeQueued(qs)
+	text, atts := tui.MergeQueued(qs)
 	if text != "stop doing X\n\nalso check Y" {
 		t.Fatalf("merge text = %q", text)
 	}

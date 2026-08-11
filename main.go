@@ -1,11 +1,13 @@
 package main
 
 import (
+	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/cli"
-	"amurru/hakase/internal/interfaces"
-	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/session"
+	"amurru/hakase/internal/tui"
+	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
 	"context"
 	"fmt"
@@ -17,32 +19,9 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "skill" {
-		os.Exit(runSkillCLI(os.Args[2:]))
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "task" {
-		os.Exit(cli.RunTaskCLI(os.Args[2:]))
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "knowledge" {
-		os.Exit(runKnowledgeCLI(os.Args[2:]))
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "session" {
-		os.Exit(runSessionCLI(os.Args[2:]))
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "rules" {
-		os.Exit(runRulesCLI(os.Args[2:]))
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "env" {
-		os.Exit(runEnvCLI(os.Args[2:]))
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "cron" {
-		os.Exit(runCronCLI(os.Args[2:]))
+	// Dispatch CLI subcommands through the unified framework.
+	if len(os.Args) > 1 {
+		os.Exit(cli.Dispatch(os.Args[1:]))
 	}
 
 	ctx := context.Background()
@@ -64,28 +43,28 @@ func main() {
 	logToUI := func(msg string) {
 		util.DebugEvent("status_log", "msg", msg)
 		if p != nil {
-			p.Send(StatusLogMsg{Text: msg})
+			p.Send(tui.StatusLogMsg{Text: msg})
 		}
 	}
 
 	// Push task board refreshes to the TUI whenever an agent tool mutates tasks
-	taskBoardNotify = func(action string, task TaskMeta) {
+	taskBoardNotify = func(action string, task agent.TaskMeta) {
 		if p != nil {
-			p.Send(TaskUpdateMsg{Task: task, Action: action})
+			p.Send(tui.TaskUpdateMsg{Task: task, Action: action})
 		}
 	}
 
 	// Stream delegated sub-agent progress (text, tool calls, status) to the TUI
-	delegationProgressNotify = func(status string, taskID, agent, message string) {
+	delegationProgressNotify = func(status string, taskID, agentName, message string) {
 		if p != nil {
-			p.Send(DelegationProgressMsg{TaskID: taskID, Agent: agent, Status: status, Message: message})
+			p.Send(tui.DelegationProgressMsg{TaskID: taskID, Agent: agentName, Status: status, Message: message})
 		}
 	}
 
 	// Stream cron job lifecycle events (scheduled/completed/failed) to the TUI
-	cronJobNotify = func(status, jobID, name, summary, outputPath string) {
+	cli.CronJobNotify = func(status, jobID, name, summary, outputPath string) {
 		if p != nil {
-			p.Send(CronJobMsg{JobID: jobID, Name: name, Status: status, Summary: summary, OutputPath: outputPath})
+			p.Send(tui.CronJobMsg{JobID: jobID, Name: name, Status: status, Summary: summary, OutputPath: outputPath})
 		}
 	}
 
@@ -103,54 +82,74 @@ func main() {
 		log.Fatalf("Failed to setup agent runner: %v", err)
 	}
 
-	m := newModel(ctx, r, sessionSvc, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
+	m := tui.NewModel(ctx, r, sessionSvc, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
 	p = tea.NewProgram(&m)
-	m.program = p
+	m.SetProgram(p)
+
+	// Wire TUI hook variables for slash command handlers that live in root.
+	tui.CurrentHistoryBuilder = currentHistoryBuilder
+	tui.RunBoardCommand = runBoardCommand
+	tui.RunMCPCommand = runMCPCommand
+
+	// Set approval/clarify configs on the TUI package.
+	tui.SetApprovalConfig(interfaces.ApprovalConfig{
+		Mode:          cfg.Approval.Mode,
+		ExpirySeconds: cfg.Approval.ExpirySeconds,
+	})
+	tui.SetClarifyConfig(interfaces.ClarifyConfig{
+		ExpirySeconds: cfg.Clarify.ExpirySeconds,
+	})
 
 	// Share the TUI's mid-run message queue with the HistoryBuilder so
 	// prompts typed while the agent is busy are steered into the running
 	// session at model-call boundaries (BeforeModelCallback).
 	if currentHistoryBuilder != nil {
-		currentHistoryBuilder.SetPendingQueue(m.pendingQueue)
+		currentHistoryBuilder.SetPendingQueue(m.PendingQueue())
 	}
 
-	// Install the interactive approval gate so tool handlers can ask the
-	// user for confirmation via the TUI approval modal.
-	expiry := time.Duration(cfg.Approval.ExpirySeconds) * time.Second
-	if expiry <= 0 {
-		expiry = 60 * time.Second
+	// Install the interactive approval gate. Bridge the interfaces.ApprovalRequest
+	// type (from interfaces) to agent.ApprovalRequest (used by root globals).
+	approvalExpiry := time.Duration(cfg.Approval.ExpirySeconds) * time.Second
+	if approvalExpiry <= 0 {
+		approvalExpiry = 60 * time.Second
 	}
-	askApproval = func(req ApprovalRequest) (bool, error) {
-		if p == nil {
-			return false, nil
-		}
-		resp := make(chan bool, 1)
-		p.Send(approvalPromptMsg{Req: req, Resp: resp})
-		return waitForApproval(resp, expiry), nil
+	askApproval = func(req agent.ApprovalRequest) (bool, error) {
+		return m.AskApproval(interfaces.ApprovalRequest{
+			Tool:      req.Tool,
+			Command:   req.Command,
+			Args:      req.Args,
+			Risk:      req.Risk,
+			Reason:    req.Reason,
+			Source:    req.Source,
+			ExpiresAt: req.ExpiresAt,
+		})
 	}
 
-	// Install the interactive clarify gate so tool handlers can ask the user
-	// mid-task questions via the TUI clarify modal.
-	askClarify = func(req ClarifyRequest) (ClarifyResponse, error) {
-		if p == nil {
-			return ClarifyResponse{}, fmt.Errorf("no TUI available")
+	// Install the interactive clarify gate.
+	clarifyExpiry := time.Duration(cfg.Clarify.ExpirySeconds) * time.Second
+	if clarifyExpiry <= 0 {
+		clarifyExpiry = 120 * time.Second
+	}
+	askClarify = func(req agent.ClarifyRequest) (agent.ClarifyResponse, error) {
+		res, err := m.AskClarify(interfaces.ClarifyRequest{
+			Question:    req.Question,
+			Choices:     req.Choices,
+			MultiSelect: req.MultiSelect,
+		})
+		if err != nil {
+			return agent.ClarifyResponse{}, err
 		}
-		resp := make(chan ClarifyResponse, 1)
-		p.Send(clarifyPromptMsg{Req: req, Resp: resp})
-		// Notify the TUI when the question expires so the modal (and its
-		// free-text input state) clears even though the agent already moved
-		// on with a timed-out answer.
-		go func() {
-			time.Sleep(clarifyTimeout())
-			p.Send(clarifyTimeoutMsg{})
-		}()
-		return waitForClarify(resp, clarifyTimeout()), nil
+		return agent.ClarifyResponse{
+			Answer:   res.Answer,
+			Canceled: res.Canceled,
+			TimedOut: res.TimedOut,
+		}, nil
 	}
 
 	// Run stale session cleanup on startup.
 	go func() {
-		if m.sessionService != nil {
-			removed, err := m.sessionService.CleanupStale(30 * 24 * time.Hour)
+		if sessionSvc != nil {
+			removed, err := sessionSvc.CleanupStale(30 * 24 * time.Hour)
 			if err == nil && removed > 0 {
 				logToUI(fmt.Sprintf("🧹 Cleaned up %d stale session(s)", removed))
 			}
@@ -162,8 +161,8 @@ func main() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if m.sessionService != nil {
-				removed, err := m.sessionService.CleanupStale(30 * 24 * time.Hour)
+			if sessionSvc != nil {
+				removed, err := sessionSvc.CleanupStale(30 * 24 * time.Hour)
 				if err == nil && removed > 0 {
 					logToUI(fmt.Sprintf("🧹 Cleaned up %d stale session(s)", removed))
 				}
@@ -174,7 +173,7 @@ func main() {
 	// Fetch model capabilities (context window, thinking support) in the
 	// background so the status bar can show them once available.
 	go func() {
-		info, err := FetchModelInfo(ctx, cfg)
+		info, err := agent.FetchModelInfo(ctx, cfg)
 		if err != nil {
 			logToUI(fmt.Sprintf("⚠️ model info unavailable: %v", err))
 			return
@@ -186,7 +185,7 @@ func main() {
 		currentModelInfo = info
 		vision.CurrentModelInfo = func() *interfaces.ModelInfo { return currentModelInfo }
 		if p != nil {
-			p.Send(ModelInfoMsg{Info: info})
+			p.Send(tui.ModelInfoMsg{Info: info})
 		}
 	}()
 

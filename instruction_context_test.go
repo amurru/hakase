@@ -4,6 +4,7 @@ package main
 
 import (
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/session"
 	"net/http"
@@ -440,15 +441,13 @@ func TestContextUpdateNotice(t *testing.T) {
 	}
 }
 
-// captureStdout is shared with skill_cli_test.go (same package).
-
 func TestRulesCLIList(t *testing.T) {
 	isolateHome(t)
 	root := makeGitDir(t, t.TempDir())
 	writeContextFile(t, filepath.Join(root, "AGENTS.md"), "# repo rules\nUse tabs.\n")
 	t.Chdir(root)
 
-	out := captureStdout(t, func() { runRulesList(nil) })
+	out := captureStdout(t, func() { cli.RunRulesList(nil) })
 	if !strings.Contains(out, "Project context files (render order):") ||
 		!strings.Contains(out, "AGENTS.md") {
 		t.Errorf("expected listing output, got:\n%s", out)
@@ -457,7 +456,7 @@ func TestRulesCLIList(t *testing.T) {
 	// Empty workspace: no files, no config instruction.
 	empty := t.TempDir()
 	t.Chdir(empty)
-	out = captureStdout(t, func() { runRulesList(nil) })
+	out = captureStdout(t, func() { cli.RunRulesList(nil) })
 	if !strings.Contains(out, "No project context files found") {
 		t.Errorf("expected empty listing message, got:\n%s", out)
 	}
@@ -471,13 +470,13 @@ func TestRulesCLIShow(t *testing.T) {
 	t.Chdir(root)
 
 	// Show by basename.
-	out := captureStdout(t, func() { runRulesShow([]string{"AGENTS.md"}) })
+	out := captureStdout(t, func() { cli.RunRulesShow([]string{"AGENTS.md"}) })
 	if !strings.Contains(out, "Instructions from: "+agents) || !strings.Contains(out, "# repo rules") {
 		t.Errorf("expected show output, got:\n%s", out)
 	}
 
 	// Unknown file -> exit code 1.
-	if code := runRulesShow([]string{"missing.md"}); code != 1 {
+	if code := cli.RunRulesShow([]string{"missing.md"}); code != 1 {
 		t.Errorf("show of unknown file: expected exit 1, got %d", code)
 	}
 }

@@ -1,8 +1,8 @@
 // task_slash.go - the /board slash command: a TUI-facing mirror of the
 // `hakase task` CLI (task_cli.go). All output goes to the log pane via
 // m.appendLog (never stdout/stderr), and mutations refresh the task pane
-// via m.refreshTaskBoard(). Mutating subcommands are blocked while the
-// agent is processing (m.isProcessing), matching the convention used by
+// via m.RefreshTaskBoard(). Mutating subcommands are blocked while the
+// agent is processing (m.IsProcessing), matching the convention used by
 // /compact, /new, and /sessions.
 package main
 
@@ -51,15 +51,15 @@ func runBoardCommand(m *appModel, args string) tea.Cmd {
 	case "summary":
 		return boardSummary(m)
 	default:
-		m.appendLog(fmt.Sprintf("unknown /board subcommand %q (try: summary, list, new, get, update, done, fail, cancel, delete, archive, claim)", sub))
+		m.AppendLog(fmt.Sprintf("unknown /board subcommand %q (try: summary, list, new, get, update, done, fail, cancel, delete, archive, claim)", sub))
 		return nil
 	}
 }
 
 // boardBlockWarn logs the standard "agent is working" warning and returns nil
-// for mutating subcommands invoked while m.isProcessing is true.
+// for mutating subcommands invoked while m.IsProcessing is true.
 func boardBlockWarn(m *appModel) tea.Cmd {
-	m.appendLog("⚠ cannot modify the task board while the agent is working")
+	m.AppendLog("⚠ cannot modify the task board while the agent is working")
 	return nil
 }
 
@@ -68,7 +68,7 @@ func boardBlockWarn(m *appModel) tea.Cmd {
 func boardSummary(m *appModel) tea.Cmd {
 	registry, err := loadTaskRegistry()
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to load tasks: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to load tasks: %v", err))
 		return nil
 	}
 	summary := map[TaskStatus]int{
@@ -84,7 +84,7 @@ func boardSummary(m *appModel) tea.Cmd {
 	for _, task := range registry.Tasks {
 		summary[task.Status]++
 	}
-	m.appendLog("📋 Task Board")
+	m.AppendLog("📋 Task Board")
 	statusOrder := []TaskStatus{
 		TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted,
 		TaskStatusFailed, TaskStatusCancelled, TaskStatusSkipped,
@@ -93,9 +93,9 @@ func boardSummary(m *appModel) tea.Cmd {
 	for _, status := range statusOrder {
 		count := summary[status]
 		symbol := statusSymbol(status)
-		m.appendLog(fmt.Sprintf("  %s %s: %d", symbol, status, count))
+		m.AppendLog(fmt.Sprintf("  %s %s: %d", symbol, status, count))
 	}
-	m.appendLog(fmt.Sprintf("Total: %d", len(registry.Tasks)))
+	m.AppendLog(fmt.Sprintf("Total: %d", len(registry.Tasks)))
 	return nil
 }
 
@@ -111,7 +111,7 @@ func boardList(m *appModel, args string) tea.Cmd {
 	fs.StringVar(&parentFlag, "parent", "", "filter by parent task ID")
 
 	if err := fs.Parse(strings.Fields(args)); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ invalid /board list arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ invalid /board list arguments: %v", err))
 		return nil
 	}
 
@@ -142,14 +142,14 @@ func boardList(m *appModel, args string) tea.Cmd {
 	}
 	tasks, err := listTasks(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to list tasks: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to list tasks: %v", err))
 		return nil
 	}
 	if len(tasks) == 0 {
-		m.appendLog("No tasks found.")
+		m.AppendLog("No tasks found.")
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Tasks (%d):", len(tasks)))
+	m.AppendLog(fmt.Sprintf("Tasks (%d):", len(tasks)))
 	for _, task := range tasks {
 		psym := prioritySymbol(task.Priority)
 		ssym := statusSymbol(task.Status)
@@ -161,8 +161,8 @@ func boardList(m *appModel, args string) tea.Cmd {
 		if task.Assignee != "" {
 			assigneeStr = fmt.Sprintf(" (assignee: %s)", task.Assignee)
 		}
-		m.appendLog(fmt.Sprintf("  %s %s %s%s%s", ssym, psym, task.Title, depsStr, assigneeStr))
-		m.appendLog(fmt.Sprintf("    ID: %s | Status: %s | Priority: %s | Created: %s",
+		m.AppendLog(fmt.Sprintf("  %s %s %s%s%s", ssym, psym, task.Title, depsStr, assigneeStr))
+		m.AppendLog(fmt.Sprintf("    ID: %s | Status: %s | Priority: %s | Created: %s",
 			task.ID, task.Status, task.Priority, task.CreatedAt.Format("2006-01-02 15:04:05")))
 	}
 	return nil
@@ -171,12 +171,12 @@ func boardList(m *appModel, args string) tea.Cmd {
 // boardNew mirrors runTaskCreate: title is the remaining positional args
 // joined by space; flags --priority/--assignee/--description/--tags.
 func boardNew(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	tokens := strings.Fields(args)
 	if len(tokens) == 0 {
-		m.appendLog("Usage: /board new <title> [--priority <level>] [--assignee <id>] [--description <text>] [--tags <tags>]")
+		m.AppendLog("Usage: /board new <title> [--priority <level>] [--assignee <id>] [--description <text>] [--tags <tags>]")
 		return nil
 	}
 
@@ -201,7 +201,7 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--description":
 			v, ok := next()
 			if !ok {
-				m.appendLog("⚠ flag needs an argument: --description")
+				m.AppendLog("⚠ flag needs an argument: --description")
 				return nil
 			}
 			description = v
@@ -210,7 +210,7 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--priority":
 			v, ok := next()
 			if !ok {
-				m.appendLog("⚠ flag needs an argument: --priority")
+				m.AppendLog("⚠ flag needs an argument: --priority")
 				return nil
 			}
 			priority = v
@@ -219,7 +219,7 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--assignee":
 			v, ok := next()
 			if !ok {
-				m.appendLog("⚠ flag needs an argument: --assignee")
+				m.AppendLog("⚠ flag needs an argument: --assignee")
 				return nil
 			}
 			assignee = v
@@ -228,14 +228,14 @@ func boardNew(m *appModel, args string) tea.Cmd {
 		case arg == "--tags":
 			v, ok := next()
 			if !ok {
-				m.appendLog("⚠ flag needs an argument: --tags")
+				m.AppendLog("⚠ flag needs an argument: --tags")
 				return nil
 			}
 			tags = v
 		case strings.HasPrefix(arg, "--tags="):
 			tags = strings.TrimPrefix(arg, "--tags=")
 		case strings.HasPrefix(arg, "-"):
-			m.appendLog(fmt.Sprintf("⚠ unknown flag %q", arg))
+			m.AppendLog(fmt.Sprintf("⚠ unknown flag %q", arg))
 			return nil
 		default:
 			titleParts = append(titleParts, arg)
@@ -244,13 +244,13 @@ func boardNew(m *appModel, args string) tea.Cmd {
 
 	title := strings.Join(titleParts, " ")
 	if title == "" {
-		m.appendLog("⚠ title is required")
+		m.AppendLog("⚠ title is required")
 		return nil
 	}
 
 	validPriorities := map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
 	if priority != "" && !validPriorities[priority] {
-		m.appendLog(fmt.Sprintf("⚠ invalid priority %q (valid: critical, high, medium, low)", priority))
+		m.AppendLog(fmt.Sprintf("⚠ invalid priority %q (valid: critical, high, medium, low)", priority))
 		return nil
 	}
 	if priority == "" {
@@ -276,11 +276,11 @@ func boardNew(m *appModel, args string) tea.Cmd {
 	}
 	task, err := createTask(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to create task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to create task: %v", err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Created task %s: %s", task.ID, task.Title))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Created task %s: %s", task.ID, task.Title))
+	m.RefreshTaskBoard()
 	return nil
 }
 
@@ -288,44 +288,44 @@ func boardNew(m *appModel, args string) tea.Cmd {
 func boardGet(m *appModel, args string) tea.Cmd {
 	fields := strings.Fields(args)
 	if len(fields) != 1 {
-		m.appendLog("Usage: /board get <id>")
+		m.AppendLog("Usage: /board get <id>")
 		return nil
 	}
 	id := fields[0]
 	task, err := getTask(id)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to get task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to get task: %v", err))
 		return nil
 	}
 	if task == nil {
-		m.appendLog(fmt.Sprintf("task not found: %s", id))
+		m.AppendLog(fmt.Sprintf("task not found: %s", id))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("ID: %s", task.ID))
-	m.appendLog(fmt.Sprintf("Title: %s", task.Title))
+	m.AppendLog(fmt.Sprintf("ID: %s", task.ID))
+	m.AppendLog(fmt.Sprintf("Title: %s", task.Title))
 	if task.Description != "" {
-		m.appendLog(fmt.Sprintf("Description: %s", task.Description))
+		m.AppendLog(fmt.Sprintf("Description: %s", task.Description))
 	}
-	m.appendLog(fmt.Sprintf("Status: %s", task.Status))
-	m.appendLog(fmt.Sprintf("Priority: %s", task.Priority))
+	m.AppendLog(fmt.Sprintf("Status: %s", task.Status))
+	m.AppendLog(fmt.Sprintf("Priority: %s", task.Priority))
 	if task.Assignee != "" {
-		m.appendLog(fmt.Sprintf("Assignee: %s", task.Assignee))
+		m.AppendLog(fmt.Sprintf("Assignee: %s", task.Assignee))
 	}
 	if len(task.Dependencies) > 0 {
-		m.appendLog(fmt.Sprintf("Dependencies: %s", strings.Join(task.Dependencies, ", ")))
+		m.AppendLog(fmt.Sprintf("Dependencies: %s", strings.Join(task.Dependencies, ", ")))
 	}
-	m.appendLog(fmt.Sprintf("CreatedAt: %s", task.CreatedAt.Format(time.RFC3339)))
+	m.AppendLog(fmt.Sprintf("CreatedAt: %s", task.CreatedAt.Format(time.RFC3339)))
 	return nil
 }
 
 // boardUpdate mirrors runTaskUpdate.
 func boardUpdate(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	tokens := strings.Fields(args)
 	if len(tokens) < 1 {
-		m.appendLog("Usage: /board update <id> [--status <s>] [--priority <p>] [--assignee <id>] [--title <t>] [--description <t>] [--error <t>]")
+		m.AppendLog("Usage: /board update <id> [--status <s>] [--priority <p>] [--assignee <id>] [--title <t>] [--description <t>] [--error <t>]")
 		return nil
 	}
 	id := tokens[0]
@@ -342,7 +342,7 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 	fs.StringVar(&errorFlag, "error", "", "error message")
 
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ invalid /board update arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ invalid /board update arguments: %v", err))
 		return nil
 	}
 
@@ -352,19 +352,19 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 		"blocked": true, "archived": true,
 	}
 	if statusFlag != "" && !validStatuses[statusFlag] {
-		m.appendLog(fmt.Sprintf("⚠ invalid status %q", statusFlag))
+		m.AppendLog(fmt.Sprintf("⚠ invalid status %q", statusFlag))
 		return nil
 	}
 	validPriorities := map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
 	if priorityFlag != "" && !validPriorities[priorityFlag] {
-		m.appendLog(fmt.Sprintf("⚠ invalid priority %q", priorityFlag))
+		m.AppendLog(fmt.Sprintf("⚠ invalid priority %q", priorityFlag))
 		return nil
 	}
 
 	var result interface{}
 	if resultFlag != "" {
 		if err := json.Unmarshal([]byte(resultFlag), &result); err != nil {
-			m.appendLog(fmt.Sprintf("⚠ invalid JSON for --result: %v", err))
+			m.AppendLog(fmt.Sprintf("⚠ invalid JSON for --result: %v", err))
 			return nil
 		}
 	}
@@ -394,7 +394,7 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 
 	task, err := updateTask(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to update task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to update task: %v", err))
 		return nil
 	}
 	statusStr := string(task.Status)
@@ -402,19 +402,19 @@ func boardUpdate(m *appModel, args string) tea.Cmd {
 		// status unchanged; report the actual current status
 		statusStr = string(task.Status)
 	}
-	m.appendLog(fmt.Sprintf("Updated task %s: %s (status: %s)", task.ID, task.Title, statusStr))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Updated task %s: %s (status: %s)", task.ID, task.Title, statusStr))
+	m.RefreshTaskBoard()
 	return nil
 }
 
 // boardDone mirrors runTaskComplete.
 func boardDone(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	tokens := strings.Fields(args)
 	if len(tokens) < 1 {
-		m.appendLog("Usage: /board done <id> [--result <json>]")
+		m.AppendLog("Usage: /board done <id> [--result <json>]")
 		return nil
 	}
 	id := tokens[0]
@@ -424,14 +424,14 @@ func boardDone(m *appModel, args string) tea.Cmd {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&resultFlag, "result", "", "result as JSON string")
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ invalid /board done arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ invalid /board done arguments: %v", err))
 		return nil
 	}
 
 	var result interface{}
 	if resultFlag != "" {
 		if err := json.Unmarshal([]byte(resultFlag), &result); err != nil {
-			m.appendLog(fmt.Sprintf("⚠ invalid JSON for --result: %v", err))
+			m.AppendLog(fmt.Sprintf("⚠ invalid JSON for --result: %v", err))
 			return nil
 		}
 	}
@@ -442,22 +442,22 @@ func boardDone(m *appModel, args string) tea.Cmd {
 	}
 	task, err := updateTask(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to complete task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to complete task: %v", err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Completed task %s: %s", task.ID, task.Title))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Completed task %s: %s", task.ID, task.Title))
+	m.RefreshTaskBoard()
 	return nil
 }
 
 // boardFail mirrors runTaskFail.
 func boardFail(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	tokens := strings.Fields(args)
 	if len(tokens) < 1 {
-		m.appendLog("Usage: /board fail <id> [--error <text>]")
+		m.AppendLog("Usage: /board fail <id> [--error <text>]")
 		return nil
 	}
 	id := tokens[0]
@@ -467,97 +467,97 @@ func boardFail(m *appModel, args string) tea.Cmd {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&errorFlag, "error", "task failed", "error message")
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ invalid /board fail arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ invalid /board fail arguments: %v", err))
 		return nil
 	}
 
 	input := UpdateTaskInput{ID: id, Status: TaskStatusFailed, Error: errorFlag}
 	task, err := updateTask(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to fail task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to fail task: %v", err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Failed task %s: %s", task.ID, task.Title))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Failed task %s: %s", task.ID, task.Title))
+	m.RefreshTaskBoard()
 	return nil
 }
 
 // boardCancel mirrors runTaskCancel.
 func boardCancel(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	fields := strings.Fields(args)
 	if len(fields) != 1 {
-		m.appendLog("Usage: /board cancel <id>")
+		m.AppendLog("Usage: /board cancel <id>")
 		return nil
 	}
 	id := fields[0]
 	input := UpdateTaskInput{ID: id, Status: TaskStatusCancelled}
 	task, err := updateTask(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to cancel task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to cancel task: %v", err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Cancelled task %s: %s", task.ID, task.Title))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Cancelled task %s: %s", task.ID, task.Title))
+	m.RefreshTaskBoard()
 	return nil
 }
 
 // boardDelete mirrors runTaskDelete.
 func boardDelete(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	fields := strings.Fields(args)
 	if len(fields) != 1 {
-		m.appendLog("Usage: /board delete <id>")
+		m.AppendLog("Usage: /board delete <id>")
 		return nil
 	}
 	id := fields[0]
 	success, err := deleteTask(id)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to delete task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to delete task: %v", err))
 		return nil
 	}
 	if !success {
-		m.appendLog(fmt.Sprintf("task not found: %s", id))
+		m.AppendLog(fmt.Sprintf("task not found: %s", id))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Deleted task %s", id))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Deleted task %s", id))
+	m.RefreshTaskBoard()
 	return nil
 }
 
 // boardArchive mirrors runTaskArchive.
 func boardArchive(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	fields := strings.Fields(args)
 	if len(fields) != 1 {
-		m.appendLog("Usage: /board archive <id>")
+		m.AppendLog("Usage: /board archive <id>")
 		return nil
 	}
 	id := fields[0]
 	task, err := archiveTask(id)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to archive task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to archive task: %v", err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Archived task %s: %s", task.ID, task.Title))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Archived task %s: %s", task.ID, task.Title))
+	m.RefreshTaskBoard()
 	return nil
 }
 
 // boardClaim mirrors runTaskClaim.
 func boardClaim(m *appModel, args string) tea.Cmd {
-	if m.isProcessing {
+	if m.IsProcessing {
 		return boardBlockWarn(m)
 	}
 	tokens := strings.Fields(args)
 	if len(tokens) < 1 {
-		m.appendLog("Usage: /board claim <id> [--assignee <id>]")
+		m.AppendLog("Usage: /board claim <id> [--assignee <id>]")
 		return nil
 	}
 	id := tokens[0]
@@ -567,32 +567,32 @@ func boardClaim(m *appModel, args string) tea.Cmd {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&assigneeFlag, "assignee", "agent", "agent/user ID to assign")
 	if err := fs.Parse(tokens[1:]); err != nil {
-		m.appendLog(fmt.Sprintf("⚠ invalid /board claim arguments: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ invalid /board claim arguments: %v", err))
 		return nil
 	}
 
 	task, err := getTask(id)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to get task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to get task: %v", err))
 		return nil
 	}
 	if task == nil {
-		m.appendLog(fmt.Sprintf("task not found: %s", id))
+		m.AppendLog(fmt.Sprintf("task not found: %s", id))
 		return nil
 	}
 	if task.Status != TaskStatusPending && task.Status != TaskStatusBlocked {
-		m.appendLog(fmt.Sprintf("⚠ task %s cannot be claimed (status: %s, must be pending or blocked)", id, task.Status))
+		m.AppendLog(fmt.Sprintf("⚠ task %s cannot be claimed (status: %s, must be pending or blocked)", id, task.Status))
 		return nil
 	}
 
 	input := UpdateTaskInput{ID: id, Status: TaskStatusInProgress, Assignee: assigneeFlag}
 	updatedTask, err := updateTask(input)
 	if err != nil {
-		m.appendLog(fmt.Sprintf("⚠ failed to claim task: %v", err))
+		m.AppendLog(fmt.Sprintf("⚠ failed to claim task: %v", err))
 		return nil
 	}
-	m.appendLog(fmt.Sprintf("Claimed task %s by %s", updatedTask.ID, assigneeFlag))
-	m.refreshTaskBoard()
+	m.AppendLog(fmt.Sprintf("Claimed task %s by %s", updatedTask.ID, assigneeFlag))
+	m.RefreshTaskBoard()
 	return nil
 }
 
