@@ -51,19 +51,27 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('hakase_token')
   }
 
+  let initPromise: Promise<void> | null = null
+
   async function init() {
     if (initialized.value) return
-    try {
-      const data = await apiGet<MeResponse>('/me')
-      user.value = { username: data.username }
-    } catch {
-      // 401 or network error - user stays null, guard handles redirect
-      user.value = null
-      token.value = null
-      localStorage.removeItem('hakase_token')
-    } finally {
-      initialized.value = true
+    if (!initPromise) {
+      initPromise = (async () => {
+        try {
+          const data = await apiGet<MeResponse>('/me')
+          user.value = { username: data.username }
+        } catch {
+          // 401 or network error - user stays null, guard handles redirect
+          user.value = null
+          token.value = null
+          localStorage.removeItem('hakase_token')
+        } finally {
+          initialized.value = true
+          initPromise = null
+        }
+      })()
     }
+    return initPromise
   }
 
   // Wire up the 401 handler to redirect via router

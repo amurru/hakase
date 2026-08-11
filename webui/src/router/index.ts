@@ -59,13 +59,21 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to) => {
   const authStore = useAuthStore()
-  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
-    next({ path: '/login', query: { redirect: to.fullPath } })
-  } else {
-    next()
+  if (to.meta.requiresAuth) {
+    // On a hard refresh the router starts its initial navigation at
+    // app.use(router) time - before main.ts's init() has finished - so the
+    // guard must await the session check itself. Without this, a valid
+    // persisted session is treated as logged out and every refresh bounces
+    // back to the login page. init() is idempotent and shares its in-flight
+    // promise, so a concurrent call from main.ts is safe.
+    await authStore.init()
+    if (!authStore.isLoggedIn) {
+      return { path: '/login', query: { redirect: to.fullPath } }
+    }
   }
+  return true
 })
 
 export default router
