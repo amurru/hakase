@@ -16,7 +16,7 @@ var testJWTSigningKey = []byte("test-secret-key-for-testing-only")
 
 // newTestServer creates a Server with a test JWT key wired into the router.
 func newTestServer() *Server {
-	s := NewServer(testJWTSigningKey)
+	s := NewServer(testJWTSigningKey, nil)
 	s.RegisterDefaults(getTestFrontendAssets())
 	return s
 }

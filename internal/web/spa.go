@@ -8,15 +8,19 @@ import (
 	"strings"
 	"time"
 
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
+	"amurru/hakase/internal/web/sse"
+	"google.golang.org/adk/v2/runner"
 )
 
 // RegisterRoutes sets up all routes on the given chi router.
 // Unauthenticated endpoints (/api/health, /api/login) are registered first,
 // then the auth middleware group wraps the remaining API routes.
 // The SPA catch-all is mounted last.
-func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte) {
+func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate) {
 	// Middleware applied globally
 	r.Use(CORSMiddleware())
 	r.Use(RequestLogger())
@@ -30,7 +34,21 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte) {
 		r.Use(AuthMiddleware(jwtKey))
 		r.Get("/me", handlers.MeHandler())
 		r.Post("/logout", handlers.LogoutHandler())
-		// Future API endpoints (tasks 20-22) will be registered here
+		// Session API routes (task 20)
+		if sessionSvc != nil {
+			handlers.RegisterSessionRoutes(r, sessionSvc)
+		}
+		// Chat (SSE streaming + message endpoint - task 21)
+		if bridge != nil && runner != nil && runtime != nil && sessionSvc != nil {
+			handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime)
+		}
+		// Approval/Clarify response endpoints (task 22)
+		if approvalGate != nil {
+			handlers.RegisterApprovalRoutes(r, approvalGate)
+		}
+		if clarifyGate != nil {
+			handlers.RegisterClarifyRoutes(r, clarifyGate)
+		}
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html
@@ -139,14 +157,11 @@ type chiRouter interface {
 	Use(middlewares ...func(http.Handler) http.Handler)
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
+	Delete(pattern string, handlerFn http.HandlerFunc)
 	Route(pattern string, fn func(r chiRouter))
 }
 
 // credentialsPath returns the path to the credentials.json file.
 func credentialsPath() string {
-	home := config.HakaseHome()
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, "credentials.json")
+	return filepath.Join(config.HakaseHome(), "credentials.json")
 }

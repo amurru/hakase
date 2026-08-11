@@ -16,6 +16,7 @@ type Router interface {
 	Use(middlewares ...func(http.Handler) http.Handler)
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
+	Delete(pattern string, handlerFn http.HandlerFunc)
 	Route(pattern string, fn func(r Router))
 }
 
