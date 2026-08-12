@@ -18,6 +18,11 @@ function applyTheme(theme: Theme) {
 export const useThemeStore = defineStore('theme', () => {
   const theme = ref<Theme>(readStoredTheme())
 
+  // Apply the stored theme on store init so the visual theme matches the
+  // persisted value even if the head bootstrap script (theme-init.js) is
+  // blocked or unavailable. Idempotent with classList.toggle.
+  applyTheme(theme.value)
+
   function setTheme(next: Theme) {
     theme.value = next
     applyTheme(next)
