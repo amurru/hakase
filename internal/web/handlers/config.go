@@ -50,6 +50,10 @@ type ConfigResponse struct {
 	HasAPIKey bool `json:"has_api_key"`
 	// HasVisionAPIKey reports whether a vision_api_key is configured.
 	HasVisionAPIKey bool `json:"has_vision_api_key"`
+	// EffectiveModel is the model the agent will actually use, resolved from the
+	// configured model_name or the provider default. Exposed so the web UI can
+	// label the active model without recomputing provider defaults client-side.
+	EffectiveModel string `json:"effective_model"`
 	// Config holds the sanitized config values (api keys blanked).
 	Config config.Config `json:"config"`
 }
@@ -85,6 +89,7 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 		Writable:        writable,
 		HasAPIKey:       hasKey,
 		HasVisionAPIKey: hasVisionKey,
+		EffectiveModel:  cfg.EffectiveModelName(),
 		Config:          *cfg,
 	})
 }

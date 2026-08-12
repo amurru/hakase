@@ -313,6 +313,30 @@ func SystemEnvEnabled(cfg *Config) bool {
 	return *cfg.SystemEnv.Enabled
 }
 
+// DefaultModelForProvider returns the default model name for a provider. An
+// empty or "gemini" provider uses Gemini's default; "openai" and
+// "openai-compatible" use OpenAI's default. This is the single source of truth
+// for provider defaults, shared with the agent package and the web API so the
+// UI does not have to recompute them.
+func DefaultModelForProvider(provider string) string {
+	switch provider {
+	case "openai", "openai-compatible":
+		return "gpt-4o-mini"
+	default:
+		return "gemini-2.5-flash"
+	}
+}
+
+// EffectiveModelName returns the model the agent will actually use: the
+// configured ModelName when set, otherwise the provider's default. Trims
+// surrounding whitespace so a stray space in config does not leak into labels.
+func (c *Config) EffectiveModelName() string {
+	if name := strings.TrimSpace(c.ModelName); name != "" {
+		return name
+	}
+	return DefaultModelForProvider(c.Provider)
+}
+
 // MarshalJSON implements json.Marshaler. It redacts sensitive map values in
 // MCPServerConfig (Env, Headers) using the has_api_key pattern: each value is
 // replaced with "true" when the key exists, so the caller sees key presence

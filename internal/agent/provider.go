@@ -47,7 +47,7 @@ func (p *GeminiProvider) ValidateConfig(cfg *config.Config) error {
 
 // GetDefaultModel returns the default Gemini model name.
 func (p *GeminiProvider) GetDefaultModel() string {
-	return "gemini-2.5-flash"
+	return config.DefaultModelForProvider("gemini")
 }
 
 // GetModelInfo queries the Gemini API for the model's context window and
@@ -99,7 +99,7 @@ func (p *OpenAIProvider) ValidateConfig(cfg *config.Config) error {
 
 // GetDefaultModel returns the default OpenAI model name.
 func (p *OpenAIProvider) GetDefaultModel() string {
-	return "gpt-4o-mini"
+	return config.DefaultModelForProvider("openai")
 }
 
 // openAIModelInfo mirrors the model objects returned by OpenAI-compatible

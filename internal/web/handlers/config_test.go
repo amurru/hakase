@@ -75,6 +75,9 @@ func TestGetConfigSanitizesSecrets(t *testing.T) {
 	if resp.Config.ModelName != "gemini-3.6-flash" {
 		t.Fatalf("expected model_name, got %q", resp.Config.ModelName)
 	}
+	if resp.EffectiveModel != "gemini-3.6-flash" {
+		t.Fatalf("expected effective_model=gemini-3.6-flash, got %q", resp.EffectiveModel)
+	}
 }
 
 func TestGetConfigMissingFile(t *testing.T) {
@@ -99,6 +102,41 @@ func TestGetConfigMissingFile(t *testing.T) {
 	}
 	if resp.Config.Provider != "" {
 		t.Fatalf("expected empty provider, got %q", resp.Config.Provider)
+	}
+}
+
+func TestGetConfigEffectiveModelResolvesProviderDefault(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{"openai default", `{"provider": "openai"}`, "gpt-4o-mini"},
+		{"openai-compatible default", `{"provider": "openai-compatible", "base_url": "http://localhost:11434/v1"}`, "gpt-4o-mini"},
+		{"empty provider defaults to gemini", `{}`, "gemini-2.5-flash"},
+		{"explicit model wins", `{"provider": "openai", "model_name": "gpt-4o"}`, "gpt-4o"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestConfig(t, tc.body)
+			setTestConfigPath(t, path)
+
+			handler := (&ConfigAPI{}).GetConfig
+			req := httptest.NewRequest("GET", "/api/config", nil)
+			w := httptest.NewRecorder()
+			handler(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp ConfigResponse
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if resp.EffectiveModel != tc.expected {
+				t.Fatalf("expected effective_model=%q, got %q", tc.expected, resp.EffectiveModel)
+			}
+		})
 	}
 }
 
