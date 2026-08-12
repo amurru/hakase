@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'vue-sonner'
+import { useAppStore } from '@/stores/app'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -62,6 +63,7 @@ interface SettingsForm {
 }
 
 const cfgPath = ref('')
+const appStore = useAppStore()
 const writable = ref(true)
 const hasAPIKey = ref(false)
 const hasVisionAPIKey = ref(false)
@@ -375,6 +377,8 @@ async function saveConfig() {
     showAPIKeyInput.value = false
     showVisionAPIKeyInput.value = false
     await loadConfig()
+    // Keep the navbar model label in sync with the new configuration.
+    appStore.loadModelName()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to save config'
     toast.error(error.value)
