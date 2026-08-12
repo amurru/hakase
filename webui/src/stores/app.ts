@@ -36,10 +36,14 @@ export const useAppStore = defineStore('app', () => {
 
   // loadModelName pulls the real configured model from the backend so the UI
   // label reflects the user's configuration instead of the hardcoded default.
+  // The backend resolves the effective model (explicit model_name or the
+  // provider default) and returns it as effective_model; the local helper is a
+  // fallback for older servers that don't populate it.
   async function loadModelName() {
     try {
-      const resp = await apiGet<{ config: ConfigModelInfo }>('/config')
-      setModelName(effectiveModelName(resp.config))
+      const resp = await apiGet<{ config: ConfigModelInfo; effective_model?: string }>('/config')
+      const effective = resp.effective_model?.trim()
+      setModelName(effective ? effective : effectiveModelName(resp.config))
     } catch {
       // Keep the current value if the request fails (e.g. auth race); the next
       // call after a successful request will correct it.
