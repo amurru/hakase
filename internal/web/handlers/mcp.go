@@ -109,7 +109,13 @@ func (api *MCPAPI) ListServers(w http.ResponseWriter, r *http.Request) {
 			Error:     s.Error,
 		}
 		if cfg, ok := mg.ServerConfig(s.Name); ok {
-			dto.Config = cfg
+			// Env and Headers are write-only: they must never be returned
+			// via the read API. Strip them to empty maps so the caller
+			// sees the key is configurable but never receives values.
+			safeCfg := *cfg
+			safeCfg.Env = map[string]string{}
+			safeCfg.Headers = map[string]string{}
+			dto.Config = &safeCfg
 		}
 		dtos = append(dtos, dto)
 	}

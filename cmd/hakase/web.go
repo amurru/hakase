@@ -12,11 +12,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/auth"
+	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
@@ -32,6 +34,52 @@ import (
 	"google.golang.org/adk/v2/tool"
 )
 
+// insecureCookieFlag implements flag.Value for --insecure-cookie. Unlike a
+// plain fs.Bool it records whether the flag was explicitly set, so the CLI can
+// override the config file value in both directions (true and false) while an
+// absent flag defers to the config file.
+type insecureCookieFlag struct {
+	value bool
+	set   bool
+}
+
+// IsBoolFlag lets -insecure-cookie (no value) mean true, like the built-in
+// bool flags.
+func (f *insecureCookieFlag) IsBoolFlag() bool { return true }
+
+func (f *insecureCookieFlag) Set(s string) error {
+	b, err := strconv.ParseBool(s)
+	if err != nil {
+		return fmt.Errorf("invalid boolean value %q for -insecure-cookie: %v", s, err)
+	}
+	f.value = b
+	f.set = true
+	return nil
+}
+
+func (f *insecureCookieFlag) String() string { return strconv.FormatBool(f.value) }
+
+// registerWebFlags registers the shared web/serve flags on fs and returns
+// pointers to their parsed values. Single source of truth for the flag
+// definitions so tests exercise the exact registration used by runServer.
+func registerWebFlags(fs *flag.FlagSet) (port *int, host *string, insecureCookie *insecureCookieFlag) {
+	port = fs.Int("port", 0, "port to listen on")
+	host = fs.String("host", "", "host address to bind to")
+	insecureCookie = &insecureCookieFlag{}
+	fs.Var(insecureCookie, "insecure-cookie", "allow insecure (non-HTTPS) cookie transmission")
+	return port, host, insecureCookie
+}
+
+// applyInsecureCookiePrecedence resolves the effective allow-insecure-cookie
+// setting: an explicitly-set CLI flag wins over the config file value, which
+// wins over the default (false).
+func applyInsecureCookiePrecedence(cfgValue, flagSet, flagValue bool) bool {
+	if flagSet {
+		return flagValue
+	}
+	return cfgValue
+}
+
 // runWeb starts the full web UI server (SPA + API).
 func runWeb(args []string) int {
 	return runServer(args, true)
@@ -46,8 +94,7 @@ func runServe(args []string) int {
 func runServer(args []string, serveSPA bool) int {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	port := fs.Int("port", 0, "port to listen on")
-	host := fs.String("host", "", "host address to bind to")
+	port, host, insecureCookie := registerWebFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -96,6 +143,14 @@ func runServer(args []string, serveSPA bool) int {
 		fmt.Fprintf(os.Stderr, "hakase: failed to load config: %v\n", err)
 		return 1
 	}
+
+	// --insecure-cookie (CLI) overrides auth.allow_insecure_cookie (config
+	// file), which defaults to false. The cookie setter consumes the resolved
+	// value (security-hardening Task 17 - W8).
+	cfg.Auth.AllowInsecureCookie = applyInsecureCookiePrecedence(cfg.Auth.AllowInsecureCookie, insecureCookie.set, insecureCookie.value)
+
+	// Init sandbox before any file or exec operations.
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 
 	// Init debug logging.
 	_ = os.MkdirAll(filepath.Join(home, "logs"), 0o755)
@@ -198,6 +253,7 @@ func runServer(args []string, serveSPA bool) int {
 
 	// Build the web server.
 	srv := web.NewServer(jwtKey, sessionSvc)
+	srv.SetAllowInsecureCookie(cfg.Auth.AllowInsecureCookie)
 	srv.SetChatDeps(bridge, runner, runtime)
 	srv.SetGates(approvalGate, clarifyGate)
 

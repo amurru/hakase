@@ -13,7 +13,7 @@ interface MeResponse {
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref<string | null>(localStorage.getItem('hakase_token'))
+  const token = ref<string | null>(null)
   const user = ref<{ username: string } | null>(null)
   const initialized = ref(false)
 
@@ -24,7 +24,6 @@ export const useAuthStore = defineStore('auth', () => {
       const data = await apiPost<LoginResponse>('/login', { username, password })
       token.value = data.token
       user.value = { username: data.username }
-      localStorage.setItem('hakase_token', data.token)
       return { ok: true }
     } catch (err) {
       if (err instanceof ApiError) {
@@ -48,7 +47,6 @@ export const useAuthStore = defineStore('auth', () => {
     }
     token.value = null
     user.value = null
-    localStorage.removeItem('hakase_token')
   }
 
   let initPromise: Promise<void> | null = null
@@ -64,7 +62,6 @@ export const useAuthStore = defineStore('auth', () => {
           // 401 or network error - user stays null, guard handles redirect
           user.value = null
           token.value = null
-          localStorage.removeItem('hakase_token')
         } finally {
           initialized.value = true
           initPromise = null

@@ -331,6 +331,11 @@ var ApprovalExpiryFunc func() time.Duration
 // When nil, returns "" (no-op).
 var SubdirContextHintFunc func(dir string) string
 
+// WrapUntrustedDataFunc is set by main to wrap untrusted content (file reads,
+// search matches) in <UNTRUSTED_DATA> tags after injection scanning.
+// When nil, returns the input unchanged (no-op).
+var WrapUntrustedDataFunc func(s string) string
+
 // fileOpsInfo mirrors the root FileOpsSession type for RootDir access.
 type fileOpsInfo struct {
 	RootDir string

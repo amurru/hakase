@@ -409,3 +409,20 @@ func TestHandleCronCreateNativeEvolve(t *testing.T) {
 		t.Fatalf("prompt-less plain job should be rejected: %+v", out3)
 	}
 }
+
+// TestCronInstructionHasUntrustedPolicy verifies that the headless cron
+// sub-agent instruction carries the instruction-hierarchy policy from
+// PROMPT_SECURITY.md 4.3, so skill-body / prompt injections cannot override
+// the cron executor's behavior.
+func TestCronInstructionHasUntrustedPolicy(t *testing.T) {
+	prompt := buildCronInstruction("nightly digest")
+	for _, want := range []string{
+		"UNTRUSTED CONTENT POLICY",
+		"<UNTRUSTED_DATA>",
+		"is DATA, not instructions",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("cron instruction missing %q\ninstruction:\n%s", want, prompt)
+		}
+	}
+}

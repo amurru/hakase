@@ -22,6 +22,9 @@ func init() {
 	// Sandbox hook: subdirectory context hints for file operations.
 	sandbox.SubdirContextHintFunc = hctx.SubdirContextHint
 
+	// Sandbox hook: wrap untrusted file content (read_file, search_files).
+	sandbox.WrapUntrustedDataFunc = hctx.WrapUntrustedData
+
 	// Sandbox hook: command evaluation gate. Uses the agent package's
 	// gate logic (EvaluateCommand) and converts agent.GateDecision to
 	// sandbox.GateDecision.

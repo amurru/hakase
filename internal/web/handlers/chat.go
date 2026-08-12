@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
@@ -20,12 +21,43 @@ import (
 	"google.golang.org/genai"
 )
 
+// maxConcurrentAgentRuns is the maximum number of concurrent agent runs
+// allowed per session. Additional runs receive a 429 response.
+const maxConcurrentAgentRuns = 3
+
+// sessionSem tracks concurrent agent runs for a single session.
+type sessionSem struct {
+	mu      sync.Mutex
+	counter int
+}
+
+// acquire increments the counter if under the limit. Returns true if acquired.
+func (s *sessionSem) acquire(max int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.counter >= max {
+		return false
+	}
+	s.counter++
+	return true
+}
+
+// release decrements the counter.
+func (s *sessionSem) release() {
+	s.mu.Lock()
+	s.counter--
+	s.mu.Unlock()
+}
+
 // ChatAPI handles chat message endpoints and SSE streaming.
 type ChatAPI struct {
 	bridge     *sse.EventBridge
 	sessionSvc *hakasesession.SessionService
 	runner     *runner.Runner
 	runtime    *hakaseagent.Runtime
+
+	semMu         sync.Mutex
+	runSemaphores map[string]*sessionSem
 }
 
 // ChatRouter is the minimum interface needed by RegisterChatRoutes.
@@ -38,10 +70,11 @@ type ChatRouter interface {
 // Routes are relative to /api (the caller places them inside the /api group).
 func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakasesession.SessionService, runner *runner.Runner, runtime *hakaseagent.Runtime) {
 	api := &ChatAPI{
-		bridge:     bridge,
-		sessionSvc: sessionSvc,
-		runner:     runner,
-		runtime:    runtime,
+		bridge:        bridge,
+		sessionSvc:    sessionSvc,
+		runner:        runner,
+		runtime:       runtime,
+		runSemaphores: make(map[string]*sessionSem),
 	}
 
 	r.Post("/sessions/{id}/messages", api.PostMessage)
@@ -51,6 +84,17 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 // chatSessionID extracts the {id} URL parameter from the request.
 func chatSessionID(r *http.Request) string {
 	return chi.URLParam(r, "id")
+}
+
+// getOrCreateSem returns the sessionSem for sessionID, creating one if needed.
+// Must be called while holding api.semMu (or use the caller-safe wrapper).
+func (api *ChatAPI) getOrCreateSem(sessionID string) *sessionSem {
+	s, ok := api.runSemaphores[sessionID]
+	if !ok {
+		s = &sessionSem{}
+		api.runSemaphores[sessionID] = s
+	}
+	return s
 }
 
 // PostMessage handles POST /api/sessions/{id}/messages.
@@ -91,6 +135,18 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	// detached context so the run survives the request lifecycle (the browser
 	// may refresh or reconnect its SSE stream mid-run).
 	if api.runner != nil {
+		// Per-session concurrency cap: reject if this session is saturated.
+		api.semMu.Lock()
+		sem := api.getOrCreateSem(sessionID)
+		if !sem.acquire(maxConcurrentAgentRuns) {
+			api.semMu.Unlock()
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{
+				"error": "too many concurrent agent runs for this session",
+			})
+			return
+		}
+		api.semMu.Unlock()
+
 		content := genai.NewContentFromParts(
 			[]*genai.Part{{Text: req.Content}},
 			genai.RoleUser,
@@ -121,6 +177,12 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 			api.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
 			api.bridge.SendDone(sessionID)
 		}
+		// Release the per-session concurrency slot.
+		api.semMu.Lock()
+		if sem, ok := api.runSemaphores[sessionID]; ok {
+			sem.release()
+		}
+		api.semMu.Unlock()
 	}()
 
 	runCtx := ctx

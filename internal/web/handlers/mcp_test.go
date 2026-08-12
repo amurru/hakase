@@ -55,6 +55,64 @@ func TestMCPServerList(t *testing.T) {
 	if servers[0].Config == nil || servers[0].Config.URL != "http://localhost:9223/mcp" {
 		t.Fatalf("expected config in DTO, got %+v", servers[0])
 	}
+	// Env and Headers must always be write-only (no value echo on read).
+	if len(servers[0].Config.Env) != 0 {
+		t.Fatalf("env must be empty in read DTO, got %v", servers[0].Config.Env)
+	}
+	if len(servers[0].Config.Headers) != 0 {
+		t.Fatalf("headers must be empty in read DTO, got %v", servers[0].Config.Headers)
+	}
+}
+
+func TestMCPServerListStripsEnvHeaders(t *testing.T) {
+	setupMCPHandlerTest(t, map[string]*config.MCPServerConfig{
+		"github": {
+			Type:    "stdio",
+			Command: []string{"npx", "@github/mcp-server"},
+			Env:     map[string]string{"GITHUB_PAT": "ghp_secret_token"},
+			Headers: map[string]string{"Authorization": "Bearer abc123"},
+		},
+	})
+
+	handler := (&MCPAPI{}).ListServers
+	req := httptest.NewRequest("GET", "/mcp/servers", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the raw JSON body does not contain the secret values.
+	body := w.Body.String()
+	if strings.Contains(body, "ghp_secret_token") {
+		t.Fatal("response must not contain env value")
+	}
+	if strings.Contains(body, "abc123") {
+		t.Fatal("response must not contain headers value")
+	}
+
+	var servers []MCPServerDTO
+	if err := json.NewDecoder(w.Body).Decode(&servers); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	if len(servers) != 1 || servers[0].Name != "github" {
+		t.Fatalf("expected github server, got %+v", servers)
+	}
+	// Env and Headers must be empty maps (structure present, values stripped).
+	if servers[0].Config == nil {
+		t.Fatal("Config must not be nil")
+	}
+	if len(servers[0].Config.Env) != 0 {
+		t.Fatalf("env must be empty after stripping, got %v", servers[0].Config.Env)
+	}
+	if len(servers[0].Config.Headers) != 0 {
+		t.Fatalf("headers must be empty after stripping, got %v", servers[0].Config.Headers)
+	}
+	// Other config fields must still be present.
+	if servers[0].Config.Type != "stdio" {
+		t.Fatalf("expected type=stdio, got %q", servers[0].Config.Type)
+	}
 }
 
 func TestMCPServerCreate(t *testing.T) {

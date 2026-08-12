@@ -81,6 +81,16 @@ type SystemEnvConfig struct {
 	ApplyTo []string `json:"apply_to,omitempty"`
 }
 
+// AuthConfig tunes the web authentication layer (cookie security, login
+// hardening). Zero values are the secure defaults.
+type AuthConfig struct {
+	// AllowInsecureCookie permits the session cookie to be set without the
+	// Secure attribute (e.g. plain-HTTP localhost deployments). Default
+	// false: cookies are Secure-only. Consumed by the web cookie setter
+	// (security-hardening Task 17 - W8).
+	AllowInsecureCookie bool `json:"allow_insecure_cookie"`
+}
+
 type Config struct {
 	Provider  string `json:"provider"`
 	ModelName string `json:"model_name"`
@@ -167,6 +177,11 @@ type Config struct {
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
+	// Auth tunes the web authentication layer (cookie security, login
+	// hardening). Absent/zero values are the secure defaults (cookie Secure
+	// flag on). The web bootstrap (cmd/hakase/web.go) may override with the
+	// --insecure-cookie CLI flag.
+	Auth AuthConfig `json:"auth,omitempty"`
 	// SearchExpansion enables HyDE-lite LLM query expansion for
 	// search_knowledge (plan Phase 3d-4). Default false: when off, search
 	// behavior is byte-identical to plain substring search. When on, one
@@ -296,6 +311,40 @@ func SystemEnvEnabled(cfg *Config) bool {
 		return true
 	}
 	return *cfg.SystemEnv.Enabled
+}
+
+// MarshalJSON implements json.Marshaler. It redacts sensitive map values in
+// MCPServerConfig (Env, Headers) using the has_api_key pattern: each value is
+// replaced with "true" when the key exists, so the caller sees key presence
+// without the actual secret. The original Config is not mutated.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type Alias Config
+	alias := Alias(c)
+	if alias.MCPServers.Servers != nil {
+		redacted := make(map[string]*MCPServerConfig, len(alias.MCPServers.Servers))
+		for name, srv := range alias.MCPServers.Servers {
+			copy := *srv
+			copy.Env = redactMap(copy.Env)
+			copy.Headers = redactMap(copy.Headers)
+			redacted[name] = &copy
+		}
+		alias.MCPServers = MCPConfig{Servers: redacted}
+	}
+	return json.Marshal(alias)
+}
+
+// redactMap returns a copy of m with every value replaced by "true" (the
+// has_api_key pattern: shows key presence without revealing the actual value).
+// nil maps return nil.
+func redactMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k := range m {
+		out[k] = "true"
+	}
+	return out
 }
 
 // SystemEnvMaxChars returns the configured block cap, falling back to the

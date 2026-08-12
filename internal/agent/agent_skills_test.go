@@ -101,8 +101,8 @@ func TestGetSkillsPromptMixed(t *testing.T) {
 		t.Errorf("expected exactly 1 header, got %d\nprompt:\n%s", got, prompt)
 	}
 	for _, want := range []string{
-		"- Skill: 'render_card'\n  Description: Renders an HTML card to PNG\n  Import Usage: `from skills.render_card import ...` or `import render_card`\n\n",
-		"- Skill: 'extract_pdf'\n  Description: Extracts tables from PDFs\n  Import Usage: `from skills.extract_pdf import ...` or `import extract_pdf`\n\n",
+		"- Skill: 'render_card'\n  Description: \n<UNTRUSTED_DATA>\nRenders an HTML card to PNG\n</UNTRUSTED_DATA>\n\n  Import Usage: `from skills.render_card import ...` or `import render_card`\n\n",
+		"- Skill: 'extract_pdf'\n  Description: \n<UNTRUSTED_DATA>\nExtracts tables from PDFs\n</UNTRUSTED_DATA>\n\n  Import Usage: `from skills.extract_pdf import ...` or `import extract_pdf`\n\n",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing python entry %q\nprompt:\n%s", want, prompt)
@@ -110,7 +110,7 @@ func TestGetSkillsPromptMixed(t *testing.T) {
 	}
 	for _, want := range []string{
 		"- Skill: 'data-cleaner' (markdown)",
-		"  Description: Cleans raw datasets",
+		"  Description: \n<UNTRUSTED_DATA>\nCleans raw datasets\n</UNTRUSTED_DATA>\n",
 		"  Location: " + filepath.Join(sandbox, ".agents", "skills"),
 		"  Load: call 'load_markdown_skill' with name 'data-cleaner' to read full instructions",
 	} {
@@ -242,8 +242,8 @@ func TestLoadMarkdownSkillRoundTrip(t *testing.T) {
 	if out.Name != "data-cleaner" {
 		t.Errorf("Name: expected %q, got %q", "data-cleaner", out.Name)
 	}
-	if out.Description != "Cleans raw datasets" {
-		t.Errorf("Description: expected %q, got %q", "Cleans raw datasets", out.Description)
+	if out.Description != "\n<UNTRUSTED_DATA>\nCleans raw datasets\n</UNTRUSTED_DATA>\n" {
+		t.Errorf("Description: expected wrapped description, got %q", out.Description)
 	}
 	if !strings.Contains(out.Content, "Run these steps") || !strings.Contains(out.Content, "scripts/foo.py") {
 		t.Errorf("Content: expected skill body, got %q", out.Content)

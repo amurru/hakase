@@ -207,9 +207,8 @@ async function selectFile(path: string) {
 }
 
 function downloadFile(path: string) {
-  const token = localStorage.getItem('hakase_token')
   const url = `/api/files/download?path=${encodeURIComponent(path)}`
-  fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  fetch(url)
     .then((res) => {
       if (!res.ok) throw new Error('Download failed')
       return res.blob()

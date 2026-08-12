@@ -130,8 +130,7 @@ function renderMarkdown(content: string): string {
   if (!content) return ''
   const raw = md.render(content)
   return DOMPurify.sanitize(raw, {
-    ADD_TAGS: ['iframe'],
-    ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder'],
+    ADD_ATTR: ['target'],
   })
 }
 

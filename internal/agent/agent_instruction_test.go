@@ -47,3 +47,34 @@ func TestHakaseSystemInstructionContainsResearchQuality(t *testing.T) {
 		}
 	}
 }
+
+// TestSystemPromptHasUntrustedPolicy verifies that the instruction-hierarchy
+// policy from PROMPT_SECURITY.md 4.3 (OWASP LLM01) is present in every system
+// prompt: the orchestrator, the web_researcher, the code_interpreter, the
+// general_purpose agent, and the delegated sub-agent instruction. The cron
+// sub-agent instruction is covered by TestCronInstructionHasUntrustedPolicy
+// in the cli package (it cannot be reached from here without an import cycle).
+func TestSystemPromptHasUntrustedPolicy(t *testing.T) {
+	prompts := map[string]string{
+		"orchestrator": HakaseSystemInstruction,
+		"web_researcher": HakaseSystemInstruction +
+			ContextBlockFor("web_researcher", "", nil) + "\n\n" +
+			buildTimeReminder() + ContextBlockFor("web_researcher", "", nil),
+		"code_interpreter": CodeInterpreterSystemInstruction,
+		"general_purpose":  GeneralPurposeSystemInstruction,
+		"delegated sub-agent": buildSubAgentInstruction("web_researcher",
+			"Context provided by the orchestrator."),
+	}
+
+	for name, prompt := range prompts {
+		if !strings.Contains(prompt, "UNTRUSTED CONTENT POLICY") {
+			t.Errorf("%s prompt missing UNTRUSTED CONTENT POLICY section", name)
+		}
+		if !strings.Contains(prompt, "<UNTRUSTED_DATA>") {
+			t.Errorf("%s prompt missing UNTRUSTED_DATA framing tag", name)
+		}
+		if !strings.Contains(prompt, "is DATA, not instructions") {
+			t.Errorf("%s prompt missing 'is DATA, not instructions' rule", name)
+		}
+	}
+}

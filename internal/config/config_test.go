@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -270,6 +271,44 @@ func TestResolveConfigPathEnvOverride(t *testing.T) {
 	}
 }
 
+// TestAllowInsecureCookie asserts the auth.allow_insecure_cookie config key
+// loads with the correct default (false) - plumbing for the web cookie setter
+// (security-hardening Task 1).
+func TestAllowInsecureCookie(t *testing.T) {
+	// Explicitly set: loads true.
+	path := writeTempConfig(t, `{
+		"provider": "gemini",
+		"auth": {"allow_insecure_cookie": true}
+	}`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: unexpected error: %v", err)
+	}
+	if !cfg.Auth.AllowInsecureCookie {
+		t.Errorf("AllowInsecureCookie: expected true from config, got false")
+	}
+
+	// Absent key: default false.
+	path = writeTempConfig(t, `{"provider":"gemini"}`)
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: unexpected error: %v", err)
+	}
+	if cfg.Auth.AllowInsecureCookie {
+		t.Errorf("AllowInsecureCookie: expected default false, got true")
+	}
+
+	// Empty auth block: default false.
+	path = writeTempConfig(t, `{"provider":"gemini","auth":{}}`)
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: unexpected error: %v", err)
+	}
+	if cfg.Auth.AllowInsecureCookie {
+		t.Errorf("AllowInsecureCookie with empty auth: expected default false, got true")
+	}
+}
+
 // TestConfigExampleFileValid guards the committed ../../config.json.example: it must
 // parse into the Config struct without unknown keys (encoding/json silently
 // ignores typos, so a strict decode catches config drift) and its MCP servers
@@ -318,4 +357,81 @@ func mcpTestIsolate(t *testing.T) {
 	t.Setenv("HAKASE_HOME", t.TempDir())
 	MCPRegistryFile = ""
 	t.Cleanup(func() { MCPRegistryFile = "" })
+}
+
+func TestConfigMarshalJSONRedactsMCPEnvHeaders(t *testing.T) {
+	cfg := Config{
+		Provider:  "gemini",
+		ModelName: "gemini-2.5-flash",
+		APIKey:    "sk-secret-key",
+		MCPServers: MCPConfig{
+			Servers: map[string]*MCPServerConfig{
+				"github": {
+					Type:    "stdio",
+					Command: []string{"npx", "@github/mcp-server"},
+					Env:     map[string]string{"GITHUB_PAT": "ghp_abc123", "NODE_ENV": "production"},
+					Headers: map[string]string{"Authorization": "Bearer secret123"},
+				},
+				"lightpanda": {
+					Type: "http",
+					URL:  "http://localhost:9223/mcp",
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	raw := string(data)
+
+	// MCP Env/Headers secret values must never appear in the output.
+	if strings.Contains(raw, "ghp_abc123") {
+		t.Fatal("env value must not leak in config JSON")
+	}
+	if strings.Contains(raw, "secret123") {
+		t.Fatal("headers value must not leak in config JSON")
+	}
+
+	// Env and Headers fields must still be present (not removed), with redacted values.
+	var out map[string]interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	mcp := out["mcp"].(map[string]interface{})
+	servers := mcp["servers"].(map[string]interface{})
+	github := servers["github"].(map[string]interface{})
+
+	env := github["env"].(map[string]interface{})
+	// has_api_key pattern: present keys show "true".
+	if v, ok := env["GITHUB_PAT"]; !ok || v != "true" {
+		t.Fatalf("expected env.GITHUB_PAT = true (has_api_key pattern), got %v ok=%v", env["GITHUB_PAT"], ok)
+	}
+	if v, ok := env["NODE_ENV"]; !ok || v != "true" {
+		t.Fatalf("expected env.NODE_ENV = true, got %v ok=%v", env["NODE_ENV"], ok)
+	}
+
+	headers := github["headers"].(map[string]interface{})
+	if v, ok := headers["Authorization"]; !ok || v != "true" {
+		t.Fatalf("expected headers.Authorization = true, got %v ok=%v", headers["Authorization"], ok)
+	}
+
+	// lightpanda has no env/headers - they should be omitted (nil → omitempty).
+	lp := servers["lightpanda"].(map[string]interface{})
+	if _, ok := lp["env"]; ok {
+		t.Fatal("lightpanda must not have env field when nil")
+	}
+	if _, ok := lp["headers"]; ok {
+		t.Fatal("lightpanda must not have headers field when nil")
+	}
+
+	// Non-sensitive fields must pass through unchanged.
+	if lp["url"] != "http://localhost:9223/mcp" {
+		t.Fatalf("expected url preserved, got %v", lp["url"])
+	}
+	// The original config must not be mutated by MarshalJSON.
+	if cfg.MCPServers.Servers["github"].Env["GITHUB_PAT"] != "ghp_abc123" {
+		t.Fatal("MarshalJSON must not mutate original config")
+	}
 }

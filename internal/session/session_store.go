@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,14 +19,51 @@ type SessionStore struct {
 }
 
 // NewSessionStore creates a SessionStore backed by the given directory.
-// The directory is created if it does not exist.
+// The directory is created if it does not exist. Existing session files
+// written before the 0600/0700 hardening are chmod'd on startup (best-effort).
 func NewSessionStore(sessionsDir string) (*SessionStore, error) {
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+	if err := os.MkdirAll(sessionsDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
-	return &SessionStore{
+	store := &SessionStore{
 		sessionsDir: sessionsDir,
-	}, nil
+	}
+	store.migrateSessionPermissions()
+	return store, nil
+}
+
+// migrateSessionPermissions fixes permissions on session files created before
+// the 0600/0700 hardening. Session files written with the old 0644 mode are
+// chmod'd to 0600, and the sessions directory is tightened to 0700 if it was
+// created with looser permissions (e.g. 0755). Best-effort: failures are
+// logged and never abort startup.
+func (s *SessionStore) migrateSessionPermissions() {
+	if err := os.Chmod(s.sessionsDir, 0700); err != nil {
+		log.Printf("session store: failed to chmod sessions dir %s to 0700: %v", s.sessionsDir, err)
+	}
+
+	entries, err := os.ReadDir(s.sessionsDir)
+	if err != nil {
+		log.Printf("session store: failed to list sessions dir %s for permission migration: %v", s.sessionsDir, err)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), FileExt) {
+			continue
+		}
+		path := filepath.Join(s.sessionsDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("session store: failed to stat %s for permission migration: %v", path, err)
+			continue
+		}
+		if info.Mode().Perm() != 0600 {
+			if err := os.Chmod(path, 0600); err != nil {
+				log.Printf("session store: failed to chmod %s to 0600: %v", path, err)
+			}
+		}
+	}
 }
 
 // Save writes a session to disk as a JSON file.
@@ -39,7 +77,7 @@ func (s *SessionStore) Save(session *Session) error {
 	}
 
 	path := filepath.Join(s.sessionsDir, session.ID+FileExt)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to save session %s: %w", session.ID, err)
 	}
 	return nil
@@ -227,7 +265,7 @@ func (s *SessionStore) saveUnlocked(session *Session) error {
 	}
 
 	path := filepath.Join(s.sessionsDir, session.ID+FileExt)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to save session %s: %w", session.ID, err)
 	}
 	return nil

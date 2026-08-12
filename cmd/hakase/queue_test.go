@@ -190,8 +190,8 @@ func TestBeforeModelCallbackInjectsQueuedAtTail(t *testing.T) {
 	if len(req.Contents) != 4 {
 		t.Fatalf("contents len = %d, want 4 (history 2 + current + steering)", len(req.Contents))
 	}
-	if req.Contents[0].Parts[0].Text != "q1" {
-		t.Fatalf("history[0] = %q, want q1", req.Contents[0].Parts[0].Text)
+	if req.Contents[0].Parts[0].Text != hctx.WrapUntrustedData("q1") {
+		t.Fatalf("history[0] = %q, want %q", req.Contents[0].Parts[0].Text, hctx.WrapUntrustedData("q1"))
 	}
 	last := req.Contents[len(req.Contents)-1]
 	if !strings.Contains(last.Parts[0].Text, "USER INTERJECTION") || !strings.Contains(last.Parts[0].Text, "steer me") {

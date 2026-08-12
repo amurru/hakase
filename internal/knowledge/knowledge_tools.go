@@ -724,8 +724,8 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 		return CiteKnowledgeOutput{
 			Title:    note.Frontmatter.Title,
 			Slug:     note.Slug,
-			Excerpt:  excerpt,
-			Citation: citation,
+			Excerpt:  hctx.WrapUntrustedData(excerpt),
+			Citation: hctx.WrapUntrustedData(citation),
 			Source:   source,
 			Updated:  note.Frontmatter.Updated,
 		}, nil
@@ -768,7 +768,7 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 			summaries = append(summaries, KnowledgeSummary{
 				Title:   n.Frontmatter.Title,
 				Slug:    n.Slug,
-				Summary: n.Frontmatter.Summary,
+				Summary: hctx.WrapUntrustedData(n.Frontmatter.Summary),
 				Tags:    n.Frontmatter.Tags,
 				Updated: n.Frontmatter.Updated,
 				Status:  n.Frontmatter.Status,

@@ -13,6 +13,7 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
+	"amurru/hakase/internal/web/middleware"
 	"amurru/hakase/internal/web/sse"
 	"google.golang.org/adk/v2/runner"
 )
@@ -21,14 +22,15 @@ import (
 // Unauthenticated endpoints (/api/health, /api/login) are registered first,
 // then the auth middleware group wraps the remaining API routes.
 // The SPA catch-all is mounted last.
-func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate) {
+func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, allowInsecureCookie bool) {
 	// Middleware applied globally
 	r.Use(CORSMiddleware())
 	r.Use(RequestLogger())
+	r.Use(middleware.SecurityHeaders())
 
 	// Unauthenticated API routes
 	r.Get("/api/health", handlers.HealthHandler())
-	r.Post("/api/login", handlers.LoginHandler(jwtKey, credentialsPath(), 24*time.Hour))
+	r.Post("/api/login", handlers.LoginHandler(jwtKey, credentialsPath(), 24*time.Hour, middleware.NewLoginRateLimiter(), allowInsecureCookie))
 
 	// Authenticated API group
 	r.Route("/api", func(r chiRouter) {

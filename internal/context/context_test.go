@@ -66,8 +66,8 @@ func TestBuildHistoryRolesAndDedup(t *testing.T) {
 	if history[1].Role != genai.RoleModel {
 		t.Fatalf("history[1].Role = %q, want model", history[1].Role)
 	}
-	if got := history[0].Parts[0].Text; got != "q1" {
-		t.Fatalf("history[0] text = %q, want q1", got)
+	if want := WrapUntrustedData("q1"); history[0].Parts[0].Text != want {
+		t.Fatalf("history[0] text = %q, want %q", history[0].Parts[0].Text, want)
 	}
 }
 
@@ -89,8 +89,8 @@ func TestBuildHistorySummaryFirst(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("history len = %d, want 2", len(history))
 	}
-	if got := history[0].Parts[0].Text; got != "SUMMARY TEXT" {
-		t.Fatalf("summary must come first, got %q", got)
+	if want := WrapUntrustedData("SUMMARY TEXT"); history[0].Parts[0].Text != want {
+		t.Fatalf("summary must come first, got %q, want %q", history[0].Parts[0].Text, want)
 	}
 	if history[0].Role != genai.RoleModel {
 		t.Fatalf("summary role = %q, want model", history[0].Role)
@@ -122,7 +122,7 @@ func TestBeforeModelCallbackPrependsHistory(t *testing.T) {
 	if len(req.Contents) != 3 {
 		t.Fatalf("contents len = %d, want 3", len(req.Contents))
 	}
-	if req.Contents[0].Parts[0].Text != "q1" || req.Contents[2].Parts[0].Text != "q2" {
+	if req.Contents[0].Parts[0].Text != WrapUntrustedData("q1") || req.Contents[2].Parts[0].Text != "q2" {
 		t.Fatalf("unexpected contents order: %+v", req.Contents)
 	}
 }
@@ -206,8 +206,11 @@ func TestFitToBudgetStageBSnip(t *testing.T) {
 		t.Fatalf("trimmed history too small: %d", len(trimmed))
 	}
 	last := trimmed[len(trimmed)-1]
-	if got := last.Parts[0].Text; len(got) != 4000 {
-		t.Fatalf("last message truncated to %d chars, want 4000 verbatim", len(got))
+	// Account for <UNTRUSTED_DATA> wrapping overhead.
+	wantMin := 4000
+	wantMax := 4050
+	if got := len(last.Parts[0].Text); got < wantMin || got > wantMax {
+		t.Fatalf("last message text length %d, want %d..%d", got, wantMin, wantMax)
 	}
 	// Surviving history must fit the target (0.7 * 36000 = 25200).
 	target := int64(0.7 * 36000)
@@ -257,14 +260,16 @@ func TestStageATrimsToolResultsOnly(t *testing.T) {
 	trimmed := b.stageATrimToolResults(session, history, "q2")
 
 	// Tool result removed; text messages kept.
+	unwanted := WrapUntrustedData("tool output here")
 	for _, c := range trimmed {
-		if c.Parts[0].Text == "tool output here" {
+		if c.Parts[0].Text == unwanted {
 			t.Fatalf("tool result still in history after stage a")
 		}
 	}
 	foundQ := false
+	wantQ := WrapUntrustedData("q")
 	for _, c := range trimmed {
-		if c.Parts[0].Text == "q" {
+		if c.Parts[0].Text == wantQ {
 			foundQ = true
 		}
 	}
@@ -301,7 +306,7 @@ func TestSnipPreservesDedup(t *testing.T) {
 	trimmed := b.StageBSnip(session, history, currentPrompt, 1, 8000, int64(0.7*36000))
 
 	for _, c := range trimmed {
-		if c.Parts[0].Text == currentPrompt {
+		if c.Parts[0].Text == WrapUntrustedData(currentPrompt) {
 			t.Fatalf("current user message leaked back into history after snip")
 		}
 	}

@@ -186,17 +186,21 @@ func CurrentUserMessageMatches(msg sesspkg.Message, currentText string) bool {
 // the appropriate role. Agent messages map to the model role. Messages with
 // attachments rebuild their parts: text verbatim, text files as text parts,
 // images as inline data parts (content re-read from Path).
+//
+// All text content (message body and text-file attachment contents) is framed
+// in <UNTRUSTED_DATA> tags via WrapUntrustedData to clearly delimit
+// externally-sourced data when it is re-injected into the model context.
 func MessageToContent(msg sesspkg.Message) *genai.Content {
 	role := genai.Role(msg.Role)
 	if msg.Role == "agent" {
 		role = genai.RoleModel
 	}
 	if len(msg.Attachments) == 0 {
-		return genai.NewContentFromText(msg.Content, role)
+		return genai.NewContentFromText(WrapUntrustedData(msg.Content), role)
 	}
 	var parts []*genai.Part
 	if strings.TrimSpace(msg.Content) != "" {
-		parts = append(parts, genai.NewPartFromText(msg.Content))
+		parts = append(parts, genai.NewPartFromText(WrapUntrustedData(msg.Content)))
 	}
 	for _, att := range msg.Attachments {
 		if att.Path == "" {
@@ -209,7 +213,7 @@ func MessageToContent(msg sesspkg.Message) *genai.Content {
 		if util.IsImageMIME(att.MIME) {
 			parts = append(parts, genai.NewPartFromBytes(data, att.MIME))
 		} else {
-			parts = append(parts, genai.NewPartFromText(string(data)))
+			parts = append(parts, genai.NewPartFromText(WrapUntrustedData(string(data))))
 		}
 	}
 	return genai.NewContentFromParts(parts, role)

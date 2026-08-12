@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/sandbox"
 
 	"github.com/google/uuid"
@@ -80,14 +81,19 @@ type fileContentResponse struct {
 
 // resolveFilePath resolves a path through the sandbox read roots.
 // Returns the absolute resolved path or an error if outside the sandbox.
+// Fails closed: when sandbox is not initialized or explicitly disabled,
+// all file access is rejected.
 func resolveFilePath(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("path is required")
 	}
-	if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
-		return sandbox.CurrentSandbox.ResolveScopedPath(path, false)
+	if sandbox.CurrentSandbox == nil {
+		return "", fmt.Errorf("sandbox is not initialized")
 	}
-	return filepath.Abs(path)
+	if sandbox.CurrentSandbox.Mode == sandbox.SandboxModeOff {
+		return "", fmt.Errorf("sandbox is disabled; file access is not permitted")
+	}
+	return sandbox.CurrentSandbox.ResolveScopedPath(path, false)
 }
 
 // isBinaryFile checks if data contains a null byte (simple binary detection).
@@ -193,7 +199,7 @@ func (api *FileAPI) ReadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, fileContentResponse{
 		Path:      absPath,
 		Name:      name,
-		Content:   content,
+		Content:   hctx.WrapUntrustedData(content),
 		Size:      size,
 		Mime:      mimeType,
 		IsBinary:  false,

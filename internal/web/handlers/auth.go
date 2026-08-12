@@ -3,11 +3,13 @@ package handlers
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"amurru/hakase/internal/auth"
+	"amurru/hakase/internal/web/middleware"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -24,10 +26,10 @@ type Router interface {
 // RegisterAuthRoutes registers auth-related API routes on the given router.
 // Unauthenticated routes: /api/login, /api/health
 // Authenticated routes (inside an auth-protected group): /api/me, /api/logout
-func RegisterAuthRoutes(r Router, jwtKey []byte, credentialsPath string) {
+func RegisterAuthRoutes(r Router, jwtKey []byte, credentialsPath string, rateLimiter *middleware.LoginRateLimiter, allowInsecureCookie bool) {
 	// Unauthenticated routes
 	r.Get("/api/health", HealthHandler())
-	r.Post("/api/login", LoginHandler(jwtKey, credentialsPath, 24*time.Hour))
+	r.Post("/api/login", LoginHandler(jwtKey, credentialsPath, 24*time.Hour, rateLimiter, allowInsecureCookie))
 
 	// Authenticated routes group
 	r.Route("/api", func(r Router) {
@@ -40,8 +42,26 @@ func RegisterAuthRoutes(r Router, jwtKey []byte, credentialsPath string) {
 // LoginHandler returns a handler for POST /api/login.
 // Accepts {username, password}, verifies via auth.VerifyPassword,
 // returns JWT in HttpOnly cookie + JSON body {username, token}.
-func LoginHandler(jwtKey []byte, credentialsPath string, tokenExpiry time.Duration) http.HandlerFunc {
+//
+// When rateLimiter is non-nil, per-IP rate limiting with exponential backoff
+// is applied. Failed attempts are tracked per IP; repeated failures increase
+// the Retry-After delay exponentially. A successful login resets the counter.
+//
+// allowInsecureCookie permits setting the session cookie without the Secure
+// flag even on non-loopback plain-HTTP connections (opt-in via
+// --insecure-cookie / auth.allow_insecure_cookie for local development).
+func LoginHandler(jwtKey []byte, credentialsPath string, tokenExpiry time.Duration, rateLimiter *middleware.LoginRateLimiter, allowInsecureCookie bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Per-IP rate limit check
+		var clientIP string
+		if rateLimiter != nil {
+			clientIP = middleware.ExtractClientIP(r)
+			if allowed, retryAfter := rateLimiter.Allow(clientIP); !allowed {
+				middleware.WriteRateLimitResponse(w, retryAfter)
+				return
+			}
+		}
+
 		creds, err := auth.LoadCredentials(credentialsPath)
 		if err != nil {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "not configured"})
@@ -58,8 +78,16 @@ func LoginHandler(jwtKey []byte, credentialsPath string, tokenExpiry time.Durati
 		}
 
 		if req.Username != creds.Username || !auth.VerifyPassword(creds, req.Password) {
+			if rateLimiter != nil {
+				rateLimiter.RecordFailure(clientIP)
+			}
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 			return
+		}
+
+		// Successful login: reset failure counter
+		if rateLimiter != nil {
+			rateLimiter.RecordSuccess(clientIP)
 		}
 
 		// Generate JWT using the same library as middleware (jwt/v5)
@@ -79,13 +107,25 @@ func LoginHandler(jwtKey []byte, credentialsPath string, tokenExpiry time.Durati
 			return
 		}
 
-		// Set HttpOnly cookie
-		// NOTE: no Secure flag - reverse proxy (nginx/Caddy) handles HTTPS termination.
+		// Set HttpOnly cookie. The Secure flag is conditional on the
+		// transport: enabled for TLS requests or when a reverse proxy
+		// forwarded the request as https (X-Forwarded-Proto). Plain HTTP
+		// keeps Secure=false only for loopback clients (local dev) or when
+		// the user opted in with --insecure-cookie / allow_insecure_cookie.
+		secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+		loopback := isLoopbackClient(r)
+		if !secure && !allowInsecureCookie {
+			secure = !loopback
+		}
+		if !secure && !loopback {
+			log.Printf("auth: WARNING: setting insecure auth cookie for non-loopback client %s; the session token will travel in cleartext", middleware.ExtractClientIP(r))
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     "hakase_token",
 			Value:    tokenStr,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 			Expires:  now.Add(tokenExpiry),
 		})
@@ -154,6 +194,18 @@ func extractToken(r *http.Request) string {
 	}
 
 	return ""
+}
+
+// isLoopbackClient reports whether the request's client IP is a loopback
+// address (127.0.0.0/8, ::1) or the hostname "localhost". Loopback clients
+// are trusted for plain-HTTP cookies during local development.
+func isLoopbackClient(r *http.Request) bool {
+	ip := middleware.ExtractClientIP(r)
+	if ip == "localhost" {
+		return true
+	}
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	return parsed != nil && parsed.IsLoopback()
 }
 
 // writeJSON writes a JSON response with the given status code.

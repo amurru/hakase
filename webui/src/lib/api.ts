@@ -34,11 +34,6 @@ export async function apiFetch<T = unknown>(
     ...((customHeaders as Record<string, string>) || {}),
   }
 
-  const token = localStorage.getItem('hakase_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-
   const res = await fetch(`${BASE_URL}${path}`, {
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -46,7 +41,6 @@ export async function apiFetch<T = unknown>(
   })
 
   if (res.status === 401) {
-    localStorage.removeItem('hakase_token')
     if (onUnauthorized) {
       onUnauthorized()
     } else {

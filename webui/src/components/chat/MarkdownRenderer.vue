@@ -18,8 +18,7 @@ const rendered = computed(() => {
   if (!props.content) return ''
   const raw = md.render(props.content)
   return DOMPurify.sanitize(raw, {
-    ADD_TAGS: ['iframe'],
-    ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder'],
+    ADD_ATTR: ['target'],
   })
 })
 </script>

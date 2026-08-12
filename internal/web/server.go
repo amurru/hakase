@@ -29,6 +29,10 @@ type Server struct {
 	// Gate dependencies (optional - set before RegisterDefaults to enable approval/clarify routes).
 	approvalGate *handlers.WebApprovalGate
 	clarifyGate  *handlers.WebClarifyGate
+
+	// allowInsecureCookie permits the session cookie without the Secure flag
+	// on non-loopback plain-HTTP connections (opt-in for local development).
+	allowInsecureCookie bool
 }
 
 // NewServer creates a new web Server with the given configuration.
@@ -60,6 +64,13 @@ func (s *Server) SetGates(approvalGate *handlers.WebApprovalGate, clarifyGate *h
 	s.clarifyGate = clarifyGate
 }
 
+// SetAllowInsecureCookie configures whether the login handler may set the
+// session cookie without the Secure flag on non-loopback plain-HTTP
+// connections. Must be called before RegisterDefaults.
+func (s *Server) SetAllowInsecureCookie(allow bool) {
+	s.allowInsecureCookie = allow
+}
+
 // Router returns the underlying chi.Router for testing or further customization.
 func (s *Server) Router() chi.Router {
 	return s.router
@@ -69,7 +80,7 @@ func (s *Server) Router() chi.Router {
 // and SPA handler. assets is the filesystem providing the frontend assets.
 // Pass nil for API-only mode (hakase serve) - the SPA catch-all is skipped.
 func (s *Server) RegisterDefaults(assets http.FileSystem) {
-	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.approvalGate, s.clarifyGate)
+	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.approvalGate, s.clarifyGate, s.allowInsecureCookie)
 }
 
 // Run starts the HTTP server on the given address and blocks until

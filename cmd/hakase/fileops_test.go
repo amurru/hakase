@@ -31,6 +31,21 @@ func runTool(t *testing.T, tl tool.Tool, args map[string]any) (map[string]any, e
 	return runnable.Run(ctx, args)
 }
 
+// unwrapData strips a single <UNTRUSTED_DATA> open/close pair,
+// returning the inner content. If the string is not wrapped, it is
+// returned unchanged. Empty strings are passed through.
+func unwrapData(s string) string {
+	if s == "" {
+		return s
+	}
+	prefix := "\n<UNTRUSTED_DATA>\n"
+	suffix := "\n</UNTRUSTED_DATA>\n"
+	if strings.HasPrefix(s, prefix) && strings.HasSuffix(s, suffix) {
+		return s[len(prefix) : len(s)-len(suffix)]
+	}
+	return s
+}
+
 // writeTempFile writes content to <dir>/<name> and returns the absolute path.
 func writeTempFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
@@ -52,7 +67,7 @@ func TestReadFileToolFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
-	if got := out["content"]; got != "line1\nline2\nline3\nline4\nline5" {
+	if got := unwrapData(out["content"].(string)); got != "line1\nline2\nline3\nline4\nline5" {
 		t.Errorf("content: expected all lines, got %q", got)
 	}
 	if got := out["lines"]; got != float64(5) {
@@ -77,7 +92,7 @@ func TestReadFileToolRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
-	if got := out["content"]; got != "line2\nline3" {
+	if got := unwrapData(out["content"].(string)); got != "line2\nline3" {
 		t.Errorf("content: expected lines 2-3, got %q", got)
 	}
 	if got := out["offset"]; got != float64(2) {
@@ -581,7 +596,7 @@ func TestSearchFilesSandboxConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read_file inside root: expected success, got %v", err)
 	}
-	if got := out["content"]; got != "hello" {
+	if got := unwrapData(out["content"].(string)); got != "hello" {
 		t.Errorf("content: expected %q, got %v", "hello", got)
 	}
 }

@@ -144,48 +144,7 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		Name:        "read_file",
 		Description: "Reads the contents of a file, optionally restricted to a line range (offset/limit) for large files.",
 	}, func(ctx agent.Context, input ReadFileInput) (ReadFileOutput, error) {
-		path, err := taskResolve(input.Path, false, sandboxRoot)
-		if err != nil {
-			return ReadFileOutput{}, err
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return ReadFileOutput{}, fmt.Errorf("failed to read file %q: %w", path, err)
-		}
-		lines := splitLines(string(data))
-		total := len(lines)
-
-		offset := input.Offset
-		if offset < 1 {
-			offset = 1
-		}
-		limit := input.Limit
-		if limit < 1 || limit > 2000 {
-			limit = 2000
-		}
-		if offset > total {
-			offset = total + 1
-		}
-		end := offset + limit - 1
-		if end > total {
-			end = total
-		}
-
-		content := ""
-		if offset <= total {
-			content = strings.Join(lines[offset-1:end], "\n")
-		}
-		if log != nil {
-			log(fmt.Sprintf("📖 [fileops] Read %s (%d lines total)", path, total))
-		}
-		return ReadFileOutput{
-			Path:      path,
-			Content:   content,
-			Lines:     total,
-			Offset:    offset,
-			Truncated: end < total,
-			Context:   safeSubdirHint(filepath.Dir(path)),
-		}, nil
+		return readFileContent(input, sandboxRoot, log)
 	})
 	if err != nil {
 		return nil, err
@@ -457,6 +416,19 @@ func includeFile(name string, includes []string) bool {
 	return false
 }
 
+// wrapUntrustedData calls the package-level WrapUntrustedDataFunc when set,
+// returning the input unchanged (no-op) otherwise. Empty strings are passed
+// through without wrapping to avoid model-context noise.
+func wrapUntrustedData(s string) string {
+	if s == "" {
+		return s
+	}
+	if WrapUntrustedDataFunc != nil {
+		return WrapUntrustedDataFunc(s)
+	}
+	return s
+}
+
 // searchFile scans a single file with the compiled regex and returns matches
 // shaped according to the output mode. Binary files and unreadable files
 // produce no matches.
@@ -490,9 +462,57 @@ func searchFile(path string, re *regexp.Regexp, mode string) []SearchMatch {
 			line++
 			text := sc.Text()
 			if re.MatchString(text) {
-				out = append(out, SearchMatch{Path: path, Line: line, Content: text})
+				out = append(out, SearchMatch{Path: path, Line: line, Content: wrapUntrustedData(text)})
 			}
 		}
 		return out
 	}
+}
+
+// readFileContent reads a file and returns ReadFileOutput with the content
+// wrapped via wrapUntrustedData. It is a package-level function so tests can
+// invoke the read logic directly without going through the ADK tool interface.
+func readFileContent(input ReadFileInput, sandboxRoot string, log interfaces.LogFunc) (ReadFileOutput, error) {
+	path, err := taskResolve(input.Path, false, sandboxRoot)
+	if err != nil {
+		return ReadFileOutput{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ReadFileOutput{}, fmt.Errorf("failed to read file %q: %w", path, err)
+	}
+	lines := splitLines(string(data))
+	total := len(lines)
+
+	offset := input.Offset
+	if offset < 1 {
+		offset = 1
+	}
+	limit := input.Limit
+	if limit < 1 || limit > 2000 {
+		limit = 2000
+	}
+	if offset > total {
+		offset = total + 1
+	}
+	end := offset + limit - 1
+	if end > total {
+		end = total
+	}
+
+	content := ""
+	if offset <= total {
+		content = strings.Join(lines[offset-1:end], "\n")
+	}
+	if log != nil {
+		log(fmt.Sprintf("📖 [fileops] Read %s (%d lines total)", path, total))
+	}
+	return ReadFileOutput{
+		Path:      path,
+		Content:   wrapUntrustedData(content),
+		Lines:     total,
+		Offset:    offset,
+		Truncated: end < total,
+		Context:   safeSubdirHint(filepath.Dir(path)),
+	}, nil
 }

@@ -304,14 +304,16 @@ func TestMessageToContentWithAttachments(t *testing.T) {
 	if len(c.Parts) != 3 {
 		t.Fatalf("parts = %d, want 3", len(c.Parts))
 	}
-	if c.Parts[0].Text != "see" {
-		t.Fatalf("parts[0] = %q", c.Parts[0].Text)
+	wantSee := hctx.WrapUntrustedData("see")
+	if c.Parts[0].Text != wantSee {
+		t.Fatalf("parts[0] = %q, want wrapped %q", c.Parts[0].Text, wantSee)
 	}
 	if c.Parts[1].InlineData == nil || string(c.Parts[1].InlineData.Data) != "pngbytes" {
 		t.Fatalf("image attachment must rebuild as inline data, got %+v", c.Parts[1])
 	}
-	if c.Parts[2].Text != "file text" {
-		t.Fatalf("text attachment must rebuild as text part, got %q", c.Parts[2].Text)
+	wantFileText := hctx.WrapUntrustedData("file text")
+	if c.Parts[2].Text != wantFileText {
+		t.Fatalf("text attachment must rebuild as text part, got %q, want wrapped %q", c.Parts[2].Text, wantFileText)
 	}
 }
 
@@ -321,8 +323,9 @@ func TestMessageToContentSkipsMissingAttachmentFile(t *testing.T) {
 		Content:     "hi",
 		Attachments: []session.AttachmentRef{{Name: "gone.png", Path: filepath.Join(t.TempDir(), "gone.png"), MIME: "image/png"}},
 	})
-	if len(c.Parts) != 1 || c.Parts[0].Text != "hi" {
-		t.Fatalf("missing attachment file must be skipped, got %+v", c.Parts)
+	wantHi := hctx.WrapUntrustedData("hi")
+	if len(c.Parts) != 1 || c.Parts[0].Text != wantHi {
+		t.Fatalf("missing attachment file must be skipped, got %+v, want wrapped %q", c.Parts, wantHi)
 	}
 }
 

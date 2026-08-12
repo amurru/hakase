@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -71,6 +72,23 @@ var contextThreatPatterns = []string{
 	"<system prompt>",
 	"</system prompt>",
 }
+
+// contextThreatRegexps are regex patterns that catch obfuscated prompt-injection
+// variants (extra whitespace, filler words, alternative phrasings) that the
+// fixed-phrase substring list would miss. Matching runs against the
+// whitespace-normalized lowercase input.
+var contextThreatRegexps = []*regexp.Regexp{
+	regexp.MustCompile(`ignore\s+.{0,40}instructions?`),
+	regexp.MustCompile(`disregard\s+.{0,40}(directive|instruction|prompt)`),
+	regexp.MustCompile(`forget\s+.{0,40}(previous|prior|all).{0,40}(instruction|directive|prompt|rule)`),
+	regexp.MustCompile(`you\s+are\s+now\s+(an?\s+)?(unrestricted|different|new)\s+(model|assistant|ai)`),
+	regexp.MustCompile(`<\|im_start\|>(user|system)`),
+	regexp.MustCompile(`system:\s*new\s+instructions?\s+follow`),
+}
+
+// whitespaceRun is used to collapse all whitespace runs into a single space
+// during normalization.
+var whitespaceRun = regexp.MustCompile(`\s+`)
 
 // InstructionFile is a single discovered context file.
 type InstructionFile struct {
@@ -243,14 +261,22 @@ func readContextFile(p string, remote bool, log interfaces.LogFunc) string {
 	return string(b)
 }
 
-// ScanContextForInjection checks content against contextThreatPatterns.
+// ScanContextForInjection checks content against contextThreatPatterns and
+// contextThreatRegexps. Content is normalized (lowercased, whitespace collapsed)
+// before matching to catch obfuscated variants with extra spaces or newlines.
 // It returns (false, matchedPattern) when the content looks like a prompt
 // injection attempt, (true, "") otherwise.
 func ScanContextForInjection(content string) (bool, string) {
 	lower := strings.ToLower(content)
+	normalized := whitespaceRun.ReplaceAllString(lower, " ")
 	for _, pat := range contextThreatPatterns {
-		if strings.Contains(lower, pat) {
+		if strings.Contains(normalized, pat) {
 			return false, pat
+		}
+	}
+	for _, re := range contextThreatRegexps {
+		if loc := re.FindStringIndex(normalized); loc != nil {
+			return false, normalized[loc[0]:loc[1]]
 		}
 	}
 	return true, ""
@@ -266,6 +292,19 @@ func SanitizeContextContent(content string) string {
 		return fmt.Sprintf("[BLOCKED: potential prompt injection detected (%s); content omitted]", reason)
 	}
 	return content
+}
+
+// WrapUntrustedData frames the given string in <UNTRUSTED_DATA> tags after
+// sanitizing it through SanitizeContextContent, so untrusted user-supplied
+// content that enters the model context is clearly delimited. Content that
+// already contains <UNTRUSTED_DATA> is returned unchanged (double-wrap
+// prevention) after sanitization.
+func WrapUntrustedData(s string) string {
+	if strings.Contains(s, "<UNTRUSTED_DATA>") {
+		return SanitizeContextContent(s)
+	}
+	sanitized := SanitizeContextContent(s)
+	return "\n<UNTRUSTED_DATA>\n" + sanitized + "\n</UNTRUSTED_DATA>\n"
 }
 
 // RenderInstructionBlock renders the discovered context files into the

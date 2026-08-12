@@ -17,6 +17,7 @@ package vision
 
 import (
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/util"
@@ -317,7 +318,9 @@ func VisionHandler(ctx agent.Context, input VisionInput) (VisionOutput, error) {
 		if err != nil {
 			return VisionOutput{}, fmt.Errorf("vision model: %w", err)
 		}
-		return VisionOutput{Success: true, Description: desc}, nil
+		// The vision-model description is text transcribed from image pixels and
+		// may embed instructions; frame it as untrusted data (PROMPT_SECURITY 3.5).
+		return VisionOutput{Success: true, Description: hctx.WrapUntrustedData(desc)}, nil
 
 	default: // VisionUnsupported
 		return VisionOutput{
@@ -489,7 +492,7 @@ func DescribeOrWarnImage(ctx gocontext.Context, data []byte, mime, question stri
 				"[image: %s - the vision model could not describe it: %v. Check vision_model/vision_provider in config.json.]",
 				mime, err)
 		} else {
-			text = "[Image description from the vision model]:\n" + desc
+			text = hctx.WrapUntrustedData("[Image description from the vision model]:\n" + desc)
 		}
 	} else {
 		text = fmt.Sprintf(

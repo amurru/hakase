@@ -14,6 +14,7 @@ import (
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
@@ -52,6 +53,9 @@ func runTUI() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+
+	// Init sandbox before any file or exec operations.
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 
 	var program *tea.Program
 
