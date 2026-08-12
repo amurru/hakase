@@ -1,0 +1,350 @@
+package sandbox
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"amurru/hakase/internal/interfaces"
+
+	"github.com/cyphar/filepath-securejoin"
+)
+
+// SandboxMode selects the sandboxing strategy.
+type SandboxMode string
+
+const (
+	SandboxModeOff        SandboxMode = "off"
+	SandboxModePaths      SandboxMode = "paths"
+	SandboxModeBubblewrap SandboxMode = "bubblewrap"
+	SandboxModeLandlock   SandboxMode = "landlock"
+)
+
+// SandboxConfig is the resolved, normalized sandbox configuration used
+// throughout the runtime. Roots are absolute, cleaned, and symlink-evaluated.
+// A nil *SandboxConfig means confinement is disabled.
+type SandboxConfig struct {
+	Mode            SandboxMode
+	WorkspaceRoots  []string
+	ReadRoots       []string
+	DenyRoots       []string
+	AllowNetwork    bool
+	AllowPipInstall bool
+	Permissions     map[string]string
+	AllowedCommands []string
+	DenyPatterns    []string
+	RiskThreshold   string
+	AllowFallback   bool
+}
+
+// SandboxJSON is the on-disk JSON shape for the "sandbox" config block.
+type SandboxJSON struct {
+	Mode            string            `json:"mode,omitempty"`
+	WorkspaceRoots  []string          `json:"workspace_roots,omitempty"`
+	ReadRoots       []string          `json:"read_roots,omitempty"`
+	DenyRoots       []string          `json:"deny_roots,omitempty"`
+	AllowNetwork    bool              `json:"allow_network,omitempty"`
+	AllowPipInstall bool              `json:"allow_pip_install,omitempty"`
+	Permissions     map[string]string `json:"permissions,omitempty"`
+	AllowedCommands []string          `json:"allowed_commands,omitempty"`
+	DenyPatterns    []string          `json:"deny_patterns,omitempty"`
+	RiskThreshold   string            `json:"risk_threshold,omitempty"`
+	AllowFallback   bool              `json:"allow_fallback,omitempty"`
+}
+
+// CurrentSandbox is the package-level sandbox configuration consulted by
+// buildExecCommand and file-ops tools. It is nil when sandboxing is disabled.
+// Set at startup by the main package.
+var CurrentSandbox *SandboxConfig
+
+// LoadSandboxConfig converts a *SandboxJSON into a normalized *SandboxConfig,
+// applying defaults and resolving roots.
+func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
+	if s == nil {
+		s = &SandboxJSON{}
+	}
+	sb := &SandboxConfig{
+		Mode:            SandboxMode(s.Mode),
+		WorkspaceRoots:  append([]string(nil), s.WorkspaceRoots...),
+		ReadRoots:       append([]string(nil), s.ReadRoots...),
+		DenyRoots:       append([]string(nil), s.DenyRoots...),
+		AllowNetwork:    s.AllowNetwork,
+		AllowPipInstall: s.AllowPipInstall,
+		Permissions:     s.Permissions,
+		AllowedCommands: append([]string(nil), s.AllowedCommands...),
+		DenyPatterns:    append([]string(nil), s.DenyPatterns...),
+		RiskThreshold:   s.RiskThreshold,
+		AllowFallback:   s.AllowFallback,
+	}
+
+	switch sb.Mode {
+	case SandboxModeOff, SandboxModePaths, SandboxModeBubblewrap, SandboxModeLandlock:
+	default:
+		sb.Mode = SandboxModePaths
+	}
+
+	if len(sb.WorkspaceRoots) == 0 {
+		sb.WorkspaceRoots = []string{"."}
+	}
+	sb.WorkspaceRoots = normalizeRoots(sb.WorkspaceRoots)
+
+	if len(sb.ReadRoots) == 0 {
+		sb.ReadRoots = append([]string(nil), sb.WorkspaceRoots...)
+	} else {
+		sb.ReadRoots = normalizeRoots(sb.ReadRoots)
+	}
+
+	sb.DenyRoots = normalizeRoots(sb.DenyRoots)
+
+	if sb.Permissions == nil {
+		sb.Permissions = map[string]string{
+			"system_exec":        "ask",
+			"python_interpreter": "allow",
+			"write_file":         "allow",
+		}
+	}
+
+	return sb
+}
+
+// normalizeRoots cleans, evaluates symlinks, and de-duplicates a list of root paths.
+func normalizeRoots(roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		abs, err := filepath.Abs(expandHome(r))
+		if err != nil {
+			continue
+		}
+		cleaned := filepath.Clean(abs)
+		resolved, err := filepath.EvalSymlinks(cleaned)
+		if err != nil {
+			resolved = cleaned
+		}
+		if _, dup := seen[resolved]; dup {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		out = append(out, resolved)
+	}
+	return out
+}
+
+// expandHome replaces a leading "~" with the user's home directory.
+func expandHome(p string) string {
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~"+string(filepath.Separator)) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
+// within reports whether target is contained under root.
+func within(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	if rel == ".." {
+		return false
+	}
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// ResolveScopedPath is the core path-confinement helper. When the sandbox
+// is off (sb == nil or Mode == off) it returns filepath.Abs(path).
+func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, error) {
+	if sb == nil || sb.Mode == SandboxModeOff {
+		return filepath.Abs(path)
+	}
+
+	p := expandHome(path)
+	p = filepath.Clean(p)
+	if !filepath.IsAbs(p) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolveScopedPath: cwd: %w", err)
+		}
+		p = filepath.Join(cwd, p)
+	}
+	p = filepath.Clean(p)
+
+	for _, d := range sb.DenyRoots {
+		if within(d, p) {
+			return "", fmt.Errorf("path %q is in a denied root", path)
+		}
+	}
+
+	roots := sb.WorkspaceRoots
+	if !write {
+		roots = sb.ReadRoots
+	}
+	for _, root := range roots {
+		if !within(root, p) {
+			continue
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			continue
+		}
+		joined, err := securejoin.SecureJoin(root, rel)
+		if err != nil {
+			continue
+		}
+		if resolved, rerr := filepath.EvalSymlinks(joined); rerr == nil {
+			if !within(root, resolved) {
+				return "", fmt.Errorf("path %q escapes workspace root after symlink resolution", path)
+			}
+		} else if resolved, rerr := filepath.EvalSymlinks(p); rerr == nil {
+			if !within(root, resolved) {
+				return "", fmt.Errorf("path %q escapes workspace root after symlink resolution", path)
+			}
+		}
+		return joined, nil
+	}
+
+	if write {
+		return "", fmt.Errorf("path %q is outside approved workspace", path)
+	}
+	return "", fmt.Errorf("path %q is outside approved read roots", path)
+}
+
+// WorkspaceRoot returns the first workspace root, used by other agents to
+// pin cmd.Dir. Returns "" when sb is nil or the sandbox is off.
+func (sb *SandboxConfig) WorkspaceRoot() string {
+	if sb == nil || sb.Mode == SandboxModeOff {
+		return ""
+	}
+	if len(sb.WorkspaceRoots) == 0 {
+		return ""
+	}
+	return sb.WorkspaceRoots[0]
+}
+
+// Permitted returns the permission action for a tool name and whether it
+// was explicitly set. ok is false when the tool is not in the Permissions map.
+func (sb *SandboxConfig) Permitted(tool string) (action string, ok bool) {
+	if sb == nil || sb.Permissions == nil {
+		return "", false
+	}
+	action, ok = sb.Permissions[tool]
+	return action, ok
+}
+
+// ---------------------------------------------------------------------------
+// Cross-package function hooks set by the main package at startup.
+// These bridge the sandbox package to root-level gate, approval, audit,
+// and context functions that have not yet been migrated to internal packages.
+// ---------------------------------------------------------------------------
+
+// CommandAuditEntry records one command-execution decision.
+type CommandAuditEntry struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Tool        string    `json:"tool"`
+	Command     string    `json:"command"`
+	Args        []string  `json:"args"`
+	CWD         string    `json:"cwd"`
+	SandboxMode string    `json:"sandbox_mode"`
+	Decision    string    `json:"decision"`
+	Risk        string    `json:"risk"`
+	Reason      string    `json:"reason"`
+	DurationMs  int64     `json:"duration_ms"`
+	ExitCode    int        `json:"exit_code"`
+}
+
+// GateDecision is the outcome of evaluating one command.
+type GateDecision struct {
+	Action GateAction
+	Risk   CommandRisk
+	Reason string
+}
+
+// GateAction is the policy outcome.
+type GateAction string
+
+const (
+	ActionAllow GateAction = "allow"
+	ActionAsk   GateAction = "ask"
+	ActionDeny  GateAction = "deny"
+)
+
+// CommandRisk classifies a parsed command's danger level.
+type CommandRisk int
+
+const (
+	RiskLow CommandRisk = iota
+	RiskMedium
+	RiskHigh
+	RiskUnknown
+)
+
+func (r CommandRisk) String() string {
+	switch r {
+	case RiskLow:
+		return "low"
+	case RiskMedium:
+		return "medium"
+	case RiskHigh:
+		return "high"
+	case RiskUnknown:
+		return "unknown"
+	default:
+		return "unknown"
+	}
+}
+
+// EvaluateCommandFunc is set by main to gate-evaluate a system command.
+// When nil, gate evaluation is skipped (fail-open; tests with nil sandbox).
+var EvaluateCommandFunc func(sb *SandboxConfig, command string, args []string) GateDecision
+
+// AuditCommandFunc is set by main to audit-log a command execution.
+// When nil, auditing is no-op.
+var AuditCommandFunc func(entry CommandAuditEntry)
+
+// ApproveFunc is set by main to ask the user for approval.
+// When nil, approval is denied (fail-closed).
+var ApproveFunc func(req interfaces.ApprovalRequest) (bool, error)
+
+// ApprovalExpiryFunc is set by main to return the configured approval expiry.
+// When nil, defaults to 60s.
+var ApprovalExpiryFunc func() time.Duration
+
+// SubdirContextHintFunc is set by main to return a subdirectory context hint.
+// When nil, returns "" (no-op).
+var SubdirContextHintFunc func(dir string) string
+
+// WrapUntrustedDataFunc is set by main to wrap untrusted content (file reads,
+// search matches) in <UNTRUSTED_DATA> tags after injection scanning.
+// When nil, returns the input unchanged (no-op).
+var WrapUntrustedDataFunc func(s string) string
+
+// fileOpsInfo mirrors the root FileOpsSession type for RootDir access.
+type fileOpsInfo struct {
+	RootDir string
+}
+
+// safeSubdirHint calls SubdirContextHintFunc when non-nil, returning empty otherwise.
+func safeSubdirHint(dir string) string {
+	if SubdirContextHintFunc != nil {
+		return SubdirContextHintFunc(dir)
+	}
+	return ""
+}

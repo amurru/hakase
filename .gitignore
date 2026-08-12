@@ -70,3 +70,12 @@ sessions/
 
 # dev-mode structured debug logs
 logs/
+
+# generated runtime artifacts
+outputs/
+downloads/
+.venv/
+
+# frontend build output (mirrored by Makefile for embedding)
+webui/dist/
+internal/web/dist/
