@@ -1,10 +1,10 @@
 package agent
 
 import (
-	hctx "amurru/hakase/internal/context"
-	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/env"
+	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/util"
@@ -83,14 +83,20 @@ const HakaseSystemInstruction = `You are a high-autonomy, general-purpose resear
 - If search results are truncated, note it and re-search with narrower queries.
 ` + UntrustedContentPolicy
 
+// This will be used to optimize TimeReminder caching
+var frozenTimeReminder string
+
 // buildTimeReminder returns a system-prompt block that grounds the agent in
 // the current wall-clock time on the user's machine. LLM training cutoffs go
 // stale, so injecting "now" tells the model to reason about recency correctly
 // and to prefer live search results over outdated training data.
 func buildTimeReminder() string {
+	if frozenTimeReminder != "" {
+		return frozenTimeReminder
+	}
 	now := time.Now()
 	zoneName, _ := now.Zone()
-	return fmt.Sprintf(`
+	frozenTimeReminder = fmt.Sprintf(`
 ### SYSTEM REMINDER - CURRENT DATE & TIME:
 The current date and time on the user's machine is %s (%s, UTC offset %s).
 
@@ -101,6 +107,7 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 		zoneName,
 		now.Format("-07:00"),
 	)
+	return frozenTimeReminder
 }
 
 const GeneralPurposeSystemInstruction = `You are a general-purpose agent with file operations capabilities.
@@ -153,7 +160,6 @@ When writing code intended to be saved as a skill via 'save_skill':
 
 // LogFunc is a thread-safe callback function to send status logs to the TUI
 type LogFunc = interfaces.LogFunc
-
 
 type PythonExecInput struct {
 	Code string `json:"code" doc:"Python code snippet to execute"`
@@ -281,7 +287,10 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			if root != "" {
 				tmpDir = filepath.Join(root, ".hakase-tmp")
 				if err := os.MkdirAll(tmpDir, 0755); err != nil {
-					return PythonExecOutput{}, fmt.Errorf("failed to create sandbox temp dir: %w", err)
+					return PythonExecOutput{}, fmt.Errorf(
+						"failed to create sandbox temp dir: %w",
+						err,
+					)
 				}
 				tmpIsSandbox = true
 			}
@@ -490,14 +499,23 @@ func createDownloadTool() (tool.Tool, error) {
 		// propagates to the model, which can correct its request.
 		var filePath string
 		if deps.SandboxConfig != nil && deps.SandboxConfig.Mode != sandbox.SandboxModeOff {
-			resolved, err := deps.SandboxConfig.ResolveScopedPath(filepath.Join("./downloads", filename), true)
+			resolved, err := deps.SandboxConfig.ResolveScopedPath(
+				filepath.Join("./downloads", filename),
+				true,
+			)
 			if err != nil {
-				return FileDownloadOutput{}, fmt.Errorf("download path outside approved workspace: %w", err)
+				return FileDownloadOutput{}, fmt.Errorf(
+					"download path outside approved workspace: %w",
+					err,
+				)
 			}
 			filePath = resolved
 			// Ensure the resolved downloads directory exists.
 			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-				return FileDownloadOutput{}, fmt.Errorf("failed to create downloads folder: %w", err)
+				return FileDownloadOutput{}, fmt.Errorf(
+					"failed to create downloads folder: %w",
+					err,
+				)
 			}
 		} else {
 			filePath = filepath.Join(outDir, filename)
@@ -567,8 +585,6 @@ func notifyTaskBoard(action string, task TaskMeta) {
 		}
 	}
 }
-
-
 
 // Task management types are defined in task_registry.go.
 
@@ -656,7 +672,7 @@ func createSaveSkillTool() (tool.Tool, error) {
 type ListSkillsInput struct{}
 
 type ListSkillsOutput struct {
-	Skills         []skill.SkillMeta         `json:"skills" doc:"List of all saved skills currently available in the registry"`
+	Skills         []skill.SkillMeta         `json:"skills"          doc:"List of all saved skills currently available in the registry"`
 	MarkdownSkills []skill.MarkdownSkillMeta `json:"markdown_skills" doc:"List of discovered markdown skills"`
 }
 
@@ -720,7 +736,12 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 	for _, s := range registry.Skills {
 		if mdNames[s.Name] {
 			if log != nil {
-				log(fmt.Sprintf("[skills] Skipping Python skill '%s' in prompt: collides with markdown skill", s.Name))
+				log(
+					fmt.Sprintf(
+						"[skills] Skipping Python skill '%s' in prompt: collides with markdown skill",
+						s.Name,
+					),
+				)
 			}
 			continue
 		}
@@ -736,22 +757,22 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 	for _, s := range pythonSkills {
 		sb.WriteString(
 			fmt.Sprintf(
-			"- Skill: '%s'\n  Description: %s\n  Import Usage: `from skills.%s import ...` or `import %s`\n\n",
-			s.Name,
-			hctx.WrapUntrustedData(s.Description),
-			s.Name,
-			s.Name,
+				"- Skill: '%s'\n  Description: %s\n  Import Usage: `from skills.%s import ...` or `import %s`\n\n",
+				s.Name,
+				hctx.WrapUntrustedData(s.Description),
+				s.Name,
+				s.Name,
 			),
 		)
 	}
 	for _, s := range mdSkills {
 		sb.WriteString(
 			fmt.Sprintf(
-			"- Skill: '%s' (markdown)\n  Description: %s\n  Location: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
-			s.Frontmatter.Name,
-			hctx.WrapUntrustedData(s.Frontmatter.Description),
-			s.Source,
-			s.Frontmatter.Name,
+				"- Skill: '%s' (markdown)\n  Description: %s\n  Location: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
+				s.Frontmatter.Name,
+				hctx.WrapUntrustedData(s.Frontmatter.Description),
+				s.Source,
+				s.Frontmatter.Name,
 			),
 		)
 	}
@@ -776,7 +797,12 @@ type LoadMarkdownSkillOutput struct {
 // and scripts of a markdown skill (SKILL.md) by name. The passed skills are
 // indexed at construction time; an unknown name triggers one fresh
 // re-discovery scan before failing.
-func CreateLoadMarkdownSkillTool(skills []skill.MarkdownSkill, cwd string, extraDirs []string, log LogFunc) (tool.Tool, error) {
+func CreateLoadMarkdownSkillTool(
+	skills []skill.MarkdownSkill,
+	cwd string,
+	extraDirs []string,
+	log LogFunc,
+) (tool.Tool, error) {
 	index := make(map[string]skill.MarkdownSkill, len(skills))
 	for _, s := range skills {
 		index[s.Frontmatter.Name] = s
@@ -1132,7 +1158,10 @@ func ArchiveTask(id string) (TaskMeta, error) {
 
 	task := registry.Tasks[idx]
 	if task.Status != TaskStatusCompleted {
-		return TaskMeta{}, fmt.Errorf("only completed tasks can be archived (status: %s)", task.Status)
+		return TaskMeta{}, fmt.Errorf(
+			"only completed tasks can be archived (status: %s)",
+			task.Status,
+		)
 	}
 
 	task.Status = TaskStatusArchived
@@ -1202,7 +1231,10 @@ func writeTaskCheckpoint(registry *TaskRegistry) error {
 		return err
 	}
 
-	checkpointFile := filepath.Join(checkpointDir, fmt.Sprintf("checkpoint-%s.json", time.Now().Format("2006-01-02T15-04-05.000Z")))
+	checkpointFile := filepath.Join(
+		checkpointDir,
+		fmt.Sprintf("checkpoint-%s.json", time.Now().Format("2006-01-02T15-04-05.000Z")),
+	)
 	return os.WriteFile(checkpointFile, checkpointBytes, 0644)
 }
 
@@ -1235,7 +1267,14 @@ func updateTaskTool(log LogFunc) (tool.Tool, error) {
 			return UpdateTaskOutput{}, err
 		}
 		if log != nil {
-			log(fmt.Sprintf("📋 [tasks] Updated task %s: %s (status: %s)", task.ID, task.Title, task.Status))
+			log(
+				fmt.Sprintf(
+					"📋 [tasks] Updated task %s: %s (status: %s)",
+					task.ID,
+					task.Title,
+					task.Status,
+				),
+			)
 		}
 		notifyTaskBoard("updated", task)
 		return UpdateTaskOutput{Task: task}, nil
@@ -1407,7 +1446,11 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// feeds the compaction reserve in context.go via contextBlockTokens.
 	cwd, _ := os.Getwd()
 	instructionFiles := hctx.DiscoveredInstructionFiles(cwd, cfg, log)
-	ctxBlock := hctx.RenderInstructionBlock(instructionFiles, cfg.Instruction, cfg.ContextFiles.MaxChars)
+	ctxBlock := hctx.RenderInstructionBlock(
+		instructionFiles,
+		cfg.Instruction,
+		cfg.ContextFiles.MaxChars,
+	)
 	hctx.ContextBlockTokens = util.EstimateTokens(ctxBlock)
 	// Record session-scoped state for progressive subdirectory context hints
 	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
@@ -1542,14 +1585,25 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 
 	researcherAgent, _ := llmagent.New(llmagent.Config{
-		Name:                  "web_researcher",
-		Description:           "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction:           HakaseSystemInstruction + ContextBlockFor("web_researcher", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder() + ContextBlockFor("web_researcher", envBlock, cfg.SystemEnv.ApplyTo),
+		Name:        "web_researcher",
+		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
+		Instruction: HakaseSystemInstruction + ContextBlockFor(
+			"web_researcher",
+			ctxBlock,
+			cfg.ContextFiles.ApplyTo,
+		) + "\n\n" + buildTimeReminder() + ContextBlockFor(
+			"web_researcher",
+			envBlock,
+			cfg.SystemEnv.ApplyTo,
+		),
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              researcherToolsets,
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, ToolResultGuard},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			vision.VisionInjectionCallback,
+			ToolResultGuard,
+		},
 	})
 
 	// Code Inpterpreter agent/ data analyst
@@ -1601,11 +1655,19 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
 		Description: "Specialist agent for executing Python code, data analysis, parsing JSON/CSV, and managing learned skills.",
-		Instruction: CodeInterpreterSystemInstruction + ContextBlockFor("code_interpreter", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + installedSkills + `
+		Instruction: CodeInterpreterSystemInstruction + ContextBlockFor(
+			"code_interpreter",
+			ctxBlock,
+			cfg.ContextFiles.ApplyTo,
+		) + "\n\n" + installedSkills + `
 ### SKILL REUSE & EVOLUTION RULES:
 1. REUSE FIRST: Check the "AVAILABLE PRE-LEARNED SKILLS" list above before writing code. If a skill exists that can solve or assist in the task, write a Python script that imports and calls it!
 2. SAVE NOVEL SKILLS: If you solve a new problem with fresh code, test it with python_interpreter, then call save_skill to store it for future reuse.
-3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.` + "\n\n" + buildTimeReminder() + ContextBlockFor("code_interpreter", envBlock, cfg.SystemEnv.ApplyTo),
+3. DO NOT DUPLICATE: Never save a skill with a functionality that is already covered by an installed skill.` + "\n\n" + buildTimeReminder() + ContextBlockFor(
+			"code_interpreter",
+			envBlock,
+			cfg.SystemEnv.ApplyTo,
+		),
 		Model: model,
 		Tools: []tool.Tool{
 			pythonTool,
@@ -1615,7 +1677,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			visionTool,
 		}, // 👈 Attached skill tools here!
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, ToolResultGuard},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			vision.VisionInjectionCallback,
+			ToolResultGuard,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -1629,13 +1694,24 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
-		Name:                  "general_purpose",
-		Description:           "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
-		Instruction:           GeneralPurposeSystemInstruction + ContextBlockFor("general_purpose", ctxBlock, cfg.ContextFiles.ApplyTo) + "\n\n" + buildTimeReminder() + ContextBlockFor("general_purpose", envBlock, cfg.SystemEnv.ApplyTo),
+		Name:        "general_purpose",
+		Description: "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
+		Instruction: GeneralPurposeSystemInstruction + ContextBlockFor(
+			"general_purpose",
+			ctxBlock,
+			cfg.ContextFiles.ApplyTo,
+		) + "\n\n" + buildTimeReminder() + ContextBlockFor(
+			"general_purpose",
+			envBlock,
+			cfg.SystemEnv.ApplyTo,
+		),
 		Model:                 model,
 		Tools:                 append(fileOpsTools, visionTool),
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, ToolResultGuard},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			vision.VisionInjectionCallback,
+			ToolResultGuard,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -1701,9 +1777,19 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	deps.HistoryBuilder = historyBuilder
 
 	rootAgent, err := llmagent.New(llmagent.Config{
-		Name:                  "orchestrator",
-		Description:           "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction:           buildOrchestratorInstruction(installedSkills) + ContextBlockFor("orchestrator", ctxBlock, cfg.ContextFiles.ApplyTo) + ContextBlockFor("orchestrator", envBlock, cfg.SystemEnv.ApplyTo),
+		Name:        "orchestrator",
+		Description: "Main orchestrator agent that delegates research and analysis tasks.",
+		Instruction: buildOrchestratorInstruction(
+			installedSkills,
+		) + ContextBlockFor(
+			"orchestrator",
+			ctxBlock,
+			cfg.ContextFiles.ApplyTo,
+		) + ContextBlockFor(
+			"orchestrator",
+			envBlock,
+			cfg.SystemEnv.ApplyTo,
+		),
 		Model:                 model,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
