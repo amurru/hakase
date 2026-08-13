@@ -186,47 +186,67 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 	}()
 
 	runCtx := ctx
-	for ev, err := range api.runner.Run(runCtx, "user-1", hakasesession.GenerateTaskID(), content, adkagent.RunConfig{}) {
-		if err != nil {
-			log.Printf("chat: agent error for session %s: %v", sessionID, err)
-			api.bridge.SendLog(sessionID, fmt.Sprintf("Error: %v", err))
-			break
-		}
-		if ev == nil {
-			continue
-		}
-		// Send usage update.
-		if ev.UsageMetadata != nil {
-			lastUsage = ev.UsageMetadata
-			tokens := int(ev.UsageMetadata.TotalTokenCount)
-			if tokens <= 0 {
-				tokens = int(ev.UsageMetadata.PromptTokenCount + ev.UsageMetadata.CandidatesTokenCount)
+	msg := content
+outer:
+	for attempt := 0; ; attempt++ {
+		var parseErr error
+		for ev, err := range api.runner.Run(runCtx, "user-1", hakasesession.GenerateTaskID(), msg, adkagent.RunConfig{}) {
+			if err != nil {
+				// Malformed tool-call JSON: re-enter the runner with a
+				// corrective user message instead of aborting the run. This
+				// mirrors internal/tui/ui.go:runAgentTask and
+				// internal/agent/delegate.go so the web path survives the
+				// same provider hiccup.
+				if hakaseagent.IsToolCallJSONErr(err) && attempt < hakaseagent.MaxToolCallRepairAttempts {
+					parseErr = err
+					break
+				}
+				log.Printf("chat: agent error for session %s: %v", sessionID, err)
+				api.bridge.SendLog(sessionID, fmt.Sprintf("Error: %v", err))
+				break outer
 			}
-			api.bridge.SendUsage(sessionID, tokens, 0)
-		}
-		if ev.Content != nil {
-			for _, part := range ev.Content.Parts {
-				if part.Text != "" {
-					if part.Thought {
-						thinkBuf.WriteString(part.Text)
-						api.bridge.SendStreamContent(sessionID, "", part.Text)
-					} else {
-						contentBuf.WriteString(part.Text)
-						api.bridge.SendStreamContent(sessionID, part.Text, "")
+			if ev == nil {
+				continue
+			}
+			// Send usage update.
+			if ev.UsageMetadata != nil {
+				lastUsage = ev.UsageMetadata
+				tokens := int(ev.UsageMetadata.TotalTokenCount)
+				if tokens <= 0 {
+					tokens = int(ev.UsageMetadata.PromptTokenCount + ev.UsageMetadata.CandidatesTokenCount)
+				}
+				api.bridge.SendUsage(sessionID, tokens, 0)
+			}
+			if ev.Content != nil {
+				for _, part := range ev.Content.Parts {
+					if part.Text != "" {
+						if part.Thought {
+							thinkBuf.WriteString(part.Text)
+							api.bridge.SendStreamContent(sessionID, "", part.Text)
+						} else {
+							contentBuf.WriteString(part.Text)
+							api.bridge.SendStreamContent(sessionID, part.Text, "")
+						}
+					}
+					if part.FunctionCall != nil {
+						api.bridge.SendLog(sessionID,
+							fmt.Sprintf("Call: %s(%v)", part.FunctionCall.Name, part.FunctionCall.Args),
+						)
+					}
+					if part.FunctionResponse != nil {
+						api.bridge.SendLog(sessionID,
+							fmt.Sprintf("Response: %s", part.FunctionResponse.Name),
+						)
 					}
 				}
-				if part.FunctionCall != nil {
-					api.bridge.SendLog(sessionID,
-						fmt.Sprintf("Call: %s(%v)", part.FunctionCall.Name, part.FunctionCall.Args),
-					)
-				}
-				if part.FunctionResponse != nil {
-					api.bridge.SendLog(sessionID,
-						fmt.Sprintf("Response: %s", part.FunctionResponse.Name),
-					)
-				}
 			}
 		}
+		if parseErr != nil {
+			log.Printf("chat: tool call repair for session %s (attempt %d): %v", sessionID, attempt+1, parseErr)
+			msg = hakaseagent.ToolCallRepairMessage(parseErr, attempt)
+			continue
+		}
+		break
 	}
 	api.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
 	api.bridge.SendDone(sessionID)
