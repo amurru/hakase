@@ -116,15 +116,46 @@ func TestSystemPromptHasMermaidDirective(t *testing.T) {
 // not exist (ErrStateKeyNotExist), so a stray {B} in an embedded mermaid
 // example silently kills the agent. System instructions must stay brace-free.
 func TestInstructionsHaveNoStatePlaceholders(t *testing.T) {
+	// Representative non-empty context for realistic testing
+	representativeContext := `
+PROJECT CONTEXT FILES:
+Instructions from: /home/user/project/AGENTS.md
+
+### PROJECT CONTEXT FILES:
+This is a test project with some conventions and rules that agents should follow.
+- Use TypeScript for frontend
+- Follow the repository's code style guidelines
+- Always write tests for new features
+`
+
+	// Representative environment block
+	representativeEnv := `
+ENVIRONMENT DETECTED:
+OS: linux/amd64 (Ubuntu 22.04)
+Shell: /bin/bash
+Package Manager: apt
+Toolchains: go 1.26, python3 11.2, node 18
+`
+
+	// Representative installed skills
+	representativeSkills := `
+INSTALLED SKILLS:
+- latex-math: LaTeX typesetting and mathematical documents
+- domain-intel: Passive reconnaissance and domain intelligence
+- osint-investigation: Public records OSINT framework
+- darwinian-evolver: Skill evolution loop management
+`
+
 	prompts := map[string]string{
-		"orchestrator": buildOrchestratorInstruction(""),
+		"orchestrator": buildOrchestratorInstruction(representativeContext),
 		"web_researcher": HakaseSystemInstruction +
-			ContextBlockFor("web_researcher", "", nil) + "\n\n" +
-			buildTimeReminder() + ContextBlockFor("web_researcher", "", nil),
+			ContextBlockFor("web_researcher", representativeContext, nil) + "\n\n" +
+			buildTimeReminder() + ContextBlockFor("web_researcher", representativeEnv, nil) +
+			representativeSkills,
 		"code_interpreter": CodeInterpreterSystemInstruction,
 		"general_purpose":  GeneralPurposeSystemInstruction,
 		"delegated sub-agent": buildSubAgentInstruction("general_purpose",
-			"Context provided by the orchestrator."),
+			representativeContext),
 	}
 
 	// Mirror ADK's placeholderRegex: {+[^{}]*}+

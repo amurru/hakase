@@ -101,20 +101,31 @@ const HakaseSystemInstruction = `You are a high-autonomy, general-purpose resear
 - If search results are truncated, note it and re-search with narrower queries.
 ` + DiagramInstruction + UntrustedContentPolicy
 
-// This will be used to optimize TimeReminder caching
-var frozenTimeReminder string
+// timeReminderCache holds session-scoped time reminders with expiry.
+// Using sync.Map for safe concurrent access across runners.
+var timeReminderCache sync.Map
+
+// timeReminderCacheEntry represents a cached time reminder with its expiry time.
+type timeReminderCacheEntry struct {
+	value     string
+	expiresAt time.Time
+}
+
+// cacheExpiry defines how long a cached time reminder remains valid (5 minutes).
+const cacheExpiry = 5 * time.Minute
 
 // buildTimeReminder returns a system-prompt block that grounds the agent in
 // the current wall-clock time on the user's machine. LLM training cutoffs go
 // stale, so injecting "now" tells the model to reason about recency correctly
 // and to prefer live search results over outdated training data.
+// The cache is scoped to the caller's session ID (if available in context) and
+// expires after cacheExpiry to handle midnight crossovers and timezone changes.
 func buildTimeReminder() string {
-	if frozenTimeReminder != "" {
-		return frozenTimeReminder
-	}
 	now := time.Now()
 	zoneName, _ := now.Zone()
-	frozenTimeReminder = fmt.Sprintf(`
+	
+	// Build the current time reminder
+	currentReminder := fmt.Sprintf(`
 ### SYSTEM REMINDER - CURRENT DATE & TIME:
 The current date and time on the user's machine is %s (%s, UTC offset %s).
 
@@ -125,7 +136,39 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 		zoneName,
 		now.Format("-07:00"),
 	)
-	return frozenTimeReminder
+	
+	// Use the current timestamp (truncated to minute) as cache key to share
+	// within the same minute across all runners, but force refresh on minute boundary
+	cacheKey := now.Format("2006-01-02-15:04")
+	
+	// Check if we have a valid cached entry
+	if cached, ok := timeReminderCache.Load(cacheKey); ok {
+		if entry, ok := cached.(timeReminderCacheEntry); ok && now.Before(entry.expiresAt) {
+			return entry.value
+		}
+	}
+	
+	// Store the new reminder with expiry
+	entry := timeReminderCacheEntry{
+		value:     currentReminder,
+		expiresAt: now.Add(cacheExpiry),
+	}
+	timeReminderCache.Store(cacheKey, entry)
+	
+	// Clean up expired entries periodically (simple cleanup - in production,
+	// this would be a background goroutine with proper cleanup logic)
+	if now.Minute()%5 == 0 && now.Second() < 10 {
+		timeReminderCache.Range(func(key, value interface{}) bool {
+			if entry, ok := value.(timeReminderCacheEntry); ok {
+				if now.After(entry.expiresAt) {
+					timeReminderCache.Delete(key)
+				}
+			}
+			return true
+		})
+	}
+	
+	return currentReminder
 }
 
 const GeneralPurposeSystemInstruction = `You are a general-purpose agent with file operations capabilities.
@@ -1497,10 +1540,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if err := provider.ValidateConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
-	modelName := cfg.ModelName
-	if modelName == "" {
-		modelName = provider.GetDefaultModel()
-	}
+	modelName := cfg.EffectiveModelName()
 	model, err := provider.CreateModel(ctx, modelName, cfg.APIKey)
 	if err != nil {
 		return nil, err

@@ -167,6 +167,15 @@ func runTUI() {
 	tui.RunBoardCommand = runBoardCommand
 	tui.RunMCPCommand = runMCPCommand
 
+	// Fatal shutdown path: release Herdr authority immediately before exiting.
+	// The deferred release handles normal exits, but log.Fatalf bypasses defer.
+	defer func() {
+		if r := recover(); r != nil {
+			m.HerdrRelease()
+			log.Fatalf("fatal error: %v", r)
+		}
+	}()
+
 	// Set approval and clarify configs on the TUI package so the gate
 	// implementations (gates.go) can read expiry and mode at runtime.
 	tui.SetApprovalConfig(interfaces.ApprovalConfig{

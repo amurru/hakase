@@ -31,7 +31,7 @@ sanitization gate, and must remain robust while the response streams.
 | `webui/src/components/chat/MarkdownRenderer.vue` | The renderer component; only consumer of the pipeline. | Rewritten to use the new pipeline + post-mount mermaid hydration. | High (core change) |
 | `webui/src/components/chat/MessageBubble.vue` | Mounts `MarkdownRenderer`; passes streaming flag. | Pass `streaming` prop through; no logic change needed. | Low |
 | `webui/src/components/chat/ThinkingBlock.vue` | Shows raw thinking text. | Optional: render limited markdown (no mermaid). Out of scope for v1. | Low |
-| `webui/src/lib/markdown.ts` (new) | Pipeline factory + plugins + DOMPurify config. | Imports markdown-it, highlight.js, KaTeX plugin, mermaid (lazy). | High (new) |
+| `webui/src/lib/markdown/index.ts` (new) | Pipeline factory + plugins + DOMPurify config. | Imports markdown-it, highlight.js, KaTeX plugin, mermaid (lazy). | High (new) |
 | `webui/src/composables/useMermaid.ts` (new) | Async mermaid hydration + render cache + error fallback. | Lazy-imports mermaid; mutates placeholder DOM. | Medium (new) |
 | `webui/src/main.ts` / `webui/src/assets/globals.css` | Import `katex.min.css` + highlight.js theme(s). | Build-time font/theme bundling. | Low |
 | `webui/package.json` | Add `katex`, `@vscode/markdown-it-katex`, `mermaid`. | pnpm lockfile. | Low |

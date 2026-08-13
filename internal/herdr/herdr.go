@@ -178,14 +178,71 @@ func (r *Reporter) Release() {
 	})
 }
 
+// reportWorkQueue is a channel that queues report operations to a serialized
+// worker goroutine. This prevents blocking the TUI AppModel.View rendering.
+var reportWorkQueue chan func()
+
+var reportWorkQueueOnce sync.Once
+
+func initReportWorkQueue() {
+	reportWorkQueueOnce.Do(func() {
+		reportWorkQueue = make(chan func(), 100)
+		go reportWorker()
+	})
+}
+
+func reportWorker() {
+	for fn := range reportWorkQueue {
+		fn()
+	}
+}
+
 // exec runs the Herdr CLI in a separate goroutine with a short timeout so a
 // slow or missing daemon can never block the agent's UI thread. Output is
 // discarded so it cannot pollute the agent's terminal.
+// When reportWorkQueue is initialized (by calling a Report method), this
+// runs through the queued worker instead of blocking the caller.
 func (r *Reporter) exec(args []string) {
+	if reportWorkQueue != nil {
+		// Queue to worker if the queue is initialized
+		reportWorkQueue <- func() {
+			r.execSync(args)
+		}
+		return
+	}
+	// Fallback to direct execution for backward compatibility
+	r.execSync(args)
+}
+
+// execSync is the actual implementation that runs the Herdr CLI command.
+func (r *Reporter) execSync(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	_ = cmd.Run()
+}
+
+// NewReporter builds a Reporter from the process environment. It returns nil
+// when not running inside Herdr, which callers should handle gracefully.
+func NewReporter() *Reporter {
+	if os.Getenv(envEnabled) != "1" {
+		return nil
+	}
+	bin := os.Getenv(envBinPath)
+	if bin == "" {
+		return nil
+	}
+	pane := os.Getenv(envPaneID)
+	if pane == "" {
+		return nil
+	}
+	// Initialize the report work queue when the first reporter is created
+	initReportWorkQueue()
+	return &Reporter{
+		bin:  bin,
+		pane: pane,
+		seq:  0,
+	}
 }

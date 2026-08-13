@@ -195,13 +195,21 @@ func useWhiteText(bgHex string) bool {
 func (mr *MathRenderer) ApplyBackgroundColor(msg tea.BackgroundColorMsg) {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	// bgColor only gates the transparent-PNG path; textColor is what the
-	// glyph color in the LaTeX document is derived from.
-	mr.bgColor = "000000"
+	
+	newBgColor := "000000"
+	newTextColor := "black"
 	if msg.IsDark() {
-		mr.textColor = "white"
-	} else {
-		mr.textColor = "black"
+		newTextColor = "white"
+	}
+	
+	// Clear caches when background or text color changes to force re-rendering
+	// with the new colors. The nextImageID counter is preserved to maintain
+	// monotonicity.
+	if mr.bgColor != newBgColor || mr.textColor != newTextColor {
+		mr.pngCache = make(map[string][]byte)
+		mr.imageIDs = make(map[string]int)
+		mr.bgColor = newBgColor
+		mr.textColor = newTextColor
 	}
 }
 

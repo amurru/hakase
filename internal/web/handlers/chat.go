@@ -187,10 +187,15 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 
 	runCtx := ctx
 	msg := content
-outer:
+	
+	// Generate task ID once before the retry loop so all repair attempts
+	// preserve the same session context
+	taskID := hakasesession.GenerateTaskID()
+	
+	outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
-		for ev, err := range api.runner.Run(runCtx, "user-1", hakasesession.GenerateTaskID(), msg, adkagent.RunConfig{}) {
+		for ev, err := range api.runner.Run(runCtx, "user-1", taskID, msg, adkagent.RunConfig{}) {
 			if err != nil {
 				// Malformed tool-call JSON: re-enter the runner with a
 				// corrective user message instead of aborting the run. This

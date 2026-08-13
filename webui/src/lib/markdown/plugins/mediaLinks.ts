@@ -45,12 +45,42 @@ function isWorkspaceRelative(src: string): boolean {
   return !/^\s*(?:[a-zA-Z][a-zA-Z0-9+.\-]*:|\/|#)/.test(src)
 }
 
+// isSameOriginOrDataUrl checks if a URL is same-origin (no external protocol)
+// or a data: URL. Used to filter audio/video to only these types.
+function isSameOriginOrDataUrl(src: string): boolean {
+  // No protocol = relative/same-origin
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src)) {
+    return true
+  }
+  // data: URLs are safe
+  if (src.startsWith('data:')) {
+    return true
+  }
+  // All other protocols are external and should remain as links
+  return false
+}
+
 // rewriteSrc rewrites a workspace-relative src/href to the authenticated inline
-// file route; everything else passes through unchanged.
+// file route; everything else passes through unchanged. Preserves fragments and
+// query parameters.
 function rewriteSrc(src: string): string {
   if (!isWorkspaceRelative(src)) return src
-  const clean = src.replace(/^\.\//, '')
-  return `/api/files/inline?path=${encodeURIComponent(clean)}`
+  
+  // Split into path, query, and fragment
+  const urlObj = new URL(src, 'file://placeholder') // Use placeholder base for parsing
+  const clean = urlObj.pathname.replace(/^\.\//, '')
+  const query = urlObj.search
+  const fragment = urlObj.hash
+  
+  let result = `/api/files/inline?path=${encodeURIComponent(clean)}`
+  if (query !== '') {
+    result += `&${query.slice(1)}`
+  }
+  if (fragment !== '') {
+    result += `#${fragment.slice(1)}`
+  }
+  
+  return result
 }
 
 function htmlEscape(s: string): string {
@@ -93,7 +123,9 @@ export function mediaLinks(): MarkdownIt.PluginSimple {
               tok.attrSet('src', rewriteSrc(src))
               continue
             }
-            // A video/audio extension on an image token -> convert to media_tag.
+            // A video/audio extension on an image token -> convert to media_tag
+            // only if same-origin or data URL (remote media stays as image)
+            if (!isSameOriginOrDataUrl(src)) continue
             const alt = collectText(tok.children ?? [], 0, (tok.children ?? []).length)
             children.splice(j, 1, makeMediaTag(kind, rewriteSrc(src), alt))
             continue
@@ -103,6 +135,8 @@ export function mediaLinks(): MarkdownIt.PluginSimple {
             const href = tok.attrGet('href') ?? ''
             const kind = kindFor(href)
             if (!kind) continue
+            // Only convert video/audio if same-origin or data URL (remote media stays as link)
+            if ((kind === 'video' || kind === 'audio') && !isSameOriginOrDataUrl(href)) continue
             // Find the matching link_close to splice the whole [text](url).
             let closeIdx = -1
             for (let k = j + 1; k < children.length; k++) {

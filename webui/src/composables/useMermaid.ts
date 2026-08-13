@@ -19,18 +19,43 @@ export interface MermaidController {
 }
 
 export function useMermaid(): MermaidController {
+  const roots = new Set<HTMLElement>()
+  let disposeTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
+
+  function dispose() {
+    if (disposed) return
+    disposed = true
+    // Clear our roots from the shared pending queue
+    roots.forEach(root => pendingRoots.delete(root))
+    roots.clear()
+    if (disposeTimer != null) {
+      clearTimeout(disposeTimer)
+      disposeTimer = null
+    }
+  }
+
+  function hydrate(root: HTMLElement): void {
+    if (disposed) return
+    roots.add(root)
+    pendingRoots.add(root)
+    if (planTimer != null) return
+    planTimer = setTimeout(() => {
+      planTimer = null
+      const batch = Array.from(pendingRoots).filter(r => r.isConnected)
+      pendingRoots.clear()
+      batch.forEach(r => hydrateNow(r))
+    }, 0)
+  }
+
   return {
-    hydrate(root) {
-      schedule(root)
-    },
-    dispose() {
-      clearPending()
-    },
+    hydrate,
+    dispose,
   }
 }
 
 // ---------------------------------------------------------------------------
-
+// Global state shared across all controller instances
 const mermaidOptions: MermaidConfig = {
   startOnLoad: false,
   securityLevel: 'strict',
@@ -70,29 +95,10 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-// Coalesce hydration into a single pass per tick and serialize overlapping
-// async renders.
+// Shared state for coalesced hydration across all controller instances.
 let planTimer: ReturnType<typeof setTimeout> | null = null
-let pendingRoot: HTMLElement | null = null
+const pendingRoots = new Set<HTMLElement>()
 let running: Promise<void> = Promise.resolve()
-
-function clearPending(): void {
-  if (planTimer != null) clearTimeout(planTimer)
-  planTimer = null
-  pendingRoot = null
-}
-
-function schedule(root: HTMLElement): void {
-  pendingRoot = root
-  if (planTimer != null) return
-  planTimer = setTimeout(() => {
-    planTimer = null
-    const target = pendingRoot
-    pendingRoot = null
-    if (!target || !target.isConnected) return
-    running = running.then(() => hydrateNow(target)).catch(() => {})
-  }, 0)
-}
 
 async function hydrateNow(root: HTMLElement): Promise<void> {
   const placeholders = Array.from(

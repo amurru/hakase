@@ -95,9 +95,17 @@ export const md = buildMarkdownIt()
 /**
  * renderMarkdown renders markdown source to sanitized HTML suitable for
  * v-html. Safe for streaming: called on every content delta.
+ * 
+ * Resets KaTeX macro state for each render to prevent \gdef definitions
+ * from leaking between messages.
  */
 export function renderMarkdown(source: string): string {
   if (!source) return ''
+  
+  // Clear KaTeX macros before each render to prevent cross-message leakage
+  // Note: This affects the sharedMacros object used by the KaTeX plugin
+  Object.keys(sharedMacros).forEach(key => delete sharedMacros[key])
+  
   const raw = md.render(source)
   return DOMPurify.sanitize(raw, SANITIZE_OPTIONS) as string
 }

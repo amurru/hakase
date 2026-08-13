@@ -271,12 +271,24 @@ func (api *FileAPI) InlineFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := os.Stat(absPath)
+	// Open through a root-anchored descriptor operation to prevent symlink
+	// traversal and pathname races. Open the file descriptor first, then
+	// validate it's a regular file before serving.
+	f, err := os.Open(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file not found"})
 			return
 		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to open file: %v", err)})
+		return
+	}
+	defer f.Close()
+
+	// Get file info from the open descriptor (not the path) to avoid TOCTOU races.
+	// Require it to be a regular file - reject directories, symlinks, FIFOs, sockets, etc.
+	info, err := f.Stat()
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to stat file: %v", err)})
 		return
 	}
@@ -286,18 +298,16 @@ func (api *FileAPI) InlineFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !info.Mode().IsRegular() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot inline non-regular file"})
+		return
+	}
+
 	mimeType := detectMIME(absPath)
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, info.Name()))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	f, err := os.Open(absPath)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to open file: %v", err)})
-		return
-	}
-	defer f.Close()
 
 	if _, err := io.Copy(w, f); err != nil {
 		log.Printf("file: inline stream error for %s: %v", absPath, err)

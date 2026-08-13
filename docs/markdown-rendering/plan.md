@@ -20,7 +20,7 @@ the work into phases with owners, exit criteria, and parallelization.
       Seekable video deferred to v2. Recorded in `research.md`.
 
 ### Phase 1 - Frontend foundation (serial)
-**MD-001** Pipeline factory + DOMPurify config (`webui/src/lib/markdown.ts`).
+**MD-001** Pipeline factory + DOMPurify config (`webui/src/lib/markdown/index.ts`).
 - Exit: `renderMarkdown()` exists; `katex` + `@vscode/markdown-it-katex` in
   `package.json`; basic + math + sanitization tests pass.
 

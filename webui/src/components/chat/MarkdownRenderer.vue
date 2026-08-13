@@ -39,18 +39,34 @@ function handleCopy(e: Event) {
   if (!code) return
 
   const text = code.innerText
-  navigator.clipboard?.writeText(text).catch(() => {
-    // Fallback for non-secure contexts.
+  
+  // Try clipboard API first, fallback to textarea method
+  const copyPromise = navigator.clipboard?.writeText(text)
+  
+  if (copyPromise) {
+    // Modern browsers: use clipboard API, show copied state only on success
+    copyPromise.then(() => {
+      btn.classList.add('copied')
+      window.setTimeout(() => btn.classList.remove('copied'), 1500)
+    }).catch(() => {
+      // Clipboard API failed, try fallback
+      copyWithFallback(text)
+    })
+  } else {
+    // No clipboard API, use fallback immediately
+    copyWithFallback(text)
+  }
+
+  function copyWithFallback(text: string) {
     const ta = document.createElement('textarea')
     ta.value = text
     document.body.appendChild(ta)
     ta.select()
     document.execCommand('copy')
     ta.remove()
-  })
-
-  btn.classList.add('copied')
-  window.setTimeout(() => btn.classList.remove('copied'), 1500)
+    btn.classList.add('copied')
+    window.setTimeout(() => btn.classList.remove('copied'), 1500)
+  }
 }
 
 function attachCopyButtons(root: HTMLElement) {
