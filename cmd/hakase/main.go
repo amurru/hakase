@@ -14,10 +14,11 @@ import (
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
-	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/herdr"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/tui"
@@ -152,6 +153,13 @@ func runTUI() {
 	m := tui.NewModel(ctx, r, sessionSvc, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
 	program = tea.NewProgram(&m)
 	m.SetProgram(program)
+
+	// Install the Herdr lifecycle reporter when hakase runs inside a Herdr
+	// pane. Releases authority on exit so Herdr stops tracking this agent.
+	if rep := herdr.NewReporter(); rep != nil {
+		m.SetHerdrReporter(rep)
+	}
+	defer m.HerdrRelease()
 
 	// Wire TUI hook variables for slash command handlers that live in this
 	// package (formerly in root). These are accessed by internal/tui/slash.go.
