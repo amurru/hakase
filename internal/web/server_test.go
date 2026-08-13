@@ -197,6 +197,18 @@ func TestConfigRouteRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestFilesInlineRouteRequiresAuth(t *testing.T) {
+	srv := newTestServer()
+
+	req := httptest.NewRequest("GET", "/api/files/inline?path=outputs/x.png", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /api/files/inline, got %d", w.Code)
+	}
+}
+
 func TestConfigRouteAuthed(t *testing.T) {
 	srv := newTestServer()
 	token := newTestToken(srv.jwtKey)

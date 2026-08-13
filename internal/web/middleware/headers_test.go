@@ -60,6 +60,31 @@ func TestSecurityHeadersCSPBlocksFraming(t *testing.T) {
 	}
 }
 
+// TestSecurityHeadersCSPMedia verifies the CSP gains the media-src directive
+// for the markdown-rendering feature ('self' data: only, no external media or
+// frames per Phase 0) while script-src remains 'self'.
+func TestSecurityHeadersCSPMedia(t *testing.T) {
+	handler := SecurityHeaders()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	csp := rec.Header().Get("Content-Security-Policy")
+
+	if !contains(csp, "media-src 'self' data:") {
+		t.Errorf("CSP = %q, want it to contain media-src 'self' data:", csp)
+	}
+	if !contains(csp, "script-src 'self'") {
+		t.Errorf("CSP = %q, want script-src 'self' to be preserved", csp)
+	}
+	if contains(csp, "frame-src") {
+		t.Errorf("CSP = %q, want frame-src to be absent (frames disabled)", csp)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOf(s, sub) >= 0)
 }

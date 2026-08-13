@@ -49,7 +49,7 @@ const isUser = computed(() => props.message.role === 'user')
 
         <!-- Message content -->
         <div v-if="isUser" class="whitespace-pre-wrap">{{ message.content }}</div>
-        <MarkdownRenderer v-else :content="message.content" />
+        <MarkdownRenderer v-else :content="message.content" :streaming="streaming" />
 
         <!-- Streaming indicator -->
         <span

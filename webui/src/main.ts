@@ -4,6 +4,7 @@ import router from './router'
 import App from './App.vue'
 import { useAuthStore } from './stores/auth'
 import { useThemeStore } from './stores/theme'
+import 'katex/dist/katex.min.css'
 import './assets/globals.css'
 
 const app = createApp(App)

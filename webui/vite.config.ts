@@ -14,6 +14,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Fonts must ship as real files, not data: URIs: KaTeX_Size3 is small
+    // enough to fall under the default 4096-byte inline limit and the CSP
+    // header (font-src 'self') blocks data: fonts.
+    assetsInlineLimit: (filePath: string) => !/\.(woff2?|ttf|otf|eot)$/i.test(filePath),
   },
   server: {
     proxy: {

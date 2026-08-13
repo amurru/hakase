@@ -55,6 +55,7 @@ func RegisterFileRoutes(r FileRouter) {
 
 	r.Get("/files/browse", api.BrowseFiles)
 	r.Get("/files/list", api.ListDirectory)
+	r.Get("/files/inline", api.InlineFile)
 	r.Get("/files/download", api.DownloadFile)
 	r.Get("/files", api.ReadFile)
 	r.Post("/sessions/{id}/attachments", api.UploadAttachment)
@@ -250,6 +251,56 @@ func (api *FileAPI) DownloadFile(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := io.Copy(w, f); err != nil {
 		log.Printf("file: download stream error for %s: %v", absPath, err)
+	}
+}
+
+// InlineFile handles GET /api/files/inline?path=<path> - serves a workspace
+// file with Content-Disposition: inline for use as <img>/<video>/<audio>
+// sources. Mirrors DownloadFile but uses inline disposition, and streams the
+// whole file (no Range support in v1).
+func (api *FileAPI) InlineFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path parameter is required"})
+		return
+	}
+
+	absPath, err := resolveFilePath(path)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("path outside workspace: %v", err)})
+		return
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to stat file: %v", err)})
+		return
+	}
+
+	if info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot inline a directory"})
+		return
+	}
+
+	mimeType := detectMIME(absPath)
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, info.Name()))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	f, err := os.Open(absPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to open file: %v", err)})
+		return
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(w, f); err != nil {
+		log.Printf("file: inline stream error for %s: %v", absPath, err)
 	}
 }
 
