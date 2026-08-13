@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Bot, User } from '@lucide/vue'
+import { computed, ref } from 'vue'
+import { Bot, User, Copy, Check } from '@lucide/vue'
 import type { ChatMessage } from '@/composables/useSSE'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
@@ -11,6 +11,28 @@ const props = defineProps<{
 }>()
 
 const isUser = computed(() => props.message.role === 'user')
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+
+async function copyContent() {
+  try {
+    await navigator.clipboard.writeText(props.message.content)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = props.message.content
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+  copied.value = true
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    copied.value = false
+  }, 2000)
+}
 </script>
 
 <template>
@@ -57,6 +79,18 @@ const isUser = computed(() => props.message.role === 'user')
           class="inline-block h-4 w-0.5 animate-pulse bg-foreground/50 ml-0.5 align-text-bottom"
         />
       </div>
+
+      <!-- Copy button -->
+      <button
+        v-if="!streaming"
+        type="button"
+        class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+        :title="copied ? 'Copied' : 'Copy message'"
+        @click="copyContent"
+      >
+        <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
+        <Copy v-else class="h-3 w-3" />
+      </button>
     </div>
   </div>
 </template>
