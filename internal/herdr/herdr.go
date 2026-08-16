@@ -67,6 +67,7 @@ func NewReporter() *Reporter {
 	if bin == "" {
 		return nil
 	}
+	initReportWorkQueue()
 	return &Reporter{bin: bin, pane: pane}
 }
 
@@ -222,27 +223,4 @@ func (r *Reporter) execSync(args []string) {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	_ = cmd.Run()
-}
-
-// NewReporter builds a Reporter from the process environment. It returns nil
-// when not running inside Herdr, which callers should handle gracefully.
-func NewReporter() *Reporter {
-	if os.Getenv(envEnabled) != "1" {
-		return nil
-	}
-	bin := os.Getenv(envBinPath)
-	if bin == "" {
-		return nil
-	}
-	pane := os.Getenv(envPaneID)
-	if pane == "" {
-		return nil
-	}
-	// Initialize the report work queue when the first reporter is created
-	initReportWorkQueue()
-	return &Reporter{
-		bin:  bin,
-		pane: pane,
-		seq:  0,
-	}
 }

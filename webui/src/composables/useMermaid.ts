@@ -98,7 +98,6 @@ function escapeHtml(s: string): string {
 // Shared state for coalesced hydration across all controller instances.
 let planTimer: ReturnType<typeof setTimeout> | null = null
 const pendingRoots = new Set<HTMLElement>()
-let running: Promise<void> = Promise.resolve()
 
 async function hydrateNow(root: HTMLElement): Promise<void> {
   const placeholders = Array.from(

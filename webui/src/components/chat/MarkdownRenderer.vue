@@ -64,8 +64,10 @@ function handleCopy(e: Event) {
     ta.select()
     document.execCommand('copy')
     ta.remove()
-    btn.classList.add('copied')
-    window.setTimeout(() => btn.classList.remove('copied'), 1500)
+    if (btn) {
+      btn.classList.add('copied')
+      window.setTimeout(() => btn.classList.remove('copied'), 1500)
+    }
   }
 }
 
