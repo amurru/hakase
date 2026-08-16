@@ -111,9 +111,9 @@ func TestGetConfigEffectiveModelResolvesProviderDefault(t *testing.T) {
 		body     string
 		expected string
 	}{
-		{"openai default", `{"provider": "openai"}`, "gpt-4o-mini"},
-		{"openai-compatible default", `{"provider": "openai-compatible", "base_url": "http://localhost:11434/v1"}`, "gpt-4o-mini"},
-		{"empty provider defaults to gemini", `{}`, "gemini-2.5-flash"},
+		{"openai default", `{"provider": "openai"}`, "gpt-5.6-terra"},
+		{"openai-compatible default", `{"provider": "openai-compatible", "base_url": "http://localhost:11434/v1"}`, "gpt-5.6-terra"},
+		{"empty provider defaults to gemini", `{}`, "gemini-3.7-flash"},
 		{"explicit model wins", `{"provider": "openai", "model_name": "gpt-4o"}`, "gpt-4o"},
 	}
 	for _, tc := range cases {

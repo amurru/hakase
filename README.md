@@ -1,6 +1,6 @@
 # Hakase
 
-A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI, Google ADK orchestration with Gemini, MCP server integration, a Python code interpreter, and a self-evolving skill library.
+A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI, Google ADK orchestration across multiple model providers (Gemini, OpenAI, and OpenAI-compatible endpoints), MCP server integration, a Python code interpreter, and a self-evolving skill library.
 
 ![Go](https://img.shields.io/badge/Go-1.26-blue?logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -9,7 +9,7 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
 
 ## Overview
 
-**hakase** is a terminal-based AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents — a **Web Researcher** and a **Code Interpreter** — through a Google ADK root orchestrator, powered by Gemini models. The entire interaction happens inside a simple split-pane TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+**hakase** is a terminal-based AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents — a **Web Researcher** and a **Code Interpreter** — through a Google ADK root orchestrator, powered by configurable LLM providers (Gemini, OpenAI, or any OpenAI-compatible endpoint). The entire interaction happens inside a simple split-pane TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
 The agent can:
 
@@ -360,7 +360,7 @@ Linux-specific ones (kernel, distro, disk, memory) degrade gracefully.
 
 ### 👁️ Vision
 
-The `vision` tool loads an image (URL, local file path, or `data:` URL) so the model can see it. When the main model supports images (Gemini models), the image is attached directly to the model context; otherwise a configured `vision_model` describes the image as text. Images are SSRF-guarded, size-capped, and auto-converted or resized to fit provider limits. Configure via `vision_model`, `vision_provider`, `vision_base_url`, `vision_api_key`, and `model_vision`.
+The `vision` tool loads an image (URL, local file path, or `data:` URL) so the model can see it. When the main model is vision-capable, the image is attached directly to the model context; otherwise a configured `vision_model` describes the image as text. Images are SSRF-guarded, size-capped, and auto-converted or resized to fit provider limits. Configure via `vision_model`, `vision_provider`, `vision_base_url`, `vision_api_key`, and `model_vision`.
 
 Attached images (`@file` or pasted screenshots) are handled the same way: on a non-vision main model they are described by `vision_model` before reaching the model (required on OpenAI-compatible providers, whose adapter rejects raw image parts); on a vision-capable model they pass through as inline input.
 
@@ -456,7 +456,7 @@ auto-migrated to a server named `lightpanda`.
 
 - **Go** 1.26+
 - **Python 3** — required for the code interpreter (`.venv` execution, auto-dependency resolution) and the self-evolving skill library (`./skills/`)
-- A **Google Gemini API key**
+- An **API key for your chosen provider** — Google Gemini, OpenAI, or an OpenAI-compatible endpoint (e.g. Ollama, vLLM). The key requirement depends on the `provider` field in `config.json`.
 - **Lightpanda** — the MCP browser automation server that provides web navigation tools. Install it from [lightpanda.ai](https://lightpanda.ai) and start it before running the agent (it serves the MCP endpoint on `localhost:9223` by default)
 
 ### Setup
@@ -465,7 +465,7 @@ auto-migrated to a server named `lightpanda`.
 
 ```bash
 cp config.json.example config.json
-# Edit config.json with your API key and MCP server URL
+# Edit config.json with your API key (matching your provider) and MCP server URL
 ```
 
 2. **Install Go dependencies:**
@@ -493,7 +493,7 @@ Edit `config.json`:
 ```json
 {
   "provider": "gemini",
-  "model_name": "gemini-3.5-flash-lite",
+  "model_name": "gemini-2.5-flash",
   "api_key": "your-gemini-api-key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
@@ -515,9 +515,9 @@ hakase supports multiple LLM providers, selected via the `provider` field in `co
 
 | Provider            | Description                                      | Default Model      |
 | ------------------- | ------------------------------------------------ | ------------------ |
-| `gemini`            | Google Gemini                                    | `gemini-2.5-flash` |
-| `openai`            | OpenAI API                                       | `gpt-4o-mini`      |
-| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | `gpt-4o-mini`      |
+| `gemini`            | Google Gemini                                    | `gemini-3.7-flash` |
+| `openai`            | OpenAI API                                       | `gpt-5.6-terra`    |
+| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | `gpt-5.6-terra`    |
 
 When `model_name` is empty, the provider's default model is used.
 
@@ -526,7 +526,7 @@ When `model_name` is empty, the provider's default model is used.
 ```json
 {
   "provider": "gemini",
-  "model_name": "gemini-2.5-flash",
+  "model_name": "gemini-3.7-flash",
   "api_key": "your_gemini_api_key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
@@ -541,7 +541,7 @@ When `model_name` is empty, the provider's default model is used.
 ```json
 {
   "provider": "openai",
-  "model_name": "gpt-4o-mini",
+  "model_name": "gpt-5.6-terra",
   "api_key": "your_openai_api_key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp"
@@ -574,7 +574,7 @@ When `model_name` is empty, the provider's default model is used.
 - `mcp` - Optional MCP server configuration (see [MCP Integration](#-mcp-integration)): `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `search_expansion` - Optional HyDE-lite LLM query expansion for `search_knowledge` (default `false`). When off, search behavior is byte-identical to plain substring search (just relevance-ordered). When on, the summarization model rephrases the query into 2-3 phrasings which are OR-matched and fused with Reciprocal Rank Fusion; on failure or timeout it falls back silently to plain substring search. Set `HAKASE_SEARCH_EXPANSION` to override via environment.
-- `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
+- `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-3.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
 - `vision_model` - Optional multimodal model used to describe images as text when the main model lacks vision (legacy mode). Empty = disabled.
 - `vision_base_url` - Optional separate endpoint for the vision model; empty = primary `base_url`.
 - `vision_api_key` - Optional separate key for the vision model; empty = primary `api_key`.

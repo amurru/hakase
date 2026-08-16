@@ -441,10 +441,10 @@ func TestDefaultModelForProvider(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"", "gemini-2.5-flash"},
-		{"gemini", "gemini-2.5-flash"},
-		{"openai", "gpt-4o-mini"},
-		{"openai-compatible", "gpt-4o-mini"},
+		{"", "gemini-3.7-flash"},
+		{"gemini", "gemini-3.7-flash"},
+		{"openai", "gpt-5.6-terra"},
+		{"openai-compatible", "gpt-5.6-terra"},
 	}
 	for _, tc := range cases {
 		if got := DefaultModelForProvider(tc.provider); got != tc.want {
@@ -463,9 +463,9 @@ func TestEffectiveModelName(t *testing.T) {
 		{"explicit openai", "openai", "gpt-4o", "gpt-4o"},
 		{"explicit gemini", "gemini", "gemini-2.5-pro", "gemini-2.5-pro"},
 		{"whitespace trimmed", "openai", "  gpt-4o  ", "gpt-4o"},
-		{"empty openai falls back", "openai", "", "gpt-4o-mini"},
-		{"empty gemini falls back", "gemini", "", "gemini-2.5-flash"},
-		{"empty everything falls back to gemini", "", "", "gemini-2.5-flash"},
+		{"empty openai falls back", "openai", "", "gpt-5.6-terra"},
+		{"empty gemini falls back", "gemini", "", "gemini-3.7-flash"},
+		{"empty everything falls back to gemini", "", "", "gemini-3.7-flash"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

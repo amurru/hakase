@@ -18,8 +18,8 @@ func TestGeminiProvider(t *testing.T) {
 		t.Errorf("ValidateConfig with API key: unexpected error: %v", err)
 	}
 
-	if got := p.GetDefaultModel(); got != "gemini-2.5-flash" {
-		t.Errorf("GetDefaultModel: expected %q, got %q", "gemini-2.5-flash", got)
+	if got := p.GetDefaultModel(); got != "gemini-3.7-flash" {
+		t.Errorf("GetDefaultModel: expected %q, got %q", "gemini-3.7-flash", got)
 	}
 }
 
@@ -34,8 +34,8 @@ func TestOpenAIProvider(t *testing.T) {
 		t.Errorf("ValidateConfig with API key: unexpected error: %v", err)
 	}
 
-	if got := p.GetDefaultModel(); got != "gpt-4o-mini" {
-		t.Errorf("GetDefaultModel: expected %q, got %q", "gpt-4o-mini", got)
+	if got := p.GetDefaultModel(); got != "gpt-5.6-terra" {
+		t.Errorf("GetDefaultModel: expected %q, got %q", "gpt-5.6-terra", got)
 	}
 
 	if p.BaseURL != "https://example.com/v1" {

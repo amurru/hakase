@@ -321,9 +321,9 @@ func SystemEnvEnabled(cfg *Config) bool {
 func DefaultModelForProvider(provider string) string {
 	switch provider {
 	case "openai", "openai-compatible":
-		return "gpt-4o-mini"
+		return "gpt-5.6-terra"
 	default:
-		return "gemini-2.5-flash"
+		return "gemini-3.7-flash"
 	}
 }
 
