@@ -101,7 +101,9 @@ No other modules are affected. Agent output format is unchanged.
   - `renderMarkdown('# h\n**b**')` returns sanitized HTML matching today's
     output shape (headings, bold, lists).
   - `renderMarkdown('$a^2$')` produces a `.katex` span (math rendered).
-  - `renderMarkdown('<script>alert(1)</script>')` returns empty / no script tag.
+  - `renderMarkdown('<script>alert(1)</script>')` returns the script source
+    as escaped text (`&lt;script&gt;...`) with no live script element
+    (`html:false` escapes raw HTML before sanitization).
   - `renderMarkdown('<img src=x onerror=alert(1)>')` has no `onerror` attr.
   - MathML tags (`<math>`, `<mrow>`, `<mi>`, ...) survive DOMPurify.
   - `style` attributes inside KaTeX output survive sanitization.
@@ -139,10 +141,13 @@ No other modules are affected. Agent output format is unchanged.
   links) to `<img>`/`<video controls>`/`<audio controls>` tokens, and rewrites
   workspace-relative URLs to `/api/files/inline?path=...`.
 - Acceptance Criteria:
-  - `[clip](https://example.com/v.mp4)` -> `<video controls src="...">`.
+  - `[clip](https://example.com/v.mp4)` stays a plain link (external media
+    remains a link under the resolved v1 policy: same-origin and `data:`
+    media only).
   - `[song](./outputs/a.mp3)` -> `<audio controls src="/api/files/inline?path=outputs%2Fa.mp3">`.
   - `![pic](./outputs/a.png)` and `[pic](./outputs/a.png)` both -> `<img>`.
   - External `https://` image stays absolute (CSP `img-src https:` allows it).
+  - Protocol-relative URLs (`//host/v.mp4`) stay plain links (external origin).
   - Unknown extensions render as normal links (no behavior change).
   - `data:` URLs pass through for images (CSP `img-src data:` allows it).
   - No new inline event handlers or scripts are emitted.
@@ -243,7 +248,9 @@ No other modules are affected. Agent output format is unchanged.
 - Guardrails: do NOT relax `script-src`, `connect-src`, `default-src`, or
   `frame-ancestors`. Document the chosen policy in `research.md`.
 - Dependencies: needs the policy decision in Open Questions (default: `'self'
-  data:` only, no frames).
+  data:` only, no frames). RESOLVED for v1: same-origin and `data:` media
+  only, no external `media-src` and no `frame-src`; external audio/video
+  stays a plain link (see MD-003).
 
 ### Spec MD-008: Tests and regression fixtures
 - Objective: Lock behavior with unit tests for the pipeline and a Go test for
@@ -276,16 +283,17 @@ MD-001.
 ## Open Questions and Risks
 
 1. **Media/iframe CSP policy** (blocks MD-007 finalization, not the default
-   path): decide external `media-src https:` and/or `frame-src https:`. Default
-   proposed in `research.md`: local + data only; external as links.
+   path): RESOLVED for v1 - same-origin and `data:` media only; external
+   audio/video stays a plain link (implemented in the `mediaLinks` plugin);
+   no `frame-src` (frames disabled). Revisit external `media-src https:`
+   only if a concrete need emerges.
 2. **Video range requests**: needed for seeking in long videos. v1 may stream
    whole file; confirm whether the model commonly emits large local videos.
 3. **Mermaid bundle size**: ~1MB even when lazy-loaded. Acceptable given it is
     code-split and rare. Monitor.
-4. **KaTeX macro persistence**: a single shared `macros` object enables `\gdef`
-   across blocks but could leak between messages. Mitigation: scope macros per
-   `MarkdownRenderer` instance (reset on message change) if cross-message
-   leakage is observed.
+4. **KaTeX macro persistence**: RESOLVED - `sharedMacros` is cleared before
+   each full-message render (macros scope to one message, shared across the
+   equations within it), so `\gdef` cannot leak between messages.
 5. **Theme contrast**: highlight.js theme must be readable in both light/dark;
    verify against the existing token palette in `globals.css`.
 

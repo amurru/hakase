@@ -157,7 +157,7 @@ Rendered:
 | --- | --- |
 | `<script>alert(1)</script>hello` | `&lt;script&gt;alert(1)&lt;/script&gt;hello` (escaped as text; `html:false`) |
 | `<img src="x.png" onerror="alert(1)">` | `&lt;img ... onerror=&quot;alert(1)&quot;&gt;` (escaped; no live element) |
-| `<iframe src="https://evil.example">` | stripped (frames disabled per Phase 0; no `frame-src` in CSP) |
+| `<iframe src="https://evil.example">` | `&lt;iframe src="..."&gt;` escaped as text (`html:false`; src URL autolinked; no live iframe element) |
 | inline `style` inside `.katex` | kept (`ADD_ATTR:['style']`) - KaTeX layout depends on it |
 | `data-mermaid-source` after sanitize | kept (`ALLOW_DATA_ATTR:true` + explicit add) |
 | fenced ` ```html\n<div>x</div>\n``` ` | `&lt;div&gt;x&lt;/div&gt;` inside `<pre>` (code content escaped) |

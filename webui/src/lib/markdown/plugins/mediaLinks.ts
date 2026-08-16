@@ -48,6 +48,11 @@ function isWorkspaceRelative(src: string): boolean {
 // isSameOriginOrDataUrl checks if a URL is same-origin (no external protocol)
 // or a data: URL. Used to filter audio/video to only these types.
 function isSameOriginOrDataUrl(src: string): boolean {
+  // Protocol-relative URLs (//host/path) resolve against the page's scheme to
+  // an external origin; treat them as external so they stay plain links.
+  if (src.startsWith('//')) {
+    return false
+  }
   // No protocol = relative/same-origin
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src)) {
     return true
@@ -68,7 +73,9 @@ function rewriteSrc(src: string): string {
   
   // Split into path, query, and fragment
   const urlObj = new URL(src, 'file://placeholder') // Use placeholder base for parsing
-  const clean = urlObj.pathname.replace(/^\.\//, '')
+  // URL resolution prefixes relative paths with "/" (pathname of the
+  // placeholder base); strip it so the encoded path stays workspace-relative.
+  const clean = urlObj.pathname.replace(/^\//, '')
   const query = urlObj.search
   const fragment = urlObj.hash
   

@@ -256,6 +256,9 @@ func runTUI() {
 	}()
 
 	if _, err := program.Run(); err != nil {
+		// log.Fatalf bypasses deferred functions; release Herdr authority
+		// explicitly so Herdr stops tracking this agent on fatal exit.
+		m.HerdrRelease()
 		log.Fatalf("Error running program: %v", err)
 	}
 	util.DebugEvent("shutdown")

@@ -102,6 +102,18 @@ describe('renderMarkdown', () => {
       expect(html).not.toContain('/api/files/inline')
     })
 
+    it('keeps protocol-relative video URLs as links', () => {
+      const html = renderMarkdown('[clip](//external.example/v.mp4)')
+      expect(html).not.toContain('<video')
+      expect(html).toContain('href="//external.example/v.mp4"')
+    })
+
+    it('keeps protocol-relative audio URLs as links', () => {
+      const html = renderMarkdown('[song](//external.example/a.mp3)')
+      expect(html).not.toContain('<audio')
+      expect(html).toContain('href="//external.example/a.mp3"')
+    })
+
     it('leaves data: image URLs untouched', () => {
       const html = renderMarkdown('![x](data:image/png;base64,AAAB)')
       expect(html).toContain('src="data:image/png;base64,AAAB"')
@@ -134,7 +146,7 @@ describe('renderMarkdown', () => {
       expect(html).toContain('&lt;img')
     })
 
-    it('strips <iframe> (frames disabled per Phase 0)', () => {
+    it('escapes <iframe> as text (html:false, no live iframe element)', () => {
       const html = renderMarkdown('<iframe src="https://evil.example"></iframe>')
       expect(html).not.toContain('<iframe')
     })

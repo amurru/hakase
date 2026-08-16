@@ -31,6 +31,14 @@ const (
 	StateIdle    = "idle"
 	StateWorking = "working"
 	StateBlocked = "blocked"
+
+	// commandTimeout bounds a single Herdr CLI invocation.
+	commandTimeout = 3 * time.Second
+
+	// releaseWait bounds how long Release waits for its queued command (and
+	// any work still ahead of it) before giving up: worst case one report
+	// pair mid-flight (2 x commandTimeout) plus the release command itself.
+	releaseWait = 3*commandTimeout + time.Second
 )
 
 // Reporter pushes state to a Herdr pane through the Herdr CLI. All methods are
@@ -95,6 +103,10 @@ func resolveHerdrBin() string {
 // the session is registered, so this must run before the state update; calling
 // it on every transition also re-registers the agent if the Herdr server has
 // been reloaded.
+//
+// Report never blocks: the session + state command pair is queued as a single
+// work item on the serialized report worker (see reportQueue). This matters
+// because the TUI calls Report from AppModel.View, on the render path.
 func (r *Reporter) Report(state, message, sessionID string) {
 	if r == nil {
 		return
@@ -118,14 +130,19 @@ func (r *Reporter) Report(state, message, sessionID string) {
 	// across the two calls in one Report so the state update always wins over
 	// the session registration and subsequent Reports always win over prior
 	// ones.
-	r.reportSession(seq, sessionID)
-	r.reportState(state, seq, message, sessionID)
+	sessionArgs := r.sessionArgs(seq, sessionID)
+	stateArgs := r.stateArgs(state, seq, message, sessionID)
+	submitReportWork(reportWork{
+		run: func() {
+			r.execSync(sessionArgs)
+			r.execSync(stateArgs)
+		},
+		droppable: true,
+	})
 }
 
-// reportSession registers (or refreshes) the hakase agent with Herdr. Without
-// this, report-agent updates are ignored and the agent never appears in
-// Herdr's agent menu.
-func (r *Reporter) reportSession(seq uint64, sessionID string) {
+// sessionArgs builds the report-agent-session command for a report pair.
+func (r *Reporter) sessionArgs(seq uint64, sessionID string) []string {
 	args := []string{
 		"pane", "report-agent-session", r.pane,
 		"--source", sourceName,
@@ -135,11 +152,11 @@ func (r *Reporter) reportSession(seq uint64, sessionID string) {
 	if sessionID != "" {
 		args = append(args, "--agent-session-id", sessionID)
 	}
-	r.exec(args)
+	return args
 }
 
-// reportState pushes the current lifecycle state.
-func (r *Reporter) reportState(state string, seq uint64, message, sessionID string) {
+// stateArgs builds the report-agent command for a report pair.
+func (r *Reporter) stateArgs(state string, seq uint64, message, sessionID string) []string {
 	args := []string{
 		"pane", "report-agent", r.pane,
 		"--source", sourceName,
@@ -153,7 +170,17 @@ func (r *Reporter) reportState(state string, seq uint64, message, sessionID stri
 	if sessionID != "" {
 		args = append(args, "--agent-session-id", sessionID)
 	}
-	r.exec(args)
+	return args
+}
+
+// releaseArgs builds the release-agent command.
+func (r *Reporter) releaseArgs(seq uint64) []string {
+	return []string{
+		"pane", "release-agent", r.pane,
+		"--source", sourceName,
+		"--agent", agentName,
+		"--seq", strconv.FormatUint(seq, 10),
+	}
 }
 
 // Release returns lifecycle authority for this source back to Herdr. Call it
@@ -162,6 +189,11 @@ func (r *Reporter) reportState(state string, seq uint64, message, sessionID stri
 // The --seq must be strictly greater than every prior report's seq, otherwise
 // Herdr treats the release as stale and keeps the agent registered (which is
 // exactly what left a stuck "hakase" entry in the agents menu on exit).
+//
+// Release waits (bounded by releaseWait) for the queued release command to
+// actually run before returning, because shutdown paths exit the process
+// immediately after calling it; a fire-and-forget release could be abandoned
+// with the agent still registered.
 func (r *Reporter) Release() {
 	if r == nil {
 		return
@@ -171,53 +203,142 @@ func (r *Reporter) Release() {
 	seq := r.seq
 	r.mu.Unlock()
 
-	r.exec([]string{
-		"pane", "release-agent", r.pane,
-		"--source", sourceName,
-		"--agent", agentName,
-		"--seq", strconv.FormatUint(seq, 10),
+	args := r.releaseArgs(seq)
+	done := make(chan struct{})
+	submitReportWork(reportWork{
+		run: func() { r.execSync(args) },
+		// Once authority is released, pending state reports are moot.
+		supersedes: true,
+		done:       done,
 	})
+
+	select {
+	case <-done:
+	case <-time.After(releaseWait):
+	}
 }
 
-// reportWorkQueue is a channel that queues report operations to a serialized
-// worker goroutine. This prevents blocking the TUI AppModel.View rendering.
-var reportWorkQueue chan func()
+// reportWork is one serialized unit of Herdr CLI work.
+type reportWork struct {
+	run func()
 
-var reportWorkQueueOnce sync.Once
+	// droppable marks supersede-able state reports. Any later enqueue removes
+	// pending droppable work from the queue: Herdr only honors the report
+	// with the highest --seq, so an older pending report is redundant.
+	droppable bool
+
+	// supersedes marks work (release) after which pending state reports are
+	// moot; enqueueing it clears all pending droppable work.
+	supersedes bool
+
+	// done is closed after run completes when the caller waits on it.
+	done chan struct{}
+}
+
+// reportQueue serializes Herdr CLI invocations onto one worker goroutine so
+// submitting work never blocks the caller (in particular the TUI render path,
+// which calls Report from AppModel.View). The queue is an unbounded slice:
+// coalescing in enqueue keeps at most one pending report pair queued, so it
+// cannot grow without bound.
+type reportQueue struct {
+	mu     sync.Mutex
+	items  []reportWork
+	notify chan struct{}
+}
+
+var (
+	rq     *reportQueue
+	rqOnce sync.Once
+)
 
 func initReportWorkQueue() {
-	reportWorkQueueOnce.Do(func() {
-		reportWorkQueue = make(chan func(), 100)
-		go reportWorker()
+	rqOnce.Do(func() {
+		rq = &reportQueue{notify: make(chan struct{}, 1)}
+		go rq.worker()
 	})
 }
 
-func reportWorker() {
-	for fn := range reportWorkQueue {
-		fn()
-	}
+// submitReportWork queues work and returns immediately; it never blocks.
+func submitReportWork(w reportWork) {
+	initReportWorkQueue()
+	rq.enqueue(w)
 }
 
-// exec runs the Herdr CLI in a separate goroutine with a short timeout so a
-// slow or missing daemon can never block the agent's UI thread. Output is
-// discarded so it cannot pollute the agent's terminal.
-// When reportWorkQueue is initialized (by calling a Report method), this
-// runs through the queued worker instead of blocking the caller.
-func (r *Reporter) exec(args []string) {
-	if reportWorkQueue != nil {
-		// Queue to worker if the queue is initialized
-		reportWorkQueue <- func() {
-			r.execSync(args)
+// enqueue adds work to the queue.
+//
+// A newly queued report carries a higher --seq than everything pending, and a
+// release makes pending state work moot; in both cases pending droppable work
+// is dropped first. This coalesces superseded state updates, keeps the queue
+// short, and means submission can never block on a full queue.
+func (q *reportQueue) enqueue(w reportWork) {
+	q.mu.Lock()
+	if w.droppable || w.supersedes {
+		kept := q.items[:0]
+		for _, it := range q.items {
+			if !it.droppable {
+				kept = append(kept, it)
+			}
 		}
-		return
+		q.items = kept
 	}
-	// Fallback to direct execution for backward compatibility
-	r.execSync(args)
+	q.items = append(q.items, w)
+	q.mu.Unlock()
+
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
 }
 
-// execSync is the actual implementation that runs the Herdr CLI command.
+// worker runs queued work serially, preserving queue order: a report pair's
+// session command always precedes its state command, and a release always
+// follows the work queued before it.
+func (q *reportQueue) worker() {
+	for range q.notify {
+		q.drain()
+	}
+}
+
+func (q *reportQueue) drain() {
+	for {
+		q.mu.Lock()
+		if len(q.items) == 0 {
+			q.mu.Unlock()
+			return
+		}
+		w := q.items[0]
+		q.items = q.items[1:]
+		q.mu.Unlock()
+
+		w.run()
+		if w.done != nil {
+			close(w.done)
+		}
+	}
+}
+
+// flush blocks until every work item queued before it has completed, bounded
+// by timeout. It reports whether the drain finished in time. Used by tests
+// that need deterministic reporting.
+func (r *Reporter) flush(timeout time.Duration) bool {
+	if r == nil {
+		return true
+	}
+	done := make(chan struct{})
+	submitReportWork(reportWork{run: func() {}, done: done})
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// execSync runs one Herdr CLI command with a short timeout so a slow or
+// missing daemon can never stall the worker for long. Output is discarded so
+// it cannot pollute the agent's terminal.
 func (r *Reporter) execSync(args []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Stdout = io.Discard
