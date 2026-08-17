@@ -783,18 +783,33 @@ func createListSkillsTool(cwd string, extraDirs []string, log LogFunc) (tool.Too
 			return ListSkillsOutput{}, err
 		}
 
-		mdSkillsRaw := deps.DiscoverMarkdownSkillsFn(cwd, extraDirs, log)
-		mdSkills := mdSkillsRaw.([]skill.MarkdownSkill)
-		mdMeta := make([]skill.MarkdownSkillMeta, 0, len(mdSkills))
-		for _, s := range mdSkills {
-			mdMeta = append(mdMeta, skill.MarkdownSkillMeta{
-				Name:        s.Frontmatter.Name,
-				Description: s.Frontmatter.Description,
-				Path:        s.Path,
-			})
+		disabled := skill.DisabledSkillsSet()
+		pythonSkills := make([]skill.SkillMeta, 0, len(registry.Skills))
+		for _, s := range registry.Skills {
+			if disabled[skill.SkillKey(skill.KindPython, s.Name)] {
+				continue
+			}
+			pythonSkills = append(pythonSkills, s)
 		}
 
-		return ListSkillsOutput{Skills: registry.Skills, MarkdownSkills: mdMeta}, nil
+		mdMeta := make([]skill.MarkdownSkillMeta, 0, 0)
+		if deps != nil && deps.DiscoverMarkdownSkillsFn != nil {
+			mdSkillsRaw := deps.DiscoverMarkdownSkillsFn(cwd, extraDirs, log)
+			mdSkills := mdSkillsRaw.([]skill.MarkdownSkill)
+			mdMeta = make([]skill.MarkdownSkillMeta, 0, len(mdSkills))
+			for _, s := range mdSkills {
+				if disabled[skill.SkillKey(skill.KindMarkdown, s.Frontmatter.Name)] {
+					continue
+				}
+				mdMeta = append(mdMeta, skill.MarkdownSkillMeta{
+					Name:        s.Frontmatter.Name,
+					Description: s.Frontmatter.Description,
+					Path:        s.Path,
+				})
+			}
+		}
+
+		return ListSkillsOutput{Skills: pythonSkills, MarkdownSkills: mdMeta}, nil
 	}
 
 	return util.NewDocTool(functiontool.Config{
@@ -818,10 +833,25 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 		}
 	}
 
+	// Disabled skills are excluded from the agent's view, matching the
+	// persistent enable/disable state managed from the web UI. A disabled
+	// markdown skill also stops shadowing a same-named Python skill.
+	disabled := skill.DisabledSkillsSet()
+	mdEnabled := make([]skill.MarkdownSkill, 0, len(mdSkills))
+	for _, s := range mdSkills {
+		if disabled[skill.SkillKey(skill.KindMarkdown, s.Frontmatter.Name)] {
+			if log != nil {
+				log(fmt.Sprintf("[skills] Skipping disabled markdown skill '%s'", s.Frontmatter.Name))
+			}
+			continue
+		}
+		mdEnabled = append(mdEnabled, s)
+	}
+
 	// Markdown skill names take precedence; colliding Python entries are
 	// omitted from the prompt (the .py file remains on disk and importable).
-	mdNames := make(map[string]bool, len(mdSkills))
-	for _, s := range mdSkills {
+	mdNames := make(map[string]bool, len(mdEnabled))
+	for _, s := range mdEnabled {
 		mdNames[s.Frontmatter.Name] = true
 	}
 
@@ -838,10 +868,16 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 			}
 			continue
 		}
+		if disabled[skill.SkillKey(skill.KindPython, s.Name)] {
+			if log != nil {
+				log(fmt.Sprintf("[skills] Skipping disabled Python skill '%s'", s.Name))
+			}
+			continue
+		}
 		pythonSkills = append(pythonSkills, s)
 	}
 
-	if len(pythonSkills) == 0 && len(mdSkills) == 0 {
+	if len(pythonSkills) == 0 && len(mdEnabled) == 0 {
 		return "No pre-existing skills currently saved."
 	}
 
@@ -858,7 +894,7 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 			),
 		)
 	}
-	for _, s := range mdSkills {
+	for _, s := range mdEnabled {
 		sb.WriteString(
 			fmt.Sprintf(
 				"- Skill: '%s' (markdown)\n  Description: %s\n  Location: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
@@ -918,6 +954,12 @@ func CreateLoadMarkdownSkillTool(
 		}
 		if !ok {
 			return LoadMarkdownSkillOutput{}, fmt.Errorf("skill not found: %s", input.Name)
+		}
+		if skill.IsSkillDisabled(skill.KindMarkdown, input.Name) {
+			if log != nil {
+				log(fmt.Sprintf("[skills] Refusing to load disabled skill '%s'", input.Name))
+			}
+			return LoadMarkdownSkillOutput{}, fmt.Errorf("skill is disabled: %s", input.Name)
 		}
 		if log != nil {
 			log(fmt.Sprintf("[skills] Loaded markdown skill '%s'", input.Name))

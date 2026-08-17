@@ -5,6 +5,7 @@ import App from './App.vue'
 import { useAuthStore } from './stores/auth'
 import { useThemeStore } from './stores/theme'
 import 'katex/dist/katex.min.css'
+import 'vue-sonner/style.css'
 import './assets/globals.css'
 
 const app = createApp(App)
