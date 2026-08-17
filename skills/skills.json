@@ -29,6 +29,12 @@
       "description": "Creates a beautiful, multi-page, printable to-do list PDF template with elegant minimalist design. Inspired by modern online design trends from sources like Canva, Pinterest, Adobe, and Vertex42. Includes daily tasks, weekly planning with Eisenhower Box, general project tasks, goal setting and reflection sections, and a monthly habit tracker. Parameterized by output path, page size, color scheme, and section inclusion options.",
       "file_name": "create_stylish_todo_list.py",
       "saved_at": "2026-08-02T00:17:00+03:00"
+    },
+    {
+      "name": "moon_phase_calculator",
+      "description": "Computes the lunar phase for any given date/time using simplified astronomical formulas: mean Sun-Earth-Moon elongation, illuminated fraction (0-100% as seen from Earth), and the traditional eight-phase name (new, waxing crescent, first quarter, waxing gibbous, full, waning gibbous, last quarter, waning crescent). Pure Python standard library, parameterized by datetime (defaults to now UTC).",
+      "file_name": "moon_phase_calculator.py",
+      "saved_at": "2026-08-17T18:25:00+03:00"
     }
   ]
 }

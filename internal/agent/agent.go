@@ -248,6 +248,7 @@ When writing code intended to be saved as a skill via 'save_skill':
    - Step A: Verify execution using 'python_interpreter'.
    - Step B: Once execution is verified with valid output, you MUST immediately call 'save_skill' to store it in ./skills/!
 3. NO DUPLICATION: Do not save a new skill if an identical capability is already present in your installed skills list.
+4. EPHEMERAL SCRATCH: The interpreter runs your code from a transient scratch file (.hakase-tmp/script.py) that is overwritten on every run - it is NOT a durable artifact and never a deliverable. Persist anything worth keeping via 'save_skill' (reusable code) or './outputs/' (artifacts); never present a leftover scratch script as a result.
 ` + DiagramInstruction + UntrustedContentPolicy
 
 // LogFunc is a thread-safe callback function to send status logs to the TUI
