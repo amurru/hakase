@@ -75,6 +75,7 @@ graph TD
     B --> C[Done]
 ` + "```" + `
 `
+
 const HakaseSystemInstruction = `You are a high-autonomy, general-purpose research and navigation agent modeled after the Hermes Agent framework.
 
 ### CORE OPERATIONAL PRINCIPLES:
@@ -120,10 +121,40 @@ const cacheExpiry = 5 * time.Minute
 // and to prefer live search results over outdated training data.
 // The cache is scoped to the caller's session ID (if available in context) and
 // expires after cacheExpiry to handle midnight crossovers and timezone changes.
+
+// buildUnitsReminder renders the preferred-measurement-units system reminder,
+// injected into every agent's instruction so the agent reports physical
+// quantities (length, mass, volume, temperature, speed, area) in the user's
+// preferred system. system is "metric" (SI/ISO, default) or "imperial".
+func buildUnitsReminder(system string) string {
+	if system == "imperial" {
+		return `` +
+			`### PREFERRED MEASUREMENT UNITS:` + "\n" +
+			`The user prefers the IMPERIAL system. Report all physical quantities in imperial units:` + "\n" +
+			`- length: feet (ft) / miles (mi)` + "\n" +
+			`- mass: ounces (oz) / pounds (lb)` + "\n" +
+			`- volume: US fluid ounces (fl oz) / cups / pints / quarts / gallons` + "\n" +
+			`- temperature: degrees Fahrenheit (°F)` + "\n" +
+			`- speed: miles per hour (mph)` + "\n" +
+			`- area: square feet (sq ft) / acres` + "\n" +
+			`When a source gives a value in another system, convert it and present the imperial value (you may show the original in parentheses on first mention). If the user explicitly asks for another system, follow the request.`
+	}
+	return `` +
+		`### PREFERRED MEASUREMENT UNITS:` + "\n" +
+		`The user prefers the METRIC system (SI / ISO). Report all physical quantities in metric units:` + "\n" +
+		`- length: meters (m) / kilometers (km)` + "\n" +
+		`- mass: grams (g) / kilograms (kg)` + "\n" +
+		`- volume: milliliters (mL) / liters (L)` + "\n" +
+		`- temperature: degrees Celsius (°C)` + "\n" +
+		`- speed: kilometers per hour (km/h)` + "\n" +
+		`- area: square meters (m²) / hectares (ha)` + "\n" +
+		`When a source gives a value in another system, convert it and present the metric value (you may show the original in parentheses on first mention). If the user explicitly asks for another system, follow the request.`
+}
+
 func buildTimeReminder() string {
 	now := time.Now()
 	zoneName, _ := now.Zone()
-	
+
 	// Build the current time reminder
 	currentReminder := fmt.Sprintf(`
 ### SYSTEM REMINDER - CURRENT DATE & TIME:
@@ -136,25 +167,25 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 		zoneName,
 		now.Format("-07:00"),
 	)
-	
+
 	// Use the current timestamp (truncated to minute) as cache key to share
 	// within the same minute across all runners, but force refresh on minute boundary
 	cacheKey := now.Format("2006-01-02-15:04")
-	
+
 	// Check if we have a valid cached entry
 	if cached, ok := timeReminderCache.Load(cacheKey); ok {
 		if entry, ok := cached.(timeReminderCacheEntry); ok && now.Before(entry.expiresAt) {
 			return entry.value
 		}
 	}
-	
+
 	// Store the new reminder with expiry
 	entry := timeReminderCacheEntry{
 		value:     currentReminder,
 		expiresAt: now.Add(cacheExpiry),
 	}
 	timeReminderCache.Store(cacheKey, entry)
-	
+
 	// Clean up expired entries periodically (simple cleanup - in production,
 	// this would be a background goroutine with proper cleanup logic)
 	if now.Minute()%5 == 0 && now.Second() < 10 {
@@ -167,7 +198,7 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 			return true
 		})
 	}
-	
+
 	return currentReminder
 }
 
@@ -1533,6 +1564,12 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}
 	}
 
+	// Render the preferred-measurement-units system-reminder block once per
+	// session (metric/ISO by default, imperial when selected) and inject it
+	// into every agent's instruction so the agent reports physical quantities
+	// in the user's preferred units.
+	unitsBlock := buildUnitsReminder(config.EffectiveUnitsSystem(cfg))
+
 	provider, err := ProviderFactory(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create provider: %w", err)
@@ -1653,7 +1690,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"web_researcher",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		),
+		) + "\n\n" + unitsBlock,
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              researcherToolsets,
@@ -1725,7 +1762,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"code_interpreter",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		),
+		) + "\n\n" + unitsBlock,
 		Model: model,
 		Tools: []tool.Tool{
 			pythonTool,
@@ -1762,7 +1799,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"general_purpose",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		),
+		) + "\n\n" + unitsBlock,
 		Model:                 model,
 		Tools:                 append(fileOpsTools, visionTool),
 		GenerateContentConfig: genCfg,
@@ -1847,7 +1884,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"orchestrator",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		),
+		) + "\n\n" + unitsBlock,
 		Model:                 model,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{

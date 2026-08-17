@@ -81,6 +81,16 @@ type SystemEnvConfig struct {
 	ApplyTo []string `json:"apply_to,omitempty"`
 }
 
+// UnitsConfig tunes the user's preferred measurement system. It is rendered
+// as a system-reminder block so the agent reports physical quantities (length,
+// mass, volume, temperature, speed, area) in the user's preferred units.
+// Unset defaults to the metric (SI/ISO) system.
+type UnitsConfig struct {
+	// System selects the preferred measurement system: "metric" (SI/ISO;
+	// default) or "imperial". An empty/missing value uses metric.
+	System string `json:"system,omitempty"`
+}
+
 // AuthConfig tunes the web authentication layer (cookie security, login
 // hardening). Zero values are the secure defaults.
 type AuthConfig struct {
@@ -115,6 +125,10 @@ type Config struct {
 	// instructions. Absent = enabled with default caps. Set enabled:false to
 	// disable, max_chars to cap the rendered block.
 	SystemEnv SystemEnvConfig `json:"system_env,omitempty"`
+	// Units tunes the user's preferred measurement system injected as a
+	// system-reminder block so the agent reports quantities in the user's
+	// preferred units. Absent = metric (SI/ISO).
+	Units UnitsConfig `json:"units,omitempty"`
 	MCPServerURL string             `json:"mcp_server_url"`
 	// MCPServers configures MCP servers (see mcp_config.go). Legacy
 	// mcp_server_url is auto-migrated into the "lightpanda" server.
@@ -335,6 +349,15 @@ func (c *Config) EffectiveModelName() string {
 		return name
 	}
 	return DefaultModelForProvider(c.Provider)
+}
+
+// EffectiveUnitsSystem normalizes the configured units system, defaulting to
+// "metric" (SI/ISO) when unset or invalid. Only "imperial" selects imperial.
+func EffectiveUnitsSystem(cfg *Config) string {
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Units.System), "imperial") {
+		return "imperial"
+	}
+	return "metric"
 }
 
 // MarshalJSON implements json.Marshaler. It redacts sensitive map values in

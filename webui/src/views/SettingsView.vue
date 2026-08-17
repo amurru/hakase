@@ -45,6 +45,8 @@ interface SettingsForm {
   system_env_max_chars: number
   system_env_apply_to: string
 
+  units_system: string
+
   sandbox_mode: string
   sandbox_workspace_roots: string
   sandbox_read_roots: string
@@ -99,9 +101,12 @@ const form = ref<SettingsForm>({
   model_vision: 'auto',
   context_files_max_chars: 20000,
   context_files_apply_to: '',
-  system_env_enabled: true,
-  system_env_max_chars: 800,
-  system_env_apply_to: '',
+    system_env_enabled: true,
+    system_env_max_chars: 800,
+    system_env_apply_to: '',
+
+    units_system: 'metric',
+
   sandbox_mode: 'paths',
   sandbox_workspace_roots: '.',
   sandbox_read_roots: '',
@@ -144,6 +149,7 @@ function fillForm(cfg: ConfigResponse['config']) {
   const cl = asObj(cfg.clarify)
   const cf = asObj(cfg.context_files)
   const se = asObj(cfg.system_env)
+  const un = asObj(cfg.units)
 
   form.value = {
     provider: asStr(cfg.provider),
@@ -171,6 +177,8 @@ function fillForm(cfg: ConfigResponse['config']) {
     system_env_enabled: asBool(se?.enabled, true),
     system_env_max_chars: asNum(se?.max_chars) || 800,
     system_env_apply_to: asList(se?.apply_to),
+
+    units_system: asStr(un?.system) || 'metric',
 
     sandbox_mode: asStr(sb?.mode) || 'paths',
     sandbox_workspace_roots: asList(sb?.workspace_roots),
@@ -290,6 +298,13 @@ function buildPayload(): Record<string, unknown> {
     sePatch.apply_to = toList(form.value.system_env_apply_to)
   }
   if (Object.keys(sePatch).length > 0) p.system_env = sePatch
+
+  // units block
+  const un = asObj(o.units) || {}
+  const unitsSystemDefault = un.system === undefined ? 'metric' : asStr(un.system)
+  if (form.value.units_system !== unitsSystemDefault) {
+    p.units = { system: form.value.units_system }
+  }
 
   // sandbox block
   const sb = asObj(o.sandbox) || {}
@@ -822,6 +837,31 @@ onMounted(loadConfig)
                        class="h-4 w-4 rounded border-input" />
                 Inject runtime environment block
               </label>
+            </CardContent>
+          </Card>
+
+          <!-- Preferred Units -->
+          <Card>
+            <CardHeader>
+              <CardTitle>Preferred Measurement Units</CardTitle>
+              <CardDescription>
+                The agent reports physical quantities (distance, mass, volume, temperature, speed, area)
+                in your preferred system. Defaults to metric (SI / ISO) when unset.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="grid gap-2">
+                <Label for="units_system">Measurement system</Label>
+                <select
+                  id="units_system"
+                  v-model="form.units_system"
+                  :disabled="!writable"
+                  class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3"
+                >
+                  <option value="metric">Metric (meters, kg, liters, °C)</option>
+                  <option value="imperial">Imperial (miles, lb, gallons, °F)</option>
+                </select>
+              </div>
             </CardContent>
           </Card>
 

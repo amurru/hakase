@@ -14,6 +14,9 @@
     "max_chars": 800,
     "apply_to": []
   },
+  "units": {
+    "system": "metric"
+  },
   "mcp_server_url": "http://localhost:9223/mcp",
   "mcp": {
     "servers": {

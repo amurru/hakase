@@ -118,6 +118,7 @@ var editableConfigKeys = []string{
 	"show_thinking",
 	"system_env",
 	"context_files",
+	"units",
 	"sandbox",
 	"loop_guard",
 	"approval",
@@ -249,6 +250,15 @@ func validateConfigUpdate(req map[string]interface{}) error {
 		if enabled, ok := v["enabled"]; ok {
 			if _, ok := enabled.(bool); !ok {
 				return fmt.Errorf("system_env.enabled must be a boolean")
+			}
+		}
+	}
+	if v, ok := req["units"].(map[string]interface{}); ok {
+		if sys, ok := v["system"].(string); ok && sys != "" {
+			switch sys {
+			case "metric", "imperial":
+			default:
+				return fmt.Errorf("units.system must be metric or imperial")
 			}
 		}
 	}

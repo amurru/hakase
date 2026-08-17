@@ -67,6 +67,7 @@ sessions/
 # agentic
 .omc
 .omo
+.mimosa
 
 # dev-mode structured debug logs
 logs/

@@ -284,6 +284,21 @@ hakase rules list    # list the context files that would be loaded (render order
 hakase rules show AGENTS.md   # show one file's content (path or basename)
 ```
 
+### 📐 Preferred Measurement Units
+
+hakase can report physical quantities (distance, mass, volume, temperature, speed, area) in your preferred measurement system. Set `units.system` in `config.json` (or in the web UI's **Settings → Preferred Measurement Units**):
+
+```json
+{
+  "units": { "system": "metric" }
+}
+```
+
+- `metric` (default) — meters/km, kilograms, liters, degrees Celsius, km/h, m²/ha (SI / ISO).
+- `imperial` — miles, pounds, US gallons, degrees Fahrenheit, mph, sq ft/acres.
+
+When unset, metric (SI / ISO) is used for every agent. The preference is injected as a system reminder into every agent's instruction, so the agent converts and presents values in your chosen system whenever a task involves units (the original value may be shown in parentheses on first mention). The user can always override per-task by asking for a specific system.
+
 ### 🖥️ Runtime Environment Awareness
 
 At session start hakase detects the environment it runs on and injects a compact
