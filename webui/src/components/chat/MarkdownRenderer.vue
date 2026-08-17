@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { renderMarkdown } from '@/lib/markdown'
 import { useMermaid } from '@/composables/useMermaid'
+import ImageLightbox from './ImageLightbox.vue'
 
 const props = defineProps<{
   content: string
@@ -10,6 +11,7 @@ const props = defineProps<{
 
 const rootEl = ref<HTMLElement>()
 const mermaid = useMermaid()
+const lightbox = ref<InstanceType<typeof ImageLightbox>>()
 
 const rendered = computed(() => renderMarkdown(props.content))
 
@@ -24,6 +26,19 @@ function afterRender() {
 onMounted(afterRender)
 watch(() => props.content, afterRender)
 onBeforeUnmount(() => mermaid.dispose())
+
+function handleImageClick(e: Event) {
+  const img = (e.target as HTMLElement).closest<HTMLImageElement>('img')
+  if (!img) return
+  lightbox.value?.show(img.currentSrc || img.src, img.alt || '')
+}
+
+// Combined click handler: image clicks open the lightbox, copy-button clicks
+// copy code, everything else is ignored.
+function handleContentClick(e: Event) {
+  handleImageClick(e)
+  handleCopy(e)
+}
 
 // ---------------------------------------------------------------------------
 // Copy-to-clipboard on fenced code blocks. markdown-it renders `<pre><code>`,
@@ -107,8 +122,9 @@ function attachCopyButtons(root: HTMLElement) {
            prose-blockquote:border-l-primary/40 prose-blockquote:text-muted-foreground
            prose-hr:border-border"
     v-html="rendered"
-    @click="handleCopy"
+    @click="handleContentClick"
   />
+  <ImageLightbox ref="lightbox" />
 </template>
 
 <style>
@@ -149,8 +165,11 @@ function attachCopyButtons(root: HTMLElement) {
 }
 
 .markdown-body img {
-  border-radius: 0.5rem;
+  display: block;
   max-width: 100%;
+  margin: 1.25rem auto;
+  border-radius: 0.5rem;
+  cursor: zoom-in;
 }
 
 .markdown-body a {

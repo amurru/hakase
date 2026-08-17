@@ -10,7 +10,10 @@
 //
 // Workspace-relative URLs (no scheme, no leading slash, no fragment) are
 // rewritten to the authenticated inline file route so local artifacts render.
-// Absolute http(s) and data: URLs pass through untouched (CSP permitting).
+// Absolute http(s) image URLs are proxied through the agent server
+// (/api/files/proxy) so external photos render under the strict CSP
+// (img-src 'self' data: https:) without the browser hitting the remote host
+// directly. data: URLs and protocol-relative URLs pass through untouched.
 // Unknown extensions and non-media links are left alone (no behavior change).
 
 import MarkdownIt from 'markdown-it'
@@ -63,6 +66,23 @@ function isSameOriginOrDataUrl(src: string): boolean {
   }
   // All other protocols are external and should remain as links
   return false
+}
+
+// isExternalHttpUrl reports whether src is an absolute http(s) URL.
+function isExternalHttpUrl(src: string): boolean {
+  return /^https?:\/\//i.test(src)
+}
+
+// rewriteImageSrc rewrites an image src to a same-origin servable route:
+// workspace-relative paths go to the inline file route and absolute http(s)
+// URLs are proxied through the agent server (/api/files/proxy). data: URLs,
+// protocol-relative URLs, and everything else pass through unchanged.
+function rewriteImageSrc(src: string): string {
+  if (isWorkspaceRelative(src)) return rewriteSrc(src)
+  if (isExternalHttpUrl(src)) {
+    return `/api/files/proxy?url=${encodeURIComponent(src)}`
+  }
+  return src
 }
 
 // rewriteSrc rewrites a workspace-relative src/href to the authenticated inline
@@ -127,7 +147,7 @@ export function mediaLinks(): MarkdownIt.PluginSimple {
             const kind = kindFor(src)
             if (!kind) continue
             if (kind === 'image') {
-              tok.attrSet('src', rewriteSrc(src))
+              tok.attrSet('src', rewriteImageSrc(src))
               continue
             }
             // A video/audio extension on an image token -> convert to media_tag
@@ -154,7 +174,11 @@ export function mediaLinks(): MarkdownIt.PluginSimple {
             }
             if (closeIdx < 0) continue
             const alt = collectText(children, j + 1, closeIdx)
-            children.splice(j, closeIdx - j + 1, makeMediaTag(kind, rewriteSrc(href), alt))
+            children.splice(
+              j,
+              closeIdx - j + 1,
+              makeMediaTag(kind, kind === 'image' ? rewriteImageSrc(href) : rewriteSrc(href), alt),
+            )
           }
         }
       }

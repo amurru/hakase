@@ -96,10 +96,21 @@ describe('renderMarkdown', () => {
       expect(html).toContain('src="/api/files/inline?path=tone.mp3"')
     })
 
-    it('leaves external image URLs untouched', () => {
+    it('proxies external http(s) image URLs through the agent server', () => {
       const html = renderMarkdown('![x](https://example.com/a.png)')
-      expect(html).toContain('<img src="https://example.com/a.png"')
-      expect(html).not.toContain('/api/files/inline')
+      expect(html).toContain('src="/api/files/proxy?url=https%3A%2F%2Fexample.com%2Fa.png"')
+      expect(html).not.toContain('src="https://example.com/a.png"')
+    })
+
+    it('proxies external image URLs in links through the agent server', () => {
+      const html = renderMarkdown('[x](http://example.com/b.jpg)')
+      expect(html).toContain('src="/api/files/proxy?url=http%3A%2F%2Fexample.com%2Fb.jpg"')
+    })
+
+    it('keeps protocol-relative image URLs untouched (no proxy, no scheme)', () => {
+      const html = renderMarkdown('![x](//external.example/c.png)')
+      expect(html).toContain('src="//external.example/c.png"')
+      expect(html).not.toContain('/api/files/proxy')
     })
 
     it('keeps protocol-relative video URLs as links', () => {
