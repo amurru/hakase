@@ -50,6 +50,10 @@ type ConfigResponse struct {
 	HasAPIKey bool `json:"has_api_key"`
 	// HasVisionAPIKey reports whether a vision_api_key is configured.
 	HasVisionAPIKey bool `json:"has_vision_api_key"`
+	// EffectiveModel is the model the agent will actually use, resolved from the
+	// configured model_name or the provider default. Exposed so the web UI can
+	// label the active model without recomputing provider defaults client-side.
+	EffectiveModel string `json:"effective_model"`
 	// Config holds the sanitized config values (api keys blanked).
 	Config config.Config `json:"config"`
 }
@@ -85,6 +89,7 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 		Writable:        writable,
 		HasAPIKey:       hasKey,
 		HasVisionAPIKey: hasVisionKey,
+		EffectiveModel:  cfg.EffectiveModelName(),
 		Config:          *cfg,
 	})
 }
@@ -113,6 +118,7 @@ var editableConfigKeys = []string{
 	"show_thinking",
 	"system_env",
 	"context_files",
+	"units",
 	"sandbox",
 	"loop_guard",
 	"approval",
@@ -244,6 +250,25 @@ func validateConfigUpdate(req map[string]interface{}) error {
 		if enabled, ok := v["enabled"]; ok {
 			if _, ok := enabled.(bool); !ok {
 				return fmt.Errorf("system_env.enabled must be a boolean")
+			}
+		}
+	}
+	if raw, present := req["units"]; present {
+		v, ok := raw.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("units must be an object")
+		}
+		if rawSystem, present := v["system"]; present {
+			sys, ok := rawSystem.(string)
+			if !ok {
+				return fmt.Errorf("units.system must be a string")
+			}
+			if sys != "" {
+				switch sys {
+				case "metric", "imperial":
+				default:
+					return fmt.Errorf("units.system must be metric or imperial")
+				}
 			}
 		}
 	}

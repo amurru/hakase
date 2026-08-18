@@ -336,3 +336,182 @@ func TestLoadMarkdownSkillNotFound(t *testing.T) {
 		t.Errorf("expected error containing %q, got %q", "skill not found", err.Error())
 	}
 }
+
+func TestGetSkillsPromptExcludesDisabled(t *testing.T) {
+	isolateHome(t)
+	sandbox := t.TempDir()
+	t.Chdir(sandbox)
+	makeGitDir(t, sandbox)
+
+	writePythonRegistry(t, sandbox, []skill.SkillMeta{
+		{Name: "render_card", Description: "Renders an HTML card to PNG", FileName: "render_card.py", SavedAt: "2026-08-01T00:00:00Z"},
+		{Name: "extract_pdf", Description: "Extracts tables from PDFs", FileName: "extract_pdf.py", SavedAt: "2026-08-01T00:00:00Z"},
+	})
+	writeMarkdownSkillWithScripts(t, filepath.Join(sandbox, ".agents", "skills"), "data-cleaner", "Cleans raw datasets", "Steps:\n1. Load the CSV.\n")
+
+	if err := skill.SetSkillDisabled(skill.KindPython, "render_card", true); err != nil {
+		t.Fatalf("SetSkillDisabled(render_card): %v", err)
+	}
+	if err := skill.SetSkillDisabled(skill.KindMarkdown, "data-cleaner", true); err != nil {
+		t.Fatalf("SetSkillDisabled(data-cleaner): %v", err)
+	}
+
+	var msgs []string
+	log := func(msg string) { msgs = append(msgs, msg) }
+
+	mdSkills := DiscoverMarkdownSkillsForTest(sandbox, nil, log)
+	if len(mdSkills) != 1 {
+		t.Fatalf("expected 1 discovered markdown skill, got %d", len(mdSkills))
+	}
+
+	prompt := getSkillsPrompt(mdSkills, log)
+
+	if strings.Contains(prompt, "render_card") {
+		t.Errorf("disabled python skill must be excluded from prompt:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "data-cleaner") {
+		t.Errorf("disabled markdown skill must be excluded from prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "extract_pdf") {
+		t.Errorf("enabled python skill must stay in prompt:\n%s", prompt)
+	}
+
+	wantDisabledLogs := []string{
+		"[skills] Skipping disabled markdown skill 'data-cleaner'",
+		"[skills] Skipping disabled Python skill 'render_card'",
+	}
+	for _, want := range wantDisabledLogs {
+		var logged bool
+		for _, m := range msgs {
+			if m == want {
+				logged = true
+			}
+		}
+		if !logged {
+			t.Errorf("expected log %q, got logs: %v", want, msgs)
+		}
+	}
+}
+
+func TestGetSkillsPromptDisabledCollision(t *testing.T) {
+	isolateHome(t)
+	sandbox := t.TempDir()
+	t.Chdir(sandbox)
+	makeGitDir(t, sandbox)
+
+	writePythonRegistry(t, sandbox, []skill.SkillMeta{
+		{Name: "shared", Description: "Python version of shared", FileName: "shared.py", SavedAt: "2026-08-01T00:00:00Z"},
+	})
+	writeMarkdownSkillWithScripts(t, filepath.Join(sandbox, ".agents", "skills"), "shared", "Markdown version of shared", "Use the markdown version.\n")
+
+	if err := skill.SetSkillDisabled(skill.KindMarkdown, "shared", true); err != nil {
+		t.Fatalf("SetSkillDisabled(shared): %v", err)
+	}
+
+	var msgs []string
+	log := func(msg string) { msgs = append(msgs, msg) }
+
+	mdSkills := DiscoverMarkdownSkillsForTest(sandbox, nil, log)
+
+	prompt := getSkillsPrompt(mdSkills, log)
+
+	// Disabling the markdown skill lifts its shadow: the python twin becomes
+	// visible again.
+	if !strings.Contains(prompt, "- Skill: 'shared'") {
+		t.Errorf("python twin should be visible once the markdown skill is disabled:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "(markdown)") {
+		t.Errorf("disabled markdown skill must be excluded from prompt:\n%s", prompt)
+	}
+}
+
+func TestLoadMarkdownSkillDisabled(t *testing.T) {
+	isolateHome(t)
+	root := t.TempDir()
+	makeGitDir(t, root)
+	writeMarkdownSkillWithScripts(t, filepath.Join(root, ".agents", "skills"), "data-cleaner", "Cleans raw datasets", "Body\n")
+
+	if err := skill.SetSkillDisabled(skill.KindMarkdown, "data-cleaner", true); err != nil {
+		t.Fatalf("SetSkillDisabled(data-cleaner): %v", err)
+	}
+
+	var msgs []string
+	log := func(msg string) { msgs = append(msgs, msg) }
+
+	skills := DiscoverMarkdownSkillsForTest(root, nil, log)
+	loadTool, err := CreateLoadMarkdownSkillTool(skills, root, nil, log)
+	if err != nil {
+		t.Fatalf("createLoadMarkdownSkillTool: %v", err)
+	}
+
+	runnable, ok := loadTool.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	})
+	if !ok {
+		t.Fatalf("tool %T does not expose Run", loadTool)
+	}
+
+	ctx := agent.NewContext(&agent.ContextMock{})
+	_, err = runnable.Run(ctx, map[string]any{"name": "data-cleaner"})
+	if err == nil {
+		t.Fatal("expected error for disabled skill")
+	}
+	if !strings.Contains(err.Error(), "skill is disabled") {
+		t.Errorf("expected error containing %q, got %q", "skill is disabled", err.Error())
+	}
+}
+
+func TestListSkillsToolExcludesDisabled(t *testing.T) {
+	isolateHome(t)
+	sandbox := t.TempDir()
+	t.Chdir(sandbox)
+	makeGitDir(t, sandbox)
+
+	writePythonRegistry(t, sandbox, []skill.SkillMeta{
+		{Name: "render_card", Description: "Renders an HTML card to PNG", FileName: "render_card.py", SavedAt: "2026-08-01T00:00:00Z"},
+		{Name: "extract_pdf", Description: "Extracts tables from PDFs", FileName: "extract_pdf.py", SavedAt: "2026-08-01T00:00:00Z"},
+	})
+	writeMarkdownSkillWithScripts(t, filepath.Join(sandbox, ".agents", "skills"), "data-cleaner", "Cleans raw datasets", "Steps:\n")
+
+	if err := skill.SetSkillDisabled(skill.KindPython, "render_card", true); err != nil {
+		t.Fatalf("SetSkillDisabled(render_card): %v", err)
+	}
+	if err := skill.SetSkillDisabled(skill.KindMarkdown, "data-cleaner", true); err != nil {
+		t.Fatalf("SetSkillDisabled(data-cleaner): %v", err)
+	}
+
+	var msgs []string
+	log := func(msg string) { msgs = append(msgs, msg) }
+
+	lsTool, err := createListSkillsTool(sandbox, nil, log)
+	if err != nil {
+		t.Fatalf("createListSkillsTool: %v", err)
+	}
+	runnable, ok := lsTool.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	})
+	if !ok {
+		t.Fatalf("tool %T does not expose Run", lsTool)
+	}
+
+	ctx := agent.NewContext(&agent.ContextMock{})
+	result, err := runnable.Run(ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out ListSkillsOutput
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(out.Skills) != 1 || out.Skills[0].Name != "extract_pdf" {
+		t.Errorf("expected only extract_pdf python skill, got %+v", out.Skills)
+	}
+	if len(out.MarkdownSkills) != 0 {
+		t.Errorf("expected no markdown skills (all disabled), got %+v", out.MarkdownSkills)
+	}
+}

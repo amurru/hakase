@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi/kitty"
 	"github.com/doug/termtex"
 )
@@ -86,9 +86,6 @@ func newMathRenderer() *MathRenderer {
 		pngCache:    make(map[string][]byte),
 		imageIDs:    make(map[string]int),
 	}
-	if mr.kittyOK {
-		mr.detectTerminalColors()
-	}
 	return mr
 }
 
@@ -128,57 +125,7 @@ func detectMathToolchain() bool {
 // canRenderImages reports whether the kitty PNG path is available.
 func (mr *MathRenderer) canRenderImages() bool {
 	return mr.kittyOK && mr.toolchainOK && !mr.asciiMode
-}
-
-// detectTerminalColors queries the terminal background color via the OSC 11
-// escape sequence and picks a contrasting glyph color. Failures are silent:
-// the fields stay empty and the renderer falls back to a white-card PNG.
-func (mr *MathRenderer) detectTerminalColors() {
-	bg, ok := queryTerminalBGColor()
-	if !ok {
-		return
 	}
-	mr.bgColor = bg
-	if useWhiteText(bg) {
-		mr.textColor = "white"
-	} else {
-		mr.textColor = "black"
-	}
-}
-
-// queryTerminalBGColor sends the OSC 11 query (background color) to the
-// controlling terminal and parses the response. A read timeout (goroutine +
-// select) keeps it from hanging on terminals that do not answer. Returns the
-// background color as a lowercase 6-hex string.
-func queryTerminalBGColor() (string, bool) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return "", false
-	}
-	defer tty.Close()
-
-	if _, err := tty.WriteString("\x1b]11;?\x1b\\"); err != nil {
-		return "", false
-	}
-
-	resp := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 512)
-		n, err := tty.Read(buf)
-		if err != nil || n == 0 {
-			resp <- ""
-			return
-		}
-		resp <- string(buf[:n])
-	}()
-
-	select {
-	case s := <-resp:
-		return parseOSC11(s)
-	case <-time.After(300 * time.Millisecond):
-		return "", false
-	}
-}
 
 // parseOSC11 extracts an rgb color from an OSC 11 response. Handles the
 // rgb:RRRR/GGGG/BBBB form (kitty, 16-bit channels), the rgb:RR/GG/BB form
@@ -237,6 +184,33 @@ func useWhiteText(bgHex string) bool {
 	b, _ := strconv.ParseInt(bgHex[4:6], 16, 32)
 	lum := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
 	return lum < 128
+}
+
+// ApplyBackgroundColor records the terminal background color reported by
+// bubbletea's RequestBackgroundColor command and picks a contrasting glyph
+// color. It is called from the TUI event loop (never at construction), so the
+// OSC 11 background-color query and its response stay inside bubbletea's
+// terminal handling and the response never leaks to the visible main screen
+// before the alt screen is active.
+func (mr *MathRenderer) ApplyBackgroundColor(msg tea.BackgroundColorMsg) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	
+	newBgColor := "000000"
+	newTextColor := "black"
+	if msg.IsDark() {
+		newTextColor = "white"
+	}
+	
+	// Clear caches when background or text color changes to force re-rendering
+	// with the new colors. The nextImageID counter is preserved to maintain
+	// monotonicity.
+	if mr.bgColor != newBgColor || mr.textColor != newTextColor {
+		mr.pngCache = make(map[string][]byte)
+		mr.imageIDs = make(map[string]int)
+		mr.bgColor = newBgColor
+		mr.textColor = newTextColor
+	}
 }
 
 // RenderMarkdown renders markdown content with math support to ANSI-styled,

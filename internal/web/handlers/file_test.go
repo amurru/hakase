@@ -115,3 +115,79 @@ func TestFilesHandlerSandbox(t *testing.T) {
 		}
 	})
 }
+
+// TestInlineFileHandler is a table-driven test for GET /api/files/inline:
+// 200 with inline disposition for a workspace file, 403 outside the sandbox,
+// 404 for a missing file, and 400 for a directory.
+func TestInlineFileHandler(t *testing.T) {
+	dir := t.TempDir()
+	mediaFile := filepath.Join(dir, "clip.mp4")
+	if err := os.WriteFile(mediaFile, []byte("fake-video-bytes"), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("failed to create test dir: %v", err)
+	}
+
+	prev := sandbox.CurrentSandbox
+	defer func() { sandbox.CurrentSandbox = prev }()
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(&sandbox.SandboxJSON{
+		WorkspaceRoots: []string{dir},
+	})
+
+	cases := []struct {
+		name       string
+		path       string
+		wantCode   int
+		wantHeader map[string]string
+	}{
+		{
+			name:     "200_inline_disposition",
+			path:     mediaFile,
+			wantCode: http.StatusOK,
+			wantHeader: map[string]string{
+				"Content-Disposition": `inline; filename="clip.mp4"`,
+				"Content-Type":        "video/mp4",
+				"Content-Length":      "16",
+			},
+		},
+		{
+			name:     "403_outside_sandbox",
+			path:     "/etc/passwd",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "404_missing_file",
+			path:     filepath.Join(dir, "nope.mp4"),
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "400_directory",
+			path:     filepath.Join(dir, "sub"),
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "400_missing_path_param",
+			path:     "",
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &FileAPI{}
+			req := httptest.NewRequest("GET", "/api/files/inline?path="+tc.path, nil)
+			w := httptest.NewRecorder()
+			api.InlineFile(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("expected %d, got %d: %s", tc.wantCode, w.Code, w.Body.String())
+			}
+			for k, want := range tc.wantHeader {
+				if got := w.Header().Get(k); got != want {
+					t.Errorf("header %q = %q, want %q", k, got, want)
+				}
+			}
+		})
+	}
+}

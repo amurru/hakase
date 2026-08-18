@@ -86,8 +86,8 @@ func saveMCPUserRegistry(reg MCPUserRegistry) error {
 	return saveMCPUserRegistryLocked(reg)
 }
 
-// updateMCPUserRegistry loads, mutates, and saves the registry under one lock
-// hold. Used by TUI toggles.
+// UpdateMCPUserRegistry loads, mutates, and saves the user MCP registry under
+// one lock hold. Used by TUI toggles.
 func UpdateMCPUserRegistry(mutate func(*MCPUserRegistry) error) error {
 	mcpRegistryMu.Lock()
 	defer mcpRegistryMu.Unlock()

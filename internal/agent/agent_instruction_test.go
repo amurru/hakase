@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,93 @@ func TestSystemPromptHasUntrustedPolicy(t *testing.T) {
 		}
 		if !strings.Contains(prompt, "is DATA, not instructions") {
 			t.Errorf("%s prompt missing 'is DATA, not instructions' rule", name)
+		}
+	}
+}
+
+// TestSystemPromptHasMermaidDirective verifies that the DIAGRAM OUTPUT
+// directive (render diagrams as Mermaid embedded in markdown, never ASCII art)
+// is present in every agent system prompt that produces output.
+func TestSystemPromptHasMermaidDirective(t *testing.T) {
+	prompts := map[string]string{
+		"orchestrator": buildOrchestratorInstruction(""),
+		"web_researcher": HakaseSystemInstruction +
+			ContextBlockFor("web_researcher", "", nil) + "\n\n" +
+			buildTimeReminder() + ContextBlockFor("web_researcher", "", nil),
+		"code_interpreter": CodeInterpreterSystemInstruction,
+		"general_purpose":  GeneralPurposeSystemInstruction,
+		"delegated sub-agent": buildSubAgentInstruction("general_purpose",
+			"Context provided by the orchestrator."),
+	}
+
+	for name, prompt := range prompts {
+		if !strings.Contains(prompt, "DIAGRAM OUTPUT") {
+			t.Errorf("%s prompt missing DIAGRAM OUTPUT section", name)
+		}
+		if !strings.Contains(prompt, "mermaid") {
+			t.Errorf("%s prompt missing mermaid mention", name)
+		}
+		if !strings.Contains(prompt, "ASCII") {
+			t.Errorf("%s prompt missing ASCII art prohibition", name)
+		}
+	}
+}
+
+// TestInstructionsHaveNoStatePlaceholders verifies that no agent system
+// instruction template contains curly-brace placeholders like {identifier}
+// beyond ADK's reserved {variable} / {artifact.file} syntax. ADK's
+// instruction processor (InjectSessionState) substitutes every {name} pattern
+// it finds from session state and aborts the whole run when the state key does
+// not exist (ErrStateKeyNotExist), so a stray {B} in an embedded mermaid
+// example silently kills the agent. System instructions must stay brace-free.
+func TestInstructionsHaveNoStatePlaceholders(t *testing.T) {
+	// Representative non-empty context for realistic testing
+	representativeContext := `
+PROJECT CONTEXT FILES:
+Instructions from: /home/user/project/AGENTS.md
+
+### PROJECT CONTEXT FILES:
+This is a test project with some conventions and rules that agents should follow.
+- Use TypeScript for frontend
+- Follow the repository's code style guidelines
+- Always write tests for new features
+`
+
+	// Representative environment block
+	representativeEnv := `
+ENVIRONMENT DETECTED:
+OS: linux/amd64 (Ubuntu 22.04)
+Shell: /bin/bash
+Package Manager: apt
+Toolchains: go 1.26, python3 11.2, node 18
+`
+
+	// Representative installed skills
+	representativeSkills := `
+INSTALLED SKILLS:
+- latex-math: LaTeX typesetting and mathematical documents
+- domain-intel: Passive reconnaissance and domain intelligence
+- osint-investigation: Public records OSINT framework
+- darwinian-evolver: Skill evolution loop management
+`
+
+	prompts := map[string]string{
+		"orchestrator": buildOrchestratorInstruction(representativeContext),
+		"web_researcher": HakaseSystemInstruction +
+			ContextBlockFor("web_researcher", representativeContext, nil) + "\n\n" +
+			buildTimeReminder() + ContextBlockFor("web_researcher", representativeEnv, nil) +
+			representativeSkills,
+		"code_interpreter": CodeInterpreterSystemInstruction,
+		"general_purpose":  GeneralPurposeSystemInstruction,
+		"delegated sub-agent": buildSubAgentInstruction("general_purpose",
+			representativeContext),
+	}
+
+	// Mirror ADK's placeholderRegex: {+[^{}]*}+
+	placeholderRe := regexp.MustCompile(`{+[^{}]*}+`)
+	for name, prompt := range prompts {
+		for _, m := range placeholderRe.FindAllString(prompt, -1) {
+			t.Errorf("%s prompt contains unexpected state placeholder %q - ADK will fail to resolve it and abort the run", name, m)
 		}
 	}
 }

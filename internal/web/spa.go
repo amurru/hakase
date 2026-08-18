@@ -58,10 +58,14 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterFileRoutes(r)
 		// Knowledge management routes (task 31)
 		var knowledgeDir string
+		var skillDirs []string
 		if cfg, err := config.LoadConfig("config.json"); err == nil {
 			knowledgeDir = cfg.KnowledgeDir
+			skillDirs = cfg.SkillDirs
 		}
 		handlers.RegisterKnowledgeRoutes(r, knowledgeDir)
+		// Skill management routes (web UI skill manager)
+		handlers.RegisterSkillRoutes(r, ".", skillDirs)
 		// MCP server management routes (task 32)
 		handlers.RegisterMCPRoutes(r)
 		// Cron job management routes (task 33)

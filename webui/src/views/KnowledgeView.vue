@@ -29,6 +29,7 @@ import {
 } from '@lucide/vue'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
+import ImageLightbox from '@/components/chat/ImageLightbox.vue'
 
 // Types
 interface KnowledgeNote {
@@ -79,6 +80,9 @@ const newTags = ref('')
 
 // Wikilink navigation
 const navigationStack = ref<string[]>([])
+
+// Image lightbox
+const lightbox = ref<InstanceType<typeof ImageLightbox>>()
 
 // Markdown renderer with wikilink support
 const md = new MarkdownIt({
@@ -283,9 +287,14 @@ async function handleCreateNote() {
   }
 }
 
-// Handle wikilink clicks
+// Handle wikilink clicks and image lightbox
 function handleContentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
+  const img = target.closest('img')
+  if (img) {
+    lightbox.value?.show(img.currentSrc || img.src, img.alt || '')
+    return
+  }
   if (target.tagName === 'A') {
     const href = (target as HTMLAnchorElement).href
     if (href.includes('#/wikilink/')) {
@@ -647,6 +656,8 @@ onMounted(loadNotes)
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <ImageLightbox ref="lightbox" />
   </div>
 </template>
 
@@ -687,8 +698,11 @@ onMounted(loadNotes)
 }
 
 .markdown-body :deep(img) {
-  border-radius: 0.5rem;
+  display: block;
   max-width: 100%;
+  margin: 1.25rem auto;
+  border-radius: 0.5rem;
+  cursor: zoom-in;
 }
 
 .markdown-body :deep(a) {

@@ -67,9 +67,13 @@ sessions/
 # agentic
 .omc
 .omo
+.mimosa
 
 # dev-mode structured debug logs
 logs/
+
+# interpreter scratch space (sandboxed script.py + web attachments)
+.hakase-tmp/
 
 # generated runtime artifacts
 outputs/

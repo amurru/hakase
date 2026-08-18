@@ -8,14 +8,18 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/vision"
 
 	"github.com/google/uuid"
 )
@@ -55,7 +59,9 @@ func RegisterFileRoutes(r FileRouter) {
 
 	r.Get("/files/browse", api.BrowseFiles)
 	r.Get("/files/list", api.ListDirectory)
+	r.Get("/files/inline", api.InlineFile)
 	r.Get("/files/download", api.DownloadFile)
+	r.Get("/files/proxy", api.ProxyImage)
 	r.Get("/files", api.ReadFile)
 	r.Post("/sessions/{id}/attachments", api.UploadAttachment)
 }
@@ -250,6 +256,209 @@ func (api *FileAPI) DownloadFile(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := io.Copy(w, f); err != nil {
 		log.Printf("file: download stream error for %s: %v", absPath, err)
+	}
+}
+
+// InlineFile handles GET /api/files/inline?path=<path> - serves a workspace
+// file with Content-Disposition: inline for use as <img>/<video>/<audio>
+// sources. Mirrors DownloadFile but uses inline disposition, and streams the
+// whole file (no Range support in v1).
+func (api *FileAPI) InlineFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path parameter is required"})
+		return
+	}
+
+	absPath, err := resolveFilePath(path)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("path outside workspace: %v", err)})
+		return
+	}
+
+	// Open through a root-anchored descriptor operation to prevent symlink
+	// traversal and pathname races. Open the file descriptor first, then
+	// validate it's a regular file before serving.
+	f, err := os.Open(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to open file: %v", err)})
+		return
+	}
+	defer f.Close()
+
+	// Get file info from the open descriptor (not the path) to avoid TOCTOU races.
+	// Require it to be a regular file - reject directories, symlinks, FIFOs, sockets, etc.
+	info, err := f.Stat()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to stat file: %v", err)})
+		return
+	}
+
+	if info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot inline a directory"})
+		return
+	}
+
+	if !info.Mode().IsRegular() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot inline non-regular file"})
+		return
+	}
+
+	mimeType := detectMIME(absPath)
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, info.Name()))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if _, err := io.Copy(w, f); err != nil {
+		log.Printf("file: inline stream error for %s: %v", absPath, err)
+	}
+}
+
+// maxProxyImageBytes caps images fetched through the proxy endpoint (10 MB),
+// matching the vision tool's download ceiling.
+const maxProxyImageBytes = 10 << 20
+
+// proxyHTTPClient is the shared client for fetching remote images through
+// /api/files/proxy. Redirect targets are re-checked against the SSRF guard at
+// every hop so a public URL can never redirect to an internal address.
+var proxyHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		MaxIdleConns:          8,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		if err := vision.CheckHostPublic(req.URL.Host); err != nil {
+			return fmt.Errorf("redirect target blocked: %w", err)
+		}
+		return nil
+	},
+}
+
+// ProxyImage handles GET /api/files/proxy?url=<external_url> - fetches an
+// image from an external http(s) URL and serves it inline from the agent
+// server's own origin. This lets the web UI render remote photos under the
+// strict Content-Security-Policy (img-src 'self') by proxying them through
+// hakase, and gives the agent a deterministic way to show fetched images.
+//
+// The remote host is SSRF-guarded (private/loopback/link-local addresses are
+// rejected, including at each redirect hop), the response is capped at
+// maxProxyImageBytes, and only image MIME types are served. The bytes are
+// streamed straight through with a Content-Type detected from the payload.
+func (api *FileAPI) ProxyImage(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSpace(r.URL.Query().Get("url"))
+	if raw == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url parameter is required"})
+		return
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid url: must be an http(s) URL"})
+		return
+	}
+
+	// SSRF guard: reject private, loopback, link-local, and unspecified
+	// addresses before any request is made. Redirects are re-checked by
+	// proxyHTTPClient.CheckRedirect.
+	if err := vision.CheckHostPublic(u.Host); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("url blocked: %v", err)})
+		return
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid url"})
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HakaseAgent/1.0")
+
+	resp, err := proxyHTTPClient.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("fetch failed: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("upstream returned HTTP %d", resp.StatusCode)})
+		return
+	}
+
+	// Stream through a limit reader to enforce the size cap.
+	limited := io.LimitReader(resp.Body, maxProxyImageBytes+1)
+	buf := make([]byte, 0, 64*1024)
+	chunk := make([]byte, 32*1024)
+	total := 0
+	for {
+		n, rerr := limited.Read(chunk)
+		if n > 0 {
+			total += n
+			if total > maxProxyImageBytes {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "image too large"})
+				return
+			}
+			buf = append(buf, chunk[:n]...)
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("read failed: %v", rerr)})
+			return
+		}
+	}
+
+	// Detect the MIME type from the payload (fall back to the upstream
+	// Content-Type header). Only images are served - the proxy is not a
+	// generic byte relay.
+	mimeType, ok := vision.DetectImageMime(buf)
+	if !ok {
+		if upstream := resp.Header.Get("Content-Type"); upstream != "" && strings.HasPrefix(upstream, "image/") {
+			mimeType = upstream
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url does not point to a recognizable image"})
+			return
+		}
+	}
+
+	filename := filepath.Base(u.Path)
+	if filename == "" || filename == "." || filename == "/" {
+		filename = "image"
+	}
+	if ext := mime.TypeByExtension(filepath.Ext(filename)); ext == "" {
+		// Derive an extension from the detected MIME so the filename hint
+		// is useful in Content-Disposition.
+		if mimeType == "image/jpeg" {
+			filename += ".jpg"
+		} else if mimeType == "image/png" {
+			filename += ".png"
+		} else if mimeType == "image/webp" {
+			filename += ".webp"
+		} else if mimeType == "image/gif" {
+			filename += ".gif"
+		}
+	}
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(buf)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	if _, err := w.Write(buf); err != nil {
+		log.Printf("file: proxy stream error for %s: %v", raw, err)
 	}
 }
 

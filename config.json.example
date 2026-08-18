@@ -1,6 +1,6 @@
 {
   "provider": "gemini",
-  "model_name": "gemini-3.6-flash",
+  "model_name": "gemini-3.7-flash",
   "api_key": "your_api_key",
   "base_url": "",
   "instruction": "You are a web automation agent harness. Use the available web browsing tools to complete user requests.",
@@ -13,6 +13,9 @@
     "enabled": true,
     "max_chars": 800,
     "apply_to": []
+  },
+  "units": {
+    "system": "metric"
   },
   "mcp_server_url": "http://localhost:9223/mcp",
   "mcp": {

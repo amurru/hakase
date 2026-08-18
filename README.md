@@ -1,6 +1,6 @@
 # Hakase
 
-A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI, Google ADK orchestration with Gemini, MCP server integration, a Python code interpreter, and a self-evolving skill library.
+A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI **and a browser-based web UI**, Google ADK orchestration across multiple model providers (Gemini, OpenAI, and OpenAI-compatible endpoints), MCP server integration, a Python code interpreter, and a self-evolving skill library.
 
 ![Go](https://img.shields.io/badge/Go-1.26-blue?logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -9,7 +9,7 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
 
 ## Overview
 
-**hakase** is a terminal-based AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents — a **Web Researcher** and a **Code Interpreter** — through a Google ADK root orchestrator, powered by Gemini models. The entire interaction happens inside a simple split-pane TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+**hakase** is an AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents - a **Web Researcher** and a **Code Interpreter** - through a Google ADK root orchestrator, powered by configurable LLM providers (Gemini, OpenAI, or any OpenAI-compatible endpoint). Interaction happens either in a split-pane terminal TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), or in a browser through the bundled web UI - a Vue 3 single-page app served by `hakase web` (see [Web UI](#web-ui)).
 
 The agent can:
 
@@ -28,35 +28,65 @@ The agent can:
 
 ## Project Structure
 
+The codebase is organized as a standard Go layout - a single entry point under `cmd/`, all packages under `internal/`, and the web SPA under `webui/`:
+
 ```
 hakase/
-├── main.go                  # Entry point — loads config, boots the TUI and agent runner
-├── agent.go                 # Core agent logic: ADK setup, sub-agents, tools (Python interpreter, downloader, skill manager)
-├── cronjob.go               # Scheduled tasks - cronjob tool, scheduler, ~/.hakase/cronjobs.json registry
-├── delegate.go              # Sub-agent delegation — execute_task, progress reporting, dedup cache, watchdog
-├── toolcall.go              # Malformed tool-call JSON repair and retry
-├── sandbox.go               # Workspace path confinement (root normalization, secure join, containment checks)
-├── sandboxexec.go           # bubblewrap (bwrap) subprocess isolation for sandboxed exec
-├── systemexec.go            # system_exec toolset — shell routing, process hardening, env scrubbing
-├── fileops.go               # File operation tools (read/write/patch/search) with sandbox-aware resolution
-├── debug_log.go             # Structured JSON debug logging (info/warn/error levels)
-├── skill_discovery.go       # Markdown & Python skill discovery/loading
-├── instruction_context.go   # Project context files (AGENTS.md) discovery & rendering
-├── env.go                   # Runtime environment detection (OS/distro/arch, package manager, toolchains)
-├── env_cli.go               # hakase env CLI (print the detected environment block)
-├── rule_cli.go              # hakase rules CLI (list/show project context files)
-├── ui.go                    # Bubble Tea TUI — split-pane layout with chat, log, and input views
-├── config.go                # Config loader (reads config.json)
-├── config.json              # Runtime configuration (API key, model, MCP server URL)
-├── config.json.example      # Example config template
-├── go.mod / go.sum          # Go module dependencies
-├── skills/                  # Persisted Python skill library
-├── knowledge/               # Persistent knowledge base (markdown notes with YAML frontmatter + [[wikilinks]])
-├── .agents/skills/          # Portable markdown skills (SKILL.md) - includes the hakase self-skill
-├── skill_cli.go             # hakase skill CLI (create/list/validate)
-├── downloads/               # Downloaded files (PDFs, images, datasets)
-├── outputs/                 # Generated artifacts (HTML files, charts, reports)
-└── .venv/                   # Python virtual environment (auto-created)
+├── cmd/
+│   └── hakase/                 # Entry point. main.go - TUI bootstrap, dependency wiring, web/serve
+│                               #   interception before CLI dispatch; web.go - web/serve server
+│                               #   bootstrap; slash_commands.go - /board and /mcp handlers
+├── internal/
+│   ├── agent/                  # Core agent logic: ADK runner setup, sub-agents, providers
+│   │                           #   (Gemini / OpenAI / OpenAI-compatible + fallback), delegation,
+│   │                           #   approval & clarify gates, loop guard, task registry,
+│   │                           #   malformed tool-call repair, audit logging
+│   ├── auth/                   # Argon2id credential hashing + JWT issue/verify
+│   ├── cli/                    # CLI dispatcher and subcommands (skill, task, knowledge, session,
+│   │                           #   rules, env, cron, auth) + the cronjob tool & scheduler
+│   ├── config/                 # Config loader (reads config.json) + MCP server config & persistence
+│   ├── context/                # Context management: instruction rendering, compaction cascade /
+│   │                           #   summarization, token budgeting
+│   ├── env/                    # Runtime environment detection (OS/distro/arch, package manager,
+│   │                           #   toolchains)
+│   ├── herdr/                  # Herdr terminal-multiplexer lifecycle reporter
+│   ├── interfaces/             # Shared contracts (approval/clarify gates, notifiers, log funcs)
+│   ├── knowledge/              # Knowledge base: note storage, [[wikilinks]], relevance-ranked
+│   │                           #   search, the eight knowledge tools
+│   ├── mcp/                    # MCP client: multi-server manager (stdio + streamable HTTP)
+│   ├── sandbox/                # Workspace path confinement, bubblewrap (bwrap) subprocess
+│   │                           #   isolation, system_exec, sandbox-aware file ops
+│   ├── session/                # Session store & service (persistence, resumability, stale cleanup)
+│   ├── skill/                  # Markdown & Python skill discovery/validation + the evolver
+│   ├── tui/                    # Bubble Tea TUI: split panes, slash commands, math & markdown
+│   │                           #   rendering, MCP panel, approval/clarify modals, clipboard
+│   ├── util/                   # Structured JSON debug logging, queues, token utils
+│   ├── vision/                 # Vision tool (image loading, vision-model routing)
+│   └── web/                    # HTTP server (chi): API handlers (auth, chat SSE, sessions, tasks,
+│                               #   files, knowledge, skills, MCP, cron, config, approval, clarify),
+│                               #   middleware (security headers, login rate limiter), SSE bridge,
+│                               #   SPA embed (prod tag) / live disk serving (dev tag)
+├── webui/                      # Web UI - Vue 3 + TypeScript + Vite + Tailwind 4 SPA (pnpm)
+│   └── src/
+│       ├── views/              # Chat, Sessions, Tasks, Knowledge, Skills, MCP, Cron, Files,
+│       │                       #   Settings, Login
+│       ├── components/         # Chat (message bubbles, markdown renderer, attachments, thinking
+│       │                       #   blocks, image lightbox), approval & clarify modals, UI kit
+│       ├── stores/             # Pinia stores (app, auth, session, task, approval, clarify, theme)
+│       ├── composables/        # SSE hook, notifications, mermaid
+│       ├── lib/                # API client, markdown pipeline, SSE client, utils
+│       └── router/             # Vue Router with auth guard
+├── docs/                       # Design/plan documents (e.g. markdown-rendering)
+├── .agents/skills/             # Portable markdown skills (SKILL.md) shipped with the repo -
+│                               #   includes the hakase self-skill
+├── config.json.example         # Example config template (config.json itself is runtime, gitignored)
+├── Makefile                    # build / build-frontend / dev-frontend / dev-backend / test / clean
+├── go.mod / go.sum             # Go module dependencies (module amurru/hakase)
+├── skills/                     # Persisted Python skill library (runtime)
+├── knowledge/                  # Persistent knowledge base (runtime)
+├── downloads/                  # Downloaded files (PDFs, images, datasets - runtime)
+├── outputs/                    # Generated artifacts (HTML files, charts, reports - runtime)
+└── .venv/                      # Python virtual environment (auto-created, runtime)
 ```
 
 ---
@@ -73,6 +103,7 @@ A split-pane terminal interface built with [Bubble Tea](https://github.com/charm
 - **Mid-run messaging** — Type and send while the agent is working: your message is queued (shown as `N queued` in the hint bar), steered into the running session at the next model-call boundary as a `USER INTERJECTION`, then processed as its own turn when the current run completes
 - **Mid-run questions** — The agent can pause and ask you a question mid-task via the `clarify` tool; choose from up to 4 options or type a free-text answer, [esc] to dismiss
 - **Help overlay** — Press `Ctrl+/` (`?` when not typing) for a full keyboard shortcut reference
+- **Herdr awareness** - when launched inside a [Herdr](https://github.com/amurru/herdr) pane, hakase reports its lifecycle (start/finish) and releases authority on exit so the multiplexer stops tracking it
 - **Inline math rendering** — LaTeX math in agent responses renders natively in the chat pane: display math (`$$...$$`) compiles to a transparent PNG via tectonic + poppler and displays through the kitty graphics protocol in kitty/WezTerm/ghostty terminals; everywhere else it degrades to a Unicode character grid (stacked fractions, `∑`/`∫` limits, matrix delimiters) via the pure-Go termtex parser. Inline math (`$...$`) always uses Unicode. Streaming shows Unicode math that upgrades to images when the message completes; no terminal or toolchain is required for the fallback to work.
 
 ### Keyboard Shortcuts
@@ -284,6 +315,21 @@ hakase rules list    # list the context files that would be loaded (render order
 hakase rules show AGENTS.md   # show one file's content (path or basename)
 ```
 
+### 📐 Preferred Measurement Units
+
+hakase can report physical quantities (distance, mass, volume, temperature, speed, area) in your preferred measurement system. Set `units.system` in `config.json` (or in the web UI's **Settings → Preferred Measurement Units**):
+
+```json
+{
+  "units": { "system": "metric" }
+}
+```
+
+- `metric` (default) — meters/km, kilograms, liters, degrees Celsius, km/h, m²/ha (SI / ISO).
+- `imperial` — miles, pounds, US gallons, degrees Fahrenheit, mph, sq ft/acres.
+
+When unset, metric (SI / ISO) is used for every agent. The preference is injected as a system reminder into every agent's instruction, so the agent converts and presents values in your chosen system whenever a task involves units (the original value may be shown in parentheses on first mention). The user can always override per-task by asking for a specific system.
+
 ### 🖥️ Runtime Environment Awareness
 
 At session start hakase detects the environment it runs on and injects a compact
@@ -360,7 +406,7 @@ Linux-specific ones (kernel, distro, disk, memory) degrade gracefully.
 
 ### 👁️ Vision
 
-The `vision` tool loads an image (URL, local file path, or `data:` URL) so the model can see it. When the main model supports images (Gemini models), the image is attached directly to the model context; otherwise a configured `vision_model` describes the image as text. Images are SSRF-guarded, size-capped, and auto-converted or resized to fit provider limits. Configure via `vision_model`, `vision_provider`, `vision_base_url`, `vision_api_key`, and `model_vision`.
+The `vision` tool loads an image (URL, local file path, or `data:` URL) so the model can see it. When the main model is vision-capable, the image is attached directly to the model context; otherwise a configured `vision_model` describes the image as text. Images are SSRF-guarded, size-capped, and auto-converted or resized to fit provider limits. Configure via `vision_model`, `vision_provider`, `vision_base_url`, `vision_api_key`, and `model_vision`.
 
 Attached images (`@file` or pasted screenshots) are handled the same way: on a non-vision main model they are described by `vision_model` before reaching the model (required on OpenAI-compatible providers, whose adapter rejects raw image parts); on a vision-capable model they pass through as inline input.
 
@@ -455,8 +501,9 @@ auto-migrated to a server named `lightpanda`.
 ### Prerequisites
 
 - **Go** 1.26+
+- **Node.js + pnpm** - required to build the web UI (`webui/`). The built SPA is embedded into the Go binary via `//go:embed`, so a frontend build is part of compiling the project
 - **Python 3** — required for the code interpreter (`.venv` execution, auto-dependency resolution) and the self-evolving skill library (`./skills/`)
-- A **Google Gemini API key**
+- An **API key for your chosen provider** — Google Gemini, OpenAI, or an OpenAI-compatible endpoint (e.g. Ollama, vLLM). The key requirement depends on the `provider` field in `config.json`.
 - **Lightpanda** — the MCP browser automation server that provides web navigation tools. Install it from [lightpanda.ai](https://lightpanda.ai) and start it before running the agent (it serves the MCP endpoint on `localhost:9223` by default)
 
 ### Setup
@@ -465,22 +512,77 @@ auto-migrated to a server named `lightpanda`.
 
 ```bash
 cp config.json.example config.json
-# Edit config.json with your API key and MCP server URL
+# Edit config.json with your API key (matching your provider) and MCP server URL
 ```
 
-2. **Install Go dependencies:**
+2. **Build the frontend (required before Go builds):**
+
+```bash
+make build-frontend
+```
+
+This runs `pnpm install && pnpm build` in `webui/` and mirrors the output into `internal/web/dist/`, where `//go:embed all:dist` picks it up. On a fresh clone, `go build ./...` and `go test ./...` fail for `internal/web` until this step has run once (`make clean` removes the mirror again).
+
+3. **Install Go dependencies and run the agent:**
 
 ```bash
 go mod download
-```
-
-3. **Run the agent:**
-
-```bash
-go run .
+go run ./cmd/hakase/
 ```
 
 The TUI will launch. Type your question and press `Enter`. The agent will research, analyze, and respond — all from your terminal.
+
+4. **(Optional) Run the web UI instead:**
+
+```bash
+go run ./cmd/hakase/ auth set-password   # one-time: create the admin login
+go run ./cmd/hakase/ web                 # SPA + API on http://127.0.0.1:8080
+```
+
+See [Web UI](#web-ui) for details.
+
+### CLI subcommands
+
+Running the binary with no subcommand launches the interactive TUI; `web` and `serve` start the HTTP server. The remaining subcommands are file-only management tools (no model needed unless noted):
+
+| Command   | Action                                                                     |
+| --------- | -------------------------------------------------------------------------- |
+| `skill`   | Manage markdown skills (`create`, `list`, `validate`, `evolve`)             |
+| `task`    | Manage the task board (`create`, `list`, `get`, `update`, `complete`, ...) |
+| `knowledge` | Manage the knowledge base (`list`, `read`, `search`, `lint`, `create`, `link`, `bench`) |
+| `session` | Manage sessions (`list`, `delete`, `archive`)                              |
+| `rules`   | List/show active project context files (AGENTS.md)                         |
+| `env`     | Print the detected runtime-environment block                               |
+| `cron`    | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
+| `auth`    | Manage web authentication (`set-password`)                                 |
+
+### Building
+
+The [Makefile](Makefile) drives the build pipeline. Two build modes are supported via Go build tags on `internal/web`:
+
+- **`prod` (default, `!dev`)** - the built SPA is embedded into the binary via `//go:embed all:dist` from `internal/web/dist` (a real copy of `webui/dist`; go:embed cannot follow symlinks)
+- **`dev`** - the SPA is served live from `webui/dist` on disk, so frontend changes are visible without rebuilding the binary
+
+| Target             | Description                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| `make build`       | Full production binary: frontend build + `go build -tags prod -o hakase ./cmd/hakase/`          |
+| `make build-frontend` | `pnpm install && pnpm build` in `webui/`, then mirror `webui/dist/` into `internal/web/dist/` |
+| `make dev`         | Prints the two-terminal development mode instructions                                           |
+| `make dev-frontend` | Vite dev server with HMR on port 5173                                                          |
+| `make dev-backend` | `go run -tags dev ./cmd/hakase/ web` - serves `webui/dist` from disk, API on :8080              |
+| `make test`        | `go test ./...`                                                                                 |
+| `make clean`       | Remove `webui/dist`, `internal/web/dist`, and the `hakase` binary                               |
+
+Frontend tests: `cd webui && pnpm test` (vitest, jsdom). `pnpm build` runs `vue-tsc -b` first, so the typecheck is part of the build.
+
+### Web UI development flow
+
+Run two processes; Vite proxies `/api` to the Go server on :8080, so open http://localhost:5173 in the browser:
+
+```
+make dev-frontend   # terminal 1 - Vite dev server, HMR, port 5173
+make dev-backend    # terminal 2 - Go server with the dev tag, port 8080
+```
 
 ### Development Platform
 
@@ -493,7 +595,7 @@ Edit `config.json`:
 ```json
 {
   "provider": "gemini",
-  "model_name": "gemini-3.5-flash-lite",
+  "model_name": "gemini-3.7-flash",
   "api_key": "your-gemini-api-key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
@@ -515,18 +617,18 @@ hakase supports multiple LLM providers, selected via the `provider` field in `co
 
 | Provider            | Description                                      | Default Model      |
 | ------------------- | ------------------------------------------------ | ------------------ |
-| `gemini`            | Google Gemini                                    | `gemini-2.5-flash` |
-| `openai`            | OpenAI API                                       | `gpt-4o-mini`      |
-| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | `gpt-4o-mini`      |
+| `gemini`            | Google Gemini                                    | `gemini-3.7-flash` |
+| `openai`            | OpenAI API                                       | `gpt-5.6-terra`    |
+| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | none - `model_name` required |
 
-When `model_name` is empty, the provider's default model is used.
+When `model_name` is empty, the provider's default model is used. `openai-compatible` endpoints have no universal default - the model identifier is specific to each endpoint (e.g. `llama-3.3-70b` for Ollama), so `model_name` is required for this provider.
 
 **Gemini** (default):
 
 ```json
 {
   "provider": "gemini",
-  "model_name": "gemini-2.5-flash",
+  "model_name": "gemini-3.7-flash",
   "api_key": "your_gemini_api_key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
@@ -541,7 +643,7 @@ When `model_name` is empty, the provider's default model is used.
 ```json
 {
   "provider": "openai",
-  "model_name": "gpt-4o-mini",
+  "model_name": "gpt-5.6-terra",
   "api_key": "your_openai_api_key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp"
@@ -574,7 +676,7 @@ When `model_name` is empty, the provider's default model is used.
 - `mcp` - Optional MCP server configuration (see [MCP Integration](#-mcp-integration)): `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `search_expansion` - Optional HyDE-lite LLM query expansion for `search_knowledge` (default `false`). When off, search behavior is byte-identical to plain substring search (just relevance-ordered). When on, the summarization model rephrases the query into 2-3 phrasings which are OR-matched and fused with Reciprocal Rank Fusion; on failure or timeout it falls back silently to plain substring search. Set `HAKASE_SEARCH_EXPANSION` to override via environment.
-- `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-2.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
+- `summary_model` — Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-3.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.
 - `vision_model` - Optional multimodal model used to describe images as text when the main model lacks vision (legacy mode). Empty = disabled.
 - `vision_base_url` - Optional separate endpoint for the vision model; empty = primary `base_url`.
 - `vision_api_key` - Optional separate key for the vision model; empty = primary `api_key`.
@@ -582,6 +684,11 @@ When `model_name` is empty, the provider's default model is used.
 - `model_vision` - Override multimodal detection for the main model: `auto` | `yes` | `no` (default `auto`).
  - `sandbox` — Optional confinement block (see [Sandboxing & Workspace Confinement](#-sandboxing--workspace-confinement)). Absent → `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
  - `loop_guard` — Optional anti-degeneration guardrails that abort a run stuck in a repetition loop or text-only bloat instead of burning the whole context/output window. Zero values use the defaults. Fields: `max_output_tokens` (cap on provider `maxOutputTokens`, default `8192`), `repetition_limit` (abort after this many consecutive identical non-thought chunks, default `8`), `max_text_without_tool` (abort after this many runes of text with zero tool calls, default `20000`). Set `HAKASE_MAX_OUTPUT_TOKENS` to override the cap via environment.
+ - `approval` - Interactive approval gate for sensitive tool calls: `mode` (`interactive` or off) and `expiry_seconds` (auto-deny timeout, default `60`). Works in both the TUI and the web UI.
+ - `clarify` - Mid-run clarify questions: `expiry_seconds` (auto-dismiss timeout).
+ - `auth` - Web server auth tuning: `allow_insecure_cookie` (permit the session cookie without the `Secure` flag on non-loopback plain-HTTP; the `--insecure-cookie` CLI flag overrides it).
+ - `thinking_level` - Thinking budget hint for models that support it (editable in the web UI Settings view).
+ - `chat_buffer_size` / `show_thinking` / `task_checkpoint` - TUI chat history size, thinking display default, and task checkpointing toggles.
 
 #### Environment variables
 
@@ -625,9 +732,11 @@ hakase migrated from the ADK v1 stack to the ADK v2 stack (`google.golang.org/ad
 
 ---
 
-## Web Interface
+## Web UI
 
-hakase ships two HTTP server modes for browser access:
+hakase ships a browser-based interface: a Vue 3 single-page app (in `webui/`) served by a Go HTTP server, with the same agent, sessions, tools, and gates as the TUI. Everything the terminal offers is available in the browser - chat, session history, the task board, the knowledge base, skills, MCP servers, cron jobs, files, and settings.
+
+### Server modes
 
 - **`hakase web`** - serves the full web UI (single-page app + API) at `http://127.0.0.1:8080` by default. Open the printed URL (`Hakase web UI: http://...`) in a browser and log in.
 - **`hakase serve`** - API-only mode at `http://127.0.0.1:8081` by default. No SPA is served; useful when you run your own frontend or script against the API directly.
@@ -638,6 +747,7 @@ Both modes share the same flags:
 | ---- | ------- | ----------- |
 | `--port <n>` | `8080` (web) / `8081` (serve) | Port to listen on |
 | `--host <addr>` | `127.0.0.1` | Host address to bind to |
+| `--insecure-cookie` | off | Allow the session cookie without the `Secure` flag on non-loopback plain-HTTP connections (local development behind plain HTTP; also settable as `auth.allow_insecure_cookie` in `config.json`, with the CLI flag winning) |
 
 ```bash
 hakase web                 # SPA + API on http://127.0.0.1:8080
@@ -647,6 +757,32 @@ hakase web --host 0.0.0.0  # bind all interfaces (see warning)
 ```
 
 `--host 0.0.0.0` exposes the server on every network interface. hakase prints a warning and recommends putting a reverse proxy in front for TLS termination instead (see [Reverse Proxy (Caddy)](#reverse-proxy-caddy)).
+
+### The SPA
+
+The frontend (`webui/`) is a **Vue 3 + TypeScript + Vite** app styled with **Tailwind CSS 4**, using **Pinia** stores, **Vue Router** with an auth guard, a reka-ui based UI kit, and **markdown-it + KaTeX + Mermaid + highlight.js** rendering (sanitized with DOMPurify). It talks to the Go server exclusively through the JSON API under `/api` plus a Server-Sent-Events stream for live agent output.
+
+| View | What it does |
+| ---- | ------------ |
+| **Chat** | Conversations with the agent: SSE-streamed responses, markdown with LaTeX math, Mermaid diagrams and syntax-highlighted code, collapsible thinking blocks, `@` file attachments, copy buttons, and an image lightbox (external images are proxied through the server and policy-checked) |
+| **Sessions** | Browse, resume, and manage past sessions |
+| **Tasks** | The task board (`/board` equivalent): create, update, and track tasks |
+| **Knowledge** | Browse, search, read, and edit knowledge-base notes |
+| **Skills** | List discovered markdown skills and enable/disable them per source directory |
+| **MCP** | Manage MCP servers: status, enable / disable / reconnect |
+| **Cron** | Manage scheduled jobs: list, pause / resume, trigger |
+| **Files** | Browse the workspace and preview files |
+| **Settings** | Edit `config.json` from the browser - provider/model, summary & vision models, thinking level, sandbox, context files, system env, preferred measurement units, and more (the server reports whether the file is writable) |
+
+The **approval and clarify gates work in the browser too**: when the agent needs permission for a sensitive action or asks a mid-run question, a modal appears in the web UI (same contract as the TUI prompts) and the agent blocks until you answer.
+
+### API surface
+
+All routes live under `/api` (authenticated via JWT cookie or bearer token, except `GET /api/health` and `POST /api/login`): session management, chat with SSE streaming, approval/clarify responses, tasks, file browsing, knowledge, skills, MCP servers, cron jobs, and config read/update. The server (internal/web, built on [chi](https://github.com/go-chi/chi)) adds CORS, request logging, security headers, and login rate limiting middleware.
+
+### Build & development
+
+The SPA is embedded into the production binary (`make build` → `go build -tags prod`), or served live from disk with the `dev` build tag. For frontend development with hot reload, use the two-terminal flow from [Web UI development flow](#web-ui-development-flow) (Vite on :5173 proxying `/api` to the Go server on :8080). Frontend tests: `cd webui && pnpm test`.
 
 ## Authentication
 
@@ -828,17 +964,29 @@ from the TUI with `/mcp`. Still deferred for the remaining skills: an
 
 ## Dependencies
 
+Go (see `go.mod`, module `amurru/hakase`):
+
 | Package                                  | Purpose                                   |
 | ---------------------------------------- | ----------------------------------------- |
 | `charm.land/bubbletea/v2`                | TUI framework                             |
 | `charm.land/bubbles/v2`                  | TUI components (text input, viewport)     |
 | `charm.land/lipgloss/v2`                 | Terminal styling                          |
-| `google.golang.org/adk/v2`               | Google Agent Development Kit (v2; was v1) |
+| `charm.land/glamour/v2`                  | Terminal markdown rendering               |
+| `doug/termtex`                           | Pure-Go Unicode math rendering (TUI fallback renderer) |
+| `google.golang.org/adk/v2`               | Google Agent Development Kit (v2)         |
 | `google.golang.org/genai`                | Gemini AI client                          |
 | `github.com/openai/openai-go/v3`         | OpenAI API client                         |
-| `github.com/modelcontextprotocol/go-sdk` | MCP client for browser automation         |
+| `github.com/modelcontextprotocol/go-sdk` | MCP client (multi-server, stdio + HTTP)   |
+| `github.com/go-chi/chi/v5`               | Web server router (internal/web)          |
+| `github.com/golang-jwt/jwt/v5`           | JWT issuing/verification (web auth)       |
+| `golang.org/x/crypto`                    | Argon2id password hashing (web auth)      |
+| `golang.org/x/time`                      | Login rate limiting (web middleware)      |
 | `github.com/cyphar/filepath-securejoin` | Symlink-safe secure path joining for sandbox confinement |
-| `github.com/robfig/cron/v3`               | 5-field cron parsing for scheduled tasks |
+| `github.com/robfig/cron/v3`              | 5-field cron parsing for scheduled tasks  |
+| `github.com/atotto/clipboard`            | Clipboard access for image paste (TUI)    |
+| `gopkg.in/yaml.v3`                       | Skill frontmatter parsing                 |
+
+Web UI (`webui/`, installed with pnpm): Vue 3, Vue Router, Pinia, Vite, TypeScript, Tailwind CSS 4, reka-ui, markdown-it + KaTeX + Mermaid + highlight.js + DOMPurify (rendering), vue-sonner (toasts), @vueuse/core; vitest + jsdom for tests.
 
 ---
 

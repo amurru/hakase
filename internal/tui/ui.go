@@ -3,6 +3,7 @@ package tui
 import (
 	hakaseagent "amurru/hakase/internal/agent"
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/herdr"
 	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
@@ -410,6 +411,71 @@ type AppModel struct {
 	// the single-press guard prevents accidental interruption. Zero = not
 	// armed.
 	escArmedAt time.Time
+
+	// herdrReporter pushes lifecycle state to a Herdr pane when hakase runs
+	// inside one. Nil means hakase is not running inside Herdr (no-op).
+	herdrReporter herdrReporter
+}
+
+// herdrReporter is the subset of the Herdr reporter the TUI uses. It is an
+// interface so tests can supply a fake without exec'ing the Herdr CLI.
+type herdrReporter interface {
+	Report(state, message, sessionID string)
+	Release()
+}
+
+// SetHerdrReporter installs the Herdr lifecycle reporter. A nil reporter is a
+// no-op (hakase is not running inside Herdr).
+func (m *AppModel) SetHerdrReporter(r herdrReporter) {
+	m.herdrReporter = r
+}
+
+// HerdrRelease relinquishes Herdr lifecycle authority on exit. Safe to call
+// when no reporter is installed.
+func (m *AppModel) HerdrRelease() {
+	if m.herdrReporter != nil {
+		m.herdrReporter.Release()
+	}
+}
+
+// reportAgentState pushes the current lifecycle state to Herdr. It is called
+// from View() so every state transition that triggers a re-render is reported
+// exactly once (the reporter itself suppresses identical consecutive reports).
+// It is a no-op when no reporter is installed.
+func (m *AppModel) reportAgentState() {
+	if m.herdrReporter == nil {
+		return
+	}
+	state := herdr.StateIdle
+	message := ""
+	switch {
+	case m.pendingApproval != nil:
+		state = herdr.StateBlocked
+		message = m.approvalBlockMessage()
+	case m.pendingClarify != nil:
+		state = herdr.StateBlocked
+		message = m.pendingClarify.Req.Question
+	case m.IsProcessing:
+		state = herdr.StateWorking
+	}
+	sessionID := ""
+	if m.sessionService != nil {
+		sessionID = m.sessionService.ActiveSessionID()
+	}
+	m.herdrReporter.Report(state, message, sessionID)
+}
+
+// approvalBlockMessage builds the human-readable reason shown when Herdr marks
+// the agent blocked on an approval prompt.
+func (m *AppModel) approvalBlockMessage() string {
+	req := m.pendingApproval.Req
+	if req.Reason != "" {
+		return req.Reason
+	}
+	if req.Tool != "" {
+		return "approval: " + req.Tool
+	}
+	return "awaiting approval"
 }
 
 func newModel(
@@ -473,7 +539,14 @@ func newModel(
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	return textarea.Blink
+	cmds := []tea.Cmd{textarea.Blink}
+	// Ask the terminal for its background color through bubbletea's event
+	// loop (not a raw /dev/tty write) so the OSC 11 query and its response
+	// stay inside the alt screen and never leak to the visible main screen.
+	if m.math.kittyOK {
+		cmds = append(cmds, func() tea.Msg { return tea.RequestBackgroundColor() })
+	}
+	return tea.Batch(cmds...)
 }
 
 // cycleFocus moves focus by dir (+1 forward, -1 backward) through the panes:
@@ -616,6 +689,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		// Bubbletea delivered the terminal background color it requested
+		// inside the alt screen, so no OSC 11 response leaks to the main
+		// screen. Use it to pick a contrasting glyph color for kitty PNGs.
+		m.math.ApplyBackgroundColor(msg)
 	case tea.KeyPressMsg:
 		key := msg.String()
 
@@ -1595,6 +1673,11 @@ func (m *AppModel) inputHeight() int {
 
 // Change return type to tea.View
 func (m *AppModel) View() tea.View {
+	// Report lifecycle state to Herdr (no-op when not running inside Herdr).
+	// View is called on every state-changing render, so this captures idle /
+	// working / blocked transitions without scattering calls through Update.
+	m.reportAgentState()
+
 	if !m.ready {
 		return tea.NewView("Initializing TUI...")
 	}

@@ -40,6 +40,11 @@ const router = createRouter({
           component: () => import('@/views/KnowledgeView.vue'),
         },
         {
+          path: 'skills',
+          name: 'skills',
+          component: () => import('@/views/SkillsView.vue'),
+        },
+        {
           path: 'mcp',
           name: 'mcp',
           component: () => import('@/views/MCPView.vue'),

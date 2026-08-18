@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { apiGet, apiPost, setOnUnauthorized, ApiError } from '@/lib/api'
+import { useAppStore } from '@/stores/app'
 import router from '@/router'
 
 interface LoginResponse {
@@ -16,6 +17,7 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(null)
   const user = ref<{ username: string } | null>(null)
   const initialized = ref(false)
+  const appStore = useAppStore()
 
   const isLoggedIn = computed(() => !!user.value)
 
@@ -24,6 +26,8 @@ export const useAuthStore = defineStore('auth', () => {
       const data = await apiPost<LoginResponse>('/login', { username, password })
       token.value = data.token
       user.value = { username: data.username }
+      // Reflect the configured model in the UI now that we're authenticated.
+      appStore.loadModelName()
       return { ok: true }
     } catch (err) {
       if (err instanceof ApiError) {
@@ -58,6 +62,8 @@ export const useAuthStore = defineStore('auth', () => {
         try {
           const data = await apiGet<MeResponse>('/me')
           user.value = { username: data.username }
+          // Reflect the configured model in the UI now that we're authenticated.
+          appStore.loadModelName()
         } catch {
           // 401 or network error - user stays null, guard handles redirect
           user.value = null
