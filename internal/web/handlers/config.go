@@ -253,12 +253,22 @@ func validateConfigUpdate(req map[string]interface{}) error {
 			}
 		}
 	}
-	if v, ok := req["units"].(map[string]interface{}); ok {
-		if sys, ok := v["system"].(string); ok && sys != "" {
-			switch sys {
-			case "metric", "imperial":
-			default:
-				return fmt.Errorf("units.system must be metric or imperial")
+	if raw, present := req["units"]; present {
+		v, ok := raw.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("units must be an object")
+		}
+		if rawSystem, present := v["system"]; present {
+			sys, ok := rawSystem.(string)
+			if !ok {
+				return fmt.Errorf("units.system must be a string")
+			}
+			if sys != "" {
+				switch sys {
+				case "metric", "imperial":
+				default:
+					return fmt.Errorf("units.system must be metric or imperial")
+				}
 			}
 		}
 	}

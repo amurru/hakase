@@ -508,7 +508,7 @@ Edit `config.json`:
 ```json
 {
   "provider": "gemini",
-  "model_name": "gemini-2.5-flash",
+  "model_name": "gemini-3.7-flash",
   "api_key": "your-gemini-api-key",
   "instruction": "You are a web automation agent harness.",
   "mcp_server_url": "http://localhost:9223/mcp",
@@ -532,9 +532,9 @@ hakase supports multiple LLM providers, selected via the `provider` field in `co
 | ------------------- | ------------------------------------------------ | ------------------ |
 | `gemini`            | Google Gemini                                    | `gemini-3.7-flash` |
 | `openai`            | OpenAI API                                       | `gpt-5.6-terra`    |
-| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | `gpt-5.6-terra`    |
+| `openai-compatible` | OpenAI-compatible endpoints (Ollama, vLLM, etc.) | none - `model_name` required |
 
-When `model_name` is empty, the provider's default model is used.
+When `model_name` is empty, the provider's default model is used. `openai-compatible` endpoints have no universal default - the model identifier is specific to each endpoint (e.g. `llama-3.3-70b` for Ollama), so `model_name` is required for this provider.
 
 **Gemini** (default):
 

@@ -22,6 +22,21 @@ func writeFakeBin(t *testing.T, outPath string) string {
 	return bin
 }
 
+// waitUntil polls cond until it returns true or the timeout elapses. It is
+// used to wait for observable worker progress instead of fixed sleeps, which
+// are flaky on slow or loaded runners.
+func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met before timeout")
+}
+
 func TestNewReporterOutsideHerdr(t *testing.T) {
 	t.Setenv(envEnabled, "")
 	t.Setenv(envBinPath, "")
@@ -192,7 +207,13 @@ func TestReportCoalescesAndNeverBlocks(t *testing.T) {
 	// The first report pair is picked up by the worker and stalls on the
 	// slow binary, keeping the worker busy while the reports below queue.
 	r.Report(StateIdle, "", "") // seq 1
-	time.Sleep(100 * time.Millisecond)
+	// Wait until the worker has dequeued the seq-1 pair, so it can no longer
+	// be coalesced away by the reports queued below.
+	waitUntil(t, 5*time.Second, func() bool {
+		rq.mu.Lock()
+		defer rq.mu.Unlock()
+		return len(rq.items) == 0
+	})
 
 	// These pairs are queued while the worker is busy; each supersedes the
 	// previous one, so only the last should survive coalescing.

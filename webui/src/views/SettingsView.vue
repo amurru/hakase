@@ -141,6 +141,15 @@ function asObj(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined
 }
 
+// normalizeUnitsSystem maps a raw units.system config value to the canonical
+// option value, matching the trimmed, case-insensitive contract accepted by
+// EffectiveUnitsSystem on the backend: only "imperial" selects imperial.
+function normalizeUnitsSystem(v: unknown): 'metric' | 'imperial' {
+  return typeof v === 'string' && v.trim().toLowerCase() === 'imperial'
+    ? 'imperial'
+    : 'metric'
+}
+
 function fillForm(cfg: ConfigResponse['config']) {
   original.value = cfg
   const sb = asObj(cfg.sandbox)
@@ -178,7 +187,7 @@ function fillForm(cfg: ConfigResponse['config']) {
     system_env_max_chars: asNum(se?.max_chars) || 800,
     system_env_apply_to: asList(se?.apply_to),
 
-    units_system: asStr(un?.system) || 'metric',
+    units_system: normalizeUnitsSystem(un?.system),
 
     sandbox_mode: asStr(sb?.mode) || 'paths',
     sandbox_workspace_roots: asList(sb?.workspace_roots),
@@ -301,7 +310,7 @@ function buildPayload(): Record<string, unknown> {
 
   // units block
   const un = asObj(o.units) || {}
-  const unitsSystemDefault = un.system === undefined ? 'metric' : asStr(un.system)
+  const unitsSystemDefault = normalizeUnitsSystem(un.system)
   if (form.value.units_system !== unitsSystemDefault) {
     p.units = { system: form.value.units_system }
   }

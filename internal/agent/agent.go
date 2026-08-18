@@ -1003,6 +1003,8 @@ func loadTaskRegistryLocked() (TaskRegistry, error) {
 	return registry, nil
 }
 
+// LoadTaskRegistry reads the persisted task registry from disk, returning an
+// empty registry when no tasks file exists yet.
 func LoadTaskRegistry() (TaskRegistry, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
@@ -1054,6 +1056,10 @@ func isValidTransition(from, to TaskStatus) bool {
 	return false
 }
 
+// CreateTask adds a new task to the registry. Tasks with dependencies that are
+// not yet completed are created in the blocked state; a dependency on a
+// non-existent task is an error. On success the task is persisted and returned
+// with a generated ULID ID.
 func CreateTask(input CreateTaskInput) (TaskMeta, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
@@ -1115,6 +1121,9 @@ func CreateTask(input CreateTaskInput) (TaskMeta, error) {
 	return task, nil
 }
 
+// UpdateTask applies a partial update to an existing task. Status transitions
+// must be valid per ValidTransitions; a completed task unblocks its dependent
+// tasks. The updated task is persisted and returned.
 func UpdateTask(input UpdateTaskInput) (TaskMeta, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
@@ -1179,6 +1188,10 @@ func UpdateTask(input UpdateTaskInput) (TaskMeta, error) {
 	return task, nil
 }
 
+// ListTasks returns tasks matching the filters in input: any of the given
+// statuses, an assignee, all of the given tags, and an optional parent ID.
+// Tasks are returned in registry order with no filtering applied when every
+// field is empty.
 func ListTasks(input ListTasksInput) ([]TaskMeta, error) {
 	registry, err := LoadTaskRegistry()
 	if err != nil {
@@ -1230,6 +1243,7 @@ func ListTasks(input ListTasksInput) ([]TaskMeta, error) {
 	return result, nil
 }
 
+// GetTask returns the task with the given ID, or nil when no task matches.
 func GetTask(id string) (*TaskMeta, error) {
 	registry, err := LoadTaskRegistry()
 	if err != nil {
@@ -1244,6 +1258,9 @@ func GetTask(id string) (*TaskMeta, error) {
 	return &registry.Tasks[idx], nil
 }
 
+// DeleteTask removes the task with the given ID from the registry and strips
+// it from the BlockedBy lists of all remaining tasks. It reports whether a
+// task was actually removed.
 func DeleteTask(id string) (bool, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
@@ -1277,6 +1294,8 @@ func DeleteTask(id string) (bool, error) {
 	return true, nil
 }
 
+// ArchiveTask marks a completed task as archived. Tasks that are not yet
+// completed cannot be archived and are rejected with an error.
 func ArchiveTask(id string) (TaskMeta, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()

@@ -624,6 +624,10 @@ type ExecSessionProvider interface {
 	GetFileOps(taskID string, fallback string) any
 }
 
+// CreateSystemExecTools builds the system_exec toolset (system_exec,
+// system_exec_start, system_exec_ps, system_exec_kill) bound to the given
+// session manager for per-task CWD resolution. A nil sessionManager falls
+// back to the agent process working directory.
 func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionProvider, taskID string) ([]tool.Tool, error) {
 	m := &systemExecManager{
 		procs: make(map[int64]*runningProcess),

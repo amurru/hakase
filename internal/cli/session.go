@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// RunSessionCLI dispatches the session subcommand in args to its handler
+// (list, delete, archive, unarchive, info, ...) and returns the process exit
+// code: 0 on success, 2 on a usage error, and 1 on a runtime failure.
 func RunSessionCLI(args []string) int {
 	if len(args) == 0 {
 		sessionCLIUsage()

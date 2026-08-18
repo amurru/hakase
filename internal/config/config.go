@@ -328,14 +328,18 @@ func SystemEnvEnabled(cfg *Config) bool {
 }
 
 // DefaultModelForProvider returns the default model name for a provider. An
-// empty or "gemini" provider uses Gemini's default; "openai" and
-// "openai-compatible" use OpenAI's default. This is the single source of truth
-// for provider defaults, shared with the agent package and the web API so the
-// UI does not have to recompute them.
+// empty or "gemini" provider uses Gemini's default; "openai" uses OpenAI's
+// default. "openai-compatible" endpoints have no universal default - the model
+// name is endpoint-specific (Ollama, vLLM, etc.), so it returns an empty string
+// and the caller must configure one explicitly. This is the single source of
+// truth for provider defaults, shared with the agent package and the web API so
+// the UI does not have to recompute them.
 func DefaultModelForProvider(provider string) string {
 	switch provider {
-	case "openai", "openai-compatible":
+	case "openai":
 		return "gpt-5.6-terra"
+	case "openai-compatible":
+		return ""
 	default:
 		return "gemini-3.7-flash"
 	}

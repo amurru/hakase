@@ -112,7 +112,7 @@ func TestGetConfigEffectiveModelResolvesProviderDefault(t *testing.T) {
 		expected string
 	}{
 		{"openai default", `{"provider": "openai"}`, "gpt-5.6-terra"},
-		{"openai-compatible default", `{"provider": "openai-compatible", "base_url": "http://localhost:11434/v1"}`, "gpt-5.6-terra"},
+		{"openai-compatible has no default", `{"provider": "openai-compatible", "base_url": "http://localhost:11434/v1"}`, ""},
 		{"empty provider defaults to gemini", `{}`, "gemini-3.7-flash"},
 		{"explicit model wins", `{"provider": "openai", "model_name": "gpt-4o"}`, "gpt-4o"},
 	}
@@ -484,6 +484,12 @@ func TestValidateConfigUpdate(t *testing.T) {
 		{"invalid approval mode", `{"approval": {"mode": "sometimes"}}`, true},
 		{"valid system_env", `{"system_env": {"enabled": true}}`, false},
 		{"invalid system_env enabled", `{"system_env": {"enabled": "yes"}}`, true},
+		{"valid units metric", `{"units": {"system": "metric"}}`, false},
+		{"valid units imperial", `{"units": {"system": "imperial"}}`, false},
+		{"units absent system", `{"units": {}}`, false},
+		{"invalid units system", `{"units": {"system": "furlongs"}}`, true},
+		{"units non-object", `{"units": "imperial"}`, true},
+		{"units.system non-string", `{"units": {"system": 123}}`, true},
 		{"non-map sandbox", `{"sandbox": "paths"}`, false},
 		{"set api_key", `{"api_key": "secret"}`, false},
 		{"empty api_key", `{"api_key": ""}`, true},

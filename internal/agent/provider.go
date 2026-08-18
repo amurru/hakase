@@ -89,10 +89,15 @@ func (p *OpenAIProvider) CreateModel(ctx context.Context, modelName, apiKey stri
 	return openaimodel.NewModel(ctx, modelName, cfg)
 }
 
-// ValidateConfig returns an error when no API key is configured.
+// ValidateConfig returns an error when no API key is configured, or when an
+// OpenAI-compatible endpoint is selected without an explicit model_name (the
+// model identifier is endpoint-specific, so there is no universal default).
 func (p *OpenAIProvider) ValidateConfig(cfg *config.Config) error {
 	if cfg.APIKey == "" {
 		return fmt.Errorf("openai provider requires an api_key")
+	}
+	if cfg.Provider == "openai-compatible" && strings.TrimSpace(cfg.ModelName) == "" {
+		return fmt.Errorf("openai-compatible provider requires a model_name")
 	}
 	return nil
 }
