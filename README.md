@@ -494,6 +494,16 @@ written by the app) merged with the user registry at `~/.hakase/mcp.json`
 The legacy single-server `mcp_server_url` field still works and is
 auto-migrated to a server named `lightpanda`.
 
+### 🎨 Media Generation
+
+Hakase ships pluggable `generate_image`, `generate_video` (and stub `generate_audio`) as first-class ADK tools:
+
+- **Offline fallback (`pil`)** - pure Go rendering via `image/draw` + embedded Go font. Works with zero config, zero network, zero pip. Not photorealistic but deterministic for posters/diagrams/infographics (baoyu-infographic now prefers `generate_image` when available).
+- **Cloud quality when keys present** - `openai` (OpenAI Images or any OpenAI-compatible endpoint including OpenRouter via `openai_image_base_url` + `openai_image_path` override) and `fal.ai` (image via `fal-ai/flux/schnell`, video via `fal-ai/wan/v2.7/text-to-video` ~$0.50 for 5s @720p). `auto` order is `openai, fal, pil`; `pil` guarantee means zero-config always succeeds for images.
+- **Sandboxed & observable** - all output goes through `outputs/media/<ulid>.<ext>` via `securejoin` + atomic write + `io.CopyN` caps (20MB image / 100MB video), rendered inline in chat via `mediaLinks` + `/api/files/inline` (same-origin, no CSP change). Manifest appends to `outputs/media/manifest.jsonl`; status via `GET /api/media/status` (never leaks keys).
+
+Configure via the `media` block in `config.json` (all fields optional, defaults shown in `config.json.example`) or env vars `HAKASE_MEDIA_IMAGE_PROVIDER`, `HAKASE_MEDIA_VIDEO_PROVIDER`, `HAKASE_MEDIA_OUTPUT_DIR`, `HAKASE_FAL_KEY` (house convention is `HAKASE_*` only - `OPENAI_API_KEY`/`FAL_KEY` are not read). See `docs/media-generation/support.md` for the full matrix and troubleshooting.
+
 ---
 
 ## Quick Start
@@ -948,17 +958,14 @@ deferred a subset of the Hermes creative skills that depend on capabilities
 hakase did not have at the time. Native **MCP client support on the
 orchestrator** (see [MCP Integration](#-mcp-integration)) is now implemented -
 connect any MCP server (stdio or HTTP) via the `mcp` config block and manage it
-from the TUI with `/mcp`. Still deferred for the remaining skills: an
-**`image_gen` tool** and a **`video_gen` tool**:
+from the TUI with `/mcp`. **Media generation is now implemented** (see [Media Generation](#media-generation)): `generate_image` (cloud via OpenAI/OpenAI-compatible including OpenRouter, fal.ai, plus offline pil fallback - zero config) and `generate_video` (fal.ai) are available as orchestrator tools; `generate_audio` is a stub wired for v2. `baoyu-infographic` now prefers `generate_image`. Still deferred:
 
 - `touchdesigner-mcp` - requires a TouchDesigner MCP server; can now be added
   via the generic `mcp` config once a server endpoint is available.
-- `baoyu-infographic` - currently adapted to HTML/SVG output; revisit to use a
-  native `image_gen` tool when available.
 - `comfyui` - ported as doctrine + gated on user infra (ComfyUI/comfy-cli,
-  GPU or cloud); revisit to integrate with native image/video generation.
+  GPU or cloud); native image/video generation is now provided by the media layer, ComfyUI integration is deferred to v2 (GPU + local models).
 - `songwriting-and-ai-music` - doctrine ported; generation is external (Suno);
-  revisit for native TTS/audio when relevant tools exist.
+  native TTS/audio deferred to v2 (generate_audio stub).
 
 ---
 

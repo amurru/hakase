@@ -24,8 +24,10 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/media"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
 	"amurru/hakase/internal/web"
 	"amurru/hakase/internal/web/handlers"
@@ -207,6 +209,26 @@ func runServer(args []string, serveSPA bool) int {
 
 		ResolveVisionProviderFn: resolveVisionProvider,
 	}
+
+	// Media generation (zero-config guarantee, same as TUI).
+	mediaStore, mErr := media.NewStore(cfg.Media.OutputDir)
+	var mediaReg *media.Registry
+	if mErr != nil {
+		util.DebugEvent("media_disabled", "error", mErr.Error())
+		log.Printf("WARN [media] disabled: %v", mErr)
+	} else {
+		var err error
+		mediaReg, err = media.NewRegistry(cfg.Media, interfaces.LogFunc(logToFile), mediaStore)
+		if err != nil {
+			util.DebugEvent("media_disabled", "error", err.Error())
+			log.Printf("WARN [media] disabled: %v", err)
+			mediaReg = nil
+		}
+	}
+	deps.CreateMediaToolsFn = func(logFn interfaces.LogFunc) ([]tool.Tool, error) {
+		return media.CreateMediaTools(mediaReg, media.LogFunc(logFn))
+	}
+	handlers.SetMediaRegistry(mediaReg)
 
 	// Create the SSE bridge for real-time event streaming.
 	bridge := sse.NewEventBridge()

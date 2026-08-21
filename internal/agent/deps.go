@@ -77,6 +77,9 @@ type Deps struct {
 
 	// ResolveVisionProviderFn selects the provider for the vision model.
 	ResolveVisionProviderFn func(mainProvider LLMProvider, cfg *config.Config) LLMProvider
+
+	// CreateMediaToolsFn creates media generation tools (image/video/audio).
+	CreateMediaToolsFn func(log interfaces.LogFunc) ([]tool.Tool, error)
 }
 
 // Runtime holds interactive gate implementations that are wired AFTER

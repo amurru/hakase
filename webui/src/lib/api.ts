@@ -66,3 +66,22 @@ export function apiGet<T = unknown>(path: string): Promise<T> {
 export function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
   return apiFetch<T>(path, { method: 'POST', body })
 }
+
+export interface MediaStatusResponse {
+  image_provider: string
+  video_provider: string
+  audio_provider: string
+  resolved_image: string
+  resolved_video: string
+  resolved_audio: string
+  capabilities: Record<string, Record<string, boolean>>
+  output_dir: string
+}
+
+export function getMediaStatus(): Promise<MediaStatusResponse> {
+  return apiGet<MediaStatusResponse>('/media/status')
+}
+
+export function getMediaManifest(): Promise<unknown[]> {
+  return apiGet<unknown[]>('/media/manifest')
+}

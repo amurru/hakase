@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -203,6 +204,81 @@ type Config struct {
 	// OR-matched and fused with Reciprocal Rank Fusion; on failure or
 	// timeout it falls back silently to plain substring search.
 	SearchExpansion bool `json:"search_expansion,omitempty"`
+	// Media configures pluggable media generation (image/video/audio).
+	Media MediaConfig `json:"media,omitempty"`
+}
+
+// MediaConfig configures pluggable media generation providers.
+type MediaConfig struct {
+	ImageProvider      string   `json:"image_provider,omitempty"`
+	VideoProvider      string   `json:"video_provider,omitempty"`
+	AudioProvider      string   `json:"audio_provider,omitempty"`
+	Order              []string `json:"order,omitempty"`
+	MaxConcurrent      int      `json:"max_concurrent,omitempty"`
+	TimeoutSeconds     int      `json:"timeout_seconds,omitempty"`
+	OutputDir          string   `json:"output_dir,omitempty"`
+	FalKey             string   `json:"fal_key,omitempty"`
+	FalBaseURL         string   `json:"fal_base_url,omitempty"`
+	FalImageModel      string   `json:"fal_image_model,omitempty"`
+	FalVideoModel      string   `json:"fal_video_model,omitempty"`
+	OpenAIImageKey     string   `json:"openai_image_key,omitempty"`
+	OpenAIImageBaseURL string   `json:"openai_image_base_url,omitempty"`
+	OpenAIImagePath    string   `json:"openai_image_path,omitempty"`
+	OpenAIImageModel   string   `json:"openai_image_model,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after loading config.
+func (c *MediaConfig) ApplyDefaults() {
+	if c.ImageProvider == "" {
+		c.ImageProvider = "auto"
+	}
+	if c.VideoProvider == "" {
+		c.VideoProvider = "auto"
+	}
+	if c.AudioProvider == "" {
+		c.AudioProvider = "off"
+	}
+	if len(c.Order) == 0 {
+		c.Order = []string{"openai", "fal", "pil"}
+	}
+	if c.OutputDir == "" {
+		c.OutputDir = "outputs/media"
+	}
+	if c.OpenAIImagePath == "" {
+		c.OpenAIImagePath = "/images/generations"
+	}
+	if c.OpenAIImageModel == "" {
+		c.OpenAIImageModel = "gpt-image-1-mini"
+	}
+	if c.FalImageModel == "" {
+		c.FalImageModel = "fal-ai/flux/schnell"
+	}
+	if c.FalVideoModel == "" {
+		c.FalVideoModel = "fal-ai/wan/v2.7/text-to-video"
+	}
+}
+
+// Validate checks MediaConfig for valid values.
+func (c *MediaConfig) Validate() error {
+	validImage := map[string]bool{"auto": true, "pil": true, "openai": true, "fal": true, "off": true}
+	if !validImage[c.ImageProvider] {
+		return fmt.Errorf("invalid media.image_provider %q: must be one of auto, pil, openai, fal, off", c.ImageProvider)
+	}
+	validVideo := map[string]bool{"auto": true, "fal": true, "off": true}
+	if !validVideo[c.VideoProvider] {
+		return fmt.Errorf("invalid media.video_provider %q: must be one of auto, fal, off", c.VideoProvider)
+	}
+	validAudio := map[string]bool{"off": true, "openai": true, "elevenlabs": true}
+	if !validAudio[c.AudioProvider] {
+		return fmt.Errorf("invalid media.audio_provider %q: must be one of off, openai, elevenlabs", c.AudioProvider)
+	}
+	if c.MaxConcurrent < 0 {
+		return fmt.Errorf("invalid media.max_concurrent %d: must be >= 0", c.MaxConcurrent)
+	}
+	if c.TimeoutSeconds < 0 {
+		return fmt.Errorf("invalid media.timeout_seconds %d: must be >= 0", c.TimeoutSeconds)
+	}
+	return nil
 }
 
 // envConfigSet reports whether any HAKASE_* environment override is present.
@@ -218,7 +294,11 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_VISION_BASE_URL") != "" ||
 		os.Getenv("HAKASE_VISION_API_KEY") != "" ||
 		os.Getenv("HAKASE_VISION_PROVIDER") != "" ||
-		os.Getenv("HAKASE_MODEL_VISION") != ""
+		os.Getenv("HAKASE_MODEL_VISION") != "" ||
+		os.Getenv("HAKASE_MEDIA_IMAGE_PROVIDER") != "" ||
+		os.Getenv("HAKASE_MEDIA_VIDEO_PROVIDER") != "" ||
+		os.Getenv("HAKASE_MEDIA_OUTPUT_DIR") != "" ||
+		os.Getenv("HAKASE_FAL_KEY") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -312,6 +392,28 @@ func LoadConfig(filePath string) (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.LoopGuard.MaxOutputTokens = int32(n)
 		}
+	}
+	if v := os.Getenv("HAKASE_MEDIA_IMAGE_PROVIDER"); v != "" {
+		cfg.Media.ImageProvider = v
+	}
+	if v := os.Getenv("HAKASE_MEDIA_VIDEO_PROVIDER"); v != "" {
+		cfg.Media.VideoProvider = v
+	}
+	if v := os.Getenv("HAKASE_MEDIA_OUTPUT_DIR"); v != "" {
+		cfg.Media.OutputDir = v
+	}
+	if v := os.Getenv("HAKASE_FAL_KEY"); v != "" {
+		cfg.Media.FalKey = v
+	}
+
+	cfg.Media.ApplyDefaults()
+	// Fallback chain for OpenAI image provider (mirrors vision pattern):
+	// openai_image_key empty -> cfg.APIKey, openai_image_base_url empty -> cfg.BaseURL
+	if cfg.Media.OpenAIImageKey == "" && cfg.APIKey != "" {
+		cfg.Media.OpenAIImageKey = cfg.APIKey
+	}
+	if cfg.Media.OpenAIImageBaseURL == "" && cfg.BaseURL != "" {
+		cfg.Media.OpenAIImageBaseURL = cfg.BaseURL
 	}
 
 	return &cfg, nil

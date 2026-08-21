@@ -72,6 +72,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterCronRoutes(r)
 		// Config file routes (task 34)
 		handlers.RegisterConfigRoutes(r)
+		// Media generation routes (MG-010)
+		handlers.RegisterMediaRoutes(r)
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html.

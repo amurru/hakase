@@ -18,12 +18,14 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/media"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/tui"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
+	"amurru/hakase/internal/web/handlers"
 
 	tea "charm.land/bubbletea/v2"
 	"google.golang.org/adk/v2/tool"
@@ -137,6 +139,26 @@ func runTUI() {
 		// base_url heuristic, or reuse primary).
 		ResolveVisionProviderFn: resolveVisionProvider,
 	}
+
+	// Media generation: construct registry unconditionally (zero-config guarantee).
+	mediaStore, mErr := media.NewStore(cfg.Media.OutputDir)
+	var mediaReg *media.Registry
+	if mErr != nil {
+		util.DebugEvent("media_disabled", "error", mErr.Error())
+		logToUI(fmt.Sprintf("WARN [media] disabled: %v", mErr))
+	} else {
+		var err error
+		mediaReg, err = media.NewRegistry(cfg.Media, interfaces.LogFunc(logToUI), mediaStore)
+		if err != nil {
+			util.DebugEvent("media_disabled", "error", err.Error())
+			logToUI(fmt.Sprintf("WARN [media] disabled: %v", err))
+			mediaReg = nil
+		}
+	}
+	deps.CreateMediaToolsFn = func(logFn interfaces.LogFunc) ([]tool.Tool, error) {
+		return media.CreateMediaTools(mediaReg, media.LogFunc(logFn))
+	}
+	handlers.SetMediaRegistry(mediaReg)
 
 	// Runtime holds interactive gates that are wired AFTER the tea.Program
 	// exists (they need to Send tea.Msg into the TUI event loop).

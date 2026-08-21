@@ -50,6 +50,8 @@ type ConfigResponse struct {
 	HasAPIKey bool `json:"has_api_key"`
 	// HasVisionAPIKey reports whether a vision_api_key is configured.
 	HasVisionAPIKey bool `json:"has_vision_api_key"`
+	HasFalKey       bool `json:"has_fal_key"`
+	HasOpenAIImageKey bool `json:"has_openai_image_key"`
 	// EffectiveModel is the model the agent will actually use, resolved from the
 	// configured model_name or the provider default. Exposed so the web UI can
 	// label the active model without recomputing provider defaults client-side.
@@ -77,20 +79,26 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 
 	hasKey := cfg.APIKey != ""
 	hasVisionKey := cfg.VisionAPIKey != ""
+	hasFalKey := cfg.Media.FalKey != ""
+	hasOpenAIImageKey := cfg.Media.OpenAIImageKey != ""
 	// Blank secrets before returning.
 	cfg.APIKey = ""
 	cfg.VisionAPIKey = ""
+	cfg.Media.FalKey = ""
+	cfg.Media.OpenAIImageKey = ""
 
 	_, statErr := os.Stat(path)
 	writable := statErr == nil
 
 	writeJSON(w, http.StatusOK, ConfigResponse{
-		Path:            path,
-		Writable:        writable,
-		HasAPIKey:       hasKey,
-		HasVisionAPIKey: hasVisionKey,
-		EffectiveModel:  cfg.EffectiveModelName(),
-		Config:          *cfg,
+		Path:                path,
+		Writable:            writable,
+		HasAPIKey:           hasKey,
+		HasVisionAPIKey:     hasVisionKey,
+		HasFalKey:           hasFalKey,
+		HasOpenAIImageKey:   hasOpenAIImageKey,
+		EffectiveModel:      cfg.EffectiveModelName(),
+		Config:              *cfg,
 	})
 }
 
@@ -123,6 +131,7 @@ var editableConfigKeys = []string{
 	"loop_guard",
 	"approval",
 	"clarify",
+	"media",
 }
 
 // apiKeyControlKeys are write-only keys for managing secrets in config.json.
@@ -135,6 +144,10 @@ var apiKeyControlKeys = []string{
 	"clear_api_key",
 	"vision_api_key",
 	"clear_vision_api_key",
+	"fal_key",
+	"clear_fal_key",
+	"openai_image_key",
+	"clear_openai_image_key",
 }
 
 // UpdateConfig handles PUT /api/config. The request body is a partial JSON
@@ -200,6 +213,51 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if v, ok := req["vision_api_key"].(string); ok && v != "" {
 		raw["vision_api_key"] = v
+	}
+	// Media keys (nested under media) - support both top-level control keys and nested media.* keys
+	if clear, ok := req["clear_fal_key"].(bool); ok && clear {
+		if m, ok := raw["media"].(map[string]interface{}); ok {
+			delete(m, "fal_key")
+			raw["media"] = m
+		}
+		delete(raw, "fal_key")
+	}
+	if v, ok := req["fal_key"].(string); ok && v != "" {
+		if _, hasMedia := raw["media"]; hasMedia {
+			if m, ok := raw["media"].(map[string]interface{}); ok {
+				m["fal_key"] = v
+				raw["media"] = m
+			} else {
+				raw["media"] = map[string]interface{}{"fal_key": v}
+			}
+		} else {
+			raw["media"] = map[string]interface{}{"fal_key": v}
+		}
+	}
+	if clear, ok := req["clear_openai_image_key"].(bool); ok && clear {
+		if m, ok := raw["media"].(map[string]interface{}); ok {
+			delete(m, "openai_image_key")
+			raw["media"] = m
+		}
+		delete(raw, "openai_image_key")
+	}
+	if v, ok := req["openai_image_key"].(string); ok && v != "" {
+		if _, hasMedia := raw["media"]; hasMedia {
+			if m, ok := raw["media"].(map[string]interface{}); ok {
+				m["openai_image_key"] = v
+				raw["media"] = m
+			} else {
+				raw["media"] = map[string]interface{}{"openai_image_key": v}
+			}
+		} else {
+			raw["media"] = map[string]interface{}{"openai_image_key": v}
+		}
+	}
+	// Also handle nested media.fal_key / media.openai_image_key when sent via media object directly (deepMerge already handled, but ensure clear via empty string)
+	if m, ok := req["media"].(map[string]interface{}); ok {
+		if v, ok := m["fal_key"].(string); ok && v == "" {
+			// Empty string means clear only if explicitly sent? We treat empty as no-op to avoid accidental clear.
+		}
 	}
 
 	// The merged result must still parse into a typed Config.
