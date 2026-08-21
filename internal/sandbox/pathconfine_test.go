@@ -491,3 +491,121 @@ func TestWrapUntrustedDataSkipsEmpty(t *testing.T) {
 		t.Errorf("empty content: expected empty, got %q", got)
 	}
 }
+
+// TestSensitiveFilesImplicitlyDenied verifies LoadSandboxConfig always adds
+// hakase's own secret files (config.json, .env, and ~/.hakase config.json,
+// mcp.json, credentials.json, jwt-secret) to DenyRoots, so permissive
+// user-configured read/workspace roots can never expose their contents.
+func TestSensitiveFilesImplicitlyDenied(t *testing.T) {
+	tmp := t.TempDir()
+	home := mustMkdir(t, filepath.Join(tmp, "home"))
+	workspace := mustMkdir(t, filepath.Join(tmp, "workspace"))
+
+	cfgFile := filepath.Join(workspace, "config.json")
+	mustWriteFile(t, cfgFile, `{"api_key":"sk-secret"}`)
+	exampleFile := filepath.Join(workspace, "config.json.example")
+	mustWriteFile(t, exampleFile, "{}")
+	envFile := filepath.Join(workspace, ".env")
+	mustWriteFile(t, envFile, "TOKEN=x")
+	credsFile := filepath.Join(home, "credentials.json")
+	mustWriteFile(t, credsFile, `{"hash":"x"}`)
+
+	t.Setenv("HAKASE_HOME", home)
+	// Production anchors the project config.json/.env denies at the process
+	// working directory; mirror that here.
+	t.Chdir(workspace)
+
+	sb := LoadSandboxConfig(&SandboxJSON{
+		Mode:           "paths",
+		WorkspaceRoots: []string{workspace},
+		ReadRoots:      []string{workspace, home}, // deliberately permissive
+	})
+
+	for _, want := range normalizeRoots([]string{cfgFile, envFile, credsFile}) {
+		found := false
+		for _, got := range sb.DenyRoots {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DenyRoots missing sensitive entry %q; got %v", want, sb.DenyRoots)
+		}
+	}
+
+	// Reads of sensitive files are rejected despite the permissive read
+	// roots, with the deny-root error (not a generic outside-workspace one).
+	for _, p := range []string{"config.json", ".env", cfgFile, credsFile} {
+		if _, err := sb.ResolveScopedPath(p, false); err == nil {
+			t.Errorf("ResolveScopedPath(%q read) = no error, want denied", p)
+		} else if !strings.Contains(err.Error(), "denied root") {
+			t.Errorf("ResolveScopedPath(%q read) error = %v, want denied-root error", p, err)
+		}
+		// Writes are equally denied.
+		if _, err := sb.ResolveScopedPath(p, true); err == nil {
+			t.Errorf("ResolveScopedPath(%q write) = no error, want denied", p)
+		}
+	}
+
+	// Non-secret siblings stay readable.
+	if _, err := sb.ResolveScopedPath(exampleFile, false); err != nil {
+		t.Errorf("ResolveScopedPath(config.json.example) = %v, want allowed", err)
+	}
+	if _, err := sb.ResolveScopedPath(filepath.Join(workspace, "notes.txt"), false); err != nil {
+		t.Errorf("ResolveScopedPath(notes.txt) = %v, want allowed", err)
+	}
+
+	// DeniedPath mirrors the deny set for listing filters.
+	if !sb.DeniedPath(cfgFile) {
+		t.Error("DeniedPath(config.json) = false, want true")
+	}
+	if sb.DeniedPath(exampleFile) {
+		t.Error("DeniedPath(config.json.example) = true, want false")
+	}
+	if (*SandboxConfig)(nil).DeniedPath(cfgFile) {
+		t.Error("nil sandbox DeniedPath = true, want false")
+	}
+}
+
+// TestHakaseHomeDeniesAreCwdIndependent pins the real-world ~/.hakase
+// deployment: the config (and other secrets) live under the hakase home, so
+// launching hakase from any working directory - with no project config.json
+// present at all - must still deny the home secret files. Home-anchored
+// denies are computed from $HAKASE_HOME/~/.hakase and never depend on cwd.
+func TestHakaseHomeDeniesAreCwdIndependent(t *testing.T) {
+	tmp := t.TempDir()
+	home := mustMkdir(t, filepath.Join(tmp, ".hakase"))
+	unrelated := mustMkdir(t, filepath.Join(tmp, "elsewhere")) // no project config here
+
+	userCfg := filepath.Join(home, "config.json")
+	mustWriteFile(t, userCfg, `{"api_key":"sk-home-secret"}`)
+	mustWriteFile(t, filepath.Join(home, "credentials.json"), "{}")
+	mustWriteFile(t, filepath.Join(home, "cronjobs.json"), "[]")
+
+	t.Setenv("HAKASE_HOME", home)
+	t.Chdir(unrelated)
+
+	sb := LoadSandboxConfig(&SandboxJSON{
+		Mode:           "paths",
+		WorkspaceRoots: []string{unrelated},
+		ReadRoots:      []string{unrelated, home}, // even if home is deliberately exposed
+	})
+
+	for _, p := range []string{
+		userCfg,
+		filepath.Join(home, "credentials.json"),
+		filepath.Join(home, "cronjobs.json"),
+		filepath.Join(home, "mcp.json"),   // not yet on disk; deny is path-based
+		filepath.Join(home, "jwt-secret"), // not yet on disk; deny is path-based
+	} {
+		if _, err := sb.ResolveScopedPath(p, false); err == nil || !strings.Contains(err.Error(), "denied root") {
+			t.Errorf("ResolveScopedPath(%q read): got %v, want denied-root error", p, err)
+		}
+	}
+
+	// The actual workspace stays fully usable.
+	if _, err := sb.ResolveScopedPath(filepath.Join(unrelated, "notes.txt"), false); err != nil {
+		t.Errorf("workspace read broken: %v", err)
+	}
+}

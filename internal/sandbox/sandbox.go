@@ -96,7 +96,7 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 		sb.ReadRoots = normalizeRoots(sb.ReadRoots)
 	}
 
-	sb.DenyRoots = normalizeRoots(sb.DenyRoots)
+	sb.DenyRoots = normalizeRoots(append(sensitiveFilePaths(), sb.DenyRoots...))
 
 	if sb.Permissions == nil {
 		sb.Permissions = map[string]string{
@@ -107,6 +107,45 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 	}
 
 	return sb
+}
+
+// hakaseHomeDir mirrors config.HakaseHome without importing internal/config
+// (which imports this package): $HAKASE_HOME when set, otherwise ~/.hakase.
+func hakaseHomeDir() string {
+	if h := os.Getenv("HAKASE_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".hakase")
+}
+
+// sensitiveFilePaths lists well-known hakase-owned files whose contents are
+// secrets: the project config with provider API keys, dotenv files, the
+// user-level config fallback, MCP server tokens, the admin credential hash,
+// and the JWT signing secret. LoadSandboxConfig appends them to DenyRoots on
+// every construction, so no read or write scope can serve their contents no
+// matter how permissive the configured workspace/read roots are.
+func sensitiveFilePaths() []string {
+	var paths []string
+	if cwd, err := os.Getwd(); err == nil {
+		paths = append(paths,
+			filepath.Join(cwd, "config.json"),
+			filepath.Join(cwd, ".env"),
+		)
+	}
+	if home := hakaseHomeDir(); home != "" {
+		paths = append(paths,
+			filepath.Join(home, "config.json"),
+			filepath.Join(home, "mcp.json"),
+			filepath.Join(home, "credentials.json"),
+			filepath.Join(home, "jwt-secret"),
+			filepath.Join(home, "cronjobs.json"),
+		)
+	}
+	return paths
 }
 
 // normalizeRoots cleans, evaluates symlinks, and de-duplicates a list of root paths.
@@ -247,6 +286,23 @@ func (sb *SandboxConfig) Permitted(tool string) (action string, ok bool) {
 	}
 	action, ok = sb.Permissions[tool]
 	return action, ok
+}
+
+// DeniedPath reports whether target falls under any deny root (including the
+// implicit sensitive-file denies added by LoadSandboxConfig). It is a cheap
+// string containment check for hiding entries from directory listings; the
+// authoritative enforcement stays in ResolveScopedPath.
+func (sb *SandboxConfig) DeniedPath(target string) bool {
+	if sb == nil || len(sb.DenyRoots) == 0 {
+		return false
+	}
+	p := filepath.Clean(target)
+	for _, d := range sb.DenyRoots {
+		if within(d, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

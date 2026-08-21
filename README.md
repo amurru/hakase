@@ -446,6 +446,7 @@ Key properties:
 
 - **On by default** — an absent or unset `sandbox` block yields `paths` mode, so the agent cannot write outside approved workspaces without explicit configuration
 - **Roots** — `workspace_roots` (writable, default `["."]`), `read_roots` (readable, default = workspace roots), and `deny_roots` (always rejected, highest precedence); all are symlink-evaluated and de-duplicated
+- **Secret files** — hakase's own secret-bearing files are implicitly denied on top of any configured roots, wherever hakase is launched from: `config.json` and `.env` in the working directory, plus `config.json`, `mcp.json`, `credentials.json`, `jwt-secret`, and `cronjobs.json` under the hakase home (`~/.hakase` or `$HAKASE_HOME`). They cannot be read or written through any sandboxed tool or web file API and are hidden from directory listings; edit config via the web Settings view or a text editor. Deliberately *not* denied: `~/.hakase/AGENTS.md`, `~/.hakase/skills/`, and a user-global knowledge base - those are meant to be agent-readable
 - **Downloads** — the filename is basename-sanitized and the output path is confined to the workspace
 - **Current sandbox** — if `bwrap` is not installed, bubblewrap mode falls back to the safe path-confinement exec path and logs a warning
 
