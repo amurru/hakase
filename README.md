@@ -1,7 +1,7 @@
 # Hakase
 
 A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI **and a browser-based web UI**, Google ADK orchestration across multiple model providers (Gemini, OpenAI, and OpenAI-compatible endpoints), MCP server integration, a Python code interpreter, and a self-evolving skill library.
-
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/amurru/hakase)
 ![Go](https://img.shields.io/badge/Go-1.26-blue?logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
