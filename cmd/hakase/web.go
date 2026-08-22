@@ -154,6 +154,13 @@ func runServer(args []string, serveSPA bool) int {
 	// Init sandbox before any file or exec operations.
 	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 
+	// Vision hooks: the BeforeModel callback rewrites user-attached image
+	// parts into text (vision-model description) before the OpenAI-compatible
+	// adapter sees them; without the config hook the rewrite is skipped and
+	// InlineData parts crash the call with "openai: unsupported content part".
+	// Config is load-once per process, so closing over cfg matches its lifecycle.
+	vision.CurrentConfig = func() *config.Config { return cfg }
+
 	// Init debug logging.
 	_ = os.MkdirAll(filepath.Join(home, "logs"), 0o755)
 	logToFile := func(msg string) {

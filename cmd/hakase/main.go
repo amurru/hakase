@@ -60,6 +60,12 @@ func runTUI() {
 	// Init sandbox before any file or exec operations.
 	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 
+	// Vision hooks: feed the live config to the vision package so the
+	// BeforeModel callback can rewrite user-attached image parts before the
+	// OpenAI-compatible adapter rejects InlineData. init.go seeds nil; this
+	// is the documented override point. Config is load-once per process.
+	vision.CurrentConfig = func() *config.Config { return cfg }
+
 	var program *tea.Program
 
 	// Dev-mode structured JSON logging.

@@ -80,7 +80,11 @@ func init() {
 	hctx.FindProjectRootFunc = skill.FindProjectRoot
 	hctx.CurrentModelFunc = func() model.LLM { return nil }
 
-	// Vision hooks: default to nil (overridden at TUI launch in main.go).
+	// Vision hooks: default to nil. Each entry point overrides CurrentConfig
+	// with the loaded config (main.go TUI, web.go, cronjob bootstrap) - the
+	// BeforeModel callback needs it to rewrite attached-image parts before
+	// the OpenAI-compatible adapter rejects InlineData. CurrentModelInfo is
+	// overridden async once model capabilities are fetched.
 	vision.CurrentModelInfo = func() *interfaces.ModelInfo { return nil }
 	vision.CurrentConfig = func() *config.Config { return nil }
 

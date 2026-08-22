@@ -1195,6 +1195,10 @@ func cronModelBootstrap() error {
 	currentClarify = cfg.Clarify
 	currentGuard = hakaseagent.LoopGuardConfig(cfg.LoopGuard)
 	currentConfig = cfg
+	// Headless runs register VisionInjectionCallback too; without the config
+	// hook the attached-image rewrite is skipped and InlineData parts crash
+	// openai-compatible model calls.
+	vision.CurrentConfig = func() *config.Config { return cfg }
 
 	provider, err := hakaseagent.ProviderFactory(cfg)
 	if err != nil {
