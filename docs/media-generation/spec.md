@@ -254,7 +254,7 @@ Deferred because it cannot be developed or verified without GPU hardware, a runn
   - `image_provider:"off"` -> `image generation is off: set media.image_provider to auto, pil, openai, or fal`.
   - All tools: validate inputs, clamp sizes, `Registry.Resolve`, acquire semaphore, wrap handler in `context.WithTimeout` (**per-kind timeout resolved here in the tool layer: 120s image / 300s video**), append to `outputs/media/manifest.jsonl` (**mutex-guarded; exactly one formatted line per append** - concurrent cloud generations share the file), return result. Errors are actionable `tool.Error`s, never raw stack traces.
   - `go test` covers: valid image via pil, video/audio/off error strings verbatim, size clamping, prompt required, provider override, manifest append under concurrency, timeout releases semaphore.
-- Affected Components: `internal/media/tools.go` (new), `internal/media/tools_test.go`.
+- Affected Components: `internal/media/tools.go` (new), tests in `internal/media/media_test.go`.
 - Contracts:
   ```go
   func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error)

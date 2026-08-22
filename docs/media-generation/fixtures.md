@@ -89,11 +89,11 @@ Request mapping (the one tested mapping):
 
 Flow mirrors image: queue POST -> status poll (1s interval, bounded by video timeout 300s) -> download `.mp4` (100MB cap) -> renders as `<video controls src="/api/files/inline?path=...">`. Other slugs pass through untested.
 
-### Error states (verbatim strings, asserted in tools_test.go)
+### Error states (verbatim strings, asserted in media_test.go)
 
 No video provider:
 ```json
-{"error": "video generation requires a provider: set media.video_provider to fal and set fal_key (HAKASE_FAL_KEY), or configure an OpenAI-compatible image router"}
+{"error": "video generation requires a provider: configure an OpenAI-compatible router with video support (media.openai_video_key / openai_video_base_url, e.g. OpenRouter), or set fal_key (HAKASE_FAL_KEY) with media.video_provider fal"}
 ```
 
 Audio off:

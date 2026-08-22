@@ -440,8 +440,19 @@ func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, w
 	// Relative operands resolve against the same working directory the
 	// executed process gets: an approved override when supplied, otherwise
 	// the workspace root (BuildExecCommand pins cmd.Dir to exactly this).
-	base := workingDir
-	if base == "" && len(sb.WorkspaceRoots) > 0 {
+	// The override is resolved through ResolveScopedPath so a raw relative
+	// value like "sub" can never leave the audit comparing an absolute deny
+	// root against a relative candidate path.
+	base := ""
+	if workingDir != "" {
+		resolved, err := sb.ResolveScopedPath(workingDir, false)
+		if err != nil {
+			// BuildExecCommand rejects the same override right after; fail
+			// closed here so the audit never runs against an unusable base.
+			return fmt.Errorf("working_dir %q rejected by sandbox: %w", workingDir, err)
+		}
+		base = resolved
+	} else if len(sb.WorkspaceRoots) > 0 {
 		base = sb.WorkspaceRoots[0]
 	}
 	var tokens []string
@@ -462,9 +473,10 @@ func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, w
 
 // auditPathToken checks a single command-line token. Absolute paths must be
 // under a read root or a trusted system dir, and never under a deny root.
-// Relative path-like operands (see relativeOperandNeedsAudit) are resolved
-// against relativeBase and audited against deny rules only; everything else
-// passes, since bare words cannot leave the confined working directory.
+// Relative path-like operands are resolved against relativeBase and audited
+// against deny rules only; everything else passes, since bare words cannot
+// leave the confined working directory. Glob metacharacters are pre-expanded
+// because sh resolves them only after this audit runs.
 func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 	p := strings.TrimSpace(tok)
 	if p == "" {
@@ -476,15 +488,14 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 			return nil
 		}
 		resolved := filepath.Clean(filepath.Join(relativeBase, expanded))
-		for _, candidate := range resolveWithSymlinks(resolved) {
-			for _, d := range sb.DenyRoots {
-				if within(d, candidate) {
-					return fmt.Errorf("command references %q which resolves into a denied sandbox root", tok)
-				}
-			}
-			if sb.deniedBasename(candidate) {
-				return fmt.Errorf("command references %q which is a denied sensitive file", tok)
-			}
+		if err := auditDenyCandidates(sb, resolveWithSymlinks(resolved), tok); err != nil {
+			return err
+		}
+		// A pattern like "*/key" or "secrets/*.env" expands in the shell
+		// after this audit; check every concrete match now so metacharacters
+		// cannot mask denied targets behind their literal form.
+		if strings.ContainsAny(expanded, "*?[") {
+			return auditGlobExpansions(sb, resolved, tok)
 		}
 		return nil
 	}
@@ -496,10 +507,57 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 	if sb.deniedBasename(expanded) {
 		return fmt.Errorf("command references %q which is a denied sensitive file", tok)
 	}
+	// Same expansion concern for absolute patterns: "/proj/*/key" passes the
+	// literal checks but may expand into a denied root.
+	if strings.ContainsAny(expanded, "*?[") {
+		if err := auditGlobExpansions(sb, expanded, tok); err != nil {
+			return err
+		}
+	}
 	if pathInAny(expanded, sb.ReadRoots) || pathInAny(expanded, trustedExecDirs) {
 		return nil
 	}
 	return fmt.Errorf("command references path %q outside the sandbox (not under a read root %v nor a trusted system dir); add it to sandbox.read_roots in config.json or narrow the command", tok, sb.ReadRoots)
+}
+
+// maxGlobMatches bounds how many shell-glob expansions are audited for a
+// single operand so pathological patterns cannot stall the guard.
+const maxGlobMatches = 1000
+
+// auditGlobExpansions expands a shell-glob path pattern the way sh will
+// (bounded) and applies the deny-root and denied-basename checks to every
+// concrete match. No-match patterns pass through: the spawned shell handles
+// them exactly as it would have without this audit.
+func auditGlobExpansions(sb *SandboxConfig, pattern, tok string) error {
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	if len(matches) > maxGlobMatches {
+		matches = matches[:maxGlobMatches]
+	}
+	for _, m := range matches {
+		if err := auditDenyCandidates(sb, resolveWithSymlinks(m), tok); err != nil {
+			return fmt.Errorf("%w (glob expansion)", err)
+		}
+	}
+	return nil
+}
+
+// auditDenyCandidates applies the deny-root and denied-basename checks to
+// every candidate path (literal plus its symlink-resolved forms).
+func auditDenyCandidates(sb *SandboxConfig, candidates []string, tok string) error {
+	for _, candidate := range candidates {
+		for _, d := range sb.DenyRoots {
+			if within(d, candidate) {
+				return fmt.Errorf("command references %q which resolves into a denied sandbox root", tok)
+			}
+		}
+		if sb.deniedBasename(candidate) {
+			return fmt.Errorf("command references %q which is a denied sensitive file", tok)
+		}
+	}
+	return nil
 }
 
 // relativeOperandNeedsAudit reports whether a relative token deserves deny

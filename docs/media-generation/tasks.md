@@ -45,8 +45,8 @@ Legend: `[BE]` Go backend, `[FE]` frontend, `[QA]` test/docs. Status: TODO unles
 - [ ] **T2A.1 [BE]** Create `internal/media/pil.go`: `Name()="pil"`, `Capabilities{Image:true}`, rendering background/rounded card/title/shapes deterministic in prompt+seed via `image/draw` + embedded `goregular`. Define the `textLayout` interface here; wire `simpleLayout`.
       Verify: valid PNG at requested size, prompt-required error, determinism smoke test. Spec: MG-004.
 
-- [ ] **T2A.2 [BE]** *(included, may slip to v1.1 without blocking)* Create `internal/media/textlayout.go`: system-font discovery + `go-text/typesetting` shaping (Arabic/CJK/Indic), cmap coverage selection, fallback to `simpleLayout`. Adds direct dep to `go.mod`.
-      Verify: coverage-selection unit tests; Arabic/CJK title renders non-tofu when a covering system font exists. Spec: MG-004.
+- [ ] **T2A.2 [BE]** *(included, may slip to v1.1 without blocking)* Create `internal/media/textlayout.go`: system-font discovery + `go-text/typesetting` shaping (Arabic/CJK/Indic), cmap coverage selection, fallback to `simpleLayout`. Adds direct dep to `go.mod`. **Determinism contract**: font selection must be deterministic for a given prompt+seed - embedded `goregular` is tried first, discovered system fonts are probed in a fixed priority order (no host-dependent tiebreaks), and the chosen-font decision must be reproducible on any host with the same fonts installed. The T2A.1 determinism guarantee applies to hosts without covering system fonts; cross-host pixel equality is only claimed when selection resolves to the embedded font.
+      Verify: coverage-selection unit tests; Arabic/CJK title renders non-tofu when a covering system font exists; deterministic font-selection unit test. Spec: MG-004.
 
 ### Track B - OpenAI Images (MG-006)
 
@@ -63,8 +63,11 @@ Legend: `[BE]` Go backend, `[FE]` frontend, `[QA]` test/docs. Status: TODO unles
 - [ ] **T2D.1 [BE]** Create `internal/web/handlers/media.go`: `GET /api/media/status` (resolved providers, capabilities with `configured` booleans, no keys, no network probes) + optional `GET /api/media/manifest` (last 20 lines). Register inside the auth group in `internal/web/server.go`.
       Verify: `go test ./internal/web/...` auth, resolved fields, no key leak. Spec: MG-010.
 
-- [ ] **T2D.2 [FE]** Extend `webui/src/views/SettingsView.vue` with the Media section: provider selects, password inputs (`fal_key`, `openai_image_key`), text inputs (`openai_image_base_url`, `openai_image_path`, `openai_image_model`, `fal_base_url`, `fal_image_model`, `fal_video_model`, `order`), numbers (`max_concurrent`, `timeout_seconds`). Resolved badges + "pil always available" hint via `getMediaStatus()`; reuse `has_*_key` boolean pattern.
+- [ ] **T2D.2 [FE]** Extend `webui/src/views/SettingsView.vue` with the Media section: provider selects, password inputs (`fal_key`, `openai_image_key`, `openai_video_key`), text inputs (`openai_image_base_url`, `openai_image_path`, `openai_image_model`, `openai_video_base_url`, `openai_video_model`, `fal_base_url`, `fal_image_model`, `fal_video_model`, `order`), numbers (`max_concurrent`, `timeout_seconds`), video resolution select (`openai_video_resolution`). Resolved badges + "pil always available" hint via `getMediaStatus()`; reuse `has_*_key` boolean pattern.
       Verify: `cd webui && pnpm build && pnpm test`. Spec: MG-010.
+
+- [ ] **T2D.4 [BE+FE]** *(r4)* OpenAI-compatible video configuration flow: write-only `openai_video_key` / `clear_openai_video_key` control keys (type validation, clear-over-set precedence, nested-secret stripping), Settings UI video key card + base URL/model/resolution fields wired into load/save.
+      Verify: handler lifecycle test (set -> redacted GET -> clear precedence -> clear-only), malformed-control 400s; `pnpm build`. Spec: MG-008 r4.
 
 - [ ] **T2D.3 [FE]** Add `getMediaStatus()` / `getMediaManifest()` to `webui/src/lib/api.ts`.
       Verify: `curl -H "Authorization: Bearer $JWT" http://localhost:8080/api/media/status | jq`. Spec: MG-010.
@@ -91,7 +94,7 @@ Legend: `[BE]` Go backend, `[FE]` frontend, `[QA]` test/docs. Status: TODO unles
       2. pil capture - free, any time.
       3. Official-OpenAI and fal captures - **deferred until accounts exist** (fal image ~$0.003; fal video on the pinned wan-v2.7 slug ~$0.50 for 5s @720p).
       Record request body sent, response (redacted/truncated), manifest line, and inline-render screenshot per capture.
-      Verify: fixtures match `tools_test.go` payloads. Spec: MG-011.
+      Verify: fixtures match `media_test.go` payloads. Spec: MG-011.
 
 - [ ] **T4.2 [QA]** Update `.agents/skills/baoyu-infographic/SKILL.md`: prefer `generate_image` (prompt orchestration, `provider:"auto"`), fall back to HTML/SVG when unavailable. Do not modify the comfyui skill in v1.
       Verify: `hakase skill validate .agents/skills/baoyu-infographic` or `go test ./internal/skill/...`. Spec: MG-011.

@@ -516,6 +516,7 @@ async function saveConfig() {
     showVisionAPIKeyInput.value = false
     showFalKeyInput.value = false
     showOpenAIImageKeyInput.value = false
+    showOpenAIVideoKeyInput.value = false
     await loadConfig()
     // Keep the navbar model label in sync with the new configuration.
     appStore.loadModelName()
