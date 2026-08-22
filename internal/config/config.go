@@ -225,6 +225,13 @@ type MediaConfig struct {
 	OpenAIImageBaseURL string   `json:"openai_image_base_url,omitempty"`
 	OpenAIImagePath    string   `json:"openai_image_path,omitempty"`
 	OpenAIImageModel   string   `json:"openai_image_model,omitempty"`
+	// OpenAI-compatible video generation (async jobs API, e.g. OpenRouter
+	// /api/v1/videos). Key/base fall back to the image fields, then to the
+	// global api_key/base_url.
+	OpenAIVideoKey        string `json:"openai_video_key,omitempty"`
+	OpenAIVideoBaseURL    string `json:"openai_video_base_url,omitempty"`
+	OpenAIVideoModel      string `json:"openai_video_model,omitempty"`
+	OpenAIVideoResolution string `json:"openai_video_resolution,omitempty"`
 }
 
 // ApplyDefaults fills zero values with defaults. Call after loading config.
@@ -256,6 +263,14 @@ func (c *MediaConfig) ApplyDefaults() {
 	if c.FalVideoModel == "" {
 		c.FalVideoModel = "fal-ai/wan/v2.7/text-to-video"
 	}
+	// Cheapest confirmed OpenRouter video model (2026-08): veo-3.1-lite at
+	// $0.03/s @720p with generate_audio=false; durations 4/6/8s.
+	if c.OpenAIVideoModel == "" {
+		c.OpenAIVideoModel = "google/veo-3.1-lite"
+	}
+	if c.OpenAIVideoResolution == "" {
+		c.OpenAIVideoResolution = "720p"
+	}
 }
 
 // Validate checks MediaConfig for valid values.
@@ -264,9 +279,9 @@ func (c *MediaConfig) Validate() error {
 	if !validImage[c.ImageProvider] {
 		return fmt.Errorf("invalid media.image_provider %q: must be one of auto, pil, openai, fal, off", c.ImageProvider)
 	}
-	validVideo := map[string]bool{"auto": true, "fal": true, "off": true}
+	validVideo := map[string]bool{"auto": true, "openai": true, "fal": true, "off": true}
 	if !validVideo[c.VideoProvider] {
-		return fmt.Errorf("invalid media.video_provider %q: must be one of auto, fal, off", c.VideoProvider)
+		return fmt.Errorf("invalid media.video_provider %q: must be one of auto, openai, fal, off", c.VideoProvider)
 	}
 	validAudio := map[string]bool{"off": true, "openai": true, "elevenlabs": true}
 	if !validAudio[c.AudioProvider] {
@@ -404,6 +419,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_FAL_KEY"); v != "" {
 		cfg.Media.FalKey = v
+	}
+	if v := os.Getenv("HAKASE_MEDIA_VIDEO_MODEL"); v != "" {
+		cfg.Media.OpenAIVideoModel = v
 	}
 
 	cfg.Media.ApplyDefaults()

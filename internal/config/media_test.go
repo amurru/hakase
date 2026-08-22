@@ -35,6 +35,12 @@ func TestMediaConfigDefaults(t *testing.T) {
 	if cfg.FalVideoModel != "fal-ai/wan/v2.7/text-to-video" {
 		t.Errorf("FalVideoModel = %q", cfg.FalVideoModel)
 	}
+	if cfg.OpenAIVideoModel != "google/veo-3.1-lite" {
+		t.Errorf("OpenAIVideoModel = %q", cfg.OpenAIVideoModel)
+	}
+	if cfg.OpenAIVideoResolution != "720p" {
+		t.Errorf("OpenAIVideoResolution = %q", cfg.OpenAIVideoResolution)
+	}
 }
 
 func TestMediaConfigValidate(t *testing.T) {
@@ -51,6 +57,11 @@ func TestMediaConfigValidate(t *testing.T) {
 	cfg.VideoProvider = "pil"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for invalid video_provider")
+	}
+	// openai is a legal video provider now
+	cfg.VideoProvider = "openai"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("openai video_provider should be valid: %v", err)
 	}
 	cfg.VideoProvider = "auto"
 	cfg.AudioProvider = "invalid"
@@ -83,6 +94,7 @@ func TestMediaConfigEnvOverrides(t *testing.T) {
 	t.Setenv("HAKASE_MEDIA_IMAGE_PROVIDER", "openai")
 	t.Setenv("HAKASE_MEDIA_OUTPUT_DIR", "outputs/env")
 	t.Setenv("HAKASE_FAL_KEY", "test-fal-key")
+	t.Setenv("HAKASE_MEDIA_VIDEO_MODEL", "bytedance/seedance-1-5-pro")
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -95,6 +107,9 @@ func TestMediaConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.Media.FalKey != "test-fal-key" {
 		t.Errorf("HAKASE_FAL_KEY not applied: got %q", cfg.Media.FalKey)
+	}
+	if cfg.Media.OpenAIVideoModel != "bytedance/seedance-1-5-pro" {
+		t.Errorf("HAKASE_MEDIA_VIDEO_MODEL not applied: got %q", cfg.Media.OpenAIVideoModel)
 	}
 }
 
