@@ -295,8 +295,9 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 
 	// Sandbox confinement: reject commands that reference paths outside the
 	// sandbox's trusted folders (read roots + system dirs). Applies to both
-	// the sync and background tools since both go through here.
-	if err := AuditSystemCommandPaths(CurrentSandbox, command, args); err != nil {
+	// the sync and background tools since both go through here. workingDir
+	// threads through so relative operands resolve the way the process will.
+	if err := AuditSystemCommandPaths(CurrentSandbox, command, args, workingDir); err != nil {
 		return nil, err
 	}
 
@@ -422,18 +423,26 @@ var trustedExecDirs = []string{
 // AuditSystemCommandPaths is the confinement guard for system_exec. When the
 // sandbox is active (mode != off), every absolute path token in the command
 // line must resolve under a sandbox read root or a trusted system directory;
-// deny roots are always rejected. This closes the gap where system_exec -
-// unlike the file-ops tools - could reach arbitrary host paths (e.g. "find /
-// -type d -name skills" scanning the entire filesystem).
+// deny roots are always rejected. Relative path-like operands are resolved
+// against the same working directory the spawned process receives and are
+// checked against deny roots and denied sensitive basenames, so omitting the
+// leading "/" cannot reach a denied file (e.g. "cat services/api/.env").
 //
 // It is best-effort: the shell command line is tokenized, not parsed, so
 // variable/command-substituted paths (e.g. "$HOME/secret") are not caught.
 // Phase 2 (bubblewrap) provides the kernel-enforced guarantee; this guard is
 // defense-in-depth and gives an immediate, actionable error in the common
 // case.
-func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string) error {
+func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, workingDir string) error {
 	if sb == nil || sb.Mode == SandboxModeOff {
 		return nil
+	}
+	// Relative operands resolve against the same working directory the
+	// executed process gets: an approved override when supplied, otherwise
+	// the workspace root (BuildExecCommand pins cmd.Dir to exactly this).
+	base := workingDir
+	if base == "" && len(sb.WorkspaceRoots) > 0 {
+		base = sb.WorkspaceRoots[0]
 	}
 	var tokens []string
 	if len(args) == 0 {
@@ -443,7 +452,7 @@ func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string) e
 		tokens = append(tokens, args...)
 	}
 	for _, tok := range tokens {
-		if err := auditPathToken(sb, tok); err != nil {
+		if err := auditPathToken(sb, tok, base); err != nil {
 			util.DebugWarn("system_exec_path_rejected", "command", command, "args", args, "error", err.Error())
 			return err
 		}
@@ -451,17 +460,32 @@ func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string) e
 	return nil
 }
 
-// auditPathToken checks a single command-line token. Non-path tokens and
-// relative paths pass (relative paths resolve against the confined working
-// directory). Absolute paths must be under a read root or a trusted system
-// dir, and never under a deny root.
-func auditPathToken(sb *SandboxConfig, tok string) error {
+// auditPathToken checks a single command-line token. Absolute paths must be
+// under a read root or a trusted system dir, and never under a deny root.
+// Relative path-like operands (see relativeOperandNeedsAudit) are resolved
+// against relativeBase and audited against deny rules only; everything else
+// passes, since bare words cannot leave the confined working directory.
+func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 	p := strings.TrimSpace(tok)
 	if p == "" {
 		return nil
 	}
 	expanded := expandHome(p)
 	if !filepath.IsAbs(expanded) {
+		if relativeBase == "" || !relativeOperandNeedsAudit(expanded) {
+			return nil
+		}
+		resolved := filepath.Clean(filepath.Join(relativeBase, expanded))
+		for _, candidate := range resolveWithSymlinks(resolved) {
+			for _, d := range sb.DenyRoots {
+				if within(d, candidate) {
+					return fmt.Errorf("command references %q which resolves into a denied sandbox root", tok)
+				}
+			}
+			if sb.deniedBasename(candidate) {
+				return fmt.Errorf("command references %q which is a denied sensitive file", tok)
+			}
+		}
 		return nil
 	}
 	for _, d := range sb.DenyRoots {
@@ -476,6 +500,26 @@ func auditPathToken(sb *SandboxConfig, tok string) error {
 		return nil
 	}
 	return fmt.Errorf("command references path %q outside the sandbox (not under a read root %v nor a trusted system dir); add it to sandbox.read_roots in config.json or narrow the command", tok, sb.ReadRoots)
+}
+
+// relativeOperandNeedsAudit reports whether a relative token deserves deny
+// auditing. Flags (-l, --output) and URLs (https://...) are skipped; every
+// other relative operand resolves against the effective working directory,
+// so even bare words like "config.json" cannot smuggle a read of denied
+// content by omitting the leading path.
+func relativeOperandNeedsAudit(tok string) bool {
+	return !strings.HasPrefix(tok, "-") && !strings.Contains(tok, "://")
+}
+
+// resolveWithSymlinks returns the cleaned path plus its symlink-resolved form
+// when it exists on disk, so a workspace symlink pointing into a denied root
+// is caught too.
+func resolveWithSymlinks(path string) []string {
+	out := []string{path}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
+		out = append(out, resolved)
+	}
+	return out
 }
 
 // pathInAny reports whether path is contained under any of roots.

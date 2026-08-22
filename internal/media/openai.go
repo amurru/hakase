@@ -36,10 +36,25 @@ func NewOpenAIProvider(cfg config.MediaConfig, log LogFunc, store *Store) Provid
 		timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
 	}
 	return &openAIProvider{
-		cfg:    cfg,
-		store:  store,
-		log:    log,
-		client: &http.Client{Timeout: timeout},
+		cfg:   cfg,
+		store: store,
+		log:   log,
+		client: &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				// Poll and download URLs come from the remote API; every
+				// redirect hop must clear the SSRF guard (same seam as the
+				// fal provider) so a 302 cannot bounce an authenticated
+				// request at an internal address.
+				if err := checkHostPublic(req.URL.Host); err != nil {
+					return fmt.Errorf("redirect target blocked: %w", err)
+				}
+				return nil
+			},
+		},
 	}
 }
 

@@ -152,6 +152,8 @@ var apiKeyControlKeys = []string{
 	"clear_fal_key",
 	"openai_image_key",
 	"clear_openai_image_key",
+	"openai_video_key",
+	"clear_openai_video_key",
 }
 
 // UpdateConfig handles PUT /api/config. The request body is a partial JSON
@@ -213,27 +215,25 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Write-only API key handling: clear_* wins, then a non-empty value
-	// replaces the stored key. Values are never echoed back in the response.
+	// Write-only API key handling. clear_* takes precedence: when both a
+	// clear flag and a new value arrive, the stored key is cleared. Values
+	// are never echoed back in the response.
 	if clear, ok := req["clear_api_key"].(bool); ok && clear {
 		delete(raw, "api_key")
-	}
-	if v, ok := req["api_key"].(string); ok && v != "" {
+	} else if v, ok := req["api_key"].(string); ok && v != "" {
 		raw["api_key"] = v
 	}
 	if clear, ok := req["clear_vision_api_key"].(bool); ok && clear {
 		delete(raw, "vision_api_key")
-	}
-	if v, ok := req["vision_api_key"].(string); ok && v != "" {
+	} else if v, ok := req["vision_api_key"].(string); ok && v != "" {
 		raw["vision_api_key"] = v
 	}
 	// Media secrets live nested under media in config.json but are managed
 	// through write-only top-level control keys.
-	for _, k := range []string{"fal_key", "openai_image_key"} {
+	for _, k := range []string{"fal_key", "openai_image_key", "openai_video_key"} {
 		if clear, ok := req["clear_"+k].(bool); ok && clear {
 			clearMediaSecret(raw, k)
-		}
-		if v, ok := req[k].(string); ok && v != "" {
+		} else if v, ok := req[k].(string); ok && v != "" {
 			setMediaSecret(raw, k, v)
 		}
 	}
@@ -371,7 +371,7 @@ func validateConfigUpdate(req map[string]interface{}) error {
 	// Media secret controls follow the same contract as api_key: values must
 	// be non-empty strings, clear flags must be booleans - otherwise the
 	// handler would silently no-op and report success.
-	for _, k := range []string{"fal_key", "openai_image_key"} {
+	for _, k := range []string{"fal_key", "openai_image_key", "openai_video_key"} {
 		if v, ok := req[k]; ok {
 			if s, isStr := v.(string); !isStr || s == "" {
 				return fmt.Errorf("%s must be a non-empty string to set a new key", k)

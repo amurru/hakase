@@ -309,7 +309,7 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, tc.cmd, tc.args)
+			err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, tc.cmd, tc.args, "")
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("sandbox.AuditSystemCommandPaths(%q, %v) err = %v, wantErr %v", tc.cmd, tc.args, err, tc.wantErr)
 			}
@@ -328,11 +328,11 @@ func TestAuditSystemCommandPathsDenyRoot(t *testing.T) {
 	sandbox.CurrentSandbox.DenyRoots = []string{secret}
 	t.Cleanup(func() { sandbox.CurrentSandbox.DenyRoots = nil })
 
-	if err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, "cat "+secret, nil); err == nil {
+	if err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, "cat "+secret, nil, ""); err == nil {
 		t.Errorf("expected deny root rejection for %q, got nil", secret)
 	}
 	// A sibling path under the read root stays allowed.
-	if err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, "cat "+filepath.Join(dir, "other.txt"), nil); err != nil {
+	if err := sandbox.AuditSystemCommandPaths(sandbox.CurrentSandbox, "cat "+filepath.Join(dir, "other.txt"), nil, ""); err != nil {
 		t.Errorf("expected sibling path to be allowed, got %v", err)
 	}
 }
@@ -340,10 +340,10 @@ func TestAuditSystemCommandPathsDenyRoot(t *testing.T) {
 // TestAuditSystemCommandPathsDisabled verifies the audit is a no-op when the
 // sandbox is nil or explicitly off.
 func TestAuditSystemCommandPathsDisabled(t *testing.T) {
-	if err := sandbox.AuditSystemCommandPaths(nil, "find / -type d", nil); err != nil {
+	if err := sandbox.AuditSystemCommandPaths(nil, "find / -type d", nil, ""); err != nil {
 		t.Errorf("nil sandbox: expected no error, got %v", err)
 	}
-	if err := sandbox.AuditSystemCommandPaths(&sandbox.SandboxConfig{Mode: sandbox.SandboxModeOff}, "find / -type d", nil); err != nil {
+	if err := sandbox.AuditSystemCommandPaths(&sandbox.SandboxConfig{Mode: sandbox.SandboxModeOff}, "find / -type d", nil, ""); err != nil {
 		t.Errorf("sandbox off: expected no error, got %v", err)
 	}
 }

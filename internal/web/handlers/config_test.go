@@ -148,6 +148,9 @@ func TestUpdateConfigRejectsMalformedMediaKeyControls(t *testing.T) {
 		{"non-bool clear_fal_key", `{"clear_fal_key": "true"}`},
 		{"non-string openai_image_key", `{"openai_image_key": []}`},
 		{"non-bool clear_openai_image_key", `{"clear_openai_image_key": 1}`},
+		{"non-string openai_video_key", `{"openai_video_key": 123}`},
+		{"empty-string openai_video_key", `{"openai_video_key": ""}`},
+		{"non-bool clear_openai_video_key", `{"clear_openai_video_key": "true"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,6 +176,74 @@ func TestUpdateConfigRejectsMalformedMediaKeyControls(t *testing.T) {
 	media, _ := stored["media"].(map[string]interface{})
 	if media["fal_key"] != "existing" {
 		t.Fatalf("stored fal_key was modified by rejected requests: %s", data)
+	}
+}
+
+// TestUpdateConfigOpenAIVideoKeyLifecycle covers the full write-only
+// openai_video_key flow: set persists under media.openai_video_key and is
+// redacted on read, a combined clear+set request honors the clear control,
+// and clearing removes the nested key from disk.
+func TestUpdateConfigOpenAIVideoKeyLifecycle(t *testing.T) {
+	path := writeTestConfig(t, `{"provider": "gemini"}`)
+	setTestConfigPath(t, path)
+
+	put := func(body string) *httptest.ResponseRecorder {
+		handler := (&ConfigAPI{}).UpdateConfig
+		req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	// Set: persists nested under media.
+	if w := put(`{"openai_video_key": "vid-secret"}`); w.Code != http.StatusOK {
+		t.Fatalf("set: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back config: %v", err)
+	}
+	var stored map[string]interface{}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("read back config is not valid JSON: %v", err)
+	}
+	storedMedia, _ := stored["media"].(map[string]interface{})
+	if storedMedia["openai_video_key"] != "vid-secret" {
+		t.Fatalf("openai_video_key not persisted under media: %s", data)
+	}
+
+	// GET reports presence but never the value.
+	getReq := httptest.NewRequest("GET", "/api/config", nil)
+	gw := httptest.NewRecorder()
+	(&ConfigAPI{}).GetConfig(gw, getReq)
+	var resp ConfigResponse
+	if err := json.NewDecoder(gw.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if !resp.HasOpenAIVideoKey {
+		t.Fatal("has_openai_video_key = false after set")
+	}
+	if resp.Config.Media.OpenAIVideoKey != "" || strings.Contains(gw.Body.String(), "vid-secret") {
+		t.Fatal("openai_video_key leaked in GET response")
+	}
+
+	// Precedence: a combined clear+set clears (clear_* wins).
+	if w := put(`{"clear_openai_video_key": true, "openai_video_key": "new-secret"}`); w.Code != http.StatusOK {
+		t.Fatalf("clear+set: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data, _ = os.ReadFile(path)
+	stored = map[string]interface{}{}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("read back config: %v", err)
+	}
+	storedMedia, _ = stored["media"].(map[string]interface{})
+	if _, stillThere := storedMedia["openai_video_key"]; stillThere {
+		t.Fatalf("clear_openai_video_key did not win over set: %s", data)
+	}
+
+	// Clear-only on an absent key is a harmless 200.
+	if w := put(`{"clear_openai_video_key": true}`); w.Code != http.StatusOK {
+		t.Fatalf("clear-only: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
