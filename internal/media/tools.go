@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,10 +111,17 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 		Name:        "generate_image",
 		Description: "Generate an image from a text prompt. Use for infographics, posters, illustrations. Offline fallback pil always works; cloud providers used when keys present. Returns path and markdown snippet.",
 	}, func(ctx agent.Context, input GenerateImageInput) (GenerateImageOutput, error) {
-		// Validate off first
+		// Explicit input wins; otherwise default resolution honors the
+		// configured image_provider preference before falling back to auto
+		// ordering.
 		provHint := input.Provider
-		if provHint == "" {
-			provHint = "auto"
+		if provHint == "" || provHint == "auto" {
+			pref := reg.Config().ImageProvider
+			if pref != "" && pref != "auto" && pref != "off" {
+				provHint = pref
+			} else {
+				provHint = "auto"
+			}
 		}
 		// Check global image_provider off
 		if reg.Config().ImageProvider == "off" && provHint == "auto" {
@@ -216,17 +224,28 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 		Name:        "generate_video",
 		Description: "Generate a video from a text prompt, optionally anchored to an input image (image-to-video via first frame). Prefers the OpenAI-compatible router (e.g. OpenRouter) when its key is configured; falls back to fal. Returns path and markdown snippet.",
 	}, func(ctx agent.Context, input GenerateVideoInput) (GenerateVideoOutput, error) {
+		// Explicit input wins; otherwise default resolution honors the
+		// configured video_provider preference before falling back to auto
+		// ordering.
 		provHint := input.Provider
-		if provHint == "" {
-			provHint = "auto"
+		if provHint == "" || provHint == "auto" {
+			pref := reg.Config().VideoProvider
+			if pref != "" && pref != "auto" && pref != "off" {
+				provHint = pref
+			} else {
+				provHint = "auto"
+			}
 		}
 		if reg.Config().VideoProvider == "off" && provHint == "auto" {
-			return GenerateVideoOutput{}, fmt.Errorf(videoNoProviderMsg)
+			return GenerateVideoOutput{}, errors.New(videoNoProviderMsg)
 		}
 		if provHint == "off" {
-			return GenerateVideoOutput{}, fmt.Errorf(videoNoProviderMsg)
+			return GenerateVideoOutput{}, errors.New(videoNoProviderMsg)
 		}
 		if strings.TrimSpace(input.Prompt) == "" {
+			return GenerateVideoOutput{}, fmt.Errorf("prompt is required (1-4000 chars)")
+		}
+		if len(input.Prompt) > 4000 {
 			return GenerateVideoOutput{}, fmt.Errorf("prompt is required (1-4000 chars)")
 		}
 		// Duration clamp 2-10 default 5
@@ -244,7 +263,7 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 		if err != nil {
 			// Ensure verbatim error for no provider
 			if provHint == "auto" {
-				return GenerateVideoOutput{}, fmt.Errorf(videoNoProviderMsg)
+				return GenerateVideoOutput{}, errors.New(videoNoProviderMsg)
 			}
 			return GenerateVideoOutput{}, err
 		}
@@ -341,14 +360,25 @@ func appendManifest(store *Store, e manifestEntry) {
 	} else {
 		path = filepath.Join("outputs", "media", "manifest.jsonl")
 	}
-	_ = os.MkdirAll(filepath.Dir(path), 0755)
-	b, _ := json.Marshal(e)
-	// Append exactly one formatted line per call.
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		util.DebugWarn("media_manifest_write_failed", "path", path, "error", err.Error())
+		return
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		util.DebugWarn("media_manifest_marshal_failed", "error", err.Error())
+		return
+	}
+	b = append(b, '\n')
+	// Append exactly one formatted line per call so a concurrent writer from
+	// another process cannot interleave payload and newline.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
+		util.DebugWarn("media_manifest_open_failed", "path", path, "error", err.Error())
 		return
 	}
 	defer f.Close()
-	_, _ = f.Write(b)
-	_, _ = f.Write([]byte("\n"))
+	if _, err := f.Write(b); err != nil {
+		util.DebugWarn("media_manifest_write_failed", "path", path, "error", err.Error())
+	}
 }

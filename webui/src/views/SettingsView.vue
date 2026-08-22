@@ -1078,6 +1078,7 @@ onMounted(loadConfig)
                   <Label for="media_video_provider">Video provider</Label>
                   <select id="media_video_provider" v-model="form.media_video_provider" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="auto">auto</option>
+                    <option value="openai">openai</option>
                     <option value="fal">fal</option>
                     <option value="off">off</option>
                   </select>

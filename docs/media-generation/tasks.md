@@ -21,7 +21,7 @@ Legend: `[BE]` Go backend, `[FE]` frontend, `[QA]` test/docs. Status: TODO unles
 - [ ] **T1.1 [BE]** Add `MediaConfig` to `internal/config/config.go`: fields per MG-001 contract (incl. `OpenAIImagePath`, `OpenAIImageModel`, `FalImageModel`, `FalVideoModel`; no ComfyUI fields), `ApplyDefaults()`, `Validate()`, redaction in any debug rendering.
       Verify: `go test ./internal/config/...` defaults/validation + zero-config regression case. Spec: MG-001.
 
-- [ ] **T1.2 [BE]** Env overrides in `Load()` after file read: `HAKASE_MEDIA_IMAGE_PROVIDER`, `HAKASE_MEDIA_VIDEO_PROVIDER`, `HAKASE_MEDIA_OUTPUT_DIR`, `HAKASE_FAL_KEY`. Nothing else - do NOT add `OPENAI_API_KEY`/`FAL_KEY`/`REPLICATE_API_TOKEN`.
+- [ ] **T1.2 [BE]** Env overrides in `Load()` after file read: `HAKASE_MEDIA_IMAGE_PROVIDER`, `HAKASE_MEDIA_VIDEO_PROVIDER`, `HAKASE_MEDIA_OUTPUT_DIR`, `HAKASE_FAL_KEY`, `HAKASE_MEDIA_VIDEO_MODEL`. Nothing else - do NOT add `OPENAI_API_KEY`/`FAL_KEY`/`REPLICATE_API_TOKEN`.
       Verify: `go test ./internal/config/...` precedence file < env. Spec: MG-001.
 
 - [ ] **T1.3 [QA]** Update `config.json.example` with documented `media` block: commented defaults, env hints, and an OpenRouter example (`base_url` + `"openai_image_path": "/images"`).

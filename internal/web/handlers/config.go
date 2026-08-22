@@ -50,8 +50,9 @@ type ConfigResponse struct {
 	HasAPIKey bool `json:"has_api_key"`
 	// HasVisionAPIKey reports whether a vision_api_key is configured.
 	HasVisionAPIKey bool `json:"has_vision_api_key"`
-	HasFalKey       bool `json:"has_fal_key"`
+	HasFalKey         bool `json:"has_fal_key"`
 	HasOpenAIImageKey bool `json:"has_openai_image_key"`
+	HasOpenAIVideoKey bool `json:"has_openai_video_key"`
 	// EffectiveModel is the model the agent will actually use, resolved from the
 	// configured model_name or the provider default. Exposed so the web UI can
 	// label the active model without recomputing provider defaults client-side.
@@ -81,24 +82,27 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 	hasVisionKey := cfg.VisionAPIKey != ""
 	hasFalKey := cfg.Media.FalKey != ""
 	hasOpenAIImageKey := cfg.Media.OpenAIImageKey != ""
+	hasOpenAIVideoKey := cfg.Media.OpenAIVideoKey != ""
 	// Blank secrets before returning.
 	cfg.APIKey = ""
 	cfg.VisionAPIKey = ""
 	cfg.Media.FalKey = ""
 	cfg.Media.OpenAIImageKey = ""
+	cfg.Media.OpenAIVideoKey = ""
 
 	_, statErr := os.Stat(path)
 	writable := statErr == nil
 
 	writeJSON(w, http.StatusOK, ConfigResponse{
-		Path:                path,
-		Writable:            writable,
-		HasAPIKey:           hasKey,
-		HasVisionAPIKey:     hasVisionKey,
-		HasFalKey:           hasFalKey,
-		HasOpenAIImageKey:   hasOpenAIImageKey,
-		EffectiveModel:      cfg.EffectiveModelName(),
-		Config:              *cfg,
+		Path:              path,
+		Writable:          writable,
+		HasAPIKey:         hasKey,
+		HasVisionAPIKey:   hasVisionKey,
+		HasFalKey:         hasFalKey,
+		HasOpenAIImageKey: hasOpenAIImageKey,
+		HasOpenAIVideoKey: hasOpenAIVideoKey,
+		EffectiveModel:    cfg.EffectiveModelName(),
+		Config:            *cfg,
 	})
 }
 
@@ -192,6 +196,15 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Secret fields are never accepted through nested media objects - only
+	// the write-only top-level control keys may change them - so a partial
+	// patch cannot blank or replace stored credentials via deepMergeValue.
+	if m, ok := req["media"].(map[string]interface{}); ok {
+		for _, secret := range []string{"fal_key", "openai_image_key", "openai_video_key"} {
+			delete(m, secret)
+		}
+	}
+
 	// Apply only the allowlisted keys, deep-merging nested object blocks so a
 	// partial update to e.g. loop_guard preserves its sibling fields.
 	for _, key := range editableConfigKeys {
@@ -214,49 +227,14 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if v, ok := req["vision_api_key"].(string); ok && v != "" {
 		raw["vision_api_key"] = v
 	}
-	// Media keys (nested under media) - support both top-level control keys and nested media.* keys
-	if clear, ok := req["clear_fal_key"].(bool); ok && clear {
-		if m, ok := raw["media"].(map[string]interface{}); ok {
-			delete(m, "fal_key")
-			raw["media"] = m
+	// Media secrets live nested under media in config.json but are managed
+	// through write-only top-level control keys.
+	for _, k := range []string{"fal_key", "openai_image_key"} {
+		if clear, ok := req["clear_"+k].(bool); ok && clear {
+			clearMediaSecret(raw, k)
 		}
-		delete(raw, "fal_key")
-	}
-	if v, ok := req["fal_key"].(string); ok && v != "" {
-		if _, hasMedia := raw["media"]; hasMedia {
-			if m, ok := raw["media"].(map[string]interface{}); ok {
-				m["fal_key"] = v
-				raw["media"] = m
-			} else {
-				raw["media"] = map[string]interface{}{"fal_key": v}
-			}
-		} else {
-			raw["media"] = map[string]interface{}{"fal_key": v}
-		}
-	}
-	if clear, ok := req["clear_openai_image_key"].(bool); ok && clear {
-		if m, ok := raw["media"].(map[string]interface{}); ok {
-			delete(m, "openai_image_key")
-			raw["media"] = m
-		}
-		delete(raw, "openai_image_key")
-	}
-	if v, ok := req["openai_image_key"].(string); ok && v != "" {
-		if _, hasMedia := raw["media"]; hasMedia {
-			if m, ok := raw["media"].(map[string]interface{}); ok {
-				m["openai_image_key"] = v
-				raw["media"] = m
-			} else {
-				raw["media"] = map[string]interface{}{"openai_image_key": v}
-			}
-		} else {
-			raw["media"] = map[string]interface{}{"openai_image_key": v}
-		}
-	}
-	// Also handle nested media.fal_key / media.openai_image_key when sent via media object directly (deepMerge already handled, but ensure clear via empty string)
-	if m, ok := req["media"].(map[string]interface{}); ok {
-		if v, ok := m["fal_key"].(string); ok && v == "" {
-			// Empty string means clear only if explicitly sent? We treat empty as no-op to avoid accidental clear.
+		if v, ok := req[k].(string); ok && v != "" {
+			setMediaSecret(raw, k, v)
 		}
 	}
 
@@ -279,6 +257,26 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("config: updated %s", path)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved", "path": path})
+}
+
+// setMediaSecret stores v under raw["media"][key], creating the nested media
+// object when it is absent or not an object.
+func setMediaSecret(raw map[string]interface{}, key, v string) {
+	m, ok := raw["media"].(map[string]interface{})
+	if !ok {
+		m = map[string]interface{}{}
+	}
+	m[key] = v
+	raw["media"] = m
+}
+
+// clearMediaSecret removes key from raw["media"] and from the legacy
+// top-level location.
+func clearMediaSecret(raw map[string]interface{}, key string) {
+	if m, ok := raw["media"].(map[string]interface{}); ok {
+		delete(m, key)
+	}
+	delete(raw, key)
 }
 
 // validateConfigUpdate checks enum-constrained fields before they hit disk.
@@ -368,6 +366,21 @@ func validateConfigUpdate(req map[string]interface{}) error {
 	if v, ok := req["clear_vision_api_key"]; ok {
 		if _, ok := v.(bool); !ok {
 			return fmt.Errorf("clear_vision_api_key must be a boolean")
+		}
+	}
+	// Media secret controls follow the same contract as api_key: values must
+	// be non-empty strings, clear flags must be booleans - otherwise the
+	// handler would silently no-op and report success.
+	for _, k := range []string{"fal_key", "openai_image_key"} {
+		if v, ok := req[k]; ok {
+			if s, isStr := v.(string); !isStr || s == "" {
+				return fmt.Errorf("%s must be a non-empty string to set a new key", k)
+			}
+		}
+		if v, ok := req["clear_"+k]; ok {
+			if _, isBool := v.(bool); !isBool {
+				return fmt.Errorf("clear_%s must be a boolean", k)
+			}
 		}
 	}
 	return nil

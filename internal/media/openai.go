@@ -20,24 +20,26 @@ import (
 
 // openAIProvider implements Provider for OpenAI Images (plain net/http).
 type openAIProvider struct {
-	cfg   config.MediaConfig
-	fallbackAPIKey string
-	fallbackBaseURL string
-	store *Store
-	log   LogFunc
+	cfg    config.MediaConfig
+	store  *Store
+	log    LogFunc
 	client *http.Client
 }
 
-// NewOpenAIProvider creates the provider. The global APIKey/BaseURL fallbacks are passed via config.MediaConfig?
-// We capture fallback from cfg if needed; main.go should have copied APIKey/BaseURL into MediaConfig before registry creation.
+// NewOpenAIProvider creates the provider. Global APIKey/BaseURL fallbacks are
+// copied into MediaConfig by the wiring layer before registry construction.
 func NewOpenAIProvider(cfg config.MediaConfig, log LogFunc, store *Store) Provider {
-	// Fallbacks: if OpenAIImageKey empty, caller should have filled from global APIKey. Keep as-is.
-	// Similarly for baseURL.
+	timeout := 120 * time.Second
+	if cfg.TimeoutSeconds > 0 {
+		// Honor media.timeout_seconds so the documented setting actually
+		// governs per-request behavior instead of being silently ignored.
+		timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
 	return &openAIProvider{
 		cfg:    cfg,
 		store:  store,
 		log:    log,
-		client: &http.Client{Timeout: 120 * time.Second},
+		client: &http.Client{Timeout: timeout},
 	}
 }
 
@@ -125,9 +127,6 @@ func (p *openAIProvider) GenerateImage(ctx context.Context, req ImageRequest) (*
 		Created int64 `json:"created"`
 	}
 	b, _ := io.ReadAll(resp.Body)
-	// resp.Body already read partially? We already read b after? Need to handle: we already consumed? Actually we did io.ReadAll after status check, but we already read for error? Wait we read after success: need to parse.
-	// Since we did io.ReadAll for error case already, but for success we need to parse b.
-	// However we already did io.ReadAll unconditionally after? Let's parse b.
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("decode openai response: %w", err)
 	}
@@ -267,7 +266,12 @@ func (p *openAIProvider) GenerateVideo(ctx context.Context, req VideoRequest) (*
 		return nil, fmt.Errorf("openai video result url blocked: %w", err)
 	}
 	dreq, _ := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
-	dreq.Header.Set("Authorization", "Bearer "+key)
+	// Attach credentials only when the download host matches the configured
+	// API base host. unsigned_urls are API-controlled and may point at
+	// third-party hosts (CDNs) that must never receive the bearer key.
+	if bu, berr := url.Parse(baseURL); berr == nil && strings.EqualFold(bu.Host, parsed.Host) {
+		dreq.Header.Set("Authorization", "Bearer "+key)
+	}
 	dresp, err := p.client.Do(dreq)
 	if err != nil {
 		return nil, fmt.Errorf("openai video download failed: %w", err)
@@ -277,19 +281,13 @@ func (p *openAIProvider) GenerateVideo(ctx context.Context, req VideoRequest) (*
 		return nil, fmt.Errorf("openai video download failed: HTTP %d", dresp.StatusCode)
 	}
 	capBytes := int64(100 << 20)
-	limited := io.LimitReader(dresp.Body, capBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > capBytes {
-		return nil, fmt.Errorf("openai video too large")
-	}
 	allocPath, err := p.store.Allocate(".mp4")
 	if err != nil {
 		return nil, err
 	}
-	if err := p.store.Write(allocPath, bytes.NewReader(data), capBytes); err != nil {
+	// Stream straight into the capped store write; buffering up to 100MB in
+	// memory adds nothing because store.Write enforces the cap itself.
+	if err := p.store.Write(allocPath, io.LimitReader(dresp.Body, capBytes+1), capBytes); err != nil {
 		return nil, err
 	}
 	relPath := p.store.WorkspaceRelPath(allocPath)
@@ -315,11 +313,23 @@ func (p *openAIProvider) pollVideoJob(ctx context.Context, baseURL, key, id, pol
 	if pollURL == "" {
 		return "", fmt.Errorf("openai video job has no id or polling_url")
 	}
+	// The API supplies polling_url; guard it like any other remote URL so a
+	// hostile endpoint cannot redirect authenticated polling at internal
+	// addresses.
+	if pu, perr := parseURL(pollURL); perr != nil {
+		return "", fmt.Errorf("openai video poll url invalid: %w", perr)
+	} else if err := checkHostPublic(pu.Host); err != nil {
+		return "", fmt.Errorf("openai video poll url blocked: %w", err)
+	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	deadline := time.Now().Add(300 * time.Second)
+	deadline := 300 * time.Second
+	if p.cfg.TimeoutSeconds > 0 {
+		deadline = time.Duration(p.cfg.TimeoutSeconds) * time.Second
+	}
+	expiry := time.Now().Add(deadline)
 	for {
-		if time.Now().After(deadline) {
+		if time.Now().After(expiry) {
 			return "", fmt.Errorf("openai video poll timeout")
 		}
 		select {
@@ -404,7 +414,10 @@ func buildFrameImage(ref string) (map[string]interface{}, error) {
 	default:
 		path := ref
 		if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
-			resolved, err := sandbox.CurrentSandbox.ResolveScopedPath(path, true)
+			// This is a read (the file is only Stat'ed and ReadFile'd below),
+			// so resolve against read roots - write roots would wrongly reject
+			// frame images that live in configured read_roots.
+			resolved, err := sandbox.CurrentSandbox.ResolveScopedPath(path, false)
 			if err != nil {
 				return nil, fmt.Errorf("video image outside approved workspace: %w", err)
 			}

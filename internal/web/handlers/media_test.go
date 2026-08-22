@@ -13,6 +13,16 @@ import (
 	"amurru/hakase/internal/sandbox"
 )
 
+// clearSandbox clears the package-level sandbox for the duration of the test
+// and restores the previous value on cleanup, so later tests in the package
+// never observe a stale sandbox state.
+func clearSandbox(t *testing.T) {
+	t.Helper()
+	prev := sandbox.CurrentSandbox
+	sandbox.CurrentSandbox = nil
+	t.Cleanup(func() { sandbox.CurrentSandbox = prev })
+}
+
 func TestMediaStatusRedaction(t *testing.T) {
 	// Setup config with keys
 	dir := t.TempDir()
@@ -23,7 +33,7 @@ func TestMediaStatusRedaction(t *testing.T) {
 	}
 	setTestConfigPath(t, cfgPath)
 	// Setup registry
-	sandbox.CurrentSandbox = nil
+	clearSandbox(t)
 	store, _ := media.NewStore(dir + "/outputs/media")
 	cfg, _ := config.LoadConfig(cfgPath)
 	reg, _ := media.NewRegistry(cfg.Media, nil, store)
@@ -37,8 +47,6 @@ func TestMediaStatusRedaction(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	body, _ := os.ReadFile("")
-	_ = body
 	var out map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -64,8 +72,8 @@ func TestMediaStatusRedaction(t *testing.T) {
 	if out["resolved_image"] == nil || out["resolved_video"] == nil {
 		t.Fatal("resolved fields missing")
 	}
-	if out["output_dir"] != "outputs/media" && out["output_dir"] != cfg.Media.OutputDir {
-		// output_dir may be absolute after store root? Accept either
+	if out["output_dir"] == nil || out["output_dir"] == "" {
+		t.Fatal("output_dir missing from status response")
 	}
 }
 
@@ -73,9 +81,11 @@ func TestMediaStatusNoKeys(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	cfgJSON := `{"provider":"gemini"}`
-	os.WriteFile(cfgPath, []byte(cfgJSON), 0644)
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	setTestConfigPath(t, cfgPath)
-	sandbox.CurrentSandbox = nil
+	clearSandbox(t)
 	store, _ := media.NewStore(dir + "/outputs/media")
 	cfg, _ := config.LoadConfig(cfgPath)
 	// Ensure no keys
@@ -109,9 +119,11 @@ func TestMediaStatusNoKeys(t *testing.T) {
 func TestMediaManifestEmpty(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	os.WriteFile(cfgPath, []byte(`{}`), 0644)
+	if err := os.WriteFile(cfgPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	setTestConfigPath(t, cfgPath)
-	sandbox.CurrentSandbox = nil
+	clearSandbox(t)
 	store, _ := media.NewStore(dir + "/outputs/media")
 	cfg, _ := config.LoadConfig(cfgPath)
 	reg, _ := media.NewRegistry(cfg.Media, nil, store)
@@ -136,7 +148,9 @@ func TestMediaManifestEmpty(t *testing.T) {
 func TestMediaStatusNoRegistry(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	os.WriteFile(cfgPath, []byte(`{"provider":"gemini"}`), 0644)
+	if err := os.WriteFile(cfgPath, []byte(`{"provider":"gemini"}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	setTestConfigPath(t, cfgPath)
 	SetMediaRegistry(nil)
 	req := httptest.NewRequest("GET", "/api/media/status", nil)
@@ -155,9 +169,11 @@ func TestMediaStatusNoRegistry(t *testing.T) {
 func TestMediaManifestWithEntries(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	os.WriteFile(cfgPath, []byte(`{}`), 0644)
+	if err := os.WriteFile(cfgPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	setTestConfigPath(t, cfgPath)
-	sandbox.CurrentSandbox = nil
+	clearSandbox(t)
 	// Use dir as output_dir via store
 	store, _ := media.NewStore(dir + "/outputs/media")
 	cfg, _ := config.LoadConfig(cfgPath)

@@ -526,6 +526,121 @@ func TestWrapUntrustedDataSkipsEmpty(t *testing.T) {
 	}
 }
 
+// TestSymlinkIntoDenyRootRejected is a regression test for the deny-list
+// bypass: ResolveScopedPath used to check DenyRoots only before SecureJoin,
+// so a symlink inside an approved workspace that resolves into a denied
+// root (e.g. the hakase home config) slipped through.
+func TestSymlinkIntoDenyRootRejected(t *testing.T) {
+	t.Run("deny root inside workspace", func(t *testing.T) {
+		// User-configured deny_roots can point below the workspace (e.g.
+		// "./secrets"). A symlink elsewhere in the workspace that resolves
+		// into it must be rejected by the post-resolution deny re-check -
+		// previously only checked before SecureJoin, so this slipped through.
+		tmp := t.TempDir()
+		workspace := mustMkdir(t, filepath.Join(tmp, "workspace"))
+		secrets := mustMkdir(t, filepath.Join(workspace, "secrets"))
+
+		secretFile := filepath.Join(secrets, "key")
+		mustWriteFile(t, secretFile, "sk-secret")
+
+		link := filepath.Join(workspace, "leaked-key")
+		mustSymlink(t, secretFile, link)
+
+		sb := &SandboxConfig{
+			Mode:           SandboxModePaths,
+			WorkspaceRoots: []string{workspace},
+			ReadRoots:      []string{workspace},
+			DenyRoots:      []string{secrets},
+		}
+
+		for _, write := range []bool{false, true} {
+			if _, err := sb.ResolveScopedPath(link, write); err == nil || !strings.Contains(err.Error(), "resolves into a denied root") {
+				t.Fatalf("ResolveScopedPath(link, write=%v) = %v, want resolves-into-deny rejection", write, err)
+			}
+		}
+		// Direct access stays denied as before.
+		if _, err := sb.ResolveScopedPath(secretFile, false); err == nil {
+			t.Fatal("direct read of deny root unexpectedly allowed")
+		}
+	})
+
+	t.Run("deny root outside workspace under broad read root", func(t *testing.T) {
+		// Broad read_roots covering the hakase home plus a symlink from the
+		// workspace: reads must be rejected even though the target is inside
+		// the approved read scope.
+		tmp := t.TempDir()
+		root := mustMkdir(t, filepath.Join(tmp, "root"))
+		workspace := mustMkdir(t, filepath.Join(root, "work"))
+		secretHome := mustMkdir(t, filepath.Join(root, ".hakase"))
+
+		secretFile := filepath.Join(secretHome, "config.json")
+		mustWriteFile(t, secretFile, `{"api_key":"sk-secret"}`)
+		link := filepath.Join(workspace, "leaked-config.json")
+		mustSymlink(t, secretFile, link)
+
+		sb := &SandboxConfig{
+			Mode:           SandboxModePaths,
+			WorkspaceRoots: []string{workspace},
+			ReadRoots:      []string{root},
+			DenyRoots:      []string{secretHome},
+		}
+
+		if _, err := sb.ResolveScopedPath(link, false); err == nil {
+			t.Fatal("read via symlink into denied root unexpectedly allowed")
+		}
+		// Normal workspace reads are unaffected.
+		if _, err := sb.ResolveScopedPath(filepath.Join(workspace, "notes.txt"), false); err != nil {
+			t.Fatalf("workspace read broken: %v", err)
+		}
+	})
+}
+
+// TestNestedDotEnvDenied verifies the basename-based dotenv deny: .env files
+// anywhere below a scoped root (not just the process working directory) are
+// rejected for reads and writes and hidden from listings, while sibling
+// files stay readable.
+func TestNestedDotEnvDenied(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := mustMkdir(t, filepath.Join(tmp, "workspace"))
+	nested := mustMkdir(t, filepath.Join(workspace, "services", "api"))
+
+	nestedEnv := filepath.Join(nested, ".env")
+	mustWriteFile(t, nestedEnv, "TOKEN=secret")
+	sibling := filepath.Join(nested, "app.config")
+	mustWriteFile(t, sibling, "port=8080")
+
+	sb := LoadSandboxConfig(&SandboxJSON{
+		Mode:           "paths",
+		WorkspaceRoots: []string{workspace},
+		ReadRoots:      []string{workspace},
+	})
+	if len(sb.DenyBasenames) != 1 || sb.DenyBasenames[0] != ".env" {
+		t.Fatalf("DenyBasenames = %v, want [.env]", sb.DenyBasenames)
+	}
+
+	for _, write := range []bool{false, true} {
+		_, err := sb.ResolveScopedPath(nestedEnv, write)
+		if err == nil {
+			t.Fatalf("ResolveScopedPath(nested .env, write=%v) = no error, want denied", write)
+		}
+		if !strings.Contains(err.Error(), "denied sensitive file") {
+			t.Fatalf("ResolveScopedPath(nested .env, write=%v) error = %v, want sensitive-file denial", write, err)
+		}
+	}
+
+	// Sibling files in the same directory remain readable.
+	if _, err := sb.ResolveScopedPath(sibling, false); err != nil {
+		t.Fatalf("sibling file read broken: %v", err)
+	}
+	// Listings hide the nested dotenv too.
+	if !sb.DeniedPath(nestedEnv) {
+		t.Error("DeniedPath(nested .env) = false, want true")
+	}
+	if sb.DeniedPath(sibling) {
+		t.Error("DeniedPath(sibling) = true, want false")
+	}
+}
+
 // TestSensitiveFilesImplicitlyDenied verifies LoadSandboxConfig always adds
 // hakase's own secret files (config.json, .env, and ~/.hakase config.json,
 // mcp.json, credentials.json, jwt-secret) to DenyRoots, so permissive

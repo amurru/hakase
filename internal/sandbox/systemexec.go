@@ -469,6 +469,9 @@ func auditPathToken(sb *SandboxConfig, tok string) error {
 			return fmt.Errorf("command references %q which is in a denied sandbox root", tok)
 		}
 	}
+	if sb.deniedBasename(expanded) {
+		return fmt.Errorf("command references %q which is a denied sensitive file", tok)
+	}
 	if pathInAny(expanded, sb.ReadRoots) || pathInAny(expanded, trustedExecDirs) {
 		return nil
 	}

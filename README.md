@@ -495,6 +495,8 @@ written by the app) merged with the user registry at `~/.hakase/mcp.json`
 The legacy single-server `mcp_server_url` field still works and is
 auto-migrated to a server named `lightpanda`.
 
+<a id="media-generation"></a>
+
 ### 🎨 Media Generation
 
 Hakase ships pluggable `generate_image`, `generate_video` (and stub `generate_audio`) as first-class ADK tools:

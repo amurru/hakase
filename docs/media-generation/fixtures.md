@@ -2,7 +2,7 @@
 
 Feature: `media-generation` (r3 scope: `pil` + `openai` + `fal`)
 Spec: MG-004, MG-006..MG-011. This file records before/after for every provider payload and the QA matrix sign-off.
-Output captured from `go test ./internal/media/...`, mock servers, and live runs. Live captures are the merge gate for MG-011.
+Output captured from `go test ./internal/media/...`, mock servers, and live runs. Live captures gate MG-011 per account availability: one live capture is required for each cloud provider with a usable account (OpenRouter at merge time); official-OpenAI and fal captures are deferred until accounts exist and do not block the merge.
 
 ## Provider Payloads
 

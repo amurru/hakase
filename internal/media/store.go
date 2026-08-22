@@ -92,21 +92,8 @@ func (s *Store) Allocate(ext string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("secure join: %w", err)
 	}
-	// EvalSymlinks re-check to prevent traversal via symlinked root.
-	if resolved, err := filepath.EvalSymlinks(joined); err == nil {
-		// If file doesn't exist, EvalSymlinks fails; also try parent dir.
-		_ = resolved
-	} else if !os.IsNotExist(err) {
-		// If path exists and resolves outside root, reject.
-		// For non-exist, check parent dir symlink.
-		parent := filepath.Dir(joined)
-		if pres, err2 := filepath.EvalSymlinks(parent); err2 == nil {
-			// joined should be under pres; since name is ULID-only, this is safe.
-			_ = pres
-		}
-	}
-	// For non-exist file, verify parent dir is still within root after EvalSymlinks.
-	// The name is ULID-only (no traversal), so joining is safe, but we still verify root containment.
+	// The name is ULID-only (no traversal), but still verify root containment
+	// after symlink resolution of the root.
 	if evalRoot, err := filepath.EvalSymlinks(s.root); err == nil {
 		if !isWithin(evalRoot, joined) && !isWithin(s.root, joined) {
 			return "", fmt.Errorf("allocated path escapes root")

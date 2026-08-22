@@ -27,18 +27,24 @@ type falProvider struct {
 
 // NewFalProvider creates fal provider.
 func NewFalProvider(cfg config.MediaConfig, log LogFunc, store *Store) Provider {
+	timeout := 120 * time.Second
+	if cfg.TimeoutSeconds > 0 {
+		// Honor media.timeout_seconds for the HTTP client when set.
+		timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
 	return &falProvider{
 		cfg:   cfg,
 		store: store,
 		log:   log,
 		client: &http.Client{
-			Timeout: 120 * time.Second,
-			// CheckRedirect is handled via shared SSRF guard? We'll implement simple.
+			Timeout: timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
-				if err := vision.CheckHostPublic(req.URL.Host); err != nil {
+				// Route through the package seam so tests can stub the SSRF
+				// guard uniformly for direct and redirect hops.
+				if err := checkHostPublic(req.URL.Host); err != nil {
 					return fmt.Errorf("redirect target blocked: %w", err)
 				}
 				return nil
@@ -106,15 +112,12 @@ func (p *falProvider) GenerateVideo(ctx context.Context, req VideoRequest) (*Med
 		extra["seed"] = *req.Seed
 	}
 	mime := "video/mp4"
-	ext := ".mp4"
 	// For video we use generateViaQueue with video extra params
 	res, err := p.generateViaQueue(ctx, req.Prompt, model, w, h, req.Seed, extra, "video")
 	if err != nil {
 		return nil, err
 	}
 	res.MimeType = mime
-	// Ensure ext is mp4 (store Allocate used .png earlier? generateViaQueue picks ext based on kind)
-	_ = ext
 	res.Width = w
 	res.Height = h
 	return res, nil
@@ -174,7 +177,7 @@ func (p *falProvider) generateViaQueue(ctx context.Context, prompt, model string
 	var queueResp struct {
 		RequestID string `json:"request_id"`
 	}
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
 	if err := json.Unmarshal(b, &queueResp); err != nil || queueResp.RequestID == "" {
 		// Some fal responses use "request_id" directly, try alternative field
 		var alt map[string]interface{}
@@ -195,6 +198,10 @@ func (p *falProvider) generateViaQueue(ctx context.Context, prompt, model string
 	if kind == "image" {
 		timeout = 120 * time.Second
 	}
+	if p.cfg.TimeoutSeconds > 0 {
+		// An explicit media.timeout_seconds overrides both per-kind defaults.
+		timeout = time.Duration(p.cfg.TimeoutSeconds) * time.Second
+	}
 	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
@@ -211,13 +218,19 @@ func (p *falProvider) generateViaQueue(ctx context.Context, prompt, model string
 		if err != nil {
 			continue
 		}
-		sbody, _ := io.ReadAll(sresp.Body)
+		sbody, _ := io.ReadAll(io.LimitReader(sresp.Body, 16384))
 		sresp.Body.Close()
 		if sresp.StatusCode == 401 {
 			return nil, fmt.Errorf("fal auth failed: check fal_key (401)")
 		}
+		if sresp.StatusCode < 200 || sresp.StatusCode >= 300 {
+			// A bad model slug or similar must surface immediately instead of
+			// spinning until the deadline and reporting a generic poll timeout.
+			return nil, fmt.Errorf("fal poll failed: HTTP %d: %s", sresp.StatusCode, strings.TrimSpace(string(sbody)))
+		}
 		var status struct {
 			Status   string `json:"status"`
+			Error    string `json:"error"`
 			Response struct {
 				Images []struct {
 					URL string `json:"url"`
@@ -234,36 +247,17 @@ func (p *falProvider) generateViaQueue(ctx context.Context, prompt, model string
 			} else if status.Response.Video.URL != "" {
 				resultURL = status.Response.Video.URL
 			} else {
-				// Try generic URL fields
-				var generic map[string]interface{}
-				_ = json.Unmarshal(sbody, &generic)
-				// Try to find url in response
-				if respMap, ok := generic["response"].(map[string]interface{}); ok {
-					if imgs, ok := respMap["images"].([]interface{}); ok && len(imgs) > 0 {
-						if m, ok := imgs[0].(map[string]interface{}); ok {
-							if u, ok := m["url"].(string); ok {
-								resultURL = u
-							}
-						}
-					}
-					if v, ok := respMap["video"].(map[string]interface{}); ok {
-						if u, ok := v["url"].(string); ok {
-							resultURL = u
-						}
-					}
-				}
-			}
-			if resultURL == "" {
 				return nil, fmt.Errorf("fal completed but no result url")
 			}
 			break
 		} else if status.Status == "FAILED" {
-			return nil, fmt.Errorf("fal generation failed")
+			msg := strings.TrimSpace(status.Error)
+			if msg == "" {
+				msg = "no error detail returned by fal"
+			}
+			return nil, fmt.Errorf("fal generation failed: %s", msg)
 		}
 		// else IN_QUEUE / IN_PROGRESS continue
-		if resultURL != "" {
-			break
-		}
 	}
 
 	// Download via SSRF-guarded client
@@ -293,19 +287,13 @@ func (p *falProvider) generateViaQueue(ctx context.Context, prompt, model string
 		ext = ".mp4"
 		mime = "video/mp4"
 	}
-	limited := io.LimitReader(dresp.Body, capBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > capBytes {
-		return nil, fmt.Errorf("fal file too large")
-	}
 	allocPath, err := p.store.Allocate(ext)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.store.Write(allocPath, bytes.NewReader(data), capBytes); err != nil {
+	// Stream straight into the capped store write instead of buffering the
+	// whole body in memory.
+	if err := p.store.Write(allocPath, io.LimitReader(dresp.Body, capBytes+1), capBytes); err != nil {
 		return nil, err
 	}
 	// Report the workspace-relative path so the web UI mediaLinks plugin

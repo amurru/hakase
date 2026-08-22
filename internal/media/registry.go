@@ -2,8 +2,8 @@ package media
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sync"
 
 	"amurru/hakase/internal/config"
 )
@@ -21,7 +21,6 @@ type Registry struct {
 	providers map[string]Provider
 	order     []string
 	sem       map[string]chan struct{}
-	mu        sync.Mutex // protects sem acquire ordering? not needed, but for future
 }
 
 // NewRegistry builds the provider factory map internally and validates config.
@@ -108,7 +107,7 @@ func (r *Registry) ResolveForProvider(kind string, providerHint string) (Provide
 		if !supportsKind(p.Capabilities(), kind) {
 			return nil, fmt.Errorf("provider %q does not support %s", providerHint, kind)
 		}
-		if !isHealthy(p.Name(), r.cfg) {
+		if !isHealthy(p.Name(), kind, r.cfg) {
 			return nil, fmt.Errorf("provider %q is not configured (missing key)", providerHint)
 		}
 		return p, nil
@@ -122,14 +121,14 @@ func (r *Registry) ResolveForProvider(kind string, providerHint string) (Provide
 		if !supportsKind(p.Capabilities(), kind) {
 			continue
 		}
-		if !isHealthy(p.Name(), r.cfg) {
+		if !isHealthy(p.Name(), kind, r.cfg) {
 			continue
 		}
 		return p, nil
 	}
 	// Special error messages for video/audio auto with no provider.
 	if kind == "video" {
-		return nil, fmt.Errorf(videoNoProviderMsg)
+		return nil, errors.New(videoNoProviderMsg)
 	}
 	if kind == "audio" {
 		// Distinguish off vs unconfigured? Spec says audio_provider off -> stub message handled in tools.go
@@ -158,22 +157,23 @@ func supportsKind(c Capabilities, kind string) bool {
 	}
 }
 
-func isHealthy(name string, cfg config.MediaConfig) bool {
+// isHealthy reports whether a provider has the credentials needed for the
+// requested kind. Health is per kind: a video-only OpenAI credential (e.g.
+// only openai_video_key set) must make the provider resolvable for video even
+// though it cannot serve images.
+func isHealthy(name, kind string, cfg config.MediaConfig) bool {
 	switch name {
 	case "pil":
 		return true
 	case "openai":
-		key := cfg.OpenAIImageKey
-		if key == "" {
-			// Fallback chain: openai_image_key empty -> cfg.APIKey (but we need full Config to check APIKey).
-			// Since Registry only has MediaConfig, we check if MediaConfig's OpenAIImageKey is set;
-			// the main wiring will pass config.APIKey as fallback via MediaConfig construction?
-			// For now, consider healthy if OpenAIImageKey is non-empty. The tool layer will handle fallback.
-			// To preserve zero-config with api_key fallback, we treat openai as unhealthy when no key in MediaConfig,
-			// but if global APIKey exists, the provider constructor should have copied it.
-			return false
+		switch kind {
+		case "video":
+			// GenerateVideo accepts OpenAIVideoKey and falls back to
+			// OpenAIImageKey, mirroring that chain here.
+			return cfg.OpenAIVideoKey != "" || cfg.OpenAIImageKey != ""
+		default:
+			return cfg.OpenAIImageKey != ""
 		}
-		return key != ""
 	case "fal":
 		return cfg.FalKey != ""
 	default:

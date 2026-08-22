@@ -366,8 +366,13 @@ func TestBuildAttachmentPartsWorkspaceFiles(t *testing.T) {
 	if !strings.Contains(manifest[1], "img.png") || !strings.Contains(manifest[1], "image/png") {
 		t.Fatalf("image manifest line = %q", manifest[1])
 	}
-	if parts[0].Text != "hello world" {
+	// Text attachments are wrapped in UNTRUSTED_DATA markers before reaching
+	// the model; the raw content must still be present inside the wrapper.
+	if !strings.Contains(parts[0].Text, "hello world") {
 		t.Fatalf("text file part = %q", parts[0].Text)
+	}
+	if !strings.Contains(parts[0].Text, "<UNTRUSTED_DATA>") {
+		t.Fatalf("text file part not wrapped as untrusted data: %q", parts[0].Text)
 	}
 	if parts[1].InlineData == nil || parts[1].InlineData.MIMEType != "image/png" {
 		t.Fatalf("expected inline image part, got %+v", parts[1])

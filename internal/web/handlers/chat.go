@@ -12,11 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/sse"
+
 	"github.com/go-chi/chi/v5"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
@@ -94,16 +97,24 @@ func buildAttachmentParts(atts []incomingAttachment) (parts []*genai.Part, refs 
 			}
 			if isImageMIME(mimeType) {
 				parts = append(parts, genai.NewPartFromBytes(data, mimeType))
+			} else if !utf8.Valid(data) {
+				return nil, nil, nil, fail("attachment %q is not valid UTF-8 text or an image", name)
 			} else {
-				parts = append(parts, genai.NewPartFromText(string(data)))
+				parts = append(parts, genai.NewPartFromText(hctx.WrapUntrustedData(string(data))))
+			}
+			// Default the label to match the workspace-file branch so a
+			// client-omitted label never leaves a blank manifest field.
+			label := att.Label
+			if label == "" {
+				label = "@" + name
 			}
 			refs = append(refs, hakasesession.AttachmentRef{
 				Name:  name,
 				Path:  "", // pasted payloads are not on disk
 				MIME:  mimeType,
-				Label: att.Label,
+				Label: label,
 			})
-			manifest = append(manifest, fmt.Sprintf("%s %s (pasted %s)", att.Label, name, mimeType))
+			manifest = append(manifest, fmt.Sprintf("%s %s (pasted %s)", label, name, mimeType))
 
 		case strings.TrimSpace(att.Path) != "":
 			// Workspace file: resolve through sandbox read roots (fails
@@ -134,8 +145,10 @@ func buildAttachmentParts(atts []incomingAttachment) (parts []*genai.Part, refs 
 			}
 			if isImageMIME(mimeType) {
 				parts = append(parts, genai.NewPartFromBytes(data, mimeType))
+			} else if !utf8.Valid(data) {
+				return nil, nil, nil, fail("attachment %q is not valid UTF-8 text or an image", name)
 			} else {
-				parts = append(parts, genai.NewPartFromText(string(data)))
+				parts = append(parts, genai.NewPartFromText(hctx.WrapUntrustedData(string(data))))
 			}
 			refs = append(refs, hakasesession.AttachmentRef{
 				Name:  name,

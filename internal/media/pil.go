@@ -9,7 +9,6 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
-	"math"
 	"strings"
 
 	"golang.org/x/image/font"
@@ -147,7 +146,7 @@ func renderPilImage(prompt string, seed *int64, w, h int) image.Image {
 	// Draw rounded card (simple rect with margin).
 	margin := w / 10
 	cardRect := image.Rect(margin, margin, w-margin, h-margin)
-	drawRoundedRect(img, cardRect, 24, cardBg)
+	drawRect(img, cardRect, cardBg)
 
 	// Decorative shapes derived from hash.
 	for i := 0; i < 5; i++ {
@@ -164,10 +163,11 @@ func renderPilImage(prompt string, seed *int64, w, h int) image.Image {
 		drawCircle(img, x, y, r, c)
 	}
 
-	// Title from prompt (truncated ~80 chars)
+	// Title from prompt (truncated to 80 runes so multi-byte characters are
+	// never split mid-sequence).
 	title := prompt
-	if len(title) > 80 {
-		title = title[:80] + "..."
+	if runes := []rune(title); len(runes) > 80 {
+		title = string(runes[:80]) + "..."
 	}
 	// Remove newlines
 	title = strings.ReplaceAll(title, "\n", " ")
@@ -178,7 +178,7 @@ func renderPilImage(prompt string, seed *int64, w, h int) image.Image {
 	if layout != nil {
 		// Estimate text width: ~0.6*fontSize per char approx
 		fontSize := float64(h) * 0.04
-		estWidth := int(float64(len(title)) * fontSize * 0.6)
+		estWidth := int(float64(len([]rune(title))) * fontSize * 0.6)
 		tx := (w - estWidth) / 2
 		if tx < margin+10 {
 			tx = margin + 10
@@ -197,16 +197,12 @@ func renderPilImage(prompt string, seed *int64, w, h int) image.Image {
 		footerLayout.face.Close()
 	}
 
-	// Use math to silence import if needed
-	_ = math.Pi
-
 	return img
 }
 
-func drawRoundedRect(img *image.RGBA, r image.Rectangle, radius int, col color.RGBA) {
-	// Simple: fill rect, then cut corners with circles (naive but okay for fallback)
+// drawRect fills a rectangle with a solid color.
+func drawRect(img *image.RGBA, r image.Rectangle, col color.RGBA) {
 	draw.Draw(img, r, &image.Uniform{col}, image.Point{}, draw.Src)
-	// Could add corner rounding - skip for simplicity, keep rect
 }
 
 func drawCircle(img *image.RGBA, cx, cy, radius int, col color.Color) {

@@ -477,22 +477,12 @@ func TestFalProviderMock(t *testing.T) {
 	cfgTimeout.FalKey = "k"
 	cfgTimeout.FalBaseURL = falTimeout.URL
 	pTimeout := NewFalProvider(cfgTimeout, nil, s)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*1000*1e6) // 2s but fal poll interval 1s + client timeout 120s? We test via context timeout inside generateViaQueue which uses ctx deadline? Our generateViaQueue checks ctx.Done(); use short timeout context
-	_ = ctx
-	// Instead test via context cancel
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 1500*1e6)
-	defer cancel2()
-	cancel()
-	_ = cancel2
-	// Use a provider that will poll and exceed deadline quickly by using a cancelled context
-	// Just ensure it returns error on context cancel
+	// A cancelled context must abort generation immediately.
 	ctx3, cancel3 := context.WithCancel(context.Background())
 	cancel3()
 	if _, err := pTimeout.GenerateImage(ctx3, ImageRequest{Prompt: "hi"}); err == nil {
 		t.Fatal("expected error on canceled context")
 	}
-	// also test poll timeout via short deadline in generateViaQueue's internal timeout is 120s, but we can test via context timeout
-	_ = ctx2
 }
 
 func TestOpenAIVideoMock(t *testing.T) {
@@ -509,21 +499,39 @@ func TestOpenAIVideoMock(t *testing.T) {
 	defer dlSrv.Close()
 
 	polls := 0
-	var gotBody map[string]interface{}
+	var (
+		gotBodyMu sync.Mutex
+		gotBody   map[string]interface{}
+	)
+	// storeGotBody / submitBody serialize access to gotBody between the
+	// httptest handler goroutine and this test goroutine so `go test -race`
+	// stays stable.
+	storeGotBody := func(m map[string]interface{}) {
+		gotBodyMu.Lock()
+		defer gotBodyMu.Unlock()
+		gotBody = m
+	}
+	submitBody := func(key string) interface{} {
+		gotBodyMu.Lock()
+		defer gotBodyMu.Unlock()
+		return gotBody[key]
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/videos":
-			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode submit body: %v", err)
 			}
-			if gotBody["model"] != "google/veo-3.1-lite" {
-				t.Errorf("model = %v", gotBody["model"])
+			storeGotBody(body)
+			if body["model"] != "google/veo-3.1-lite" {
+				t.Errorf("model = %v", body["model"])
 			}
-			if gotBody["generate_audio"] != false {
-				t.Errorf("generate_audio = %v, want explicit false (cheapest tier)", gotBody["generate_audio"])
+			if body["generate_audio"] != false {
+				t.Errorf("generate_audio = %v, want explicit false (cheapest tier)", body["generate_audio"])
 			}
-			if gotBody["resolution"] != "720p" {
-				t.Errorf("resolution = %v", gotBody["resolution"])
+			if body["resolution"] != "720p" {
+				t.Errorf("resolution = %v", body["resolution"])
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(202)
@@ -566,13 +574,13 @@ func TestOpenAIVideoMock(t *testing.T) {
 	if err := os.WriteFile(imgPath, mustPNGBytes(), 0644); err != nil {
 		t.Fatalf("write frame: %v", err)
 	}
-	gotBody = nil
+	storeGotBody(nil)
 	if _, err := p.GenerateVideo(context.Background(), VideoRequest{Prompt: "animate it", ImageRef: imgPath}); err != nil {
 		t.Fatalf("i2v GenerateVideo: %v", err)
 	}
-	frames, ok := gotBody["frame_images"].([]interface{})
+	frames, ok := submitBody("frame_images").([]interface{})
 	if !ok || len(frames) != 1 {
-		t.Fatalf("frame_images missing: %v", gotBody["frame_images"])
+		t.Fatalf("frame_images missing: %v", submitBody("frame_images"))
 	}
 	frame, _ := frames[0].(map[string]interface{})
 	if frame["frame_type"] != "first_frame" || frame["type"] != "image_url" {
@@ -585,11 +593,11 @@ func TestOpenAIVideoMock(t *testing.T) {
 	}
 
 	// http(s) image refs pass through untouched
-	gotBody = nil
+	storeGotBody(nil)
 	if _, err := p.GenerateVideo(context.Background(), VideoRequest{Prompt: "x", ImageRef: "https://example.com/a.png"}); err != nil {
 		t.Fatalf("url i2v: %v", err)
 	}
-	frames = gotBody["frame_images"].([]interface{})
+	frames = submitBody("frame_images").([]interface{})
 	frame = frames[0].(map[string]interface{})
 	iu = frame["image_url"].(map[string]interface{})
 	if iu["url"] != "https://example.com/a.png" {
@@ -658,6 +666,28 @@ func TestRegistryOpenAIVideoResolution(t *testing.T) {
 	}
 }
 
+func TestRegistryVideoOnlyKeyResolution(t *testing.T) {
+	s := tempStore(t)
+	cfg := config.MediaConfig{}
+	cfg.ApplyDefaults()
+	cfg.OpenAIVideoKey = "sk-video-only"
+	reg, err := NewRegistry(cfg, nil, s)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	p, err := reg.Resolve("video")
+	if err != nil {
+		t.Fatalf("Resolve video with video-only key: %v", err)
+	}
+	if p.Name() != "openai" {
+		t.Fatalf("expected openai for video with only openai_video_key, got %s", p.Name())
+	}
+	// Image resolution must not select openai without an image key.
+	if ip, ierr := reg.Resolve("image"); ierr == nil && ip.Name() == "openai" {
+		t.Fatal("openai resolved for image without openai_image_key")
+	}
+}
+
 func TestFalVideoRejectsImageInput(t *testing.T) {
 	s := tempStore(t)
 	cfg := config.MediaConfig{}
@@ -674,39 +704,27 @@ func TestToolsErrorStrings(t *testing.T) {
 	s := tempStore(t)
 	cfg := config.MediaConfig{}
 	cfg.ApplyDefaults()
-	reg, _ := NewRegistry(cfg, nil, s)
+	reg, err := NewRegistry(cfg, nil, s)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
 	tools, err := CreateMediaTools(reg, nil)
 	if err != nil {
 		t.Fatalf("CreateMediaTools: %v", err)
 	}
 	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools")
+		t.Fatalf("expected 3 tools, got %d", len(tools))
 	}
-	// Find tools by name? We can test via CreateMediaTools error strings indirectly by calling registry Resolve errors
-	// video requires provider
+	// No keys configured: video auto-resolution must fail with the verbatim
+	// actionable message shared by the registry and the generate_video tool.
 	if _, err := reg.Resolve("video"); err == nil || err.Error() != videoNoProviderMsg {
 		t.Fatalf("video error string mismatch: %v", err)
 	}
-	// image off
-	cfgOff := config.MediaConfig{}
-	cfgOff.ApplyDefaults()
-	cfgOff.ImageProvider = "off"
-	regOff, _ := NewRegistry(cfgOff, nil, s)
-	toolsOff, _ := CreateMediaTools(regOff, nil)
-	// We need to invoke tool handler to get error string. Use the tool's function directly via CreateMediaTools internals? Instead test the error strings via direct calls to the tool's validation: we expect the tool to return off error when ImageProvider off and provider auto
-	// Since tool handlers are closures, we can test by calling the registry's ResolveForProvider with off
-	if _, err := regOff.ResolveForProvider("image", "auto"); err != nil {
-		// Registry will try to resolve pil even though ImageProvider off - but tools check off before resolve
+	// Audio is a v1 stub with a fixed not-wired message.
+	const wantAudio = "audio generation is not wired in this build: openai TTS is planned for v2"
+	if _, err := reg.Resolve("audio"); err == nil || err.Error() != wantAudio {
+		t.Fatalf("audio error string mismatch: got %v, want %q", err, wantAudio)
 	}
-	_ = toolsOff
-	// audio off
-	if _, err := reg.Resolve("audio"); err == nil || err.Error() != "audio generation is not wired in this build: openai TTS is planned for v2" {
-		// This is registry error, but tools error for audio off is different: "audio generation is off: set media.audio_provider to openai once TTS is wired (planned v2)"
-		// We'll test tools audio directly by invoking the tool's handler via ADK tool call simulation is complex; instead verify the verbatim strings are as expected in code
-		_ = err
-	}
-	_ = tools
-	_ = reg
 }
 
 func TestManifestConcurrent(t *testing.T) {

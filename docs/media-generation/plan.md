@@ -49,11 +49,11 @@ Exit per track: the track's acceptance criteria + its slice of `go test ./...` /
 ### Phase 4 - Hardening (after integration)
 
 **MG-011** Docs, skills, and support matrix.
-- Exit: `fixtures.md` captures payloads incl. one live capture per cloud provider (~$0.10 total), `.agents/skills/baoyu-infographic` updated, README TODO closed with ComfyUI-deferred note, `support.md` published.
+- Exit: `fixtures.md` captures payloads incl. one live capture per cloud provider with an available account (OpenRouter at merge time; official-OpenAI and fal deferred until accounts exist), `.agents/skills/baoyu-infographic` updated, README TODO closed with ComfyUI-deferred note, `support.md` published.
 
 ## Critical Path
 
-```
+```text
 MG-001 ─► MG-003 ─► MG-002 ─┬─► MG-004 ─┐
                             ├─► MG-006 ─┼─► MG-008 ─► MG-009 ─► MG-011
                             └─► MG-007 ─┘         ▲
