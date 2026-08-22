@@ -94,7 +94,7 @@ Legend: `[BE]` Go backend, `[FE]` frontend, `[QA]` test/docs. Status: TODO unles
       2. pil capture - free, any time.
       3. Official-OpenAI and fal captures - **deferred until accounts exist** (fal image ~$0.003; fal video on the pinned wan-v2.7 slug ~$0.50 for 5s @720p).
       Record request body sent, response (redacted/truncated), manifest line, and inline-render screenshot per capture.
-      Verify: fixtures match `media_test.go` payloads. Spec: MG-011.
+      Verify: `media_test.go` covers mock payloads only. Live captures require manual sign-off - confirm the capture order above and that each recorded artifact (request body, redacted response, manifest line, inline-render screenshot) exists in this file. Spec: MG-011.
 
 - [ ] **T4.2 [QA]** Update `.agents/skills/baoyu-infographic/SKILL.md`: prefer `generate_image` (prompt orchestration, `provider:"auto"`), fall back to HTML/SVG when unavailable. Do not modify the comfyui skill in v1.
       Verify: `hakase skill validate .agents/skills/baoyu-infographic` or `go test ./internal/skill/...`. Spec: MG-011.

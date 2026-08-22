@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -255,5 +256,83 @@ func TestAuditSystemCommandPathsGlobExpansion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAuditSystemCommandPathsRelativeEscapeRejected verifies that relative
+// operands resolving outside every read root are rejected even when they
+// dodge the deny rules: the relative branch enforces read-root confinement
+// on literal, symlink-resolved, and glob-expanded candidates. Regression
+// guard for "../other-workspace/private-key" style escapes.
+func TestAuditSystemCommandPathsRelativeEscapeRejected(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := mustMkdir(t, filepath.Join(tmp, "workspace"))
+	outside := mustMkdir(t, filepath.Join(tmp, "other-workspace"))
+	mustWriteFile(t, filepath.Join(outside, "private-key"), "sk")
+	mustWriteFile(t, filepath.Join(outside, "a.pem"), "pem")
+
+	// t.TempDir() lives under /tmp, which trustedExecDirs allows by default;
+	// drop the trusted dirs for this test so the /tmp trust cannot mask the
+	// escape being exercised.
+	origTrusted := trustedExecDirs
+	trustedExecDirs = nil
+	t.Cleanup(func() { trustedExecDirs = origTrusted })
+
+	sb := &SandboxConfig{
+		Mode:           SandboxModePaths,
+		WorkspaceRoots: normalizeRoots([]string{workspace}),
+		ReadRoots:      normalizeRoots([]string{workspace}),
+	}
+
+	cases := []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{"shell form escape", "cat ../other-workspace/private-key", nil},
+		{"explicit argv form escape", "cat", []string{"../other-workspace/private-key"}},
+		{"glob escape", "cat ../other-workspace/*.pem", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := AuditSystemCommandPaths(sb, tc.command, tc.args, "")
+			if err == nil || !strings.Contains(err.Error(), "outside the sandbox") {
+				t.Fatalf("expected outside-sandbox rejection, got %v", err)
+			}
+		})
+	}
+
+	// The same shape of operand inside the workspace stays allowed.
+	mustWriteFile(t, filepath.Join(workspace, "notes.txt"), "hi")
+	if err := AuditSystemCommandPaths(sb, "cat notes.txt", nil, ""); err != nil {
+		t.Fatalf("in-workspace read should pass, got %v", err)
+	}
+}
+
+// TestAuditSystemCommandPathsGlobOverflowRejected verifies that a glob
+// expanding beyond maxGlobMatches is rejected outright instead of being
+// audited only up to the cap - sh expands every match, so truncation would
+// leave denied or unconfined paths past the limit unaudited.
+func TestAuditSystemCommandPathsGlobOverflowRejected(t *testing.T) {
+	workspace := t.TempDir()
+	overflow := mustMkdir(t, filepath.Join(workspace, "overflow"))
+	for i := 0; i <= maxGlobMatches; i++ {
+		mustWriteFile(t, filepath.Join(overflow, fmt.Sprintf("f%04d.txt", i)), "x")
+	}
+
+	sb := &SandboxConfig{
+		Mode:           SandboxModePaths,
+		WorkspaceRoots: normalizeRoots([]string{workspace}),
+		ReadRoots:      normalizeRoots([]string{workspace}),
+	}
+
+	// 1001 matches: even though every match sits inside the workspace, the
+	// audit refuses patterns it cannot fully verify.
+	if err := AuditSystemCommandPaths(sb, "cat overflow/*.txt", nil, ""); err == nil || !strings.Contains(err.Error(), "exceeding") {
+		t.Fatalf("expected glob overflow rejection, got %v", err)
+	}
+	// A narrower pattern within the cap stays allowed.
+	if err := AuditSystemCommandPaths(sb, "cat overflow/f000*.txt", nil, ""); err != nil {
+		t.Fatalf("in-cap glob should pass, got %v", err)
 	}
 }

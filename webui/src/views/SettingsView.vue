@@ -1093,7 +1093,7 @@ onMounted(loadConfig)
             <CardHeader>
               <CardTitle>Media Generation</CardTitle>
               <CardDescription>
-                Pluggable image/video generation. pil fallback is always available (offline). Cloud providers are used when keys present (auto order: openai, fal, pil).
+                Pluggable image/video generation. pil is an offline image fallback (always available). Cloud providers are used when keys present (auto order: openai, fal, pil).
                 <span v-if="mediaStatus" class="ml-2">
                   <Badge variant="outline" class="text-[10px]">resolved image: {{ mediaStatus.resolved_image }}</Badge>
                   <Badge variant="outline" class="ml-1 text-[10px]">video: {{ mediaStatus.resolved_video }}</Badge>
@@ -1126,8 +1126,6 @@ onMounted(loadConfig)
                   <Label for="media_audio_provider">Audio provider</Label>
                   <select id="media_audio_provider" v-model="form.media_audio_provider" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="off">off</option>
-                    <option value="openai">openai</option>
-                    <option value="elevenlabs">elevenlabs</option>
                   </select>
                 </div>
               </div>
