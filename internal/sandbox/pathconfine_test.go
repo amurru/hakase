@@ -454,6 +454,40 @@ func TestSearchFilesWrapsMatches(t *testing.T) {
 	}
 }
 
+// TestReadFileBinaryNote verifies that read_file on a binary file returns a
+// short metadata note instead of dumping mangled bytes into model context.
+// Regression guard: reading a generated PNG exposed the C2PA-embedded SVG
+// as readable ASCII, and the model concluded the image "was" that SVG.
+func TestReadFileBinaryNote(t *testing.T) {
+	tmp := t.TempDir()
+	// PNG magic header + non-UTF8 payload.
+	png := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0xFF, 0xFE, 0x00, 0xD8)
+	filePath := filepath.Join(tmp, "photo.png")
+	mustWriteFile(t, filePath, string(png))
+
+	output, err := readFileContent(ReadFileInput{Path: filePath}, "", nil)
+	if err != nil {
+		t.Fatalf("readFileContent: %v", err)
+	}
+	if !strings.Contains(output.Content, "[binary file: image/png") {
+		t.Fatalf("expected binary note with mime type, got:\n%s", output.Content)
+	}
+	if strings.Contains(output.Content, "\x00") || strings.Contains(output.Content, "\xff") {
+		t.Fatal("binary bytes leaked into content")
+	}
+
+	// Text files are unaffected.
+	textPath := filepath.Join(tmp, "note.txt")
+	mustWriteFile(t, textPath, "plain text")
+	out2, err := readFileContent(ReadFileInput{Path: textPath}, "", nil)
+	if err != nil {
+		t.Fatalf("readFileContent text: %v", err)
+	}
+	if !strings.Contains(out2.Content, "plain text") {
+		t.Fatalf("text file content lost:\n%s", out2.Content)
+	}
+}
+
 // TestReadFilePreservesLegitimateContent verifies that benign file
 // content survives inside the <UNTRUSTED_DATA> wrapping tags.
 func TestReadFilePreservesLegitimateContent(t *testing.T) {
