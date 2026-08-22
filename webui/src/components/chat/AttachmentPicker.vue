@@ -105,8 +105,16 @@ function addImageAttachment(name: string, mime: string, base64: string) {
   emit('update:attachments', [...attachments.value])
 }
 
-// Expose for ChatInput to call on backspace and paste
-defineExpose({ removeLastAttachment, addImageAttachment, openPicker })
+// clearAll drops every chip (called after a successful send so consumed
+// attachments do not linger and get re-sent with the next message).
+function clearAll() {
+  if (attachments.value.length === 0) return
+  attachments.value = []
+  emit('update:attachments', [])
+}
+
+// Expose for ChatInput to call on backspace, paste, and post-send cleanup
+defineExpose({ removeLastAttachment, addImageAttachment, openPicker, clearAll })
 </script>
 
 <template>
