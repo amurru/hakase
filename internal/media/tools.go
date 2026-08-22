@@ -46,12 +46,13 @@ type GenerateImageOutput struct {
 
 // GenerateVideoInput is the ADK input for generate_video.
 type GenerateVideoInput struct {
-	Prompt          string `json:"prompt" doc:"Text prompt for video generation (required)"`
-	DurationSeconds int    `json:"duration_seconds,omitempty" doc:"Duration in seconds (2-10, default 5)"`
+	Prompt          string `json:"prompt" doc:"Text prompt describing the motion/content of the video (required)"`
+	DurationSeconds int    `json:"duration_seconds,omitempty" doc:"Duration in seconds (2-10, default 5). Must match a duration the chosen model supports (e.g. veo 4/6/8, wan 5/10); on mismatch retry with a supported value from the error."`
 	Width           int    `json:"width,omitempty" doc:"Video width (optional, used to derive aspect ratio)"`
 	Height          int    `json:"height,omitempty" doc:"Video height (optional, used to derive aspect ratio)"`
-	Provider        string `json:"provider,omitempty" doc:"Provider override: auto (default), fal, off"`
-	Model           string `json:"model,omitempty" doc:"Model override (optional)"`
+	Image           string `json:"image,omitempty" doc:"Optional image to anchor generation as the first frame (image-to-video): workspace path of a previously generated image, http(s) URL, or data: URL"`
+	Provider        string `json:"provider,omitempty" doc:"Provider override: auto (default), openai (OpenAI-compatible router such as OpenRouter), fal, off"`
+	Model           string `json:"model,omitempty" doc:"Model override (e.g. google/veo-3.1-lite, bytedance/seedance-1-5-pro, alibaba/wan-2.7)"`
 	Seed            *int64 `json:"seed,omitempty" doc:"Random seed (optional)"`
 }
 
@@ -213,17 +214,17 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 	// generate_video
 	videoTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "generate_video",
-		Description: "Generate a video from a text prompt. Requires fal provider. Returns path and markdown snippet.",
+		Description: "Generate a video from a text prompt, optionally anchored to an input image (image-to-video via first frame). Prefers the OpenAI-compatible router (e.g. OpenRouter) when its key is configured; falls back to fal. Returns path and markdown snippet.",
 	}, func(ctx agent.Context, input GenerateVideoInput) (GenerateVideoOutput, error) {
 		provHint := input.Provider
 		if provHint == "" {
 			provHint = "auto"
 		}
 		if reg.Config().VideoProvider == "off" && provHint == "auto" {
-			return GenerateVideoOutput{}, fmt.Errorf("video generation requires a provider: set media.video_provider to fal and set fal_key (HAKASE_FAL_KEY), or configure an OpenAI-compatible image router")
+			return GenerateVideoOutput{}, fmt.Errorf(videoNoProviderMsg)
 		}
 		if provHint == "off" {
-			return GenerateVideoOutput{}, fmt.Errorf("video generation requires a provider: set media.video_provider to fal and set fal_key (HAKASE_FAL_KEY), or configure an OpenAI-compatible image router")
+			return GenerateVideoOutput{}, fmt.Errorf(videoNoProviderMsg)
 		}
 		if strings.TrimSpace(input.Prompt) == "" {
 			return GenerateVideoOutput{}, fmt.Errorf("prompt is required (1-4000 chars)")
@@ -243,7 +244,7 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 		if err != nil {
 			// Ensure verbatim error for no provider
 			if provHint == "auto" {
-				return GenerateVideoOutput{}, fmt.Errorf("video generation requires a provider: set media.video_provider to fal and set fal_key (HAKASE_FAL_KEY), or configure an OpenAI-compatible image router")
+				return GenerateVideoOutput{}, fmt.Errorf(videoNoProviderMsg)
 			}
 			return GenerateVideoOutput{}, err
 		}
@@ -266,6 +267,7 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 			Provider:        provHint,
 			Model:           input.Model,
 			Seed:            input.Seed,
+			ImageRef:        strings.TrimSpace(input.Image),
 		}
 		start := time.Now()
 		result, err := provider.GenerateVideo(ctxTimeout, req)

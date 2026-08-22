@@ -72,6 +72,9 @@ func (p *falProvider) GenerateVideo(ctx context.Context, req VideoRequest) (*Med
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(req.ImageRef) != "" {
+		return nil, fmt.Errorf("provider fal does not support image-to-video; omit image or use provider openai (OpenAI-compatible router such as OpenRouter)")
+	}
 	model := p.cfg.FalVideoModel
 	if req.Model != "" {
 		model = req.Model

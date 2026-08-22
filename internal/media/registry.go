@@ -8,6 +8,11 @@ import (
 	"amurru/hakase/internal/config"
 )
 
+// videoNoProviderMsg is the verbatim actionable error returned when no
+// video-capable provider is configured. Shared by the registry and the
+// generate_video tool layer.
+const videoNoProviderMsg = "video generation requires a provider: configure an OpenAI-compatible router with video support (media.openai_video_key / openai_video_base_url, e.g. OpenRouter), or set fal_key (HAKASE_FAL_KEY) with media.video_provider fal"
+
 // Registry resolves providers by name or auto order, with semaphore concurrency control.
 type Registry struct {
 	cfg       config.MediaConfig
@@ -124,7 +129,7 @@ func (r *Registry) ResolveForProvider(kind string, providerHint string) (Provide
 	}
 	// Special error messages for video/audio auto with no provider.
 	if kind == "video" {
-		return nil, fmt.Errorf("video generation requires a provider: set media.video_provider to fal and set fal_key (HAKASE_FAL_KEY), or configure an OpenAI-compatible image router")
+		return nil, fmt.Errorf(videoNoProviderMsg)
 	}
 	if kind == "audio" {
 		// Distinguish off vs unconfigured? Spec says audio_provider off -> stub message handled in tools.go

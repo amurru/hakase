@@ -495,6 +495,181 @@ func TestFalProviderMock(t *testing.T) {
 	_ = ctx2
 }
 
+func TestOpenAIVideoMock(t *testing.T) {
+	s := tempStore(t)
+	origCheck := checkHostPublic
+	checkHostPublic = func(host string) error { return nil }
+	defer func() { checkHostPublic = origCheck }()
+
+	mp4 := []byte("fake-mp4-bytes")
+	dlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Write(mp4)
+	}))
+	defer dlSrv.Close()
+
+	polls := 0
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/videos":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode submit body: %v", err)
+			}
+			if gotBody["model"] != "google/veo-3.1-lite" {
+				t.Errorf("model = %v", gotBody["model"])
+			}
+			if gotBody["generate_audio"] != false {
+				t.Errorf("generate_audio = %v, want explicit false (cheapest tier)", gotBody["generate_audio"])
+			}
+			if gotBody["resolution"] != "720p" {
+				t.Errorf("resolution = %v", gotBody["resolution"])
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"id":"job_1","polling_url":"/videos/job_1","status":"pending"}`)
+		case r.Method == "GET" && r.URL.Path == "/videos/job_1":
+			polls++
+			w.Header().Set("Content-Type", "application/json")
+			if polls < 2 {
+				fmt.Fprint(w, `{"status":"in_progress"}`)
+				return
+			}
+			fmt.Fprintf(w, `{"status":"completed","unsigned_urls":["%s/clip.mp4"]}`, dlSrv.URL)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := config.MediaConfig{}
+	cfg.ApplyDefaults()
+	cfg.OpenAIImageKey = "sk-or-test"
+	cfg.OpenAIImageBaseURL = srv.URL
+	p := NewOpenAIProvider(cfg, nil, s)
+
+	// text-to-video happy path
+	res, err := p.GenerateVideo(context.Background(), VideoRequest{Prompt: "a horse playing chess", DurationSeconds: 5})
+	if err != nil {
+		t.Fatalf("GenerateVideo: %v", err)
+	}
+	if res.Provider != "openai" || res.MimeType != "video/mp4" || res.Model != "google/veo-3.1-lite" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if b, _ := os.ReadFile(res.Path); !bytes.Equal(b, mp4) {
+		t.Fatal("stored video bytes mismatch")
+	}
+
+	// image-to-video: local file inlined as first-frame data URL
+	imgPath := filepath.Join(t.TempDir(), "frame.png")
+	if err := os.WriteFile(imgPath, mustPNGBytes(), 0644); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	gotBody = nil
+	if _, err := p.GenerateVideo(context.Background(), VideoRequest{Prompt: "animate it", ImageRef: imgPath}); err != nil {
+		t.Fatalf("i2v GenerateVideo: %v", err)
+	}
+	frames, ok := gotBody["frame_images"].([]interface{})
+	if !ok || len(frames) != 1 {
+		t.Fatalf("frame_images missing: %v", gotBody["frame_images"])
+	}
+	frame, _ := frames[0].(map[string]interface{})
+	if frame["frame_type"] != "first_frame" || frame["type"] != "image_url" {
+		t.Fatalf("frame shape wrong: %v", frame)
+	}
+	iu, _ := frame["image_url"].(map[string]interface{})
+	urlStr, _ := iu["url"].(string)
+	if !strings.HasPrefix(urlStr, "data:image/png;base64,") {
+		t.Fatalf("local image not inlined as data url: %.60s", urlStr)
+	}
+
+	// http(s) image refs pass through untouched
+	gotBody = nil
+	if _, err := p.GenerateVideo(context.Background(), VideoRequest{Prompt: "x", ImageRef: "https://example.com/a.png"}); err != nil {
+		t.Fatalf("url i2v: %v", err)
+	}
+	frames = gotBody["frame_images"].([]interface{})
+	frame = frames[0].(map[string]interface{})
+	iu = frame["image_url"].(map[string]interface{})
+	if iu["url"] != "https://example.com/a.png" {
+		t.Fatalf("https ref altered: %v", iu["url"])
+	}
+
+	// failed job surfaces API error text
+	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			fmt.Fprint(w, `{"id":"job_f","polling_url":"/videos/job_f","status":"pending"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"failed","error":"duration 5 is not supported; use one of 4,6,8"}`)
+	}))
+	defer failSrv.Close()
+	cfgFail := cfg
+	cfgFail.OpenAIImageBaseURL = failSrv.URL
+	pFail := NewOpenAIProvider(cfgFail, nil, s)
+	if _, err := pFail.GenerateVideo(context.Background(), VideoRequest{Prompt: "x"}); err == nil || !contains(err.Error(), "duration 5 is not supported") {
+		t.Fatalf("expected surfaced failure message, got %v", err)
+	}
+
+	// 401
+	unauth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+	}))
+	defer unauth.Close()
+	cfg401 := cfg
+	cfg401.OpenAIImageBaseURL = unauth.URL
+	p401 := NewOpenAIProvider(cfg401, nil, s)
+	if _, err := p401.GenerateVideo(context.Background(), VideoRequest{Prompt: "x"}); err == nil || !contains(err.Error(), "401") {
+		t.Fatalf("expected 401, got %v", err)
+	}
+
+	// no key anywhere
+	noKey := config.MediaConfig{}
+	noKey.ApplyDefaults()
+	noKey.OpenAIImageKey = ""
+	pNoKey := NewOpenAIProvider(noKey, nil, s)
+	if _, err := pNoKey.GenerateVideo(context.Background(), VideoRequest{Prompt: "x"}); err == nil || !contains(err.Error(), "auth") {
+		t.Fatalf("expected auth error without key, got %v", err)
+	}
+}
+
+func TestRegistryOpenAIVideoResolution(t *testing.T) {
+	sandbox.CurrentSandbox = nil
+	s := tempStore(t)
+	cfg := config.MediaConfig{}
+	cfg.ApplyDefaults()
+	cfg.OpenAIImageKey = "sk-test"
+	reg, err := NewRegistry(cfg, nil, s)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	p, err := reg.Resolve("video")
+	if err != nil {
+		t.Fatalf("Resolve video with openai key: %v", err)
+	}
+	if p.Name() != "openai" {
+		t.Fatalf("expected openai for video, got %s", p.Name())
+	}
+	// explicit provider hint also works now
+	p2, err := reg.ResolveForProvider("video", "openai")
+	if err != nil || p2.Name() != "openai" {
+		t.Fatalf("explicit openai video resolve failed: %v", err)
+	}
+}
+
+func TestFalVideoRejectsImageInput(t *testing.T) {
+	s := tempStore(t)
+	cfg := config.MediaConfig{}
+	cfg.ApplyDefaults()
+	cfg.FalKey = "k"
+	p := NewFalProvider(cfg, nil, s)
+	_, err := p.GenerateVideo(context.Background(), VideoRequest{Prompt: "x", ImageRef: "outputs/media/a.png"})
+	if err == nil || !contains(err.Error(), "image-to-video") {
+		t.Fatalf("expected actionable fal i2v error, got %v", err)
+	}
+}
+
 func TestToolsErrorStrings(t *testing.T) {
 	s := tempStore(t)
 	cfg := config.MediaConfig{}
@@ -509,7 +684,7 @@ func TestToolsErrorStrings(t *testing.T) {
 	}
 	// Find tools by name? We can test via CreateMediaTools error strings indirectly by calling registry Resolve errors
 	// video requires provider
-	if _, err := reg.Resolve("video"); err == nil || err.Error() != "video generation requires a provider: set media.video_provider to fal and set fal_key (HAKASE_FAL_KEY), or configure an OpenAI-compatible image router" {
+	if _, err := reg.Resolve("video"); err == nil || err.Error() != videoNoProviderMsg {
 		t.Fatalf("video error string mismatch: %v", err)
 	}
 	// image off

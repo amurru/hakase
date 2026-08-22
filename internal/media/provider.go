@@ -78,6 +78,11 @@ type VideoRequest struct {
 	Provider        string
 	Model           string
 	Seed            *int64
+	// ImageRef optionally anchors generation to an input image
+	// (image-to-video via first frame). Accepts an http(s) URL, a
+	// data: URL, or a local file path (providers convert local files
+	// to a data URL). Empty means pure text-to-video.
+	ImageRef string
 }
 
 // Validate checks VideoRequest.

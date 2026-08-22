@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/sandbox"
 )
 
 // openAIProvider implements Provider for OpenAI Images (plain net/http).
@@ -40,7 +44,7 @@ func NewOpenAIProvider(cfg config.MediaConfig, log LogFunc, store *Store) Provid
 func (p *openAIProvider) Name() string { return "openai" }
 
 func (p *openAIProvider) Capabilities() Capabilities {
-	return Capabilities{Image: true}
+	return Capabilities{Image: true, Video: true}
 }
 
 func (p *openAIProvider) GenerateImage(ctx context.Context, req ImageRequest) (*MediaResult, error) {
@@ -158,7 +162,289 @@ func (p *openAIProvider) GenerateImage(ctx context.Context, req ImageRequest) (*
 }
 
 func (p *openAIProvider) GenerateVideo(ctx context.Context, req VideoRequest) (*MediaResult, error) {
-	return nil, fmt.Errorf("provider openai does not support video")
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+	model := p.cfg.OpenAIVideoModel
+	if req.Model != "" {
+		model = req.Model
+	}
+	if model == "" {
+		model = "google/veo-3.1-lite"
+	}
+	key := p.cfg.OpenAIVideoKey
+	if key == "" {
+		key = p.cfg.OpenAIImageKey
+	}
+	if key == "" {
+		return nil, fmt.Errorf("openai video auth failed: check api_key / openai_video_key / openai_image_key (401)")
+	}
+	baseURL := p.cfg.OpenAIVideoBaseURL
+	if baseURL == "" {
+		baseURL = p.cfg.OpenAIImageBaseURL
+	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	duration := req.DurationSeconds
+	if duration == 0 {
+		duration = 5
+	}
+	if duration < 2 {
+		duration = 2
+	}
+	if duration > 10 {
+		duration = 10
+	}
+
+	payload := map[string]interface{}{
+		"model":          model,
+		"prompt":         req.Prompt,
+		"duration":       duration,
+		"generate_audio": false,
+	}
+	if req.Width > 0 && req.Height > 0 {
+		payload["aspect_ratio"] = aspectRatioFromWH(req.Width, req.Height)
+	}
+	if res := strings.TrimSpace(p.cfg.OpenAIVideoResolution); res != "" && !strings.EqualFold(res, "auto") {
+		payload["resolution"] = res
+	}
+	if req.Seed != nil {
+		payload["seed"] = *req.Seed
+	}
+	frame, err := buildFrameImage(req.ImageRef)
+	if err != nil {
+		return nil, err
+	}
+	if frame != nil {
+		payload["frame_images"] = []map[string]interface{}{frame}
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	endpoint := baseURL + "/videos"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+key)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai video submit failed: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode == 401 {
+		return nil, fmt.Errorf("openai video auth failed: check api_key / openai_video_key (401)")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai video submit failed: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var submit struct {
+		ID         string `json:"id"`
+		PollingURL string `json:"polling_url"`
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+	}
+	if err := json.Unmarshal(b, &submit); err != nil {
+		return nil, fmt.Errorf("decode openai video response: %w", err)
+	}
+	downloadURL, err := p.pollVideoJob(ctx, baseURL, key, submit.ID, submit.PollingURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Download via SSRF-guarded client (same pattern as fal).
+	parsed, err := parseURL(downloadURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkHostPublic(parsed.Host); err != nil {
+		return nil, fmt.Errorf("openai video result url blocked: %w", err)
+	}
+	dreq, _ := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	dreq.Header.Set("Authorization", "Bearer "+key)
+	dresp, err := p.client.Do(dreq)
+	if err != nil {
+		return nil, fmt.Errorf("openai video download failed: %w", err)
+	}
+	defer dresp.Body.Close()
+	if dresp.StatusCode < 200 || dresp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai video download failed: HTTP %d", dresp.StatusCode)
+	}
+	capBytes := int64(100 << 20)
+	limited := io.LimitReader(dresp.Body, capBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > capBytes {
+		return nil, fmt.Errorf("openai video too large")
+	}
+	allocPath, err := p.store.Allocate(".mp4")
+	if err != nil {
+		return nil, err
+	}
+	if err := p.store.Write(allocPath, bytes.NewReader(data), capBytes); err != nil {
+		return nil, err
+	}
+	relPath := p.store.WorkspaceRelPath(allocPath)
+	w, h := req.Width, req.Height
+	return &MediaResult{
+		Path:     relPath,
+		Provider: "openai",
+		Model:    model,
+		MimeType: "video/mp4",
+		Markdown: fmt.Sprintf("![generated](%s)", relPath),
+		Seed:     req.Seed,
+		Width:    w,
+		Height:   h,
+	}, nil
+}
+
+// pollVideoJob polls an OpenRouter/OpenAI-style async video job until it
+// completes and returns a download URL. Handles both the OpenRouter shape
+// (relative polling_url + unsigned_urls on completion) and the OpenAI shape
+// (GET /videos/{id}, download via /videos/{id}/content).
+func (p *openAIProvider) pollVideoJob(ctx context.Context, baseURL, key, id, pollingURL string) (string, error) {
+	pollURL := resolvePollingURL(baseURL, pollingURL, id)
+	if pollURL == "" {
+		return "", fmt.Errorf("openai video job has no id or polling_url")
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	deadline := time.Now().Add(300 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("openai video poll timeout")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+		req, _ := http.NewRequestWithContext(ctx, "GET", pollURL, nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := p.client.Do(req)
+		if err != nil {
+			continue // transient poll errors are retried until deadline
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", fmt.Errorf("openai video poll failed: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var status struct {
+			Status       string   `json:"status"`
+			Error        string   `json:"error"`
+			ID           string   `json:"id"`
+			UnsignedURLs []string `json:"unsigned_urls"`
+		}
+		_ = json.Unmarshal(body, &status)
+		switch status.Status {
+		case "completed":
+			if len(status.UnsignedURLs) > 0 && status.UnsignedURLs[0] != "" {
+				return status.UnsignedURLs[0], nil
+			}
+			jobID := status.ID
+			if jobID == "" {
+				jobID = id
+			}
+			if jobID != "" {
+				// OpenAI-style content endpoint fallback.
+				return baseURL + "/videos/" + jobID + "/content", nil
+			}
+			return "", fmt.Errorf("openai video completed but no download url")
+		case "failed", "cancelled", "expired":
+			msg := strings.TrimSpace(status.Error)
+			if msg == "" {
+				msg = status.Status
+			}
+			return "", fmt.Errorf("openai video generation failed: %s", msg)
+		}
+		// pending / in_progress / unknown -> keep polling
+	}
+}
+
+func resolvePollingURL(baseURL, pollingURL, id string) string {
+	if pollingURL != "" {
+		if strings.HasPrefix(pollingURL, "http://") || strings.HasPrefix(pollingURL, "https://") {
+			return pollingURL
+		}
+		if u, err := url.Parse(baseURL); err == nil && u.Scheme != "" && u.Host != "" {
+			if !strings.HasPrefix(pollingURL, "/") {
+				pollingURL = "/" + pollingURL
+			}
+			return u.Scheme + "://" + u.Host + pollingURL
+		}
+		return baseURL + "/" + strings.TrimPrefix(pollingURL, "/")
+	}
+	if id != "" {
+		return baseURL + "/videos/" + id
+	}
+	return ""
+}
+
+// buildFrameImage converts a VideoRequest.ImageRef into an OpenRouter-style
+// frame_images entry anchored as the first frame. http(s)/data URLs pass
+// through; local paths are read (sandbox-aware) and inlined as data URLs.
+func buildFrameImage(ref string) (map[string]interface{}, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, nil
+	}
+	var imageURL string
+	switch {
+	case strings.HasPrefix(ref, "data:"), strings.HasPrefix(ref, "http://"), strings.HasPrefix(ref, "https://"):
+		imageURL = ref
+	default:
+		path := ref
+		if sandbox.CurrentSandbox != nil && sandbox.CurrentSandbox.Mode != sandbox.SandboxModeOff {
+			resolved, err := sandbox.CurrentSandbox.ResolveScopedPath(path, true)
+			if err != nil {
+				return nil, fmt.Errorf("video image outside approved workspace: %w", err)
+			}
+			path = resolved
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("video image not found: %s", ref)
+		}
+		if info.Size() > 10<<20 {
+			return nil, fmt.Errorf("video image too large: %d bytes (max 10MB)", info.Size())
+		}
+		mime, ok := imageMimeByExt(strings.ToLower(filepath.Ext(path)))
+		if !ok {
+			return nil, fmt.Errorf("video image must be png/jpg/webp, got %q", filepath.Ext(path))
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read video image: %w", err)
+		}
+		imageURL = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+	}
+	return map[string]interface{}{
+		"type":       "image_url",
+		"image_url":  map[string]string{"url": imageURL},
+		"frame_type": "first_frame",
+	}, nil
+}
+
+func imageMimeByExt(ext string) (string, bool) {
+	switch ext {
+	case ".png":
+		return "image/png", true
+	case ".jpg", ".jpeg":
+		return "image/jpeg", true
+	case ".webp":
+		return "image/webp", true
+	default:
+		return "", false
+	}
 }
 
 func (p *openAIProvider) GenerateAudio(ctx context.Context, req AudioRequest) (*MediaResult, error) {
