@@ -500,10 +500,10 @@ auto-migrated to a server named `lightpanda`.
 Hakase ships pluggable `generate_image`, `generate_video` (and stub `generate_audio`) as first-class ADK tools:
 
 - **Offline fallback (`pil`)** - pure Go rendering via `image/draw` + embedded Go font. Works with zero config, zero network, zero pip. Not photorealistic but deterministic for posters/diagrams/infographics (baoyu-infographic now prefers `generate_image` when available).
-- **Cloud quality when keys present** - `openai` (OpenAI Images or any OpenAI-compatible endpoint including OpenRouter via `openai_image_base_url` + `openai_image_path` override) and `fal.ai` (image via `fal-ai/flux/schnell`, video via `fal-ai/wan/v2.7/text-to-video` ~$0.50 for 5s @720p). `auto` order is `openai, fal, pil`; `pil` guarantee means zero-config always succeeds for images.
+- **Cloud quality when keys present** - `openai` (OpenAI Images or any OpenAI-compatible endpoint including OpenRouter via `openai_image_base_url` + `openai_image_path` override) and `fal.ai` (image via `fal-ai/flux/schnell`). Video generation runs through the async jobs API of the same router: OpenRouter `/api/v1/videos` (default model `google/veo-3.1-lite`, ~$0.03/s at 720p with audio off) with first-frame **image-to-video** support (`generate_video` accepts an image path/URL to anchor the clip); fal video (`fal-ai/wan/v2.7/text-to-video`) remains text-to-video only. `auto` order is `openai, fal, pil`; `pil` guarantee means zero-config always succeeds for images.
 - **Sandboxed & observable** - all output goes through `outputs/media/<ulid>.<ext>` via `securejoin` + atomic write + `io.CopyN` caps (20MB image / 100MB video), rendered inline in chat via `mediaLinks` + `/api/files/inline` (same-origin, no CSP change). Manifest appends to `outputs/media/manifest.jsonl`; status via `GET /api/media/status` (never leaks keys).
 
-Configure via the `media` block in `config.json` (all fields optional, defaults shown in `config.json.example`) or env vars `HAKASE_MEDIA_IMAGE_PROVIDER`, `HAKASE_MEDIA_VIDEO_PROVIDER`, `HAKASE_MEDIA_OUTPUT_DIR`, `HAKASE_FAL_KEY` (house convention is `HAKASE_*` only - `OPENAI_API_KEY`/`FAL_KEY` are not read). See `docs/media-generation/support.md` for the full matrix and troubleshooting.
+Configure via the `media` block in `config.json` (all fields optional, defaults shown in `config.json.example`) or env vars `HAKASE_MEDIA_IMAGE_PROVIDER`, `HAKASE_MEDIA_VIDEO_PROVIDER`, `HAKASE_MEDIA_VIDEO_MODEL`, `HAKASE_MEDIA_OUTPUT_DIR`, `HAKASE_FAL_KEY` (house convention is `HAKASE_*` only - `OPENAI_API_KEY`/`FAL_KEY` are not read). See `docs/media-generation/support.md` for the full matrix and troubleshooting.
 
 ---
 
@@ -959,7 +959,7 @@ deferred a subset of the Hermes creative skills that depend on capabilities
 hakase did not have at the time. Native **MCP client support on the
 orchestrator** (see [MCP Integration](#-mcp-integration)) is now implemented -
 connect any MCP server (stdio or HTTP) via the `mcp` config block and manage it
-from the TUI with `/mcp`. **Media generation is now implemented** (see [Media Generation](#media-generation)): `generate_image` (cloud via OpenAI/OpenAI-compatible including OpenRouter, fal.ai, plus offline pil fallback - zero config) and `generate_video` (fal.ai) are available as orchestrator tools; `generate_audio` is a stub wired for v2. `baoyu-infographic` now prefers `generate_image`. Still deferred:
+from the TUI with `/mcp`. **Media generation is now implemented** (see [Media Generation](#media-generation)): `generate_image` (cloud via OpenAI/OpenAI-compatible including OpenRouter, fal.ai, plus offline pil fallback - zero config) and `generate_video` (OpenRouter/OpenAI-compatible async jobs API incl. image-to-video via first frame; fal.ai text-to-video) are available as orchestrator tools; `generate_audio` is a stub wired for v2. `baoyu-infographic` now prefers `generate_image`. Still deferred:
 
 - `touchdesigner-mcp` - requires a TouchDesigner MCP server; can now be added
   via the generic `mcp` config once a server endpoint is available.

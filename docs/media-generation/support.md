@@ -7,25 +7,27 @@ Feature: `media-generation` operational guide (r2 scope: `pil` + `openai` + `fal
 | Capability | `pil` | `openai` (incl. OpenRouter) | `fal` | v2: `comfyui` / `replicate` |
 |---|---|---|---|---|
 | Image | yes (structured graphics) | yes | yes | planned |
-| Video | no | no | yes (one pinned default model) | planned |
+| Video | no | yes (async jobs API: OpenRouter `/videos`, OpenAI `/videos/{id}/content`) | yes (text-to-video only) | planned |
+| Image-to-video | no | yes (first frame via `frame_images`) | no (actionable error) | planned |
 | Audio | no | planned (TTS, v2) | planned | planned |
-| Edit / img2img | no | via OpenRouter `input_references`-style params later | later | planned |
+| Edit / img2img | no | video: first-frame anchoring; richer refs later | later | planned |
 | Runs where | inside hakase process | provider cloud GPUs | fal cloud GPUs | user GPU (comfyui) |
 | Requires network | no | yes | yes | comfyui: loopback only |
-| Cost per call | free | ~$0.01-0.08/img depending on model/router; failed OpenRouter requests unbilled | ~$0.003+/img; video varies | free (local) |
+| Cost per call | free | ~$0.01-0.08/img; video from $0.03/s (veo-3.1-lite @720p, audio off) | ~$0.003+/img; video ~$0.10/s | free (local) |
 | `auto` priority | 3 (fallback) | 1 | 2 | - |
 
 ### Default resolution
 
 - `image_provider: "auto"` walks `order` (`["openai","fal","pil"]`) and picks the first healthy provider. Health = key presence (pil always healthy). **Consequence:** if your chat key is an OpenAI/OpenRouter key, the fallback chain makes image generation billable by default - every tool result names the provider and model used, and `GET /api/media/status` shows `resolved_image`.
-- `video_provider: "auto"` with nothing configured returns an actionable error (no pil for video).
+- `video_provider: "auto"` prefers `openai` (OpenRouter/OpenAI-compatible video jobs) when a key resolves, then `fal`, and returns an actionable error when neither is configured (no pil for video).
 - `audio_provider: "off"` returns its stub message; other values report "not wired in this build" (v2).
 
 ### When to use which
 
 - **Offline / no keys / diagrams-posters-slides**: `pil`. Not photorealistic. Latin text always renders; Arabic/CJK render when a covering system font is installed (shaping layer), otherwise degrade to placeholder boxes.
 - **Photoreal images**: `openai` against api.openai.com or any compatible router. OpenRouter gives one key/bill across GPT Image, Gemini Image, FLUX, Seedream, and more.
-- **Cheapest images + only v1 video**: `fal`.
+- **Cheapest images**: `fal` flux-schnell.
+- **Video (cheapest)**: `openai` against OpenRouter with the default `google/veo-3.1-lite` slug - $0.03/s @720p with `generate_audio:false` (a 4s minimum clip is ~$0.12). Cheaper-per-second alternates: `x-ai/grok-imagine-video` ($0.05/s @480p, flexible 1-15s durations), `bytedance/seedance-1-5-pro` (per-token pricing, 480p). Pricing verified against `GET /api/v1/videos/models` on 2026-08-21; re-check before cost-sensitive runs.
 
 ## Configuration
 
@@ -46,6 +48,11 @@ Feature: `media-generation` operational guide (r2 scope: `pil` + `openai` + `fal
     "openai_image_base_url": "",
     "openai_image_path": "/images/generations",
     "openai_image_model": "gpt-image-1-mini",
+
+    "openai_video_key": "",
+    "openai_video_base_url": "",
+    "openai_video_model": "google/veo-3.1-lite",
+    "openai_video_resolution": "720p",
 
     "fal_key": "",
     "fal_base_url": "",
@@ -72,7 +79,7 @@ Fields:
 | Field | Default | Description |
 |---|---|---|
 | `image_provider` | `auto` | `auto` / `pil` / `openai` / `fal` / `off` |
-| `video_provider` | `auto` | `auto` / `fal` / `off` |
+| `video_provider` | `auto` | `auto` / `openai` / `fal` / `off` |
 | `audio_provider` | `off` | `off` now; `openai`/`elevenlabs` reserved for v2 |
 | `order` | `["openai","fal","pil"]` | `auto` priority walk |
 | `max_concurrent` | 1 for pil / 4 for cloud | Per-provider semaphore |
@@ -82,6 +89,10 @@ Fields:
 | `openai_image_base_url` | falls back to `base_url`, then `https://api.openai.com/v1` | Any OpenAI-compatible host |
 | `openai_image_path` | `/images/generations` | Set `/images` for OpenRouter |
 | `openai_image_model` | `gpt-image-1-mini` | See model table below |
+| `openai_video_key` | `openai_image_key`, then `api_key` | Bearer for the async videos endpoint |
+| `openai_video_base_url` | `openai_image_base_url`, then `base_url`, then api.openai.com | Host serving `POST {base}/videos` (OpenRouter: keep the inherited `https://openrouter.ai/api/v1`) |
+| `openai_video_model` | `google/veo-3.1-lite` | Cheapest confirmed OpenRouter slug; override e.g. `bytedance/seedance-1-5-pro`, `alibaba/wan-2.7`; also via `HAKASE_MEDIA_VIDEO_MODEL` |
+| `openai_video_resolution` | `720p` | Priced tier for most models; set `"auto"` to omit and use the server default |
 | `fal_key` | - | Also settable via `HAKASE_FAL_KEY` |
 | `fal_base_url` | `https://queue.fal.run` | Queue host override |
 | `fal_image_model` | `fal-ai/flux/schnell` | fal slug |
@@ -102,6 +113,7 @@ Fields:
 |---|---|
 | `HAKASE_MEDIA_IMAGE_PROVIDER` | `image_provider` |
 | `HAKASE_MEDIA_VIDEO_PROVIDER` | `video_provider` |
+| `HAKASE_MEDIA_VIDEO_MODEL` | `openai_video_model` |
 | `HAKASE_MEDIA_OUTPUT_DIR` | `output_dir` |
 | `HAKASE_FAL_KEY` | `fal_key` |
 
@@ -140,7 +152,15 @@ Note: hakase deliberately does not read `OPENAI_API_KEY`, `FAL_KEY`, or other pr
 
 ### `video generation requires a provider`
 
-- Expected with no `fal_key`. Set it (config or `HAKASE_FAL_KEY`). ComfyUI video is deferred to v2.
+- Expected when neither an OpenAI-compatible video key nor `fal_key` resolves. With OpenRouter, the inherited chat `api_key` + `base_url` are usually enough - check `/api/media/status`. For fal, set `fal_key` (config or `HAKASE_FAL_KEY`). ComfyUI video is deferred to v2.
+
+### `openai video generation failed: duration N is not supported`
+
+- Video models only accept specific clip lengths (veo 4/6/8s, wan 5/10s, grok 1-15s). Retry with a supported `duration_seconds`; the error quotes the model's allowed values.
+
+### `provider fal does not support image-to-video`
+
+- fal's wired pipeline is text-to-video only. For image-to-video (first-frame anchoring of a generated image), omit the fal hint and let `auto` resolve `openai` (OpenRouter), or pass `provider: "openai"`.
 
 ### Generated media not showing in chat
 
