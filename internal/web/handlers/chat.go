@@ -3,18 +3,23 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/sse"
+
 	"github.com/go-chi/chi/v5"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
@@ -24,6 +29,144 @@ import (
 // maxConcurrentAgentRuns is the maximum number of concurrent agent runs
 // allowed per session. Additional runs receive a 429 response.
 const maxConcurrentAgentRuns = 3
+
+// Web attachment caps, mirroring internal/tui/attach.go.
+const (
+	maxWebAttachImageBytes = 10 * 1024 * 1024
+	maxWebAttachTextBytes  = 200 * 1024
+	// maxWebAttachBase64Str bounds the raw base64 string before decoding so a
+	// huge payload cannot balloon during decode (4/3 expansion + slack).
+	maxWebAttachBase64Str = maxWebAttachImageBytes*4/3 + 4096
+)
+
+// incomingAttachment mirrors one entry of the `attachments` array the web UI
+// posts to POST /api/sessions/{id}/messages. Pasted images carry base64
+// Data; @-picked workspace files carry Path (resolved server-side).
+type incomingAttachment struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	MIME  string `json:"mime"`
+	Label string `json:"label"`
+	Data  string `json:"data,omitempty"`
+}
+
+// buildAttachmentParts converts web-UI attachments into genai content parts,
+// mirroring the TUI path (internal/tui/attach.go buildMessageParts): images
+// become inline data parts, text files become text parts. It also returns the
+// AttachmentRefs to persist with the user message (path + mime only; content
+// is re-read from disk on history rebuilds) and manifest lines describing
+// each attachment.
+//
+// The manifest matters on non-vision main models: the vision pipeline
+// replaces inline image parts with a text description that carries no file
+// path, so without it the agent could not reference the attached file by path
+// (e.g. as generate_video's image argument).
+//
+// Per-attachment failures are hard errors: unlike the TUI (which validates at
+// chip-creation time), the web UI sends everything in one request, so a
+// dropped attachment would silently change what the model sees. The returned
+// error names the failing attachment.
+func buildAttachmentParts(atts []incomingAttachment) (parts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string, err error) {
+	for i, att := range atts {
+		name := att.Name
+		if name == "" {
+			name = fmt.Sprintf("attachment %d", i+1)
+		}
+		fail := func(format string, args ...interface{}) error {
+			return fmt.Errorf("attachment %q: %s", name, fmt.Sprintf(format, args...))
+		}
+
+		switch {
+		case strings.TrimSpace(att.Data) != "":
+			// Inline payload (pasted image).
+			if len(att.Data) > maxWebAttachBase64Str {
+				return nil, nil, nil, fail("inline data too large (max %d MB)", maxWebAttachImageBytes/(1024*1024))
+			}
+			data, err := base64.StdEncoding.DecodeString(att.Data)
+			if err != nil {
+				if data, err = base64.RawStdEncoding.DecodeString(att.Data); err != nil {
+					return nil, nil, nil, fail("invalid base64 data")
+				}
+			}
+			mimeType := att.MIME
+			if mimeType == "" {
+				mimeType = detectMIME(name)
+			}
+			if len(data) > maxWebAttachImageBytes {
+				return nil, nil, nil, fail("image too large (%d KB, max %d KB)", len(data)/1024, maxWebAttachImageBytes/1024)
+			}
+			if isImageMIME(mimeType) {
+				parts = append(parts, genai.NewPartFromBytes(data, mimeType))
+			} else if !utf8.Valid(data) {
+				return nil, nil, nil, fail("attachment %q is not valid UTF-8 text or an image", name)
+			} else {
+				parts = append(parts, genai.NewPartFromText(hctx.WrapUntrustedData(string(data))))
+			}
+			// Default the label to match the workspace-file branch so a
+			// client-omitted label never leaves a blank manifest field.
+			label := att.Label
+			if label == "" {
+				label = "@" + name
+			}
+			refs = append(refs, hakasesession.AttachmentRef{
+				Name:  name,
+				Path:  "", // pasted payloads are not on disk
+				MIME:  mimeType,
+				Label: label,
+			})
+			manifest = append(manifest, fmt.Sprintf("%s %s (pasted %s)", label, name, mimeType))
+
+		case strings.TrimSpace(att.Path) != "":
+			// Workspace file: resolve through sandbox read roots (fails
+			// closed outside approved roots and for sensitive files), then
+			// read with the TUI size caps.
+			resolved, err := resolveFilePath(att.Path)
+			if err != nil {
+				return nil, nil, nil, fail("%v", err)
+			}
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return nil, nil, nil, fail("cannot stat file: %v", err)
+			}
+			mimeType := att.MIME
+			if mimeType == "" || mimeType == "application/octet-stream" {
+				mimeType = detectMIME(resolved)
+			}
+			cap := maxWebAttachTextBytes
+			if isImageMIME(mimeType) {
+				cap = maxWebAttachImageBytes
+			}
+			if info.Size() > int64(cap) {
+				return nil, nil, nil, fail("too large (%d KB, max %d KB)", info.Size()/1024, cap/1024)
+			}
+			data, err := os.ReadFile(resolved)
+			if err != nil {
+				return nil, nil, nil, fail("cannot read file: %v", err)
+			}
+			if isImageMIME(mimeType) {
+				parts = append(parts, genai.NewPartFromBytes(data, mimeType))
+			} else if !utf8.Valid(data) {
+				return nil, nil, nil, fail("attachment %q is not valid UTF-8 text or an image", name)
+			} else {
+				parts = append(parts, genai.NewPartFromText(hctx.WrapUntrustedData(string(data))))
+			}
+			refs = append(refs, hakasesession.AttachmentRef{
+				Name:  name,
+				Path:  resolved,
+				MIME:  mimeType,
+				Label: att.Label,
+			})
+			label := att.Label
+			if label == "" {
+				label = "@" + name
+			}
+			manifest = append(manifest, fmt.Sprintf("%s %s (%s)", label, att.Path, mimeType))
+		}
+		// Entries with neither data nor path are skipped silently - the web
+		// UI never produces them.
+	}
+	return parts, refs, manifest, nil
+}
 
 // sessionSem tracks concurrent agent runs for a single session.
 type sessionSem struct {
@@ -98,8 +241,11 @@ func (api *ChatAPI) getOrCreateSem(sessionID string) *sessionSem {
 }
 
 // PostMessage handles POST /api/sessions/{id}/messages.
-// Accepts {content, attachments?}. Saves the user message to the session,
-// starts the agent run in a goroutine, and returns 202 Accepted.
+// Accepts {content, attachments?}. Attachments (pasted images as base64
+// data, @-picked files as workspace paths) are converted into genai content
+// parts and sent to the agent alongside the text, mirroring the TUI path;
+// the refs are persisted with the user message. Saves the message to the
+// session, starts the agent run in a goroutine, and returns 202 Accepted.
 func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := chatSessionID(r)
 	if sessionID == "" {
@@ -108,23 +254,46 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content     string                   `json:"content"`
-		Attachments []map[string]interface{} `json:"attachments,omitempty"`
+		Content     string                `json:"content"`
+		Attachments []incomingAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if req.Content == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content is required"})
+	if strings.TrimSpace(req.Content) == "" && len(req.Attachments) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content or attachments required"})
 		return
 	}
 
-	// Save the user message to the session.
+	// Convert attachments into content parts up front so an invalid
+	// attachment rejects the whole request before anything is persisted.
+	promptText := strings.TrimSpace(req.Content)
+	attParts, refs, manifest, err := buildAttachmentParts(req.Attachments)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	// Append the attachment manifest to the request text (and to the
+	// persisted content, keeping them byte-identical for the history dedup).
+	// On non-vision models the vision pipeline replaces image parts with a
+	// path-less description, so this manifest is the only place the agent
+	// learns the attached file's path.
+	if len(manifest) > 0 {
+		promptText = strings.TrimSpace(promptText + "\n[attachments]\n" + strings.Join(manifest, "\n"))
+	}
+	parts := make([]*genai.Part, 0, len(attParts)+1)
+	if promptText != "" {
+		parts = append(parts, genai.NewPartFromText(promptText))
+	}
+	parts = append(parts, attParts...)
+
+	// Save the user message to the session (prompt + manifest + attachment
+	// refs, same contract as the TUI; content is rebuilt from refs on resume).
 	if api.sessionSvc != nil {
 		// Ensure this session is active so AddMessage targets it.
 		_ = api.sessionSvc.SetActiveSession(sessionID)
-		if err := api.sessionSvc.AddMessage("user", req.Content, ""); err != nil {
+		if err := api.sessionSvc.RecordUsageWithAttachments("user", promptText, "", 0, refs); err != nil {
 			log.Printf("chat: warning: failed to save user message: %v", err)
 		}
 	}
@@ -147,10 +316,7 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		api.semMu.Unlock()
 
-		content := genai.NewContentFromParts(
-			[]*genai.Part{{Text: req.Content}},
-			genai.RoleUser,
-		)
+		content := genai.NewContentFromParts(parts, genai.RoleUser)
 		go api.runAgentTask(context.Background(), sessionID, content)
 	}
 

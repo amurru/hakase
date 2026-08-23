@@ -12,7 +12,7 @@ metadata:
 
 Adapted from [baoyu-infographic](https://github.com/JimLiu/baoyu-skills) for hakase's tool ecosystem.
 
-**Note:** Native image generation is not available in hakase; output is a self-contained HTML/SVG infographic saved to `./outputs/`. A future `image_gen` tool can replace this step.
+**Media:** When `generate_image` is available (it always is - pil fallback offline; cloud via openai/fal when keys present), prefer it: use the prompt from Step 5 with `generate_image` (`provider:"auto"`), then reference the returned `outputs/media/<ulid>.png` path and its markdown snippet in your final answer. When the tool is unavailable, fall back to the self-contained HTML/SVG output described in Step 6.
 
 Two dimensions: **layout** (information structure) x **style** (visual aesthetics). Freely combine any layout with any style.
 
@@ -206,9 +206,11 @@ Combine:
 
 Save the assembled prompt to `prompts/infographic.md` using `write_file`.
 
-### Step 6: Assemble HTML/SVG Infographic -> `infographic.html`
+### Step 6: Assemble Infographic -> image (preferred) or HTML/SVG fallback
 
-Build the infographic as a **single self-contained HTML file** (inline CSS, no external dependencies) that renders the chosen layout and style as an HTML+CSS+SVG infographic.
+**Preferred (when `generate_image` is available):** Call `generate_image` with the prompt assembled in Step 5 (which already encodes layout + style + content). Use `provider:"auto"` (default) so pil is used offline and cloud is used when keys are present. The tool returns `path` (`outputs/media/<ulid>.png`), `provider`, `model`, and a `markdown` snippet (`![generated](outputs/media/<ulid>.png)`) that renders inline via `/api/files/inline` + `mediaLinks` with no CSP changes. Include that snippet in your final answer and save the `structured-content.md`/`prompts/infographic.md` artifacts as before for provenance.
+
+**Fallback (when the tool is unavailable):** Build a **single self-contained HTML file** (inline CSS, no external dependencies) that renders the chosen layout and style.
 
 **Design constraints from aspect ratio:**
 - `16:9` (landscape) -> viewport / print dimensions at 1920x1080 or 1280x720
@@ -216,7 +218,7 @@ Build the infographic as a **single self-contained HTML file** (inline CSS, no e
 - `1:1` (square) -> viewport / print dimensions at 1080x1080 or 1200x1200
 - Custom W:H -> map to nearest reasonable pixel dimensions, preserving the ratio
 
-**Implementation:**
+**Implementation (fallback):**
 - Write a single `.html` file that contains all CSS, layout, typography, and inline SVG/HTML elements
 - Implement the chosen layout's spatial structure using CSS Grid/Flexbox/SVG positioning
 - Apply the chosen style's visual language (colors, typography, texture, motif) via inline CSS

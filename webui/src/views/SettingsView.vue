@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, getMediaStatus, type MediaStatusResponse } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { useAppStore } from '@/stores/app'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,9 @@ interface ConfigResponse {
   writable: boolean
   has_api_key: boolean
   has_vision_api_key: boolean
+  has_fal_key: boolean
+  has_openai_image_key: boolean
+  has_openai_video_key: boolean
   config: Record<string, unknown>
 }
 
@@ -62,6 +65,23 @@ interface SettingsForm {
   approval_mode: string
   approval_expiry_seconds: number
   clarify_expiry_seconds: number
+
+  media_image_provider: string
+  media_video_provider: string
+  media_audio_provider: string
+  media_order: string
+  media_max_concurrent: number
+  media_timeout_seconds: number
+  media_output_dir: string
+  media_openai_image_base_url: string
+  media_openai_image_path: string
+  media_openai_image_model: string
+  media_openai_video_base_url: string
+  media_openai_video_model: string
+  media_openai_video_resolution: string
+  media_fal_base_url: string
+  media_fal_image_model: string
+  media_fal_video_model: string
 }
 
 const cfgPath = ref('')
@@ -69,16 +89,26 @@ const appStore = useAppStore()
 const writable = ref(true)
 const hasAPIKey = ref(false)
 const hasVisionAPIKey = ref(false)
+const hasFalKey = ref(false)
+const hasOpenAIImageKey = ref(false)
+const hasOpenAIVideoKey = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const mediaStatus = ref<MediaStatusResponse | null>(null)
 
 // Write-only API key state: the stored value is never shown. The user can
 // only provide a brand-new key (replace) or remove it.
 const newAPIKey = ref('')
 const newVisionAPIKey = ref('')
+const newFalKey = ref('')
+const newOpenAIImageKey = ref('')
+const newOpenAIVideoKey = ref('')
 const showAPIKeyInput = ref(false)
 const showVisionAPIKeyInput = ref(false)
+const showFalKeyInput = ref(false)
+const showOpenAIImageKeyInput = ref(false)
+const showOpenAIVideoKeyInput = ref(false)
 
 const original = ref<ConfigResponse['config']>({})
 const form = ref<SettingsForm>({
@@ -120,6 +150,22 @@ const form = ref<SettingsForm>({
   approval_mode: 'interactive',
   approval_expiry_seconds: 60,
   clarify_expiry_seconds: 120,
+  media_image_provider: 'auto',
+  media_video_provider: 'auto',
+  media_audio_provider: 'off',
+  media_order: 'openai, fal, pil',
+  media_max_concurrent: 4,
+  media_timeout_seconds: 120,
+  media_output_dir: 'outputs/media',
+  media_openai_image_base_url: '',
+  media_openai_image_path: '/images/generations',
+  media_openai_image_model: 'gpt-image-1-mini',
+  media_openai_video_base_url: '',
+  media_openai_video_model: '',
+  media_openai_video_resolution: 'auto',
+  media_fal_base_url: '',
+  media_fal_image_model: 'fal-ai/flux/schnell',
+  media_fal_video_model: 'fal-ai/wan/v2.7/text-to-video',
 })
 
 // -- helpers -------------------------------------------------------------
@@ -159,6 +205,7 @@ function fillForm(cfg: ConfigResponse['config']) {
   const cf = asObj(cfg.context_files)
   const se = asObj(cfg.system_env)
   const un = asObj(cfg.units)
+  const me = asObj(cfg.media)
 
   form.value = {
     provider: asStr(cfg.provider),
@@ -204,6 +251,22 @@ function fillForm(cfg: ConfigResponse['config']) {
     approval_mode: asStr(ap?.mode) || 'interactive',
     approval_expiry_seconds: asNum(ap?.expiry_seconds) || 60,
     clarify_expiry_seconds: asNum(cl?.expiry_seconds) || 120,
+    media_image_provider: asStr(me?.image_provider) || 'auto',
+    media_video_provider: asStr(me?.video_provider) || 'auto',
+    media_audio_provider: asStr(me?.audio_provider) || 'off',
+    media_order: asList(me?.order) || 'openai, fal, pil',
+    media_max_concurrent: asNum(me?.max_concurrent) || 4,
+    media_timeout_seconds: asNum(me?.timeout_seconds) || 120,
+    media_output_dir: asStr(me?.output_dir) || 'outputs/media',
+    media_openai_image_base_url: asStr(me?.openai_image_base_url) || '',
+    media_openai_image_path: asStr(me?.openai_image_path) || '/images/generations',
+    media_openai_image_model: asStr(me?.openai_image_model) || 'gpt-image-1-mini',
+    media_openai_video_base_url: asStr(me?.openai_video_base_url) || '',
+    media_openai_video_model: asStr(me?.openai_video_model) || '',
+    media_openai_video_resolution: asStr(me?.openai_video_resolution) || 'auto',
+    media_fal_base_url: asStr(me?.fal_base_url) || '',
+    media_fal_image_model: asStr(me?.fal_image_model) || 'fal-ai/flux/schnell',
+    media_fal_video_model: asStr(me?.fal_video_model) || 'fal-ai/wan/v2.7/text-to-video',
   }
 }
 
@@ -225,7 +288,16 @@ async function loadConfig() {
     writable.value = resp.writable
     hasAPIKey.value = resp.has_api_key
     hasVisionAPIKey.value = resp.has_vision_api_key
+    hasFalKey.value = resp.has_fal_key
+    hasOpenAIImageKey.value = resp.has_openai_image_key
+    hasOpenAIVideoKey.value = resp.has_openai_video_key
     fillForm(resp.config)
+    // Load media status (best effort, auth required)
+    try {
+      mediaStatus.value = await getMediaStatus()
+    } catch {
+      mediaStatus.value = null
+    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to load config'
   } finally {
@@ -371,6 +443,27 @@ function buildPayload(): Record<string, unknown> {
     p.clarify = { expiry_seconds: form.value.clarify_expiry_seconds }
   }
 
+  // media block
+  const me = asObj(o.media) || {}
+  const mePatch: Record<string, unknown> = {}
+  if (form.value.media_image_provider !== (asStr(me.image_provider) || 'auto')) mePatch.image_provider = form.value.media_image_provider
+  if (form.value.media_video_provider !== (asStr(me.video_provider) || 'auto')) mePatch.video_provider = form.value.media_video_provider
+  if (form.value.media_audio_provider !== (asStr(me.audio_provider) || 'off')) mePatch.audio_provider = form.value.media_audio_provider
+  if (form.value.media_order !== (asList(me.order) || 'openai, fal, pil')) mePatch.order = toList(form.value.media_order)
+  if (form.value.media_max_concurrent !== (asNum(me.max_concurrent) || 4)) mePatch.max_concurrent = form.value.media_max_concurrent
+  if (form.value.media_timeout_seconds !== (asNum(me.timeout_seconds) || 120)) mePatch.timeout_seconds = form.value.media_timeout_seconds
+  if (form.value.media_output_dir !== (asStr(me.output_dir) || 'outputs/media')) mePatch.output_dir = form.value.media_output_dir
+  if (form.value.media_openai_image_base_url !== asStr(me.openai_image_base_url)) mePatch.openai_image_base_url = form.value.media_openai_image_base_url
+  if (form.value.media_openai_image_path !== (asStr(me.openai_image_path) || '/images/generations')) mePatch.openai_image_path = form.value.media_openai_image_path
+  if (form.value.media_openai_image_model !== (asStr(me.openai_image_model) || 'gpt-image-1-mini')) mePatch.openai_image_model = form.value.media_openai_image_model
+  if (form.value.media_fal_base_url !== asStr(me.fal_base_url)) mePatch.fal_base_url = form.value.media_fal_base_url
+  if (form.value.media_fal_image_model !== (asStr(me.fal_image_model) || 'fal-ai/flux/schnell')) mePatch.fal_image_model = form.value.media_fal_image_model
+  if (form.value.media_fal_video_model !== (asStr(me.fal_video_model) || 'fal-ai/wan/v2.7/text-to-video')) mePatch.fal_video_model = form.value.media_fal_video_model
+  if (form.value.media_openai_video_base_url !== asStr(me.openai_video_base_url)) mePatch.openai_video_base_url = form.value.media_openai_video_base_url
+  if (form.value.media_openai_video_model !== asStr(me.openai_video_model)) mePatch.openai_video_model = form.value.media_openai_video_model
+  if (form.value.media_openai_video_resolution !== (asStr(me.openai_video_resolution) || 'auto')) mePatch.openai_video_resolution = form.value.media_openai_video_resolution
+  if (Object.keys(mePatch).length > 0) p.media = mePatch
+
   // Write-only API key management: only include a key when the user typed a
   // brand-new value or asked to remove it. The stored value is never read.
   if (newAPIKey.value.trim()) {
@@ -378,6 +471,24 @@ function buildPayload(): Record<string, unknown> {
   }
   if (newVisionAPIKey.value.trim()) {
     p.vision_api_key = newVisionAPIKey.value.trim()
+  }
+  if (newFalKey.value.trim()) {
+    p.fal_key = newFalKey.value.trim()
+    // also set nested for media
+    const mediaPatch = (p.media as Record<string, unknown>) || {}
+    mediaPatch.fal_key = newFalKey.value.trim()
+    p.media = { ...(p.media as object || {}), ...mediaPatch }
+  }
+  if (newOpenAIImageKey.value.trim()) {
+    p.openai_image_key = newOpenAIImageKey.value.trim()
+    const mediaPatch = (p.media as Record<string, unknown>) || {}
+    mediaPatch.openai_image_key = newOpenAIImageKey.value.trim()
+    p.media = { ...(p.media as object || {}), ...mediaPatch }
+  }
+  // Video key uses the top-level control only: the server rejects nested
+  // secret fields inside the media object.
+  if (newOpenAIVideoKey.value.trim()) {
+    p.openai_video_key = newOpenAIVideoKey.value.trim()
   }
 
   return p
@@ -398,8 +509,14 @@ async function saveConfig() {
     // never echoed back by GET.
     newAPIKey.value = ''
     newVisionAPIKey.value = ''
+    newFalKey.value = ''
+    newOpenAIImageKey.value = ''
+    newOpenAIVideoKey.value = ''
     showAPIKeyInput.value = false
     showVisionAPIKeyInput.value = false
+    showFalKeyInput.value = false
+    showOpenAIImageKeyInput.value = false
+    showOpenAIVideoKeyInput.value = false
     await loadConfig()
     // Keep the navbar model label in sync with the new configuration.
     appStore.loadModelName()
@@ -443,6 +560,51 @@ async function removeVisionAPIKey() {
     await loadConfig()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to remove vision API key'
+    toast.error(error.value)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeFalKey() {
+  saving.value = true
+  error.value = ''
+  try {
+    await apiFetch('/config', { method: 'PUT', body: { clear_fal_key: true } })
+    toast.success('Fal key removed')
+    await loadConfig()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : 'Failed to remove fal key'
+    toast.error(error.value)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeOpenAIImageKey() {
+  saving.value = true
+  error.value = ''
+  try {
+    await apiFetch('/config', { method: 'PUT', body: { clear_openai_image_key: true } })
+    toast.success('OpenAI image key removed')
+    await loadConfig()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : 'Failed to remove OpenAI image key'
+    toast.error(error.value)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeOpenAIVideoKey() {
+  saving.value = true
+  error.value = ''
+  try {
+    await apiFetch('/config', { method: 'PUT', body: { clear_openai_video_key: true } })
+    toast.success('OpenAI video key removed')
+    await loadConfig()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : 'Failed to remove OpenAI video key'
     toast.error(error.value)
   } finally {
     saving.value = false
@@ -922,6 +1084,206 @@ onMounted(loadConfig)
                          class="h-4 w-4 rounded border-input" />
                   Allow pip install
                 </label>
+              </div>
+            </CardContent>
+          </Card>
+
+          <!-- Media Generation -->
+          <Card>
+            <CardHeader>
+              <CardTitle>Media Generation</CardTitle>
+              <CardDescription>
+                Pluggable image/video generation. pil is an offline image fallback (always available). Cloud providers are used when keys present (auto order: openai, fal, pil).
+                <span v-if="mediaStatus" class="ml-2">
+                  <Badge variant="outline" class="text-[10px]">resolved image: {{ mediaStatus.resolved_image }}</Badge>
+                  <Badge variant="outline" class="ml-1 text-[10px]">video: {{ mediaStatus.resolved_video }}</Badge>
+                </span>
+                <span v-else class="ml-2 text-xs text-muted-foreground">pil always available</span>
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div class="grid gap-2">
+                  <Label for="media_image_provider">Image provider</Label>
+                  <select id="media_image_provider" v-model="form.media_image_provider" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <option value="auto">auto</option>
+                    <option value="pil">pil</option>
+                    <option value="openai">openai</option>
+                    <option value="fal">fal</option>
+                    <option value="off">off</option>
+                  </select>
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_video_provider">Video provider</Label>
+                  <select id="media_video_provider" v-model="form.media_video_provider" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <option value="auto">auto</option>
+                    <option value="openai">openai</option>
+                    <option value="fal">fal</option>
+                    <option value="off">off</option>
+                  </select>
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_audio_provider">Audio provider</Label>
+                  <select id="media_audio_provider" v-model="form.media_audio_provider" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <option value="off">off</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid gap-2">
+                <Label for="media_order">Order (comma-separated)</Label>
+                <Input id="media_order" v-model="form.media_order" :disabled="!writable" placeholder="openai, fal, pil" />
+              </div>
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div class="grid gap-2">
+                  <Label for="media_max_concurrent">Max concurrent</Label>
+                  <Input id="media_max_concurrent" v-model.number="form.media_max_concurrent" :disabled="!writable" type="number" />
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_timeout_seconds">Timeout seconds</Label>
+                  <Input id="media_timeout_seconds" v-model.number="form.media_timeout_seconds" :disabled="!writable" type="number" />
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_output_dir">Output dir</Label>
+                  <Input id="media_output_dir" v-model="form.media_output_dir" :disabled="!writable" placeholder="outputs/media" />
+                </div>
+              </div>
+              <!-- Media keys -->
+              <div class="grid gap-2 rounded-md border border-border p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <KeyRound class="h-4 w-4 text-muted-foreground" />
+                    <span class="text-sm font-medium">Fal key</span>
+                    <template v-if="hasFalKey">
+                      <CheckCircle2 class="h-4 w-4 text-emerald-500" />
+                      <span class="text-xs text-emerald-500">configured</span>
+                    </template>
+                    <template v-else>
+                      <AlertCircle class="h-4 w-4 text-amber-500" />
+                      <span class="text-xs text-amber-500">not set</span>
+                    </template>
+                  </div>
+                  <div class="flex items-center gap-1">
+                    <template v-if="hasFalKey && !showFalKeyInput">
+                      <Button variant="ghost" size="sm" class="h-7 px-2" :disabled="!writable" @click="showFalKeyInput = true">Replace</Button>
+                      <Button variant="ghost" size="sm" class="h-7 px-2 text-destructive" :disabled="!writable || saving" @click="removeFalKey">Remove</Button>
+                    </template>
+                    <Button v-if="!hasFalKey && !showFalKeyInput" size="sm" class="h-7 px-2" :disabled="!writable || saving" @click="showFalKeyInput = true">Add</Button>
+                  </div>
+                </div>
+                <div v-if="showFalKeyInput" class="grid gap-2">
+                  <div class="flex gap-2">
+                    <Input v-model="newFalKey" type="password" autocomplete="off" :disabled="!writable" placeholder="Paste fal key (HAKASE_FAL_KEY)" class="h-8 text-sm" @keydown.enter="saveConfig" />
+                    <Button size="sm" class="h-8 shrink-0" :disabled="!writable || saving || !newFalKey.trim()" @click="saveConfig">Save</Button>
+                    <Button variant="ghost" size="sm" class="h-8 shrink-0" @click="showFalKeyInput = false; newFalKey = ''">Cancel</Button>
+                  </div>
+                </div>
+              </div>
+              <div class="grid gap-2 rounded-md border border-border p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <KeyRound class="h-4 w-4 text-muted-foreground" />
+                    <span class="text-sm font-medium">OpenAI image key</span>
+                    <template v-if="hasOpenAIImageKey">
+                      <CheckCircle2 class="h-4 w-4 text-emerald-500" />
+                      <span class="text-xs text-emerald-500">configured</span>
+                    </template>
+                    <template v-else>
+                      <AlertCircle class="h-4 w-4 text-amber-500" />
+                      <span class="text-xs text-amber-500">not set</span>
+                      <span class="text-xs text-muted-foreground">falls back to api_key</span>
+                    </template>
+                  </div>
+                  <div class="flex items-center gap-1">
+                    <template v-if="hasOpenAIImageKey && !showOpenAIImageKeyInput">
+                      <Button variant="ghost" size="sm" class="h-7 px-2" :disabled="!writable" @click="showOpenAIImageKeyInput = true">Replace</Button>
+                      <Button variant="ghost" size="sm" class="h-7 px-2 text-destructive" :disabled="!writable || saving" @click="removeOpenAIImageKey">Remove</Button>
+                    </template>
+                    <Button v-if="!hasOpenAIImageKey && !showOpenAIImageKeyInput" size="sm" class="h-7 px-2" :disabled="!writable || saving" @click="showOpenAIImageKeyInput = true">Add</Button>
+                  </div>
+                </div>
+                <div v-if="showOpenAIImageKeyInput" class="grid gap-2">
+                  <div class="flex gap-2">
+                    <Input v-model="newOpenAIImageKey" type="password" autocomplete="off" :disabled="!writable" placeholder="Paste OpenAI image key" class="h-8 text-sm" @keydown.enter="saveConfig" />
+                    <Button size="sm" class="h-8 shrink-0" :disabled="!writable || saving || !newOpenAIImageKey.trim()" @click="saveConfig">Save</Button>
+                    <Button variant="ghost" size="sm" class="h-8 shrink-0" @click="showOpenAIImageKeyInput = false; newOpenAIImageKey = ''">Cancel</Button>
+                  </div>
+                </div>
+              </div>
+              <div class="grid gap-2 rounded-md border border-border p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <KeyRound class="h-4 w-4 text-muted-foreground" />
+                    <span class="text-sm font-medium">OpenAI video key</span>
+                    <template v-if="hasOpenAIVideoKey">
+                      <CheckCircle2 class="h-4 w-4 text-emerald-500" />
+                      <span class="text-xs text-emerald-500">configured</span>
+                    </template>
+                    <template v-else>
+                      <AlertCircle class="h-4 w-4 text-amber-500" />
+                      <span class="text-xs text-amber-500">not set</span>
+                      <span class="text-xs text-muted-foreground">falls back to image key</span>
+                    </template>
+                  </div>
+                  <div class="flex items-center gap-1">
+                    <template v-if="hasOpenAIVideoKey && !showOpenAIVideoKeyInput">
+                      <Button variant="ghost" size="sm" class="h-7 px-2" :disabled="!writable" @click="showOpenAIVideoKeyInput = true">Replace</Button>
+                      <Button variant="ghost" size="sm" class="h-7 px-2 text-destructive" :disabled="!writable || saving" @click="removeOpenAIVideoKey">Remove</Button>
+                    </template>
+                    <Button v-if="!hasOpenAIVideoKey && !showOpenAIVideoKeyInput" size="sm" class="h-7 px-2" :disabled="!writable || saving" @click="showOpenAIVideoKeyInput = true">Add</Button>
+                  </div>
+                </div>
+                <div v-if="showOpenAIVideoKeyInput" class="grid gap-2">
+                  <div class="flex gap-2">
+                    <Input v-model="newOpenAIVideoKey" type="password" autocomplete="off" :disabled="!writable" placeholder="Paste OpenAI video key" class="h-8 text-sm" @keydown.enter="saveConfig" />
+                    <Button size="sm" class="h-8 shrink-0" :disabled="!writable || saving || !newOpenAIVideoKey.trim()" @click="saveConfig">Save</Button>
+                    <Button variant="ghost" size="sm" class="h-8 shrink-0" @click="showOpenAIVideoKeyInput = false; newOpenAIVideoKey = ''">Cancel</Button>
+                  </div>
+                </div>
+              </div>
+              <div class="grid gap-2">
+                <Label for="media_openai_image_base_url">OpenAI image base URL</Label>
+                <Input id="media_openai_image_base_url" v-model="form.media_openai_image_base_url" :disabled="!writable" placeholder="https://api.openai.com/v1 or https://openrouter.ai/api/v1" />
+              </div>
+              <div class="grid gap-2">
+                <Label for="media_openai_image_path">OpenAI image path (set /images for OpenRouter)</Label>
+                <Input id="media_openai_image_path" v-model="form.media_openai_image_path" :disabled="!writable" placeholder="/images/generations" />
+              </div>
+              <div class="grid gap-2">
+                <Label for="media_openai_image_model">OpenAI image model</Label>
+                <Input id="media_openai_image_model" v-model="form.media_openai_image_model" :disabled="!writable" placeholder="gpt-image-1-mini" />
+              </div>
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div class="grid gap-2">
+                  <Label for="media_openai_video_base_url">OpenAI video base URL</Label>
+                  <Input id="media_openai_video_base_url" v-model="form.media_openai_video_base_url" :disabled="!writable" placeholder="falls back to image base URL (e.g. https://openrouter.ai/api/v1)" />
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_openai_video_model">OpenAI video model</Label>
+                  <Input id="media_openai_video_model" v-model="form.media_openai_video_model" :disabled="!writable" placeholder="google/veo-3.1-lite" />
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_openai_video_resolution">OpenAI video resolution</Label>
+                  <select id="media_openai_video_resolution" v-model="form.media_openai_video_resolution" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <option value="auto">auto</option>
+                    <option value="480p">480p</option>
+                    <option value="720p">720p</option>
+                    <option value="1080p">1080p</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid gap-2">
+                <Label for="media_fal_base_url">Fal base URL</Label>
+                <Input id="media_fal_base_url" v-model="form.media_fal_base_url" :disabled="!writable" placeholder="https://queue.fal.run" />
+              </div>
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div class="grid gap-2">
+                  <Label for="media_fal_image_model">Fal image model</Label>
+                  <Input id="media_fal_image_model" v-model="form.media_fal_image_model" :disabled="!writable" placeholder="fal-ai/flux/schnell" />
+                </div>
+                <div class="grid gap-2">
+                  <Label for="media_fal_video_model">Fal video model</Label>
+                  <Input id="media_fal_video_model" v-model="form.media_fal_video_model" :disabled="!writable" placeholder="fal-ai/wan/v2.7/text-to-video" />
+                </div>
               </div>
             </CardContent>
           </Card>

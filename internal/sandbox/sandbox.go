@@ -30,6 +30,10 @@ type SandboxConfig struct {
 	WorkspaceRoots  []string
 	ReadRoots       []string
 	DenyRoots       []string
+	// DenyBasenames rejects any file with one of these base names inside a
+	// scoped root regardless of location (e.g. nested dotenv files such as
+	// services/api/.env). Populated implicitly by LoadSandboxConfig.
+	DenyBasenames   []string
 	AllowNetwork    bool
 	AllowPipInstall bool
 	Permissions     map[string]string
@@ -96,7 +100,8 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 		sb.ReadRoots = normalizeRoots(sb.ReadRoots)
 	}
 
-	sb.DenyRoots = normalizeRoots(sb.DenyRoots)
+	sb.DenyRoots = normalizeRoots(append(sensitiveFilePaths(), sb.DenyRoots...))
+	sb.DenyBasenames = []string{".env"}
 
 	if sb.Permissions == nil {
 		sb.Permissions = map[string]string{
@@ -107,6 +112,45 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 	}
 
 	return sb
+}
+
+// hakaseHomeDir mirrors config.HakaseHome without importing internal/config
+// (which imports this package): $HAKASE_HOME when set, otherwise ~/.hakase.
+func hakaseHomeDir() string {
+	if h := os.Getenv("HAKASE_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".hakase")
+}
+
+// sensitiveFilePaths lists well-known hakase-owned files whose contents are
+// secrets: the project config with provider API keys, dotenv files, the
+// user-level config fallback, MCP server tokens, the admin credential hash,
+// and the JWT signing secret. LoadSandboxConfig appends them to DenyRoots on
+// every construction, so no read or write scope can serve their contents no
+// matter how permissive the configured workspace/read roots are.
+func sensitiveFilePaths() []string {
+	var paths []string
+	if cwd, err := os.Getwd(); err == nil {
+		paths = append(paths,
+			filepath.Join(cwd, "config.json"),
+			filepath.Join(cwd, ".env"),
+		)
+	}
+	if home := hakaseHomeDir(); home != "" {
+		paths = append(paths,
+			filepath.Join(home, "config.json"),
+			filepath.Join(home, "mcp.json"),
+			filepath.Join(home, "credentials.json"),
+			filepath.Join(home, "jwt-secret"),
+			filepath.Join(home, "cronjobs.json"),
+		)
+	}
+	return paths
 }
 
 // normalizeRoots cleans, evaluates symlinks, and de-duplicates a list of root paths.
@@ -192,6 +236,9 @@ func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, err
 			return "", fmt.Errorf("path %q is in a denied root", path)
 		}
 	}
+	if sb.deniedBasename(p) {
+		return "", fmt.Errorf("path %q is a denied sensitive file", path)
+	}
 
 	roots := sb.WorkspaceRoots
 	if !write {
@@ -209,14 +256,28 @@ func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, err
 		if err != nil {
 			continue
 		}
-		if resolved, rerr := filepath.EvalSymlinks(joined); rerr == nil {
-			if !within(root, resolved) {
+		resolved := joined
+		if r, rerr := filepath.EvalSymlinks(joined); rerr == nil {
+			if !within(root, r) {
 				return "", fmt.Errorf("path %q escapes workspace root after symlink resolution", path)
 			}
-		} else if resolved, rerr := filepath.EvalSymlinks(p); rerr == nil {
-			if !within(root, resolved) {
+			resolved = r
+		} else if r, rerr := filepath.EvalSymlinks(p); rerr == nil {
+			if !within(root, r) {
 				return "", fmt.Errorf("path %q escapes workspace root after symlink resolution", path)
 			}
+			resolved = r
+		}
+		// Re-check deny rules against the fully resolved path: a symlink
+		// inside an approved root may resolve into a denied root or onto a
+		// sensitive file, which would otherwise bypass the pre-join check.
+		for _, d := range sb.DenyRoots {
+			if within(d, resolved) {
+				return "", fmt.Errorf("path %q resolves into a denied root", path)
+			}
+		}
+		if sb.deniedBasename(resolved) {
+			return "", fmt.Errorf("path %q resolves to a denied sensitive file", path)
 		}
 		return joined, nil
 	}
@@ -247,6 +308,42 @@ func (sb *SandboxConfig) Permitted(tool string) (action string, ok bool) {
 	}
 	action, ok = sb.Permissions[tool]
 	return action, ok
+}
+
+// deniedBasename reports whether the base name of p matches an implicitly
+// denied sensitive basename (e.g. .env anywhere under a scoped root).
+func (sb *SandboxConfig) deniedBasename(p string) bool {
+	if sb == nil || len(sb.DenyBasenames) == 0 {
+		return false
+	}
+	base := filepath.Base(p)
+	for _, b := range sb.DenyBasenames {
+		if base == b {
+			return true
+		}
+	}
+	return false
+}
+
+// DeniedPath reports whether target falls under any deny root (including the
+// implicit sensitive-file denies added by LoadSandboxConfig) or carries a
+// denied sensitive basename. It is a cheap
+// string containment check for hiding entries from directory listings; the
+// authoritative enforcement stays in ResolveScopedPath.
+func (sb *SandboxConfig) DeniedPath(target string) bool {
+	if sb == nil {
+		return false
+	}
+	if sb.deniedBasename(target) {
+		return true
+	}
+	p := filepath.Clean(target)
+	for _, d := range sb.DenyRoots {
+		if within(d, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	hctx "amurru/hakase/internal/context"
@@ -189,5 +190,87 @@ func TestInlineFileHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSensitiveFilesHiddenAndUnreadable covers the web-facing side of the
+// implicit sandbox denies: config.json must be unreadable via /api/files,
+// /api/files/inline and /api/files/download even inside the workspace root,
+// and hidden from /api/files/list and /api/files/browse.
+func TestSensitiveFilesHiddenAndUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgFile, []byte(`{"api_key":"sk-secret"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	notes := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(notes, []byte("# notes"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	prev := sandbox.CurrentSandbox
+	defer func() { sandbox.CurrentSandbox = prev }()
+	// Production anchors the project config.json/.env denies at the process
+	// working directory; mirror that here.
+	t.Chdir(dir)
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(&sandbox.SandboxJSON{
+		WorkspaceRoots: []string{dir},
+	})
+	api := &FileAPI{}
+
+	// Absolute paths so resolution lands inside the workspace read root and
+	// the rejection comes from the implicit deny (not outside-roots).
+	for _, tc := range []struct{ name, url string }{
+		{"read", "/api/files?path=" + cfgFile},
+		{"inline", "/api/files/inline?path=" + cfgFile},
+		{"download", "/api/files/download?path=" + cfgFile},
+	} {
+		var w *httptest.ResponseRecorder
+		req := httptest.NewRequest("GET", tc.url, nil)
+		switch tc.name {
+		case "read":
+			w = httptest.NewRecorder()
+			api.ReadFile(w, req)
+		case "inline":
+			w = httptest.NewRecorder()
+			api.InlineFile(w, req)
+		case "download":
+			w = httptest.NewRecorder()
+			api.DownloadFile(w, req)
+		}
+		if w.Code < 400 {
+			t.Fatalf("%s: expected 4xx for config.json, got %d: %s", tc.name, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "denied root") {
+			t.Fatalf("%s: expected denied-root error, got %d: %s", tc.name, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "sk-secret") {
+			t.Fatalf("%s: response leaked secret content: %s", tc.name, w.Body.String())
+		}
+	}
+
+	// Listing hides the secret but still shows regular files.
+	w := httptest.NewRecorder()
+	api.ListDirectory(w, httptest.NewRequest("GET", "/api/files/list?dir="+dir, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "config.json") {
+		t.Fatalf("listing leaked config.json entry: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "notes.md") {
+		t.Fatalf("listing missing notes.md: %s", w.Body.String())
+	}
+
+	// Autocomplete browse hides it too.
+	w = httptest.NewRecorder()
+	api.BrowseFiles(w, httptest.NewRequest("GET", "/api/files/browse?q=config", nil))
+	if strings.Contains(w.Body.String(), "config.json") {
+		t.Fatalf("browse leaked config.json entry: %s", w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	api.BrowseFiles(w, httptest.NewRequest("GET", "/api/files/browse?q=notes", nil))
+	if !strings.Contains(w.Body.String(), "notes.md") {
+		t.Fatalf("browse missing notes.md: %s", w.Body.String())
 	}
 }

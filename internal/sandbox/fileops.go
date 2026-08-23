@@ -15,11 +15,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -480,6 +482,26 @@ func readFileContent(input ReadFileInput, sandboxRoot string, log interfaces.Log
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ReadFileOutput{}, fmt.Errorf("failed to read file %q: %w", path, err)
+	}
+	// Binary guard: dumping mangled bytes into model context wastes tokens
+	// and invites misreads - e.g. an SVG embedded in a PNG's C2PA metadata
+	// being taken for the image itself (same policy as the web files API).
+	if len(data) > 0 && !utf8.Valid(data) {
+		fileMIME := mime.TypeByExtension(filepath.Ext(path))
+		if fileMIME == "" {
+			fileMIME = "application/octet-stream"
+		}
+		if i := strings.IndexByte(fileMIME, ';'); i >= 0 {
+			fileMIME = strings.TrimSpace(fileMIME[:i])
+		}
+		if log != nil {
+			log(fmt.Sprintf("📖 [fileops] Read %s: binary file (%s, %d bytes), content withheld", path, fileMIME, len(data)))
+		}
+		return ReadFileOutput{
+			Path:    path,
+			Content: fmt.Sprintf("[binary file: %s, %d bytes - text content is not available. Use the vision tool to inspect images, or a script to process binary data.]", fileMIME, len(data)),
+			Context: safeSubdirHint(filepath.Dir(path)),
+		}, nil
 	}
 	lines := splitLines(string(data))
 	total := len(lines)

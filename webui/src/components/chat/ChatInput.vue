@@ -75,6 +75,9 @@ function handleSend() {
     emit('send', '', [...attachments.value])
   }
   content.value = ''
+  // Clear consumed chips so they are not re-sent with the next message
+  // (mirrors the TUI, which resets m.attachments after building parts).
+  pickerRef.value?.clearAll()
   nextTick(autoResize)
 }
 

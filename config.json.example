@@ -66,5 +66,26 @@
   "approval": {
     "mode": "interactive",
     "expiry_seconds": 60
+  },
+  "media": {
+    "image_provider": "auto",
+    "video_provider": "auto",
+    "audio_provider": "off",
+    "order": ["openai", "fal", "pil"],
+    "max_concurrent": 4,
+    "timeout_seconds": 120,
+    "output_dir": "outputs/media",
+    "openai_image_key": "",
+    "openai_image_base_url": "",
+    "openai_image_path": "/images/generations",
+    "openai_image_model": "gpt-image-1-mini",
+    "openai_video_key": "",
+    "openai_video_base_url": "",
+    "openai_video_model": "google/veo-3.1-lite",
+    "openai_video_resolution": "720p",
+    "fal_key": "",
+    "fal_base_url": "",
+    "fal_image_model": "fal-ai/flux/schnell",
+    "fal_video_model": "fal-ai/wan/v2.7/text-to-video"
   }
 }

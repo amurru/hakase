@@ -1,13 +1,16 @@
 package context
 
 import (
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"unicode/utf8"
+
 	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/interfaces"
 	sesspkg "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
-	"os"
-	"strings"
-	"sync"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -212,6 +215,12 @@ func MessageToContent(msg sesspkg.Message) *genai.Content {
 		}
 		if util.IsImageMIME(att.MIME) {
 			parts = append(parts, genai.NewPartFromBytes(data, att.MIME))
+		} else if !utf8.Valid(data) {
+			// The file on disk is not text (deleted/replaced/binary all
+			// along): summarize instead of injecting mangled bytes.
+			parts = append(parts, genai.NewPartFromText(WrapUntrustedData(
+				fmt.Sprintf("[binary file: %s, %d bytes - not readable as text]", att.MIME, len(data)),
+			)))
 		} else {
 			parts = append(parts, genai.NewPartFromText(WrapUntrustedData(string(data))))
 		}

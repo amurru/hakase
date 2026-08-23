@@ -487,10 +487,17 @@ func (api *FileAPI) ListDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hide deny-rooted entries (sensitive files like config.json) from
+	// listings; reads of them are rejected by ResolveScopedPath anyway.
+	var sb *sandbox.SandboxConfig = sandbox.CurrentSandbox
+
 	result := make([]fileEntry, 0, len(entries))
 	for _, entry := range entries {
 		// Skip hidden files/dirs (starting with .).
 		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		if sb.DeniedPath(filepath.Join(absPath, entry.Name())) {
 			continue
 		}
 
@@ -547,8 +554,17 @@ func (api *FileAPI) BrowseFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var results []browseEntry
+	// Hide deny-rooted entries (sensitive files like config.json) from
+	// autocomplete; reads of them are rejected by ResolveScopedPath anyway.
+	var sb *sandbox.SandboxConfig = sandbox.CurrentSandbox
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			return nil
+		}
+		if sb.DeniedPath(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if d.IsDir() {

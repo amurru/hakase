@@ -1528,6 +1528,9 @@ Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches 
 ### CREATING NEW MARKDOWN SKILLS:
 When the user asks you to create a new markdown skill, prefer writing it to the project root's '.agents/skills/' directory (e.g. <projectRoot>/.agents/skills/<skill-name>/SKILL.md), which is the portable, agent-agnostic location that discovery always scans. Use 'system_exec' to create the files if 'write_file' is blocked by workspace restrictions. If writing to '.agents/skills/' fails for any reason (permissions, sandbox, existing directory, etc.), you may write to another valid discovery location instead, in priority order: the project's '.claude/skills/', '.opencode/skills/', or '.gemini/skills/', then the user-level '~/.agents/skills/', '~/.claude/skills/', '~/.gemini/skills/', or '~/.config/opencode/skills/' (honoring XDG_CONFIG_HOME). Do NOT create skills outside these discovery paths - a skill placed elsewhere will never be loaded. The skill directory name must match the 'name' in its SKILL.md frontmatter.
 
+### MEDIA GENERATION:
+You have media generation tools: 'generate_image' (always available via pil fallback; cloud providers openai and fal used when keys present - prefer for photorealistic images, infographics, posters), 'generate_video' (requires a cloud provider: the OpenAI-compatible router such as OpenRouter via openai_video_key or openai_image_key, or fal via fal_key), 'generate_audio' (stub in v1). For generate_image, pil is the offline fallback that renders structured graphics (diagrams, posters, cards) deterministically from prompt+seed - not photorealistic but always works. Cloud providers are tried first when configured (order: openai, fal, pil). All generated media is saved under outputs/media/<ulid>.<ext> and rendered inline via /api/files/inline and mediaLinks - just include the returned markdown snippet in your final answer. Never write outside outputs/media; the store handles paths. Use provider:"auto" by default; explicit provider overrides auto ordering.
+
 ` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildTimeReminder()
 }
 
@@ -1925,6 +1928,16 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		return nil, err
 	}
 
+	// Media tools (orchestrator only, like knowledge tools).
+	var mediaTools []tool.Tool
+	if deps.CreateMediaToolsFn != nil {
+		if mt, err := deps.CreateMediaToolsFn(interfaces.LogFunc(log)); err == nil {
+			mediaTools = mt
+		} else if log != nil {
+			log(fmt.Sprintf("WARN [media] tools disabled: %v", err))
+		}
+	}
+
 	// Context management: build history for the root orchestrator only.
 	// Sub-agents keep isolated context by design (delegate.go untouched).
 	historyBuilder := hctx.NewHistoryBuilder(sessionSvc)
@@ -1932,6 +1945,27 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		log(fmt.Sprintf(format, args...))
 	})
 	deps.HistoryBuilder = historyBuilder
+
+	// Build the orchestrator tool list in explicit steps so the ordering
+	// stays readable and knowledgeTools is never appended into directly.
+	orchestratorTools := []tool.Tool{
+		listSkillsTool,
+		loadMarkdownSkillTool,
+		createTaskT,
+		updateTaskT,
+		listTasksT,
+		getTaskT,
+		deleteTaskT,
+		archiveTaskT,
+		clarifyT,
+		cronjobT,
+		visionTool,
+	}
+	orchestratorTools = append(orchestratorTools, knowledgeTools...)
+	orchestratorTools = append(orchestratorTools, mediaTools...)
+	orchestratorTools = append(orchestratorTools, delegateTaskT)
+	orchestratorTools = append(orchestratorTools, fileOpsTools...)
+	orchestratorTools = append(orchestratorTools, systemExecTools...)
 
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
@@ -1954,19 +1988,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
-		Tools: append([]tool.Tool{
-			listSkillsTool,
-			loadMarkdownSkillTool,
-			createTaskT,
-			updateTaskT,
-			listTasksT,
-			getTaskT,
-			deleteTaskT,
-			archiveTaskT,
-			clarifyT,
-			cronjobT,
-			visionTool,
-		}, append(append(knowledgeTools, delegateTaskT), append(fileOpsTools, systemExecTools...)...)...),
+		Tools:    orchestratorTools,
 		Toolsets: []tool.Toolset{mcpManager},
 		SubAgents: []agent.Agent{
 			researcherAgent,
