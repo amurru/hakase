@@ -1,0 +1,115 @@
+# Release pipeline with SLSA L3 provenance (Option A: generic generator).
+#
+# Flow (triggered by pushing a release tag, e.g. `git push origin v0.1.0-alpha.2`):
+#
+#   1. build       - full production build via the Makefile (frontend + ldflags-
+#                    stamped Go binary), creates the GitHub release and uploads
+#                    the binary + SHA256SUMS.txt
+#   2. provenance  - delegates to the SLSA generic generator reusable workflow,
+#                    which signs provenance for the uploaded artifacts (keyless
+#                    Sigstore signing via OIDC) and attaches it to the release
+#
+# The Makefile stays the single source of truth for how hakase is built; this
+# workflow only orchestrates it in CI. `hakase version` output therefore
+# matches the release tag exactly.
+#
+# Supply-chain notes:
+#   - Every third-party action is pinned to a full commit SHA; the SLSA
+#     reusable workflow is pinned to its release tag because slsa-verifier
+#     validates against that ref (per upstream docs).
+#   - The build job has no access to secrets beyond the ephemeral
+#     github.token, which is scoped to contents:write for asset uploads.
+#   - Provenance verification instructions: see "Verifying release binaries"
+#     in README.md.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {} # nothing at the workflow level; jobs declare their own
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build and publish release assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the binary + checksums
+    outputs:
+      # Object handle produced by the SLSA subjects action; consumed by the
+      # provenance job as base64-subjects-as-file. Using the file handle
+      # instead of a job output avoids GH Actions masking hash-like outputs
+      # as secrets (known upstream issue).
+      hashes: ${{ steps.slsa-subjects.outputs.handle }}
+    steps:
+      - name: Checkout (full history + tags for git describe)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go (version from go.mod)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.3.0
+
+      - name: Build (make build = frontend + stamped prod binary)
+        run: make build
+
+      - name: Smoke-test the built binary
+        run: ./hakase version
+
+      - name: Stage release assets
+        id: stage
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          cp hakase "dist-release/hakase-${TAG}-linux-amd64"
+          cd dist-release
+          sha256sum "hakase-${TAG}-linux-amd64" > ../SHA256SUMS.txt
+
+      - name: Create release and upload binary + checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          gh release upload "$TAG" --clobber dist-release/hakase-"$TAG"-linux-amd64 SHA256SUMS.txt
+
+      - name: Prepare SLSA provenance subjects
+        id: slsa-subjects
+        uses: slsa-framework/slsa-github-generator/actions/generator/generic/create-base64-subjects-from-file@v2.1.0
+        with:
+          path: SHA256SUMS.txt
+
+  provenance:
+    name: Generate SLSA provenance
+    needs: [build]
+    permissions:
+      actions: read # read the calling workflow's info for the provenance
+      id-token: write # keyless Sigstore signing of the provenance
+      contents: write # attach the .intoto.jsonl to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects-as-file: ${{ needs.build.outputs.hashes }}
+      upload-assets: true # attaches <binary>.intoto.jsonl to the tagged release

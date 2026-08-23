@@ -10,6 +10,16 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Release pipeline with SLSA L3 provenance** (`.github/workflows/release.yml`):
+  pushing a `v*` tag builds the production binary via the Makefile on a
+  GitHub-hosted runner, creates the release with `SHA256SUMS.txt`, and attaches
+  keylessly signed SLSA Build L3 provenance (`<binary>.intoto.jsonl`) via the
+  SLSA generic generator reusable workflow (pinned to `@v2.1.0`; all other
+  actions pinned by commit SHA). Verifiable with `slsa-verifier` - see the
+  README's "Verifying release binaries" section.
+
 ### Planned
 
 - `generate_audio` implementation (currently a stub wired for v2)

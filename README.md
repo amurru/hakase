@@ -605,7 +605,33 @@ $ hakase version --short   # version string only, for scripts
 v0.1.0-alpha.1
 ```
 
-The version defaults to `git describe --tags --always --dirty` output (latest tag, e.g. `v0.1.0-alpha.1` or `v0.1.0-alpha.1-3-g69e922d`; `dev` outside a git repo) and can be overridden with `make VERSION=vX.Y.Z`. The commit and UTC build date are captured automatically. Release flow: update `CHANGELOG.md`, commit, `git tag -a vX.Y.Z`, then `make release`. User-facing changes are tracked in the [changelog](CHANGELOG.md) (Keep a Changelog format, semver-ish during 0.x).
+The version defaults to `git describe --tags --always --dirty` output (latest tag, e.g. `v0.1.0-alpha.1` or `v0.1.0-alpha.1-3-g69e922d`; `dev` outside a git repo) and can be overridden with `make VERSION=vX.Y.Z`. The commit and UTC build date are captured automatically. User-facing changes are tracked in the [changelog](CHANGELOG.md) (Keep a Changelog format, semver-ish during 0.x).
+
+#### Release pipeline (GitHub Actions)
+
+Pushing a release tag triggers [.github/workflows/release.yml](.github/workflows/release.yml), which fully automates publishing:
+
+1. **Build job** - runs `make build` on a GitHub-hosted runner (frontend + ldflags-stamped prod binary, so `hakase version` matches the tag exactly), creates the GitHub release with generated notes, and uploads `hakase-<tag>-linux-amd64` and `SHA256SUMS.txt`.
+2. **Provenance job** - delegates to the [SLSA generic generator](https://github.com/slsa-framework/slsa-github-generator) reusable workflow, which keylessly signs SLSA Build L3 provenance (in-toto/DSSE via Sigstore) for the uploaded binaries and attaches `<binary>.intoto.jsonl` to the release.
+
+Release flow: update `CHANGELOG.md`, commit, then `git tag -a vX.Y.Z && git push origin vX.Y.Z` - the pipeline handles the rest. Every third-party action in the workflow is pinned to a full commit SHA; the SLSA reusable workflow is pinned to its release tag (`@v2.1.0`) because that ref is what `slsa-verifier` validates against.
+
+#### Verifying release binaries
+
+Release assets ship with SLSA L3 provenance. Verify a downloaded binary with [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
+
+```bash
+# provenance is attached to the release as hakase-<tag>-linux-amd64.intoto.jsonl
+slsa-verifier verify-artifact hakase-v0.1.0-alpha.2-linux-amd64 \
+  --provenance-path hakase-v0.1.0-alpha.2-linux-amd64.intoto.jsonl \
+  --source-uri github.com/amurru/hakase \
+  --source-tag v0.1.0-alpha.2
+
+# and cross-check the sha256 in SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+A passing verification proves the binary was built by the release workflow from the tagged source of this repository and has not been tampered with since. As a final check, `hakase version` should report the same version and commit as the release tag it was downloaded from.
 
 ### Web UI development flow
 
