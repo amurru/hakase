@@ -10,6 +10,41 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Planned
+
+- `generate_audio` implementation (currently a stub wired for v2)
+- `landlock` sandbox mode (in-process Landlock + seccomp confinement, Phase 3)
+- ComfyUI / TouchDesigner / Suno native integrations (see README TODO)
+
+## [0.1.0-alpha.3] - 2026-08-24
+
+### Added
+
+- **Linux packages (.deb / .rpm)** built via [nfpm](https://nfpm.goreleaser.com)
+  from a single description (`packaging/nfpm.yaml`); published on GitHub
+  releases alongside the binary, covered by `SHA256SUMS.txt` and SLSA
+  provenance. Prerelease versions are encoded with `~`
+  (`0.1.0~alpha.3`) so dpkg/rpm sort them before the final release.
+  Local builds: `make package-deb` / `package-rpm` / `package-linux`.
+
+## [0.1.0-alpha.2] - 2026-08-23
+
+### Added
+
+- **AUR prebuilt-binary package** (`packaging/aur/hakase-bin/PKGBUILD`):
+  installs the released linux/amd64 binary as `/usr/bin/hakase` with docs;
+  `provides`/`conflicts` on `hakase` so a future source-build package can
+  coexist cleanly.
+
+### Changed
+
+- Release binaries are now built with `CGO_ENABLED=0` (fully static,
+  distro-independent) - required by the `-bin` package, safer everywhere.
+
+## [0.1.0-alpha.1] - 2026-08-23
+
+First testing release. Linux-only; developed and tested on Arch Linux.
+
 ### Added
 
 - **Release pipeline with SLSA L3 provenance** (`.github/workflows/release.yml`):
@@ -19,16 +54,6 @@ guaranteed stable until 1.0.
   SLSA generic generator reusable workflow (pinned to `@v2.1.0`; all other
   actions pinned by commit SHA). Verifiable with `slsa-verifier` - see the
   README's "Verifying release binaries" section.
-
-### Planned
-
-- `generate_audio` implementation (currently a stub wired for v2)
-- `landlock` sandbox mode (in-process Landlock + seccomp confinement, Phase 3)
-- ComfyUI / TouchDesigner / Suno native integrations (see README TODO)
-
-## [0.1.0-alpha.1] - 2026-08-23
-
-First testing release. Linux-only; developed and tested on Arch Linux.
 
 ### Added
 
