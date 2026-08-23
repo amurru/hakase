@@ -42,11 +42,9 @@ jobs:
     permissions:
       contents: write # create the release and upload the binary + checksums
     outputs:
-      # Object handle produced by the SLSA subjects action; consumed by the
-      # provenance job as base64-subjects-as-file. Using the file handle
-      # instead of a job output avoids GH Actions masking hash-like outputs
-      # as secrets (known upstream issue).
-      hashes: ${{ steps.slsa-subjects.outputs.handle }}
+      # base64-encoded sha256sums of the staged assets; consumed by the
+      # provenance job as base64-subjects.
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Checkout (full history + tags for git describe)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,11 +94,13 @@ jobs:
             || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
           gh release upload "$TAG" --clobber dist-release/hakase-"$TAG"-linux-amd64 SHA256SUMS.txt
 
-      - name: Prepare SLSA provenance subjects
-        id: slsa-subjects
-        uses: slsa-framework/slsa-github-generator/actions/generator/generic/create-base64-subjects-from-file@v2.1.0
-        with:
-          path: SHA256SUMS.txt
+      - name: Generate SLSA provenance subjects
+        id: hash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "hashes=$(sha256sum "dist-release/hakase-${TAG}-linux-amd64" | base64 -w0)" >> "$GITHUB_OUTPUT"
 
   provenance:
     name: Generate SLSA provenance
@@ -111,5 +111,5 @@ jobs:
       contents: write # attach the .intoto.jsonl to the release
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      base64-subjects-as-file: ${{ needs.build.outputs.hashes }}
+      base64-subjects: "${{ needs.build.outputs.hashes }}"
       upload-assets: true # attaches <binary>.intoto.jsonl to the tagged release
