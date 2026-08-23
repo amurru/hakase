@@ -568,6 +568,7 @@ Running the binary with no subcommand launches the interactive TUI; `web` and `s
 | `env`     | Print the detected runtime-environment block                               |
 | `cron`    | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
 | `auth`    | Manage web authentication (`set-password`)                                 |
+| `version` | Print build version information (version, commit, build date, Go runtime)  |
 
 ### Building
 
@@ -579,6 +580,7 @@ The [Makefile](Makefile) drives the build pipeline. Two build modes are supporte
 | Target             | Description                                                                                     |
 | ------------------ | ----------------------------------------------------------------------------------------------- |
 | `make build`       | Full production binary: frontend build + `go build -tags prod -o hakase ./cmd/hakase/`          |
+| `make release`     | Same as `make build`, then echo the stamped version (run after tagging)                          |
 | `make build-frontend` | `pnpm install && pnpm build` in `webui/`, then mirror `webui/dist/` into `internal/web/dist/` |
 | `make dev`         | Prints the two-terminal development mode instructions                                           |
 | `make dev-frontend` | Vite dev server with HMR on port 5173                                                          |
@@ -587,6 +589,23 @@ The [Makefile](Makefile) drives the build pipeline. Two build modes are supporte
 | `make clean`       | Remove `webui/dist`, `internal/web/dist`, and the `hakase` binary                               |
 
 Frontend tests: `cd webui && pnpm test` (vitest, jsdom). `pnpm build` runs `vue-tsc -b` first, so the typecheck is part of the build.
+
+#### Release engineering
+
+Every `make build` stamps build metadata into the binary via `-ldflags` so `hakase version` can report it:
+
+```bash
+$ hakase version
+hakase v0.1.0-alpha.1
+  commit: 69e922d
+  built:  2026-08-23T10:00:00Z
+  go:     go1.26.5 (linux/amd64)
+
+$ hakase version --short   # version string only, for scripts
+v0.1.0-alpha.1
+```
+
+The version defaults to `git describe --tags --always --dirty` output (latest tag, e.g. `v0.1.0-alpha.1` or `v0.1.0-alpha.1-3-g69e922d`; `dev` outside a git repo) and can be overridden with `make VERSION=vX.Y.Z`. The commit and UTC build date are captured automatically. Release flow: update `CHANGELOG.md`, commit, `git tag -a vX.Y.Z`, then `make release`. User-facing changes are tracked in the [changelog](CHANGELOG.md) (Keep a Changelog format, semver-ish during 0.x).
 
 ### Web UI development flow
 

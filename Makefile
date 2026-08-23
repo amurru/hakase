@@ -15,6 +15,8 @@
 #   build-frontend  Install webui deps, build the SPA, mirror it into
 #                   internal/web/dist for embedding.
 #   build           Full production build: frontend + Go binary (prod tag).
+#   release         Same as build, but echoes the stamped version afterwards
+#                   (run after tagging; see Release engineering below).
 #   dev             Development mode. Runs two processes (see dev-frontend /
 #                   dev-backend); this target prints the instructions.
 #   dev-frontend    Start the Vite dev server (HMR) for the webui.
@@ -25,8 +27,28 @@
 #
 # The `web` subcommand (./hakase web) is wired in a later task; until then
 # dev-backend falls back to `go run` so the build tags are still exercised.
+#
+# ---------------------------------------------------------------------------
+# Release engineering
+#
+# Build metadata is injected via -ldflags into internal/cli so that
+# `hakase version` reports exactly what was built:
+#
+#   VERSION  git describe output of the current checkout (latest tag,
+#            e.g. "v0.1.0-alpha.1" or "v0.1.0-alpha.1-3-g69e922d");
+#            "dev" outside a git repo. Override with `make VERSION=vX.Y.Z`.
+#   COMMIT   short SHA of HEAD.
+#   DATE     UTC build timestamp.
 
-.PHONY: build-frontend build dev dev-frontend dev-backend test clean
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X amurru/hakase/internal/cli.Version=$(VERSION) \
+	-X amurru/hakase/internal/cli.Commit=$(COMMIT) \
+	-X amurru/hakase/internal/cli.Date=$(DATE)
+
+.PHONY: build-frontend build release dev dev-frontend dev-backend test clean
 
 # ---------------------------------------------------------------------------
 # Frontend
@@ -48,7 +70,12 @@ build-frontend:
 # Full production binary: embedded SPA + Go server. No internet needed beyond
 # pnpm install (Go deps come from the module cache).
 build: build-frontend
-	go build -tags prod -o hakase ./cmd/hakase/
+	go build -tags prod -ldflags "$(LDFLAGS)" -o hakase ./cmd/hakase/
+
+# Convenience wrapper around `build`: stamps nothing extra, just surfaces the
+# version that went into the binary so release builds can be eyeballed.
+release: build
+	@echo "built hakase $(VERSION) ($(COMMIT), $(DATE))"
 
 # ---------------------------------------------------------------------------
 # Development
