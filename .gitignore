@@ -85,3 +85,4 @@ webui/dist/
 internal/web/dist/
 packaging/aur/*/
 *.part
+/dist/
