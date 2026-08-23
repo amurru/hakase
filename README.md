@@ -611,8 +611,10 @@ The version defaults to `git describe --tags --always --dirty` output (latest ta
 
 Pushing a release tag triggers [.github/workflows/release.yml](.github/workflows/release.yml), which fully automates publishing:
 
-1. **Build job** - runs `make build` on a GitHub-hosted runner (frontend + ldflags-stamped prod binary, so `hakase version` matches the tag exactly), creates the GitHub release with generated notes, and uploads `hakase-<tag>-linux-amd64` and `SHA256SUMS.txt`.
+1. **Build job** - runs `make build` on a GitHub-hosted runner (frontend + ldflags-stamped prod binary, so `hakase version` matches the tag exactly), packages the binary into `.deb` and `.rpm` via [nfpm](https://nfpm.goreleaser.com) (`make package-linux`, config in `packaging/nfpm.yaml`), creates the GitHub release with generated notes, and uploads `hakase-<tag>-linux-amd64`, the packages, and `SHA256SUMS.txt`. Prerelease versions are encoded with `~` (`0.1.0~alpha.2`) so dpkg/rpm sort them before the final release.
 2. **Provenance job** - delegates to the [SLSA generic generator](https://github.com/slsa-framework/slsa-github-generator) reusable workflow, which keylessly signs SLSA Build L3 provenance (in-toto/DSSE via Sigstore) for the uploaded binaries and attaches `<binary>.intoto.jsonl` to the release.
+
+Arch Linux users can also install the prebuilt binary from the AUR as [`hakase-bin`](packaging/aur/hakase-bin/PKGBUILD).
 
 Release flow: update `CHANGELOG.md`, commit, then `git tag -a vX.Y.Z && git push origin vX.Y.Z` - the pipeline handles the rest. Every third-party action in the workflow is pinned to a full commit SHA; the SLSA reusable workflow is pinned to its release tag (`@v2.1.0`) because that ref is what `slsa-verifier` validates against.
 

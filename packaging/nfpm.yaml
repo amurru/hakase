@@ -1,0 +1,38 @@
+# NFPM packaging config: builds the .deb and .rpm from a single description.
+#
+# Used by `make package-deb` / `package-rpm` / `package-linux` and by the
+# release workflow (.github/workflows/release.yml), which sets NFPM_VERSION
+# from the pushed tag (e.g. 0.1.0~alpha.2). The tilde form sorts *before*
+# the final release in both dpkg and rpm version ordering, which is what we
+# want for alpha tags.
+#
+# The binary must be pre-built next to this file's working directory
+# (`make build`); nfpm only assembles package metadata + contents.
+#
+# Docs: https://nfpm.goreleaser.com/
+
+name: hakase
+arch: amd64
+platform: linux
+version: ${NFPM_VERSION}
+section: utils
+priority: optional
+maintainer: Amurru Zerouk <amurru@users.noreply.github.com>
+description: |-
+  Go agent harness with an embedded Vue 3 web UI.
+  Hakase is a single static binary that orchestrates LLM-driven coding
+  agents with skills, knowledge base, sandboxing, MCP, cron and a web UI.
+homepage: https://github.com/amurru/hakase
+license: MIT
+depends:
+  - python3
+
+contents:
+  - src: ./hakase
+    dst: /usr/bin/hakase
+  - src: ./config.json.example
+    dst: /usr/share/doc/hakase/config.json.example
+  - src: ./README.md
+    dst: /usr/share/doc/hakase/README.md
+  - src: ./LICENSE
+    dst: /usr/share/licenses/hakase/LICENSE

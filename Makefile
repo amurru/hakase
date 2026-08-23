@@ -48,7 +48,7 @@ LDFLAGS := -s -w \
 	-X amurru/hakase/internal/cli.Commit=$(COMMIT) \
 	-X amurru/hakase/internal/cli.Date=$(DATE)
 
-.PHONY: build-frontend build release dev dev-frontend dev-backend test clean
+.PHONY: build-frontend build release package-deb package-rpm package-linux dev dev-frontend dev-backend test clean
 
 # ---------------------------------------------------------------------------
 # Frontend
@@ -77,6 +77,22 @@ build: build-frontend
 # version that went into the binary so release builds can be eyeballed.
 release: build
 	@echo "built hakase $(VERSION) ($(COMMIT), $(DATE))"
+
+# ---------------------------------------------------------------------------
+# Linux packages (deb/rpm) via nfpm
+# ---------------------------------------------------------------------------
+
+# Requires nfpm on PATH: https://nfpm.goreleaser.com/install/
+# Version derivation (strip 'v', '-alpha' -> '~alpha') lives in
+# packaging/build-packages.sh; see that file for details.
+package-deb: build
+	./packaging/build-packages.sh deb
+
+package-rpm: build
+	./packaging/build-packages.sh rpm
+
+package-linux: build
+	./packaging/build-packages.sh deb rpm
 
 # ---------------------------------------------------------------------------
 # Development
@@ -116,4 +132,4 @@ test:
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -rf webui/dist internal/web/dist hakase
+	rm -rf webui/dist internal/web/dist hakase dist/
