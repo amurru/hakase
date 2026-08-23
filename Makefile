@@ -68,9 +68,10 @@ build-frontend:
 # ---------------------------------------------------------------------------
 
 # Full production binary: embedded SPA + Go server. No internet needed beyond
-# pnpm install (Go deps come from the module cache).
+# pnpm install (Go deps come from the module cache). CGO_ENABLED=0 keeps the
+# binary fully static so release artifacts run on any distro (AUR -bin pkg).
 build: build-frontend
-	go build -tags prod -ldflags "$(LDFLAGS)" -o hakase ./cmd/hakase/
+	CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase ./cmd/hakase/
 
 # Convenience wrapper around `build`: stamps nothing extra, just surfaces the
 # version that went into the binary so release builds can be eyeballed.
