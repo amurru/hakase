@@ -1,0 +1,26 @@
+# TEMPORARY debug workflow - delete after diagnosing the SLSA privacy-check issue.
+name: Debug visibility
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare repo API responses inside the runner
+        run: |
+          echo "=== with GITHUB_TOKEN:"
+          curl -s -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}" \
+            | jq '{private, visibility, message}'
+          echo "=== unauthenticated:"
+          curl -s "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}" \
+            | jq '{private, visibility, message}'
+          echo "=== token identity:"
+          curl -s -H "Authorization: Bearer ${{ github.token }}" \
+            "${GITHUB_API_URL}/user" | jq -r '.login // .message'
+          echo "=== GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
