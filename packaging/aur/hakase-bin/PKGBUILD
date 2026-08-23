@@ -28,13 +28,15 @@ optdepends=('tectonic: latex-math skill (LaTeX rendering)'
             'xclip: clipboard support on X11')
 provides=(hakase)
 conflicts=(hakase)
-_tag="v$pkgver"
+# The real git tag. AUR pkgver cannot contain '-', so the alpha separator
+# becomes a dot in pkgver; keep this in sync manually on version bumps.
+_tag="v0.1.0-alpha.2"
 source=("hakase-$_tag-linux-amd64::$url/releases/download/$_tag/hakase-$_tag-linux-amd64"
         "config.json.example::$url/raw/$_tag/config.json.example"
         "LICENSE::$url/raw/$_tag/LICENSE")
-sha256sums=('SKIP' # TODO: replace with real sums (`updpkgsums`) before submission
-            'SKIP'
-            'SKIP')
+sha256sums=('f9434a642db080094aa12ee1ae555d9887f68b4a31c63a5ca222491fd1677ddb'
+            '555082141ff6038ac4c6700398b8b7727895c2d0fe243b768885439ea36c8667'
+            '791adc82735316a6a2ca21ce16cf6f030ad640a8a2fdcc1f388c33816272131e')
 
 package() {
   install -Dm755 "hakase-$_tag-linux-amd64" "$pkgdir/usr/bin/hakase"
