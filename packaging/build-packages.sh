@@ -36,18 +36,24 @@ if [ -z "${NFPM_VERSION:-}" ]; then
 	NFPM_VERSION="$(printf '%s' "$raw" | sed -e 's/^v//' -e 's/-alpha/~alpha/')"
 fi
 
+# The '~' is required inside the package version (dpkg/rpm prerelease
+# ordering) but must not appear in FILENAMES: GitHub release assets replace
+# it with '.', which would desynchronize SHA256SUMS.txt. So: metadata gets
+# '~', filenames get '-'.
+FILE_VERSION="$(printf '%s' "$NFPM_VERSION" | sed 's/~/-/')"
+
 mkdir -p dist
 for fmt in "$@"; do
 	case "$fmt" in
 	deb)
 		NFPM_VERSION="$NFPM_VERSION" nfpm package \
 			-f packaging/nfpm.yaml -p deb \
-			-t "dist/hakase_${NFPM_VERSION}_amd64.deb"
+			-t "dist/hakase_${FILE_VERSION}_amd64.deb"
 		;;
 	rpm)
 		NFPM_VERSION="$NFPM_VERSION" nfpm package \
 			-f packaging/nfpm.yaml -p rpm \
-			-t "dist/hakase-${NFPM_VERSION}.x86_64.rpm"
+			-t "dist/hakase-${FILE_VERSION}.x86_64.rpm"
 		;;
 	*)
 		echo "unknown package format: $fmt" >&2
