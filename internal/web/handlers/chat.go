@@ -18,6 +18,7 @@ import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
+	hakasesidekick "amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/web/sse"
 
 	"github.com/go-chi/chi/v5"
@@ -222,6 +223,93 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 
 	r.Post("/sessions/{id}/messages", api.PostMessage)
 	r.Get("/sessions/{id}/stream", api.StreamSSE)
+	r.Post("/sessions/{id}/sidekick", api.PostSidekick)
+}
+
+// PostSidekick handles POST /api/sessions/{id}/sidekick.
+// It asks the configured sidekick model a direct question and streams the
+// answer back as a sidekick SSE event (mirroring the TUI /sidekick command).
+// The sidekick runs independently of the main agent and does not disturb the
+// current conversation. When the sidekick is disabled or no question is
+// supplied, it responds with a clear JSON error (no SSE stream is opened).
+func (api *ChatAPI) PostSidekick(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+
+	var req struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	question := strings.TrimSpace(req.Question)
+	if question == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "question required"})
+		return
+	}
+
+	if api.runtime == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sidekick unavailable"})
+		return
+	}
+	sk := api.runtime.Sidekick()
+	if sk == nil || !sk.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sidekick is not enabled"})
+		return
+	}
+
+	// Run the sidekick Ask asynchronously so the HTTP handler returns promptly;
+	// the answer is pushed as a sidekick SSE event when it lands. Use a
+	// detached context: the request context is cancelled the moment the 202 is
+	// written, which would abort the Ask before it completes.
+	go func() {
+		// Persist the exchange under kind "sidekick" so sessions/<id>.json
+		// records provenance: question as a tagged user turn, answer with
+		// role "sidekick" (same shape as watchdog notes).
+		var skStore hakasesidekick.TranscriptStore
+		if api.sessionSvc != nil {
+			skStore = api.sessionSvc.Store()
+		}
+
+		// Give on-demand asks conversational context: frame the question
+		// with the recent in-session transcript (same budget the watchdog
+		// uses), BEFORE recording this turn so it is not duplicated.
+		prompt := question
+		if skStore != nil {
+			if sess, err := skStore.Load(sessionID); err == nil && sess != nil {
+				prompt = hakasesidekick.BuildAskPrompt(
+					hakasesidekick.RecentTranscript(sess, sk.TranscriptWindow()),
+					question,
+				)
+			}
+		}
+		hakasesidekick.RecordQuestion(skStore, sessionID, question)
+
+		answer, err := sk.Ask(context.Background(), prompt)
+		if err != nil {
+			// Persist the failure too: with no SSE subscriber connected the
+			// warning below would be dropped, leaving the recorded question
+			// permanently unanswered in sessions/<id>.json.
+			hakasesidekick.RecordAnswer(skStore, sessionID, "[sidekick error] "+err.Error())
+			if api.bridge != nil {
+				api.bridge.SendSidekick(sessionID, "warning", "sidekick error: "+err.Error())
+			}
+			return
+		}
+		hakasesidekick.RecordAnswer(skStore, sessionID, answer)
+		if api.bridge != nil {
+			api.bridge.SendSidekick(sessionID, "info", answer)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":     "accepted",
+		"session_id": sessionID,
+	})
 }
 
 // chatSessionID extracts the {id} URL parameter from the request.
