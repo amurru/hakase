@@ -752,10 +752,11 @@ func runSidekickCommand(m *tui.AppModel, args string, rt *agent.Runtime) tea.Cmd
 	return func() tea.Msg {
 		answer, err := sk.Ask(context.Background(), prompt)
 		if err != nil {
-			return tui.SidekickAnswerMsg{Err: err, Question: question}
+			sidekick.RecordAnswer(skStore, sid, "[sidekick error] "+err.Error())
+			return tui.SidekickAnswerMsg{SessionID: sid, Err: err, Question: question}
 		}
 		sidekick.RecordAnswer(skStore, sid, answer)
-		return tui.SidekickAnswerMsg{Answer: answer, Question: question}
+		return tui.SidekickAnswerMsg{SessionID: sid, Answer: answer, Question: question}
 	}
 }
 

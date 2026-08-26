@@ -299,9 +299,10 @@ type SidekickMsg struct {
 // SidekickAnswerMsg carries the answer to an explicit /sidekick question back
 // from the sidekick model into the chat pane.
 type SidekickAnswerMsg struct {
-	Question string
-	Answer   string
-	Err      error
+	SessionID string
+	Question  string
+	Answer    string
+	Err       error
 }
 
 // TaskBoardMsg represents a full task board refresh

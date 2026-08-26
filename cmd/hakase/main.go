@@ -215,6 +215,15 @@ func runTUI() {
 	runtime.SetClarifyGate(&m)
 	runtime.SetEventNotifier(&m)
 
+	// Wire the event notifier into the sidekick after the TUI model
+	// exists. The sidekick is created during SetupRunner before the
+	// tea.Program (and thus before the TUI model), so SetNotifier
+	// must be called here to avoid nil-notifier drops on sidekick
+	// events.
+	if sk := runtime.Sidekick(); sk != nil {
+		sk.SetNotifier(&m)
+	}
+
 	// Share the TUI's mid-run message queue with the HistoryBuilder so
 	// prompts typed while the agent is busy are steered into the running
 	// session at model-call boundaries (BeforeModelCallback).

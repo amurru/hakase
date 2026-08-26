@@ -269,7 +269,13 @@ func (api *ChatAPI) PostSidekick(w http.ResponseWriter, r *http.Request) {
 	// the answer is pushed as a sidekick SSE event when it lands. Use a
 	// detached context: the request context is cancelled the moment the 202 is
 	// written, which would abort the Ask before it completes.
+	sem := api.getOrCreateSem(sessionID)
+	if !sem.acquire(2) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many concurrent requests for this session"})
+		return
+	}
 	go func() {
+		defer sem.release()
 		// Persist the exchange under kind "sidekick" so sessions/<id>.json
 		// records provenance: question as a tagged user turn, answer with
 		// role "sidekick" (same shape as watchdog notes).

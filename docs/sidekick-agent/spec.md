@@ -32,7 +32,6 @@ Remember `make build-frontend` on fresh clones before Go commands.
       MaxNotesPerTurn         int `json:"max_notes_per_turn,omitempty"`        // default 2
       MaxNoteChars            int `json:"max_note_chars,omitempty"`            // default 1200
       TranscriptWindowChars   int `json:"transcript_window_chars,omitempty"`   // default 6000
-      AskTimeoutSeconds       int `json:"ask_timeout_seconds,omitempty"`       // default 45
   }
   ```
   Field `Config.Sidekick SidekickConfig \`json:"sidekick,omitempty"\``;
@@ -174,7 +173,7 @@ Remember `make build-frontend` on fresh clones before Go commands.
   }
   // Tool name: ask_sidekick. Blocked for delegated sub-agents (add to blockedTools()).
   ```
-  Synchronous, `AskTimeoutSeconds`-capped; unavailable => tool returns a
+  Synchronous; unavailable => tool returns a
   descriptive error string (model adapts), not a panic. Instruction addition:
   when to consult (high-stakes decisions, before destructive actions,
   verification of risky claims) and that answers are advisory input, not

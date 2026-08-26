@@ -75,6 +75,18 @@ func (s *Sidekick) Enabled() bool {
 	return s != nil && s.cfg != nil && s.cfg.EnabledWithModel() && s.llm != nil
 }
 
+// SetNotifier installs the event notifier after construction. The notifier
+// may not be available at sidekick creation time (e.g. in the TUI path the
+// tea.Program must exist first). Thread-safe.
+func (s *Sidekick) SetNotifier(n interfaces.EventNotifier) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifier = n
+}
+
 // TranscriptWindow reports the configured transcript budget (in characters)
 // for context passed to consultations and on-demand asks. Callers may pass
 // the value straight into RecentTranscript.
@@ -144,7 +156,9 @@ func (s *Sidekick) Consult(ctx context.Context, sessionID, transcript string) ([
 	s.mu.Unlock()
 
 	if len(transcript) > s.cfg.TranscriptWindowChars {
-		transcript = transcript[len(transcript)-s.cfg.TranscriptWindowChars:]
+		// Use runes to avoid splitting a multi-byte UTF-8 character.
+		runes := []rune(transcript)
+		transcript = string(runes[len(runes)-s.cfg.TranscriptWindowChars:])
 	}
 
 	sys := "You are a watchful second-opinion reviewer observing a primary agent's ongoing work. " +
@@ -268,7 +282,8 @@ func parseNotes(raw string, cfg *config.SidekickConfig) []Note {
 			notes[i].Severity = SeverityInfo
 		}
 		if len(notes[i].Text) > cfg.MaxNoteChars {
-			notes[i].Text = notes[i].Text[:cfg.MaxNoteChars]
+			runes := []rune(notes[i].Text)
+			notes[i].Text = string(runes[:cfg.MaxNoteChars])
 		}
 	}
 	return notes

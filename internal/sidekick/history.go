@@ -30,6 +30,8 @@ func RecentTranscript(sess *hakasesession.Session, maxChars int) string {
 			lines = append(lines, "user: "+m.Content)
 		case m.Kind == hakasesession.MessageKindText && m.Role == "agent":
 			lines = append(lines, "assistant: "+m.Content)
+		case m.Kind == hakasesession.MessageKindSidekick && m.Role == "user":
+			lines = append(lines, "user: "+m.Content)
 		case m.Kind == hakasesession.MessageKindSidekick && m.Role == Role:
 			lines = append(lines, "sidekick (you): "+m.Content)
 		}

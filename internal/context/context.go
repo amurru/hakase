@@ -156,6 +156,11 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 			session.AddMessageWithMeta("sidekick", n.Text, "", 0, sesspkg.MessageKindSidekick)
 		}
 		req.Contents = append(req.Contents, genai.NewContentFromText(sb.String(), genai.RoleUser))
+		// Persist sidekick notes so they survive a crash before the next
+		// natural save point.
+		if h.svc != nil {
+			_ = h.svc.SaveSession(session)
+		}
 	}
 	return nil, nil
 }

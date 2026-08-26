@@ -172,6 +172,31 @@ async function loadSessionHistory(sid: string) {
 
 // Handle send message
 async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
+  // Known slash commands route locally - never to the main model. Unknown
+  // "/xyz" tokens fall through as ordinary text (they may be paths).
+  // Parse before session creation so /new and /compact avoid an unnecessary
+  // round-trip to the server.
+  const cmd = parseSlashCommand(content)
+  if (cmd) {
+    // /new and /compact may need a session, but /sidekick does not create one
+    // if one doesn't exist yet. Commands that need a session but don't have
+    // one will create it lazily inside executeSlash.
+    if (!sessionId.value && cmd.name !== 'new' && cmd.name !== 'compact') {
+      // Commands like /help that don't need a session at all
+      await executeSlash(cmd.name, cmd.args)
+      return
+    }
+    messages.value.push({
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content,
+      thinking: '',
+      timestamp: Date.now(),
+    })
+    await executeSlash(cmd.name, cmd.args)
+    return
+  }
+
   // Lazily create a session on the first message so there is a place to
   // persist the conversation and an SSE stream to attach to. Without an id,
   // useSSE.sendMessage bails out silently and the message is dropped.
@@ -187,21 +212,6 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
     // Keep the URL in sync so a refresh resumes this session. We are already
     // on /chat, so this is a query-only navigation - no remount, no reload.
     router.replace({ path: '/chat', query: { session: created.id } })
-  }
-
-  // Known slash commands route locally - never to the main model. Unknown
-  // "/xyz" tokens fall through as ordinary text (they may be paths).
-  const cmd = parseSlashCommand(content)
-  if (cmd) {
-    messages.value.push({
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content,
-      thinking: '',
-      timestamp: Date.now(),
-    })
-    await executeSlash(cmd.name, cmd.args)
-    return
   }
 
   await sendMessage(
@@ -286,6 +296,8 @@ async function runCompact(focus: string) {
       body: focus ? { focus } : {},
     })
     note('info', 'context compacted; summary generating in background')
+    // Reload the session history (which includes the compaction note) before
+    // clearing the in-memory message list so the note persists in the view.
     clearMessages()
     await loadSessionHistory(sessionId.value)
   } catch (err) {

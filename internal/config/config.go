@@ -599,6 +599,9 @@ func LoadConfig(filePath string) (*Config, error) {
 		cfg.Sidekick.APIKey = v
 	}
 	cfg.Sidekick.ApplyDefaults()
+	if err := cfg.Sidekick.Validate(); err != nil {
+		return nil, err
+	}
 
 	cfg.Media.ApplyDefaults()
 	// Fallback chain for OpenAI image provider (mirrors vision pattern):

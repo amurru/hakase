@@ -272,20 +272,21 @@ export function useSSE(sessionId: () => string | null) {
       addNote('info', 'Usage: /sidekick <question> - ask the sidekick model a direct question')
       return false
     }
+
+    // The answer (or its error) arrives over SSE. The stream closes after a
+    // run completes, so asking cold would drop the reply into the void -
+    // publishBytes discards events when a session has no subscribers. Open
+    // the stream before the POST, mirroring sendMessage.
+    if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
+      connect(sid)
+    }
+
     try {
       await apiFetch(`/sessions/${sid}/sidekick`, { method: 'POST', body: { question: q } })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'sidekick request failed'
       addNote('warning', `sidekick unavailable: ${msg}`)
       return false
-    }
-
-    // The answer (or its error) arrives over SSE. The stream closes after a
-    // run completes, so asking cold would drop the reply into the void -
-    // publishBytes discards events when a session has no subscribers. Open
-    // the stream before waiting, mirroring sendMessage.
-    if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-      connect(sid)
     }
 
     // Immediate acknowledgment: the 202 returns instantly while the model

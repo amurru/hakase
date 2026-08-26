@@ -2111,6 +2111,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if sk != nil {
 		if askT, err := createAskSidekickTool(log, sk); err == nil {
 			orchestratorTools = append(orchestratorTools, askT)
+		} else if log != nil {
+			log(fmt.Sprintf("sidekick tool disabled: %v", err))
 		}
 	}
 
