@@ -1,6 +1,7 @@
 import { ref, onUnmounted, readonly } from 'vue'
 import { apiFetch } from '@/lib/api'
 import { useAppStore } from '@/stores/app'
+import { parseSidekickEvent, type SidekickNote } from '@/lib/sidekick'
 
 export interface ChatMessage {
   id: string
@@ -36,6 +37,8 @@ export function useSSE(sessionId: () => string | null) {
   const isStreaming = ref(false)
   const connected = ref(false)
   const lastError = ref<string | null>(null)
+  // Sidekick advisory notes: quiet inline chips, never notifications.
+  const sidekickNotes = ref<SidekickNote[]>([])
 
   // Event callbacks (set by consumer)
   let onApproval: ((data: SSEApproval) => void) | null = null
@@ -234,6 +237,67 @@ export function useSSE(sessionId: () => string | null) {
         // ignore
       }
     })
+
+    // sidekick event: quiet advisory note (rendered as an inline chip, never
+    // dispatched as a notification - decision Q3).
+    eventSource.addEventListener('sidekick', (e) => {
+      try {
+        const note = parseSidekickEvent(e.data)
+        if (note) sidekickNotes.value.push(note)
+      } catch {
+        // ignore parse errors
+      }
+    })
+  }
+
+  // addNote appends a locally-generated sidekick chip (usage hints, API
+  // errors). Quiet by construction - no toast/notification path exists here.
+  function addNote(severity: string, text: string) {
+    sidekickNotes.value.push({
+      id: `sidekick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      severity,
+      text,
+      timestamp: Date.now(),
+    })
+  }
+
+  // askSidekick sends an explicit question to the sidekick endpoint. The
+  // answer arrives asynchronously as a sidekick SSE event (rendered as a
+  // chip); both turns are persisted server-side under kind "sidekick".
+  async function askSidekick(question: string): Promise<boolean> {
+    const sid = sessionId()
+    if (!sid) return false
+    const q = question.trim()
+    if (!q) {
+      addNote('info', 'Usage: /sidekick <question> - ask the sidekick model a direct question')
+      return false
+    }
+    try {
+      await apiFetch(`/sessions/${sid}/sidekick`, { method: 'POST', body: { question: q } })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'sidekick request failed'
+      addNote('warning', `sidekick unavailable: ${msg}`)
+      return false
+    }
+
+    // The answer (or its error) arrives over SSE. The stream closes after a
+    // run completes, so asking cold would drop the reply into the void -
+    // publishBytes discards events when a session has no subscribers. Open
+    // the stream before waiting, mirroring sendMessage.
+    if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
+      connect(sid)
+    }
+
+    // Immediate acknowledgment: the 202 returns instantly while the model
+    // call takes seconds.
+    addNote('info', 'sidekick is thinking...')
+    return true
+  }
+
+  // pushSidekickNote lets view code surface persisted sidekick records when
+  // reloading session history.
+  function pushSidekickNote(note: SidekickNote) {
+    sidekickNotes.value.push(note)
   }
 
   function scheduleReconnect(sid: string) {
@@ -294,6 +358,7 @@ export function useSSE(sessionId: () => string | null) {
 
   function clearMessages() {
     messages.value = []
+    sidekickNotes.value = []
   }
 
   // Event registration helpers
@@ -345,6 +410,9 @@ export function useSSE(sessionId: () => string | null) {
     isStreaming: readonly(isStreaming),
     connected: readonly(connected),
     lastError: readonly(lastError),
+    sidekickNotes: readonly(sidekickNotes),
+    askSidekick,
+    pushSidekickNote,
     sendMessage,
     clearMessages,
     connect,
