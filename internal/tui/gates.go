@@ -181,6 +181,16 @@ func (m *AppModel) CronJobEvent(status, jobID, name, summary, outputPath string)
 	}
 }
 
+// SidekickEvent pushes a sidekick advisory note to the TUI.
+func (m *AppModel) SidekickEvent(sessionID, severity, text string) {
+	if m.program != nil {
+		m.program.Send(SidekickMsg{
+			Severity: severity,
+			Text:     text,
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Exported constructors
 // ---------------------------------------------------------------------------

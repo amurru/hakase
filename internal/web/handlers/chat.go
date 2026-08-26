@@ -18,6 +18,7 @@ import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
+	hakasesidekick "amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/web/sse"
 
 	"github.com/go-chi/chi/v5"
@@ -198,6 +199,7 @@ type ChatAPI struct {
 	sessionSvc *hakasesession.SessionService
 	runner     *runner.Runner
 	runtime    *hakaseagent.Runtime
+	history    *hctx.HistoryBuilder
 
 	semMu         sync.Mutex
 	runSemaphores map[string]*sessionSem
@@ -211,17 +213,174 @@ type ChatRouter interface {
 
 // RegisterChatRoutes registers chat-related API routes on the given router.
 // Routes are relative to /api (the caller places them inside the /api group).
-func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakasesession.SessionService, runner *runner.Runner, runtime *hakaseagent.Runtime) {
+func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakasesession.SessionService, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder) {
 	api := &ChatAPI{
 		bridge:        bridge,
 		sessionSvc:    sessionSvc,
 		runner:        runner,
 		runtime:       runtime,
+		history:       history,
 		runSemaphores: make(map[string]*sessionSem),
 	}
 
 	r.Post("/sessions/{id}/messages", api.PostMessage)
 	r.Get("/sessions/{id}/stream", api.StreamSSE)
+	r.Post("/sessions/{id}/sidekick", api.PostSidekick)
+	r.Post("/sessions/{id}/compact", api.PostCompact)
+}
+
+// PostSidekick handles POST /api/sessions/{id}/sidekick.
+// It asks the configured sidekick model a direct question and streams the
+// answer back as a sidekick SSE event (mirroring the TUI /sidekick command).
+// The sidekick runs independently of the main agent and does not disturb the
+// current conversation. When the sidekick is disabled or no question is
+// supplied, it responds with a clear JSON error (no SSE stream is opened).
+func (api *ChatAPI) PostSidekick(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+
+	var req struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	question := strings.TrimSpace(req.Question)
+	if question == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "question required"})
+		return
+	}
+
+	if api.runtime == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sidekick unavailable"})
+		return
+	}
+	sk := api.runtime.Sidekick()
+	if sk == nil || !sk.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sidekick is not enabled"})
+		return
+	}
+
+	// Run the sidekick Ask asynchronously so the HTTP handler returns promptly;
+	// the answer is pushed as a sidekick SSE event when it lands. Use a
+	// detached context: the request context is cancelled the moment the 202 is
+	// written, which would abort the Ask before it completes.
+	sem := api.getOrCreateSem(sessionID)
+	if !sem.acquire(2) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many concurrent requests for this session"})
+		return
+	}
+	go func() {
+		defer sem.release()
+		// Persist the exchange under kind "sidekick" so sessions/<id>.json
+		// records provenance: question as a tagged user turn, answer with
+		// role "sidekick" (same shape as watchdog notes).
+		var skStore hakasesidekick.TranscriptStore
+		if api.sessionSvc != nil {
+			skStore = api.sessionSvc.Store()
+		}
+
+		// Give on-demand asks conversational context: frame the question
+		// with the recent in-session transcript (same budget the watchdog
+		// uses), BEFORE recording this turn so it is not duplicated.
+		prompt := question
+		if skStore != nil {
+			if sess, err := skStore.Load(sessionID); err == nil && sess != nil {
+				prompt = hakasesidekick.BuildAskPrompt(
+					hakasesidekick.RecentTranscript(sess, sk.TranscriptWindow()),
+					question,
+				)
+			}
+		}
+		hakasesidekick.RecordQuestion(skStore, sessionID, question)
+
+		answer, err := sk.Ask(context.Background(), prompt)
+		if err != nil {
+			// Persist the failure too: with no SSE subscriber connected the
+			// warning below would be dropped, leaving the recorded question
+			// permanently unanswered in sessions/<id>.json.
+			hakasesidekick.RecordAnswer(skStore, sessionID, "[sidekick error] "+err.Error())
+			if api.bridge != nil {
+				api.bridge.SendSidekick(sessionID, "warning", "sidekick error: "+err.Error())
+			}
+			return
+		}
+		hakasesidekick.RecordAnswer(skStore, sessionID, answer)
+		if api.bridge != nil {
+			api.bridge.SendSidekick(sessionID, "info", answer)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":     "accepted",
+		"session_id": sessionID,
+	})
+}
+
+// PostCompact handles POST /api/sessions/{id}/compact with an optional
+// {"focus": "..."} body. It mirrors the TUI /compact command: a deterministic
+// history snip runs immediately (last 2 user turns are always kept) and the
+// async LLM summary is scheduled on the shared HistoryBuilder. Refuses while
+// an agent run is active for this session, matching TUI behavior.
+func (api *ChatAPI) PostCompact(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	if api.history == nil || api.sessionSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "compaction unavailable"})
+		return
+	}
+
+	var req struct {
+		Focus string `json:"focus"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // optional body; focus may be empty
+	}
+
+	// Refuse mid-run compaction: mutating InContext flags while the history
+	// builder iterates the same session would race with the live agent.
+	api.semMu.Lock()
+	sem := api.runSemaphores[sessionID]
+	api.semMu.Unlock()
+	if sem != nil {
+		sem.mu.Lock()
+		busy := sem.counter > 0
+		sem.mu.Unlock()
+		if busy {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "cannot compact while the agent is working"})
+			return
+		}
+	}
+
+	store := api.sessionSvc.Store()
+	sess, err := store.Load(sessionID)
+	if err != nil || sess == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if len(sess.Messages) == 0 {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "nothing_to_compact"})
+		return
+	}
+
+	api.history.StageBSnip(sess, nil, "", 0, 8000, 0)
+	if err := store.Save(sess); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save compacted session"})
+		return
+	}
+	api.history.ScheduleSummarize(sessionID, strings.TrimSpace(req.Focus))
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "accepted",
+		"summary": "generating",
+	})
 }
 
 // chatSessionID extracts the {id} URL parameter from the request.
@@ -254,7 +413,7 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content     string                `json:"content"`
+		Content     string               `json:"content"`
 		Attachments []incomingAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -353,12 +512,12 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 
 	runCtx := ctx
 	msg := content
-	
+
 	// Generate task ID once before the retry loop so all repair attempts
 	// preserve the same session context
 	taskID := hakasesession.GenerateTaskID()
-	
-	outer:
+
+outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
 		for ev, err := range api.runner.Run(runCtx, "user-1", taskID, msg, adkagent.RunConfig{}) {

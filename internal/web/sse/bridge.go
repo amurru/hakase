@@ -234,6 +234,20 @@ func (b *EventBridge) CronJobEvent(status, jobID, name, summary, outputPath stri
 	b.SendCron("", jobID, name, status, summary, outputPath)
 }
 
+// SidekickEvent pushes a sidekick advisory note to SSE subscribers.
+func (b *EventBridge) SidekickEvent(sessionID, severity, text string) {
+	b.SendSidekick(sessionID, severity, text)
+}
+
+// SendSidekick sends a sidekick advisory note event.
+func (b *EventBridge) SendSidekick(sessionID, severity, text string) {
+	payload, _ := json.Marshal(map[string]string{
+		"severity": severity,
+		"text":     text,
+	})
+	b.publishBytes(sessionID, formatSSE("sidekick", payload))
+}
+
 // ---------------------------------------------------------------------------
 // SSE format helpers
 // ---------------------------------------------------------------------------

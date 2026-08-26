@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { Send, Paperclip } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import AttachmentPicker, { type FileAttachment } from './AttachmentPicker.vue'
+import { suggestCommands, type SlashCommand } from '@/lib/slash'
 
 const emit = defineEmits<{
   send: [content: string, attachments?: FileAttachment[]]
@@ -17,6 +18,34 @@ const content = ref('')
 const attachments = ref<FileAttachment[]>([])
 const pickerRef = ref<InstanceType<typeof AttachmentPicker> | null>(null)
 
+// --- Slash command palette -------------------------------------------------
+// Visible only while the value is exactly "/<token>" (no space yet), so a
+// completion to "/name " naturally closes it and the next Enter sends.
+const activeIdx = ref(0)
+const dismissed = ref(false)
+const suggestions = computed(() => suggestCommands(content.value))
+const showPalette = computed(() => !dismissed.value && suggestions.value.length > 0)
+
+function resetPalette() {
+  activeIdx.value = 0
+  dismissed.value = false
+}
+
+function completeCommand(cmd: SlashCommand) {
+  content.value = `/${cmd.name} `
+  dismissed.value = true
+  nextTick(() => {
+    autoResize()
+    textareaRef.value?.focus()
+  })
+}
+
+function onPaletteMousedown(e: MouseEvent, cmd: SlashCommand) {
+  e.preventDefault() // keep textarea focus
+  completeCommand(cmd)
+}
+// ---------------------------------------------------------------------------
+
 function autoResize() {
   const el = textareaRef.value
   if (!el) return
@@ -26,6 +55,30 @@ function autoResize() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // Palette navigation takes precedence while open.
+  if (showPalette.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      activeIdx.value = (activeIdx.value + 1) % suggestions.value.length
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      activeIdx.value = (activeIdx.value - 1 + suggestions.value.length) % suggestions.value.length
+      return
+    }
+    if (e.key === 'Tab' || e.key === 'Enter') {
+      e.preventDefault()
+      completeCommand(suggestions.value[activeIdx.value]!)
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      dismissed.value = true
+      return
+    }
+  }
+
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     handleSend()
@@ -105,17 +158,41 @@ onMounted(() => {
       >
         <Paperclip class="h-4 w-4" />
       </Button>
-      <textarea
-        ref="textareaRef"
-        v-model="content"
-        placeholder="Type a message..."
-        rows="1"
-        class="flex-1 resize-none rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-        :disabled="disabled"
-        @input="autoResize"
-        @keydown="handleKeydown"
-        @paste="handlePaste"
-      />
+      <div class="relative flex-1">
+        <!-- Slash command palette -->
+        <ul
+          v-if="showPalette"
+          class="absolute bottom-full left-0 right-0 z-10 mb-2 max-h-64 overflow-y-auto rounded-xl border border-border bg-popover py-1 shadow-lg"
+          role="listbox"
+          aria-label="Slash commands"
+        >
+          <li
+            v-for="(cmd, i) in suggestions"
+            :key="cmd.name"
+            role="option"
+            :aria-selected="i === activeIdx"
+            class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-sm"
+            :class="i === activeIdx ? 'bg-accent text-accent-foreground' : 'text-foreground'"
+            @mousedown="onPaletteMousedown($event, cmd)"
+            @mousemove="activeIdx = i"
+          >
+            <span class="font-mono font-medium">/{{ cmd.name }}</span>
+            <span v-if="cmd.args" class="font-mono text-[11px] text-muted-foreground">{{ cmd.args }}</span>
+            <span class="ml-auto truncate pl-2 text-[11px] text-muted-foreground">{{ cmd.description }}</span>
+          </li>
+        </ul>
+        <textarea
+          ref="textareaRef"
+          v-model="content"
+          placeholder="Type a message... / for commands"
+          rows="1"
+          class="w-full resize-none rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
+          :disabled="disabled"
+          @input="autoResize(); resetPalette()"
+          @keydown="handleKeydown"
+          @paste="handlePaste"
+        />
+      </div>
       <Button
         size="icon"
         class="h-10 w-10 shrink-0 rounded-xl"
@@ -127,7 +204,7 @@ onMounted(() => {
     </div>
 
     <p class="mt-1.5 text-[11px] text-muted-foreground/50">
-      Enter to send, Shift+Enter for newline, @ to attach files, Ctrl+V to paste images
+      Enter to send, Shift+Enter for newline, / for commands, @ to attach files, Ctrl+V to paste images
     </p>
   </div>
 </template>

@@ -21,6 +21,10 @@ const (
 	MessageKindToolCall   = "tool_call"
 	MessageKindToolResult = "tool_result"
 	MessageKindSummary    = "summary"
+	// MessageKindSidekick marks advisory notes surfaced by the sidekick
+	// watchdog. They are persisted in-context so the orchestrator sees them
+	// across turns (per spec NotesInContext).
+	MessageKindSidekick = "sidekick"
 )
 
 // Session represents a user chat session — a persistent conversation

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
 	"amurru/hakase/internal/web/sse"
@@ -25,6 +26,7 @@ type Server struct {
 	bridge  *sse.EventBridge
 	runner  *runner.Runner
 	runtime *hakaseagent.Runtime
+	history *hctx.HistoryBuilder
 
 	// Gate dependencies (optional - set before RegisterDefaults to enable approval/clarify routes).
 	approvalGate *handlers.WebApprovalGate
@@ -55,6 +57,14 @@ func (s *Server) SetChatDeps(bridge *sse.EventBridge, runner *runner.Runner, run
 	s.runtime = runtime
 }
 
+// SetHistoryBuilder configures the shared context HistoryBuilder used by the
+// /compact endpoint (same instance the agent uses for budget math). Must be
+// called before RegisterDefaults; optional - compaction is unavailable when
+// unset.
+func (s *Server) SetHistoryBuilder(h *hctx.HistoryBuilder) {
+	s.history = h
+}
+
 // SetGates configures the web-based approval and clarify gates for interactive
 // endpoints. Must be called before RegisterDefaults. The gates implement the
 // interfaces.ApprovalGate and interfaces.ClarifyGate contracts, allowing the
@@ -80,7 +90,7 @@ func (s *Server) Router() chi.Router {
 // and SPA handler. assets is the filesystem providing the frontend assets.
 // Pass nil for API-only mode (hakase serve) - the SPA catch-all is skipped.
 func (s *Server) RegisterDefaults(assets http.FileSystem) {
-	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.approvalGate, s.clarifyGate, s.allowInsecureCookie)
+	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.history, s.approvalGate, s.clarifyGate, s.allowInsecureCookie)
 }
 
 // Run starts the HTTP server on the given address and blocks until

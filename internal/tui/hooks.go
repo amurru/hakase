@@ -27,3 +27,16 @@ var RunBoardCommand func(m *AppModel, args string) tea.Cmd
 // RunMCPCommand is the slash command handler for /mcp, wired by root's
 // mcp_slash.go.
 var RunMCPCommand func(m *AppModel, args string) tea.Cmd
+
+// RunSidekickCommand is the slash command handler for /sidekick, wired by
+// root's slash_commands.go. It offloads a direct question to the sidekick
+// model and surfaces the answer as a chat message.
+var RunSidekickCommand func(m *AppModel, args string) tea.Cmd
+
+// SidekickBeginRun resets the sidekick's per-run watchdog state at the start
+// of an agent run. Wired by root's main.go; nil-safe.
+var SidekickBeginRun func()
+
+// SidekickEndRun clears the sidekick's per-run watchdog state when an agent
+// run finishes. Wired by root's main.go; nil-safe.
+var SidekickEndRun func()

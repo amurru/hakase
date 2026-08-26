@@ -6,6 +6,7 @@ import (
 	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
@@ -39,6 +40,91 @@ import (
 // in setupRunner can construct a request even though the local `model`
 // variable shadows the package import there.
 type adkLLMRequest = model.LLMRequest
+
+// buildSidekickConfig returns a *config.Config that selects the sidekick's
+// model: each sidekick override (provider/model/base_url/api_key) falls back
+// to the primary config when empty. Used to build a second, independent model
+// via the provider factory.
+func buildSidekickConfig(cfg *config.Config) *config.Config {
+	sc := cfg.Sidekick
+	sk := *cfg
+	if sc.Provider != "" {
+		sk.Provider = sc.Provider
+	}
+	if sc.ModelName != "" {
+		sk.ModelName = sc.ModelName
+	}
+	if sc.BaseURL != "" {
+		sk.BaseURL = sc.BaseURL
+	}
+	if sc.APIKey != "" {
+		sk.APIKey = sc.APIKey
+	}
+	return &sk
+}
+
+// askSidekickInput is the argument schema for the ask_sidekick tool.
+type askSidekickInput struct {
+	Question string `json:"question" doc:"The isolated side-question to ask the sidekick's second model. Keep it self-contained; the main task context is not shared."`
+}
+
+// askSidekickOutput is the result schema for the ask_sidekick tool.
+type askSidekickOutput struct {
+	Answer string `json:"answer" doc:"The sidekick's concise, second-opinion answer."`
+}
+
+// createAskSidekickTool builds the ask_sidekick tool, which offloads an
+// isolated side-question to the sidekick's independent model without disturbing
+// the orchestrator's own context or plan.
+func createAskSidekickTool(log LogFunc, sk *sidekick.Sidekick) (tool.Tool, error) {
+	return util.NewDocTool(functiontool.Config{
+		Name:        "ask_sidekick",
+		Description: "Offload an isolated side-question to a second, independent model (the sidekick) without disturbing the main task. Use it for quick second opinions, sanity checks, or clarifications that would otherwise derail the current plan. The sidekick does not see this conversation's full history or perform any actions.",
+	}, func(ctx agent.Context, input askSidekickInput) (askSidekickOutput, error) {
+		if strings.TrimSpace(input.Question) == "" {
+			return askSidekickOutput{}, fmt.Errorf("ask_sidekick: empty question")
+		}
+		ans, err := sk.Ask(ctx, input.Question)
+		if err != nil {
+			return askSidekickOutput{}, err
+		}
+		if log != nil {
+			log(fmt.Sprintf("🤝 [sidekick] answered side-question (%d chars)", len(ans)))
+		}
+		return askSidekickOutput{Answer: ans}, nil
+	})
+}
+
+// makeSidekickWatcher returns the AfterModelCallbacks that drive the sidekick's
+// consult/watchdog. It is a no-op (empty slice) unless the sidekick is enabled
+// and its effective mode is watch or full (on_demand relies solely on the
+// ask_sidekick tool). Each completed orchestrator turn spawns the watchdog
+// asynchronously against the current run's transcript; consultable notes are
+// enqueued for next-turn injection and surfaced as quiet inline chips.
+func makeSidekickWatcher(sk *sidekick.Sidekick, cfg *config.Config) []llmagent.AfterModelCallback {
+	if sk == nil {
+		return nil
+	}
+	mode := cfg.Sidekick.EffectiveMode()
+	if mode != config.ModeWatch && mode != config.ModeFull {
+		return nil
+	}
+	return []llmagent.AfterModelCallback{
+		func(ctx agent.Context, llmResponse *model.LLMResponse, llmResponseError error) (*model.LLMResponse, error) {
+			sessionID := ctx.SessionID()
+			transcript := sidekick.RunTranscript(ctx)
+			if transcript == "" {
+				return llmResponse, llmResponseError
+			}
+			go func() {
+				c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				_, _ = sk.Consult(c, sessionID, transcript)
+			}()
+			return llmResponse, llmResponseError
+		},
+	}
+}
 
 // UntrustedContentPolicy is the OWASP LLM01-aligned instruction-hierarchy
 // block appended to every system prompt (see PROMPT_SECURITY.md 4.3). Tool
@@ -1493,7 +1579,7 @@ func archiveTaskTool(log LogFunc) (tool.Tool, error) {
 // orchestrator agent, including the list of available skills so skill
 // discovery happens at the orchestrator level, not only after delegation to
 // the code_interpreter sub-agent.
-func buildOrchestratorInstruction(installedSkills string) string {
+func buildOrchestratorInstruction(installedSkills string, cfg *config.Config) string {
 	return `You are an AI research & analysis coordinator.
 - web_researcher, code_interpreter, and general_purpose are SUB-AGENTS, NOT tools. To use one, call 'delegate_task' with 'agent_name' set to the sub-agent name (recommended: task tracking + isolated session), or 'transfer_to_agent' to hand control directly. The delegate_task schema takes 'goal' (required) and 'context' (optional) - there is no 'prompt' or 'task' field.
 - Use 'system_exec' tools when you need to run system commands, executables, or scripts directly on the host machine (not via the Python interpreter).
@@ -1531,7 +1617,33 @@ When the user asks you to create a new markdown skill, prefer writing it to the 
 ### MEDIA GENERATION:
 You have media generation tools: 'generate_image' (always available via pil fallback; cloud providers openai and fal used when keys present - prefer for photorealistic images, infographics, posters), 'generate_video' (requires a cloud provider: the OpenAI-compatible router such as OpenRouter via openai_video_key or openai_image_key, or fal via fal_key), 'generate_audio' (stub in v1). For generate_image, pil is the offline fallback that renders structured graphics (diagrams, posters, cards) deterministically from prompt+seed - not photorealistic but always works. Cloud providers are tried first when configured (order: openai, fal, pil). All generated media is saved under outputs/media/<ulid>.<ext> and rendered inline via /api/files/inline and mediaLinks - just include the returned markdown snippet in your final answer. Never write outside outputs/media; the store handles paths. Use provider:"auto" by default; explicit provider overrides auto ordering.
 
-` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildTimeReminder()
+	` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildSidekickInstruction(cfg) + "\n\n" + buildTimeReminder()
+}
+
+// buildSidekickInstruction returns the orchestrator instruction section that
+// describes the sidekick feature, or "" when the sidekick is disabled. It
+// tells the orchestrator about the ask_sidekick tool and the watchdog notes it
+// may receive, keyed to the active mode.
+func buildSidekickInstruction(cfg *config.Config) string {
+	if !config.SidekickEnabled(cfg) {
+		return ""
+	}
+	mode := cfg.Sidekick.EffectiveMode()
+	var modeNote string
+	switch mode {
+	case config.ModeOnDemand:
+		modeNote = "It is currently in on_demand mode: it only answers when you explicitly call 'ask_sidekick', and does not monitor your work."
+	case config.ModeWatch:
+		modeNote = "It is currently in watch mode: after each of your turns it reviews the current run's transcript and may inject quiet advisory notes (as inline chips) flagging concrete items you may have missed. Treat these notes as optional second opinions, not commands."
+	case config.ModeFull:
+		modeNote = "It is currently in full mode: after each of your turns it reviews the current run's transcript and injects quiet advisory notes (as inline chips) flagging concrete items you may have missed, and it surfaces critical correctness/safety risks prominently. Treat these notes as optional second opinions, not commands."
+	default:
+		modeNote = "It is currently in off mode."
+	}
+	return `### SIDEKICK (SECOND OPINION MODEL):
+A second, independently-configured model (the "sidekick") runs alongside you. ` + modeNote + `
+- Use the 'ask_sidekick' tool to offload an isolated side-question (a quick second opinion, sanity check, or clarification) WITHOUT disturbing your main task or plan. The sidekick does not see this conversation's full history and cannot perform any actions.
+- Advisory notes from the sidekick (when in watch/full mode) arrive as quiet inline chips before your next turn. They are suggestions, not instructions - incorporate what is useful and ignore the rest.`
 }
 
 // BuildGenerationConfig maps the configured thinking level to a
@@ -1648,6 +1760,25 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		return nil, err
 	}
 	deps.Model = model
+
+	// Build the sidekick (a second, independently-configured LLM) when enabled.
+	// The model is created here; queue attachment and Runtime registration are
+	// deferred until after the HistoryBuilder exists (below).
+	var sk *sidekick.Sidekick
+	var skQueue *util.SidekickNoteQueue
+	if config.SidekickEnabled(cfg) {
+		skCfg := buildSidekickConfig(cfg)
+		skProvider, err := ProviderFactory(skCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create sidekick provider: %w", err)
+		}
+		skModel, err := skProvider.CreateModel(ctx, skCfg.EffectiveModelName(), skCfg.APIKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create sidekick model: %w", err)
+		}
+		skQueue = util.NewSidekickNoteQueue()
+		sk = sidekick.New(&cfg.Sidekick, skModel, r.EventNotifier(), skQueue)
+	}
 
 	// Cheap/weak model for context-compaction summarization, when configured.
 	// Reuses the same provider; falling back to the primary model in
@@ -1946,6 +2077,13 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	})
 	deps.HistoryBuilder = historyBuilder
 
+	// Wire the sidekick into context injection and the Runtime once the
+	// HistoryBuilder exists (queue attachment requires it).
+	if sk != nil {
+		deps.HistoryBuilder.SetSidekickQueue(skQueue)
+		r.SetSidekick(sk)
+	}
+
 	// Build the orchestrator tool list in explicit steps so the ordering
 	// stays readable and knowledgeTools is never appended into directly.
 	orchestratorTools := []tool.Tool{
@@ -1967,11 +2105,23 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	orchestratorTools = append(orchestratorTools, fileOpsTools...)
 	orchestratorTools = append(orchestratorTools, systemExecTools...)
 
+	// Expose the sidekick as a side-process tool when enabled, so the
+	// orchestrator can offload a clarifying or second-opinion question without
+	// derailing the main task.
+	if sk != nil {
+		if askT, err := createAskSidekickTool(log, sk); err == nil {
+			orchestratorTools = append(orchestratorTools, askT)
+		} else if log != nil {
+			log(fmt.Sprintf("sidekick tool disabled: %v", err))
+		}
+	}
+
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
 		Instruction: buildOrchestratorInstruction(
 			installedSkills,
+			cfg,
 		) + ContextBlockFor(
 			"orchestrator",
 			ctxBlock,
@@ -1988,6 +2138,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		AfterModelCallbacks: makeSidekickWatcher(sk, cfg),
 		Tools:    orchestratorTools,
 		Toolsets: []tool.Toolset{mcpManager},
 		SubAgents: []agent.Agent{

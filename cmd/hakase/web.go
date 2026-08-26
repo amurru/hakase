@@ -265,6 +265,7 @@ func runServer(args []string, serveSPA bool) int {
 	srv := web.NewServer(jwtKey, sessionSvc)
 	srv.SetAllowInsecureCookie(cfg.Auth.AllowInsecureCookie)
 	srv.SetChatDeps(bridge, runner, runtime)
+	srv.SetHistoryBuilder(deps.HistoryBuilder)
 	srv.SetGates(approvalGate, clarifyGate)
 
 	// Register routes.

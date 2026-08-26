@@ -6,12 +6,14 @@ import { useSessionStore } from '@/stores/session'
 import { useApprovalStore } from '@/stores/approval'
 import { useClarifyStore } from '@/stores/clarify'
 import { useSSE } from '@/composables/useSSE'
+import { sidekickSeverityClass, type SidekickNote } from '@/lib/sidekick'
+import { parseSlashCommand, SLASH_COMMANDS } from '@/lib/slash'
 import { useNotifications } from '@/composables/useNotifications'
 import { apiFetch } from '@/lib/api'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2 } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 
 const route = useRoute()
@@ -29,6 +31,7 @@ const isUserScrolledUp = ref(false)
 // Initialize SSE composable
 const {
   messages,
+  sidekickNotes,
   isStreaming,
   connected,
   sendMessage,
@@ -39,6 +42,10 @@ const {
   onClarifyTimeoutEvent,
   onDelegationEvent,
   onCronEvent,
+  onLogEvent,
+  askSidekick,
+  pushSidekickNote,
+  clearMessages,
 } = useSSE(() => sessionId.value)
 
 // Wire SSE approval/clarify events to their Pinia stores
@@ -51,6 +58,29 @@ onClarifyTimeoutEvent((data) => clarifyStore.handleClarifyTimeout(data))
 const { handleDelegation, handleCron } = useNotifications()
 onDelegationEvent(handleDelegation)
 onCronEvent(handleCron)
+
+// Surface agent-run errors: runAgentTask emits failures as SSE log events
+// prefixed "Error:" (loop-guard aborts, provider errors). Without this
+// handler they reached the browser and were silently discarded, making a
+// dead run look like a hung one. Tool Call/Response log lines stay silent -
+// they are pane chatter, not problems.
+onLogEvent((line) => {
+  if (typeof line === 'string' && line.startsWith('Error:')) {
+    note('warning', line)
+  }
+})
+
+// Map a sidekick severity to its quiet chip icon (no notification).
+const severityIcons: Record<string, unknown> = {
+  info: Info,
+  suggestion: Lightbulb,
+  warning: AlertTriangle,
+  critical: AlertCircle,
+  error: AlertCircle,
+}
+function sidekickIcon(severity: string) {
+  return (severityIcons[severity] ?? Info) as unknown
+}
 
 // Context usage warning (>= 80%)
 const contextWarning = computed(() => {
@@ -105,11 +135,24 @@ watch(
 async function loadSessionHistory(sid: string) {
   isLoadingHistory.value = true
   try {
-    const data = await apiFetch<{ messages?: Array<{ role: string; content: string; thinking?: string }> }>(
+    const data = await apiFetch<{ messages?: Array<{ role: string; content: string; thinking?: string; kind?: string }> }>(
       `/sessions/${sid}`,
     )
     if (data.messages) {
       for (const msg of data.messages) {
+        // Persisted sidekick answers carry role "sidekick" + kind "sidekick";
+        // render them as quiet chips, not chat bubbles. Sidekick questions
+        // are tagged user turns and stay in the normal transcript.
+        if (msg.kind === 'sidekick' && msg.role !== 'user') {
+          const note: SidekickNote = {
+            id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            severity: 'info',
+            text: msg.content,
+            timestamp: Date.now(),
+          }
+          pushSidekickNote(note)
+          continue
+        }
         messages.value.push({
           id: `hist-${Date.now()}-${Math.random()}`,
           role: msg.role === 'user' ? 'user' : 'agent',
@@ -129,6 +172,31 @@ async function loadSessionHistory(sid: string) {
 
 // Handle send message
 async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
+  // Known slash commands route locally - never to the main model. Unknown
+  // "/xyz" tokens fall through as ordinary text (they may be paths).
+  // Parse before session creation so /new and /compact avoid an unnecessary
+  // round-trip to the server.
+  const cmd = parseSlashCommand(content)
+  if (cmd) {
+    // /new and /compact may need a session, but /sidekick does not create one
+    // if one doesn't exist yet. Commands that need a session but don't have
+    // one will create it lazily inside executeSlash.
+    if (!sessionId.value && cmd.name !== 'new' && cmd.name !== 'compact') {
+      // Commands like /help that don't need a session at all
+      await executeSlash(cmd.name, cmd.args)
+      return
+    }
+    messages.value.push({
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content,
+      thinking: '',
+      timestamp: Date.now(),
+    })
+    await executeSlash(cmd.name, cmd.args)
+    return
+  }
+
   // Lazily create a session on the first message so there is a place to
   // persist the conversation and an SSE stream to attach to. Without an id,
   // useSSE.sendMessage bails out silently and the message is dropped.
@@ -157,6 +225,85 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
     })),
   )
   // SSE connection will be started by useSSE.sendMessage
+}
+
+// executeSlash dispatches a recognized slash command. Navigation commands
+// reuse the SPA views; stateful ones act through the API. Feedback uses quiet
+// chips - never toasts.
+async function executeSlash(name: string, args: string) {
+  switch (name) {
+    case 'sidekick':
+      // askSidekick shows a usage chip for empty args and persists nothing
+      // client-side; the backend records both turns under kind "sidekick".
+      await askSidekick(args)
+      return
+    case 'compact':
+      await runCompact(args)
+      return
+    case 'new':
+      await startNewSession()
+      return
+    case 'sessions':
+      router.push('/sessions')
+      return
+    case 'board':
+      router.push('/tasks')
+      return
+    case 'mcp':
+      router.push('/mcp')
+      return
+    case 'help': {
+      const lines = SLASH_COMMANDS.map(
+        (c) => `- \`/${c.name}${c.args ? ` ${c.args}` : ''}\` - ${c.description}`,
+      ).join('\n')
+      messages.value.push({
+        id: `help-${Date.now()}`,
+        role: 'agent',
+        content: `**Available commands**\n\n${lines}`,
+        thinking: '',
+        timestamp: Date.now(),
+      })
+      scrollToBottom()
+      return
+    }
+  }
+}
+
+function note(severity: string, text: string) {
+  pushSidekickNote({ id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, severity, text, timestamp: Date.now() })
+}
+
+async function startNewSession() {
+  const created = await sessionStore.createSession('New Session')
+  if (!created) {
+    note('warning', 'could not create a new session')
+    return
+  }
+  clearMessages()
+  sessionId.value = created.id
+  appStore.setActiveSessionTitle(created.title || 'New Session')
+  router.replace({ path: '/chat', query: { session: created.id } })
+}
+
+async function runCompact(focus: string) {
+  if (!sessionId.value) {
+    note('info', 'nothing to compact yet')
+    return
+  }
+  try {
+    await apiFetch(`/sessions/${sessionId.value}/compact`, {
+      method: 'POST',
+      body: focus ? { focus } : {},
+    })
+    note('info', 'context compacted; summary generating in background')
+    // Reload the session history (which includes the compaction note) before
+    // clearing the in-memory message list so the note persists in the view.
+    clearMessages()
+    await loadSessionHistory(sessionId.value)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'compact failed'
+    note('warning', msg)
+  }
 }
 
 // Initialize on mount
@@ -257,6 +404,19 @@ onMounted(() => {
           :message="msg"
           :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
         />
+      </div>
+
+      <!-- Sidekick advisory notes: quiet inline chips, never notifications -->
+      <div v-if="sidekickNotes.length" class="px-4 pb-3">
+        <div
+          v-for="note in sidekickNotes"
+          :key="note.id"
+          class="mb-1 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"
+          :class="sidekickSeverityClass(note.severity)"
+        >
+          <component :is="sidekickIcon(note.severity)" class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span class="leading-relaxed">{{ note.text }}</span>
+        </div>
       </div>
     </div>
 

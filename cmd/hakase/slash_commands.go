@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"amurru/hakase/internal/agent"
 	mcp "amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/tui"
 
 	tea "charm.land/bubbletea/v2"
@@ -702,6 +704,60 @@ func boardClaim(m *tui.AppModel, args string) tea.Cmd {
 	m.AppendLog(fmt.Sprintf("Claimed task %s by %s", updatedTask.ID, assigneeFlag))
 	m.RefreshTaskBoard()
 	return nil
+}
+
+// =========================================================================
+// /sidekick command (SK-008)
+// =========================================================================
+
+// runSidekickCommand handles the /sidekick TUI command: ask the configured
+// sidekick model a direct question and surface the answer as its own chat
+// message (quiet inline chip, no notification dispatch). Both the question
+// and the answer are recorded into the active session under kind "sidekick"
+// so sessions/<id>.json carries the provenance of sidekick interactions.
+func runSidekickCommand(m *tui.AppModel, args string, rt *agent.Runtime) tea.Cmd {
+	question := strings.TrimSpace(args)
+	if question == "" {
+		m.AppendLog("Usage: /sidekick <question> — ask the sidekick model a direct question")
+		return nil
+	}
+	sk := rt.Sidekick()
+	if sk == nil || !sk.Enabled() {
+		m.AppendLog("⚠ sidekick is not enabled (set sidekick.enabled in config.json)")
+		return nil
+	}
+
+	// Best-effort audit trail against the open session (nil-safe).
+	var skStore sidekick.TranscriptStore
+	var sid string
+	if svc := m.SessionService(); svc != nil {
+		skStore = svc.Store()
+		sid = svc.ActiveSessionID()
+	}
+
+	// Frame the question with recent session history (same budget as the
+	// watchdog), BEFORE recording this turn so it is not duplicated.
+	prompt := question
+	if skStore != nil && sid != "" {
+		if sess, err := skStore.Load(sid); err == nil && sess != nil {
+			prompt = sidekick.BuildAskPrompt(
+				sidekick.RecentTranscript(sess, sk.TranscriptWindow()),
+				question,
+			)
+		}
+	}
+	sidekick.RecordQuestion(skStore, sid, question)
+
+	// Run the sidekick Ask asynchronously so the TUI stays responsive.
+	return func() tea.Msg {
+		answer, err := sk.Ask(context.Background(), prompt)
+		if err != nil {
+			sidekick.RecordAnswer(skStore, sid, "[sidekick error] "+err.Error())
+			return tui.SidekickAnswerMsg{SessionID: sid, Err: err, Question: question}
+		}
+		sidekick.RecordAnswer(skStore, sid, answer)
+		return tui.SidekickAnswerMsg{SessionID: sid, Answer: answer, Question: question}
+	}
 }
 
 func prioritySymbol(p agent.TaskPriority) string {

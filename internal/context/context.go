@@ -29,7 +29,8 @@ type HistoryBuilder struct {
 	modelInfo   *interfaces.ModelInfo // guarded by modelInfoMu
 	modelInfoMu sync.RWMutex
 	logf        func(format string, args ...any)
-	pending     *util.PendingQueue // mid-run steering queue (may be nil)
+	pending     *util.PendingQueue      // mid-run steering queue (may be nil)
+	sidekick    *util.SidekickNoteQueue // sidekick advisory notes (may be nil)
 }
 
 // NewHistoryBuilder creates a HistoryBuilder bound to the given session
@@ -42,6 +43,13 @@ func NewHistoryBuilder(svc *sesspkg.SessionService) *HistoryBuilder {
 // are steered into the request on every model call. May be nil (no steering).
 func (h *HistoryBuilder) SetPendingQueue(q *util.PendingQueue) {
 	h.pending = q
+}
+
+// SetSidekickQueue attaches the sidekick's advisory-note queue so notes
+// produced by the watchdog are injected into the next model call. May be nil
+// (no sidekick).
+func (h *HistoryBuilder) SetSidekickQueue(q *util.SidekickNoteQueue) {
+	h.sidekick = q
 }
 
 // SetModelInfo updates the model capabilities used for budget decisions.
@@ -136,6 +144,24 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 			req.Contents = append(req.Contents, util.SteeringContent(q))
 		}
 	}
+
+	// Inject sidekick advisory notes (watchdog) as a user-role reminder so the
+	// model reviews them before responding. Notes are also persisted to the
+	// session (InContext) so they remain visible across turns (NotesInContext).
+	if h.sidekick != nil && h.sidekick.Len() > 0 && session != nil {
+		var sb strings.Builder
+		sb.WriteString("SIDEKICK ADVISORY NOTES — review these before responding:")
+		for _, n := range h.sidekick.Pending() {
+			sb.WriteString(fmt.Sprintf("\n- [%s] %s", n.Severity, n.Text))
+			session.AddMessageWithMeta("sidekick", n.Text, "", 0, sesspkg.MessageKindSidekick)
+		}
+		req.Contents = append(req.Contents, genai.NewContentFromText(sb.String(), genai.RoleUser))
+		// Persist sidekick notes so they survive a crash before the next
+		// natural save point.
+		if h.svc != nil {
+			_ = h.svc.SaveSession(session)
+		}
+	}
 	return nil, nil
 }
 
@@ -197,6 +223,12 @@ func MessageToContent(msg sesspkg.Message) *genai.Content {
 	role := genai.Role(msg.Role)
 	if msg.Role == "agent" {
 		role = genai.RoleModel
+	}
+	if msg.Role == "sidekick" {
+		// Advisory notes are authored content from a second LLM; surface them
+		// to the model as user-role context so they are not mistaken for the
+		// primary assistant's own output.
+		role = genai.RoleUser
 	}
 	if len(msg.Attachments) == 0 {
 		return genai.NewContentFromText(WrapUntrustedData(msg.Content), role)

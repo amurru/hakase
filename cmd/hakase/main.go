@@ -175,6 +175,19 @@ func runTUI() {
 	tui.CurrentHistoryBuilder = deps.HistoryBuilder
 	tui.RunBoardCommand = runBoardCommand
 	tui.RunMCPCommand = runMCPCommand
+	tui.RunSidekickCommand = func(m *tui.AppModel, args string) tea.Cmd {
+		return runSidekickCommand(m, args, runtime)
+	}
+	tui.SidekickBeginRun = func() {
+		if sk := runtime.Sidekick(); sk != nil {
+			sk.BeginRun()
+		}
+	}
+	tui.SidekickEndRun = func() {
+		if sk := runtime.Sidekick(); sk != nil {
+			sk.EndRun()
+		}
+	}
 
 	// Fatal shutdown path: release Herdr authority immediately before exiting.
 	// The deferred release handles normal exits, but log.Fatalf bypasses defer.
@@ -201,6 +214,15 @@ func runTUI() {
 	runtime.SetApprovalGate(&m)
 	runtime.SetClarifyGate(&m)
 	runtime.SetEventNotifier(&m)
+
+	// Wire the event notifier into the sidekick after the TUI model
+	// exists. The sidekick is created during SetupRunner before the
+	// tea.Program (and thus before the TUI model), so SetNotifier
+	// must be called here to avoid nil-notifier drops on sidekick
+	// events.
+	if sk := runtime.Sidekick(); sk != nil {
+		sk.SetNotifier(&m)
+	}
 
 	// Share the TUI's mid-run message queue with the HistoryBuilder so
 	// prompts typed while the agent is busy are steered into the running

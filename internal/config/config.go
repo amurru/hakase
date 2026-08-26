@@ -206,6 +206,11 @@ type Config struct {
 	SearchExpansion bool `json:"search_expansion,omitempty"`
 	// Media configures pluggable media generation (image/video/audio).
 	Media MediaConfig `json:"media,omitempty"`
+	// Sidekick tunes the optional second-LLM "sidekick" agent (side-process
+	// and/or watchdog). Absent/zero values fall back to sidekick defaults
+	// (see SidekickConfig). Disabling requires only enabled:false or an empty
+	// model_name.
+	Sidekick SidekickConfig `json:"sidekick,omitempty"`
 }
 
 // MediaConfig configures pluggable media generation providers.
@@ -232,6 +237,149 @@ type MediaConfig struct {
 	OpenAIVideoBaseURL    string `json:"openai_video_base_url,omitempty"`
 	OpenAIVideoModel      string `json:"openai_video_model,omitempty"`
 	OpenAIVideoResolution string `json:"openai_video_resolution,omitempty"`
+}
+
+// SidekickConfig tunes the optional "sidekick" agent: a second, independently
+// configured LLM that runs alongside the primary orchestrator. It has two
+// capabilities: a side-process (user-initiated ask_sidekick tool + /sidekick
+// command) and a consult/watchdog (observes the current run and injects quiet
+// advisory notes). See docs/sidekick-agent/. Absent/zero values fall back to
+// the defaults in the accessors below, so disabling requires only enabled:false
+// or an empty model_name.
+type SidekickConfig struct {
+	// Enabled toggles the whole sidekick feature. nil/absent = disabled, which
+	// keeps the default (off) and avoids starting any sidekick model. A
+	// pointer keeps "absent" distinguishable from "false".
+	Enabled *bool `json:"enabled,omitempty"`
+	// Mode selects the sidekick behavior: "off" (default when disabled or unset),
+	// "on_demand" (side-process only, no watchdog), "watch" (watchdog only, no
+	// side-process), "full" (both). Empty when enabled falls back to "on_demand"
+	// per the Phase 0 decision (Q1).
+	Mode string `json:"mode,omitempty"`
+	// Provider is the sidekick LLM provider: "gemini", "openai", or
+	// "openai-compatible". Empty = reuse the primary provider (mirrors vision).
+	Provider string `json:"provider,omitempty"`
+	// ModelName names the sidekick model. Empty = provider default (and the
+	// feature is forced off, because the sidekick cannot run without a model).
+	ModelName string `json:"model_name,omitempty"`
+	// BaseURL optionally overrides the endpoint for the sidekick model.
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKey optionally overrides the API key for the sidekick model.
+	APIKey string `json:"api_key,omitempty"`
+	// EvaluateDebounceSeconds spaces watchdog evaluations during a run.
+	// 0 uses defaultSidekickDebounceSeconds (20).
+	EvaluateDebounceSeconds int `json:"evaluate_debounce_seconds,omitempty"`
+	// MaxEvaluationsPerRun caps watchdog evaluations per run (anti-runaway).
+	// 0 uses defaultSidekickMaxEvals (5).
+	MaxEvaluationsPerRun int `json:"max_evaluations_per_run,omitempty"`
+	// MaxNotesPerTurn caps advisory notes emitted per watchdog turn.
+	// 0 uses defaultSidekickMaxNotes (2).
+	MaxNotesPerTurn int `json:"max_notes_per_turn,omitempty"`
+	// MaxNoteChars caps each advisory note's rendered length. 0 uses
+	// defaultSidekickNoteChars (1200).
+	MaxNoteChars int `json:"max_note_chars,omitempty"`
+	// TranscriptWindowChars bounds the run-transcript text sent to the
+	// watchdog. 0 uses defaultSidekickWindow (6000).
+	TranscriptWindowChars int `json:"transcript_window_chars,omitempty"`
+}
+
+// Sidekick default constants.
+const (
+	defaultSidekickDebounceSeconds = 20
+	defaultSidekickMaxEvals        = 5
+	defaultSidekickMaxNotes        = 2
+	defaultSidekickNoteChars       = 1200
+	defaultSidekickWindow          = 6000
+)
+
+// Sidekick mode constants.
+const (
+	ModeOff       = "off"       // disabled
+	ModeOnDemand  = "on_demand" // ask_sidekick only (default when enabled)
+	ModeWatch     = "watch"     // watchdog consults, notes injected into context
+	ModeFull      = "full"      // watch + orchestrator told to act on notes
+)
+
+// validSidekickModes is the set of recognized Mode values.
+var validSidekickModes = map[string]bool{
+	ModeOff:       true,
+	ModeOnDemand:  true,
+	ModeWatch:     true,
+	ModeFull:      true,
+}
+
+// ApplyDefaults fills zero values with sidekick defaults. Call after load.
+func (c *SidekickConfig) ApplyDefaults() {
+	if c.EvaluateDebounceSeconds <= 0 {
+		c.EvaluateDebounceSeconds = defaultSidekickDebounceSeconds
+	}
+	if c.MaxEvaluationsPerRun <= 0 {
+		c.MaxEvaluationsPerRun = defaultSidekickMaxEvals
+	}
+	if c.MaxNotesPerTurn <= 0 {
+		c.MaxNotesPerTurn = defaultSidekickMaxNotes
+	}
+	if c.MaxNoteChars <= 0 {
+		c.MaxNoteChars = defaultSidekickNoteChars
+	}
+	if c.TranscriptWindowChars <= 0 {
+		c.TranscriptWindowChars = defaultSidekickWindow
+	}
+}
+
+// EffectiveMode computes the active sidekick mode from the config, honoring
+// the Phase 0 decision (Q1): disabled OR empty model_name forces "off"; an
+// empty mode on an enabled-with-model config falls back to "on_demand"; an
+// unrecognized mode falls back to "off".
+func (c *SidekickConfig) EffectiveMode() string {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return "off"
+	}
+	if strings.TrimSpace(c.ModelName) == "" {
+		return "off"
+	}
+	mode := strings.TrimSpace(c.Mode)
+	if mode == "" {
+		return "on_demand"
+	}
+	if !validSidekickModes[mode] {
+		return "off"
+	}
+	return mode
+}
+
+// EnabledWithModel reports whether the sidekick is both enabled and has a model
+// (i.e. EffectiveMode() != "off").
+func (c *SidekickConfig) EnabledWithModel() bool {
+	return c.EffectiveMode() != "off"
+}
+
+// Validate checks SidekickConfig for valid values. It only errors when the
+// feature is explicitly enabled (per Q1: an enabled config must name a model
+// and a valid mode), so a misconfigured enabled block fails fast rather than
+// silently disabling.
+func (c *SidekickConfig) Validate() error {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.ModelName) == "" {
+		return fmt.Errorf("sidekick: enabled but model_name is empty (set model_name or disable with enabled:false)")
+	}
+	mode := strings.TrimSpace(c.Mode)
+	if mode != "" && !validSidekickModes[mode] {
+		return fmt.Errorf("sidekick: invalid mode %q: must be one of off, on_demand, watch, full", mode)
+	}
+	switch strings.TrimSpace(c.Provider) {
+	case "", "gemini", "openai", "openai-compatible":
+	default:
+		return fmt.Errorf("sidekick: invalid provider %q: must be gemini, openai, or openai-compatible", c.Provider)
+	}
+	return nil
+}
+
+// SidekickEnabled reports whether the sidekick feature is enabled at all.
+func SidekickEnabled(cfg *Config) bool {
+	return cfg != nil && cfg.Sidekick.EnabledWithModel()
 }
 
 // ApplyDefaults fills zero values with defaults. Call after loading config.
@@ -313,7 +461,13 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_MEDIA_IMAGE_PROVIDER") != "" ||
 		os.Getenv("HAKASE_MEDIA_VIDEO_PROVIDER") != "" ||
 		os.Getenv("HAKASE_MEDIA_OUTPUT_DIR") != "" ||
-		os.Getenv("HAKASE_FAL_KEY") != ""
+		os.Getenv("HAKASE_FAL_KEY") != "" ||
+		os.Getenv("HAKASE_SIDEKICK_ENABLED") != "" ||
+		os.Getenv("HAKASE_SIDEKICK_MODE") != "" ||
+		os.Getenv("HAKASE_SIDEKICK_PROVIDER") != "" ||
+		os.Getenv("HAKASE_SIDEKICK_MODEL") != "" ||
+		os.Getenv("HAKASE_SIDEKICK_BASE_URL") != "" ||
+		os.Getenv("HAKASE_SIDEKICK_API_KEY") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -422,6 +576,31 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_MEDIA_VIDEO_MODEL"); v != "" {
 		cfg.Media.OpenAIVideoModel = v
+	}
+
+	// Sidekick env overrides (mirrors the vision pattern).
+	if v := os.Getenv("HAKASE_SIDEKICK_ENABLED"); v != "" {
+		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		cfg.Sidekick.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_SIDEKICK_MODE"); v != "" {
+		cfg.Sidekick.Mode = v
+	}
+	if v := os.Getenv("HAKASE_SIDEKICK_PROVIDER"); v != "" {
+		cfg.Sidekick.Provider = v
+	}
+	if v := os.Getenv("HAKASE_SIDEKICK_MODEL"); v != "" {
+		cfg.Sidekick.ModelName = v
+	}
+	if v := os.Getenv("HAKASE_SIDEKICK_BASE_URL"); v != "" {
+		cfg.Sidekick.BaseURL = v
+	}
+	if v := os.Getenv("HAKASE_SIDEKICK_API_KEY"); v != "" {
+		cfg.Sidekick.APIKey = v
+	}
+	cfg.Sidekick.ApplyDefaults()
+	if err := cfg.Sidekick.Validate(); err != nil {
+		return nil, err
 	}
 
 	cfg.Media.ApplyDefaults()

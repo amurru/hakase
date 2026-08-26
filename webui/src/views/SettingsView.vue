@@ -696,6 +696,14 @@ onMounted(loadConfig)
                 </div>
               </div>
 
+              <p class="px-1 text-xs leading-relaxed text-muted-foreground">
+                The <span class="font-medium text-foreground">sidekick</span> is a second, independently
+                configured model that can answer direct questions or quietly watch a run. Its requests send
+                conversation excerpts (including tool output) to the configured endpoint. For privacy, point
+                it at a local model via <code>openai-compatible</code> (e.g. Ollama at
+                <code>http://localhost:11434/v1</code>) so nothing leaves your machine.
+              </p>
+
               <div class="grid gap-2 rounded-md border border-border p-3">
                 <div class="flex items-center justify-between gap-2">
                   <div class="flex items-center gap-2">
