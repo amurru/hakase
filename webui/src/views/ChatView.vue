@@ -42,6 +42,7 @@ const {
   onClarifyTimeoutEvent,
   onDelegationEvent,
   onCronEvent,
+  onLogEvent,
   askSidekick,
   pushSidekickNote,
   clearMessages,
@@ -57,6 +58,17 @@ onClarifyTimeoutEvent((data) => clarifyStore.handleClarifyTimeout(data))
 const { handleDelegation, handleCron } = useNotifications()
 onDelegationEvent(handleDelegation)
 onCronEvent(handleCron)
+
+// Surface agent-run errors: runAgentTask emits failures as SSE log events
+// prefixed "Error:" (loop-guard aborts, provider errors). Without this
+// handler they reached the browser and were silently discarded, making a
+// dead run look like a hung one. Tool Call/Response log lines stay silent -
+// they are pane chatter, not problems.
+onLogEvent((line) => {
+  if (typeof line === 'string' && line.startsWith('Error:')) {
+    note('warning', line)
+  }
+})
 
 // Map a sidekick severity to its quiet chip icon (no notification).
 const severityIcons: Record<string, unknown> = {
