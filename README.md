@@ -147,6 +147,14 @@ Type `/` in the input to see a filtered command menu (arrow keys navigate,
 two turns) and schedules an async LLM summary - the same compaction cascade
 used by automatic context management (`summary_model`), exposed manually.
 
+**Slash commands in the web UI too.** Typing `/` in the web chat input opens
+an autocomplete palette (arrow keys navigate, Tab/Enter complete) with the
+same commands except `/exit`, which is terminal-only. `/compact [focus]`
+calls `POST /api/sessions/{id}/compact` on the server; `/sidekick <question>`
+asks the sidekick model; `/new`, `/sessions`, `/board`, and `/mcp` open or
+switch to their SPA views; `/help` lists everything inline. Unknown
+`/tokens` are sent to the agent as ordinary text.
+
 ### File Attachments
 
 Attach files and images to a message without the agent having to find them:
@@ -507,6 +515,23 @@ Hakase ships pluggable `generate_image`, `generate_video` (and stub `generate_au
 
 Configure via the `media` block in `config.json` (all fields optional, defaults shown in `config.json.example`) or env vars `HAKASE_MEDIA_IMAGE_PROVIDER`, `HAKASE_MEDIA_VIDEO_PROVIDER`, `HAKASE_MEDIA_VIDEO_MODEL`, `HAKASE_MEDIA_OUTPUT_DIR`, `HAKASE_FAL_KEY` (house convention is `HAKASE_*` only - `OPENAI_API_KEY`/`FAL_KEY` are not read). See `docs/media-generation/support.md` for the full matrix and troubleshooting.
 
+### 🧑 Sidekick (second model)
+
+The sidekick is a second, independently-configured LLM that runs alongside the main orchestrator. It can answer a direct question (`/sidekick <question>` in the TUI or typed in the web chat) or quietly watch a run and surface advisory notes as quiet inline chips. Every explicit interaction is recorded in `sessions/<id>.json` under `"kind": "sidekick"` - the question as a tagged user turn, the answer with `"role": "sidekick"` - so the session log itself shows which model produced what. It reads the conversation only - it never runs tools or touches the sandbox or workspace.
+
+Modes (`sidekick.mode`):
+
+- `off` - disabled (default).
+- `on_demand` - the sidekick answers direct questions only; no watchdog.
+- `watch` - the sidekick reviews the current run on a debounce and emits advisory notes; no side-process tool.
+- `full` - both on-demand and watchdog behavior.
+
+Enabling `sidekick` without a `mode` defaults to `on_demand` (decision Q1). Advisory notes are quiet inline chips only - there are no toasts, sounds, or notification pings for any severity (decision Q3). On-demand asks are **grounded in the conversation**: the question is framed with a tail-biased transcript of the session's chat turns (bounded by `transcript_window_chars`, default 6000), so follow-ups like "what's your take?" refer to what was actually discussed. Tool call/result transcripts are excluded from that window to keep prompts bounded; the watchdog consult uses the same budget.
+
+**Cost warning:** the sidekick is a separate model, billed like any other request. Watch and full modes add evaluations per run, so a chatty watchdog has a real token cost. Tune `max_evaluations_per_run`, `max_notes_per_turn`, and `evaluate_debounce_seconds` to bound it.
+
+**Privacy:** sidekick requests send conversation excerpts, including tool output, to the configured endpoint. Point it at a local model via `openai-compatible` (for example Ollama at `http://localhost:11434/v1`) so nothing leaves your machine. The web UI Settings view carries the same privacy note. See [Sidekick configuration](#sidekick-configuration) for the full config block.
+
 ---
 
 ## Quick Start
@@ -748,7 +773,25 @@ When `model_name` is empty, the provider's default model is used. `openai-compat
  - `clarify` - Mid-run clarify questions: `expiry_seconds` (auto-dismiss timeout).
  - `auth` - Web server auth tuning: `allow_insecure_cookie` (permit the session cookie without the `Secure` flag on non-loopback plain-HTTP; the `--insecure-cookie` CLI flag overrides it).
  - `thinking_level` - Thinking budget hint for models that support it (editable in the web UI Settings view).
- - `chat_buffer_size` / `show_thinking` / `task_checkpoint` - TUI chat history size, thinking display default, and task checkpointing toggles.
+  - `chat_buffer_size` / `show_thinking` / `task_checkpoint` - TUI chat history size, thinking display default, and task checkpointing toggles.
+
+#### Sidekick configuration
+
+The `sidekick` block in `config.json` configures the second model. All fields are optional; an empty/absent block disables the feature.
+
+- `enabled` - `true` to turn the sidekick on. Pointer-style so "absent" stays distinct from `false`.
+- `mode` - `off` | `on_demand` | `watch` | `full` (default `on_demand` when enabled without a mode).
+- `provider` - `gemini` | `openai` | `openai-compatible`. Empty reuses the primary provider.
+- `model_name` - the sidekick model. Required - without a model the feature is forced off.
+- `base_url` - optional endpoint override for the sidekick model.
+- `api_key` - optional key override for the sidekick model.
+- `evaluate_debounce_seconds` - spacing between watchdog evaluations (default 20).
+- `max_evaluations_per_run` - cap on watchdog evaluations per run (default 5).
+- `max_notes_per_turn` - advisory notes emitted per watchdog turn (default 2).
+- `max_note_chars` - max rendered length of each advisory note (default 1200).
+- `transcript_window_chars` - bounds the run-transcript text sent to the watchdog (default 6000).
+
+Provider resolution mirrors the vision resolver: explicit `provider` wins, else a `base_url` forces `openai-compatible`, else the primary provider is reused. See `config.json.example` for a full template.
 
 #### Environment variables
 

@@ -10,6 +10,11 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Web UI slash-command palette** - typing `/` in the web chat input opens an autocomplete popup (arrow keys navigate, Tab/Enter complete, Esc dismisses) exposing the TUI commands except `/exit`: `/compact [focus]` (new `POST /api/sessions/{id}/compact` endpoint running the same snip + async summary cascade), `/sidekick <question>`, `/new`, `/sessions`, `/board`, `/mcp`, `/help`. Unknown `/tokens` pass through as ordinary text.
+- **Sidekick agent** - a second, independently-configured LLM that answers direct questions (`/sidekick <question>` in the TUI or typed in the web chat) or quietly watches a run and surfaces advisory notes as quiet inline chips. On-demand asks are framed with a bounded recent-conversation transcript (`transcript_window_chars`, tail-biased) so follow-up questions have context. Explicit interactions are persisted to the session file under `"kind": "sidekick"` (answers carry `"role": "sidekick"`) so provenance is auditable. Modes `off` / `on_demand` / `watch` / `full`; no notification dispatch; local `openai-compatible` models keep conversation excerpts on-machine. See the README Sidekick section.
+
 ### Planned
 
 - `generate_audio` implementation (currently a stub wired for v2)
