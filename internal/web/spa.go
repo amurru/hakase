@@ -10,6 +10,7 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
@@ -22,7 +23,7 @@ import (
 // Unauthenticated endpoints (/api/health, /api/login) are registered first,
 // then the auth middleware group wraps the remaining API routes.
 // The SPA catch-all is mounted last.
-func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, allowInsecureCookie bool) {
+func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, allowInsecureCookie bool) {
 	// Middleware applied globally
 	r.Use(CORSMiddleware())
 	r.Use(RequestLogger())
@@ -43,7 +44,7 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		}
 		// Chat (SSE streaming + message endpoint - task 21)
 		if bridge != nil && runner != nil && runtime != nil && sessionSvc != nil {
-			handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime)
+			handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)
 		}
 		// Approval/Clarify response endpoints (task 22)
 		if approvalGate != nil {
