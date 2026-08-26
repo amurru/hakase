@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/skill"
 	"encoding/json"
 	"fmt"
@@ -284,7 +285,7 @@ func TestBuildOrchestratorInstruction(t *testing.T) {
 	}
 
 	installedSkills := getSkillsPrompt(mdSkills, log)
-	instruction := buildOrchestratorInstruction(installedSkills)
+	instruction := buildOrchestratorInstruction(installedSkills, &config.Config{})
 
 	for _, want := range []string{
 		"AVAILABLE PRE-LEARNED SKILLS:",

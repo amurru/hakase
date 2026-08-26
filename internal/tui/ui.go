@@ -67,6 +67,10 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("63"))
 
+	sidekickLabelStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("99"))
+
 	hintBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245")).
 			Padding(0, 1)
@@ -283,6 +287,21 @@ type CronJobMsg struct {
 	Status     string
 	Summary    string
 	OutputPath string
+}
+
+// SidekickMsg represents a sidekick advisory note surfaced from the watchdog.
+// Severity values: "info" | "suggestion" | "warning" | "critical".
+type SidekickMsg struct {
+	Severity string
+	Text     string
+}
+
+// SidekickAnswerMsg carries the answer to an explicit /sidekick question back
+// from the sidekick model into the chat pane.
+type SidekickAnswerMsg struct {
+	Question string
+	Answer   string
+	Err      error
 }
 
 // TaskBoardMsg represents a full task board refresh
@@ -562,6 +581,12 @@ func (m *AppModel) cycleFocus(dir int) {
 	}
 }
 
+// SessionService exposes the active session service so package main slash
+// command handlers can persist sidekick Q&A against the open session.
+func (m *AppModel) SessionService() *session.SessionService {
+	return m.sessionService
+}
+
 // appendLog appends a line to the log pane, keeping the view pinned to the
 // bottom only when the user is already there so reading earlier logs is not
 // disrupted by new entries.
@@ -646,6 +671,18 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
+}
+
+// formatSidekickNote renders a sidekick advisory note for the log pane. It is
+// intentionally quiet (per Phase 0 decision Q3): a single severity-tagged line,
+// no notification, no modal.
+func formatSidekickNote(msg SidekickMsg) string {
+	sev := msg.Severity
+	if sev == "" {
+		sev = "info"
+	}
+	text := truncateRunes(msg.Text, 300)
+	return fmt.Sprintf("[sidekick %s] %s", sev, text)
 }
 
 // appendCronChatNotice puts a system-style cron notice into the chat pane so
@@ -1231,6 +1268,25 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Status == "completed" || msg.Status == "failed" {
 			m.appendCronChatNotice(msg)
 		}
+	case SidekickMsg:
+		// Quiet inline advisory note (per Phase 0 decision Q3): show it in the
+		// log pane only. No notification dispatch, no modal, no run disruption.
+		m.AppendLog(formatSidekickNote(msg))
+	case SidekickAnswerMsg:
+		// Explicit /sidekick question: surface the answer as its own chat
+		// message (quiet inline chip, no notification dispatch).
+		if msg.Err != nil {
+			m.AppendLog(fmt.Sprintf("[sidekick] error: %v", msg.Err))
+			break
+		}
+		m.chatHistory = append(m.chatHistory, ChatMessage{
+			Role:    "sidekick",
+			Content: msg.Answer,
+		})
+		m.streamingThinking = false
+		m.rebuildRenderedLines()
+		m.chatScrollOffset = m.maxChatScrollOffset()
+		m.renderChatViewport()
 	case TaskUpdateMsg:
 		m.RefreshTaskBoard()
 	case TaskBoardMsg:
@@ -1308,6 +1364,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.IsProcessing = false
 		if interrupted {
 			m.AppendLog("Conversation interrupted - tell the model what to do differently.")
+		}
+		if SidekickEndRun != nil {
+			SidekickEndRun()
 		}
 	case clarifyPromptMsg:
 		m.pendingClarify = &msg
@@ -1432,11 +1491,16 @@ func (m *AppModel) quitCmd() tea.Cmd {
 // lines (paragraph breaks) do not show up as separate empty boxes.
 func (m *AppModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	prefix := "🤖 Agent: "
+	labelStyle := agentLabelStyle
 	if msg.Role == "user" {
 		prefix = "👤 User: "
 	}
 	if msg.Role == "system" {
 		prefix = ""
+	}
+	if msg.Role == "sidekick" {
+		prefix = "🤖 Sidekick: "
+		labelStyle = sidekickLabelStyle
 	}
 
 	var lines []string
@@ -1448,8 +1512,8 @@ func (m *AppModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	}
 
 	if strings.TrimSpace(msg.Content) != "" {
-		if msg.Role == "agent" {
-			lines = append(lines, agentLabelStyle.Render(prefix))
+		if msg.Role == "agent" || msg.Role == "sidekick" {
+			lines = append(lines, labelStyle.Render(prefix))
 			mdLines := strings.Split(m.math.RenderMarkdown(msg.Content, wrapWidth, m.mathImages), "\n")
 			lines = append(lines, mdLines...)
 		} else {
@@ -2120,6 +2184,9 @@ func (m *AppModel) launchTurn(text string, attached []attachment) {
 	m.showStartupLogo = false
 	m.runStartHistoryLen = len(m.chatHistory)
 	m.IsProcessing = true
+	if SidekickBeginRun != nil {
+		SidekickBeginRun()
+	}
 	go m.runAgentTask(content, session.GenerateTaskID())
 }
 

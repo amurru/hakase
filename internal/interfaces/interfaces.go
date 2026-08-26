@@ -255,6 +255,10 @@ type EventNotifier interface {
 	// CronJobEvent pushes a cron job lifecycle event to the TUI.
 	// status: "scheduled", "started", "completed", "failed", "silent", "triggered"
 	CronJobEvent(status, jobID, name, summary, outputPath string)
+
+	// SidekickEvent pushes a sidekick advisory note to the TUI.
+	// severity: "info" | "suggestion" | "warning" | "critical"
+	SidekickEvent(sessionID, severity, text string)
 }
 
 // ModelInfoProvider replaces the currentModelInfo pointer global (vision.go:103).

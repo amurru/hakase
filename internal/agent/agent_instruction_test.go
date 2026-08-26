@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"amurru/hakase/internal/config"
 )
 
 // TestOrchestratorInstructionContainsSubAgentGuidance verifies that
@@ -16,7 +18,7 @@ import (
 // web_researcher/code_interpreter/general_purpose are sub-agents (not tools)
 // and that it must use delegate_task/transfer_to_agent to invoke them.
 func TestOrchestratorInstructionContainsSubAgentGuidance(t *testing.T) {
-	instruction := buildOrchestratorInstruction("")
+	instruction := buildOrchestratorInstruction("", &config.Config{})
 
 	for _, want := range []string{
 		"delegate_task",
@@ -85,7 +87,7 @@ func TestSystemPromptHasUntrustedPolicy(t *testing.T) {
 // is present in every agent system prompt that produces output.
 func TestSystemPromptHasMermaidDirective(t *testing.T) {
 	prompts := map[string]string{
-		"orchestrator": buildOrchestratorInstruction(""),
+		"orchestrator": buildOrchestratorInstruction("", &config.Config{}),
 		"web_researcher": HakaseSystemInstruction +
 			ContextBlockFor("web_researcher", "", nil) + "\n\n" +
 			buildTimeReminder() + ContextBlockFor("web_researcher", "", nil),
@@ -147,7 +149,7 @@ INSTALLED SKILLS:
 `
 
 	prompts := map[string]string{
-		"orchestrator": buildOrchestratorInstruction(representativeContext),
+		"orchestrator": buildOrchestratorInstruction(representativeContext, &config.Config{}),
 		"web_researcher": HakaseSystemInstruction +
 			ContextBlockFor("web_researcher", representativeContext, nil) + "\n\n" +
 			buildTimeReminder() + ContextBlockFor("web_researcher", representativeEnv, nil) +

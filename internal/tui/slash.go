@@ -84,6 +84,14 @@ var builtinCommands = []SlashCommand{
 		},
 	},
 	{
+		Name:        "sidekick",
+		Description: "Ask the sidekick model a direct question (a second LLM, independent of the orchestrator)",
+		Usage:       "/sidekick <question>",
+		Run: func(m *AppModel, args string) tea.Cmd {
+			return RunSidekickCommand(m, args)
+		},
+	},
+	{
 		Name:        "exit",
 		Aliases:     []string{"quit"},
 		Description: "Exit hakase",

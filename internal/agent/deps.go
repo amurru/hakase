@@ -9,6 +9,7 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/sidekick"
 	"context"
 	"sync"
 	"time"
@@ -93,6 +94,21 @@ type Runtime struct {
 	clarifyGate   interfaces.ClarifyGate
 	eventNotifier interfaces.EventNotifier
 	modelInfo     interfaces.ModelInfoProvider
+	sidekick      *sidekick.Sidekick
+}
+
+// SetSidekick installs the sidekick (call from SetupRunner after the model is built).
+func (r *Runtime) SetSidekick(s *sidekick.Sidekick) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sidekick = s
+}
+
+// Sidekick returns the configured sidekick, or nil when disabled.
+func (r *Runtime) Sidekick() *sidekick.Sidekick {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sidekick
 }
 
 // SetApprovalGate installs the interactive approval gate (call from main.go).

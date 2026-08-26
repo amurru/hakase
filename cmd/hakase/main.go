@@ -175,6 +175,19 @@ func runTUI() {
 	tui.CurrentHistoryBuilder = deps.HistoryBuilder
 	tui.RunBoardCommand = runBoardCommand
 	tui.RunMCPCommand = runMCPCommand
+	tui.RunSidekickCommand = func(m *tui.AppModel, args string) tea.Cmd {
+		return runSidekickCommand(m, args, runtime)
+	}
+	tui.SidekickBeginRun = func() {
+		if sk := runtime.Sidekick(); sk != nil {
+			sk.BeginRun()
+		}
+	}
+	tui.SidekickEndRun = func() {
+		if sk := runtime.Sidekick(); sk != nil {
+			sk.EndRun()
+		}
+	}
 
 	// Fatal shutdown path: release Herdr authority immediately before exiting.
 	// The deferred release handles normal exits, but log.Fatalf bypasses defer.
