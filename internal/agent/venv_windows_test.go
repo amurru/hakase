@@ -15,6 +15,7 @@ import (
 // evaluated venv path, and pip present in Scripts (pip --version, no
 // network).
 func TestGetVenvPythonWindows(t *testing.T) {
+	isolateHome(t)
 	t.Chdir(t.TempDir())
 
 	py, err := getVenvPython(nil)

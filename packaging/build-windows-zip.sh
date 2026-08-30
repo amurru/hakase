@@ -31,13 +31,11 @@ cp LICENSE "$STAGE/"
 
 (
   cd dist
-  if command -v zip >/dev/null 2>&1; then
-    zip -9 -r "hakase-${VERSION}-windows-amd64.zip" "hakase-${VERSION}-windows-amd64"
-  else
-    # Fallback for environments without zip(1): Go's archive toolchain.
-    go run ./packaging/zipdir "hakase-${VERSION}-windows-amd64.zip" "hakase-${VERSION}-windows-amd64" 2>/dev/null \
-      || { echo "error: zip(1) not available" >&2; exit 1; }
+  if ! command -v zip >/dev/null 2>&1; then
+    echo "error: zip(1) is required to assemble the Windows artifact" >&2
+    exit 1
   fi
+  zip -9 -r "hakase-${VERSION}-windows-amd64.zip" "hakase-${VERSION}-windows-amd64"
 )
 
 echo "built dist/hakase-${VERSION}-windows-amd64.zip"

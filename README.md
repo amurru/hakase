@@ -433,7 +433,7 @@ Search is hardened against pathological trees: `head_limit` defaults to `100` wh
 
 A `system_exec` toolset runs shell commands, scripts, and executables directly on the host machine, with several safety guarantees:
 
-- **Shell routing** — when no `args` are provided the whole command line is passed to `sh -c`, so pipes, redirects, globs, `&&`/`||`, and compound commands work naturally; explicit `(command, args...)` calls keep full control
+- **Shell routing** — when no `args` are provided the whole command line is passed to the platform shell (`sh -c` on Unix, `cmd /D /C` on Windows), so pipes, redirects, and compound commands work naturally; explicit `(command, args...)` calls keep full control
 - **Process hardening** — spawned processes are placed in their own process group with a parent-death signal, so they and their children are reaped if the agent dies
 - **Path confinement (all sandbox modes)** — when the sandbox is active, absolute path arguments in the command line are audited against the sandbox read roots and trusted system dirs (`/usr`, `/lib`, `/bin`, `/etc`, `/proc`, `/dev`, `/sys`, `/tmp`, `/run`); anything else is rejected with an actionable error. This stops whole-filesystem scans like `find / -type d -name skills` from escaping the workspace. Add directories to `sandbox.read_roots` in `config.json` to permit them.
 - **Default timeout** — synchronous `system_exec` kills the command after 120s when `timeout_seconds` is omitted, so a hung command can never block the agent indefinitely. Long-running work should use `system_exec_start` (background) or an explicit `timeout_seconds`.

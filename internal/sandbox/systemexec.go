@@ -539,6 +539,11 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 	if err := checkPathAlias(expanded); err != nil {
 		return fmt.Errorf("command references %q which is rejected: %w", tok, err)
 	}
+	// WIN-005 (Windows): reject cmd.exe expansion tokens - the audit sees
+	// the literal while cmd expands %VAR% to the OS path just before exec.
+	if err := checkShellExpansionAlias(expanded); err != nil {
+		return fmt.Errorf("command references %q which is rejected: %w", tok, err)
+	}
 	if !filepath.IsAbs(expanded) {
 		if relativeBase == "" || !relativeOperandNeedsAudit(expanded) {
 			return nil

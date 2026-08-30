@@ -1011,20 +1011,21 @@ func TestResolveBinaryBase(t *testing.T) {
 		t.Errorf("resolveBinaryBase(python3) = %q, want python3", got)
 	}
 
-	// Path-form names: resolve symlinks.
-	dir := t.TempDir()
-	link := filepath.Join(dir, "myls")
-	if err := os.Symlink("/bin/ls", link); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-	got := resolveBinaryBase(link)
-	if got != "ls" {
-		t.Errorf("resolveBinaryBase(%s) = %q, want ls", link, got)
-	}
-
-	// Symlink to rm (POSIX-only; skipped on Windows).
-	rmLink := filepath.Join(dir, "notrm")
+	// Path-form names: resolve symlinks (POSIX-only; /bin layout and
+	// unprivileged symlink creation are not Windows guarantees).
 	if runtime.GOOS != "windows" {
+		dir := t.TempDir()
+		link := filepath.Join(dir, "myls")
+		if err := os.Symlink("/bin/ls", link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		got := resolveBinaryBase(link)
+		if got != "ls" {
+			t.Errorf("resolveBinaryBase(%s) = %q, want ls", link, got)
+		}
+
+		// Symlink to rm.
+		rmLink := filepath.Join(dir, "notrm")
 		if _, err := os.Stat("/bin/rm"); err == nil {
 			if err := os.Symlink("/bin/rm", rmLink); err != nil {
 				t.Fatalf("symlink rm: %v", err)
@@ -1037,8 +1038,7 @@ func TestResolveBinaryBase(t *testing.T) {
 	}
 
 	// Nonexistent path falls back to basename.
-	got = resolveBinaryBase("/nonexistent/path/foo")
-	if got != "foo" {
+	if got := resolveBinaryBase("/nonexistent/path/foo"); got != "foo" {
 		t.Errorf("resolveBinaryBase(/nonexistent/path/foo) = %q, want foo", got)
 	}
 }

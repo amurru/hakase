@@ -8,6 +8,10 @@ package sandbox
 // expectations stay byte-identical.
 func checkPathAlias(string) error { return nil }
 
+// checkShellExpansionAlias rejects command tokens that a Windows shell would
+// expand (%VAR%, delayed !VAR!) after the audit ran. No-op on Unix.
+func checkShellExpansionAlias(string) error { return nil }
+
 // canonicalizePath resolves p to its final on-disk form via an open handle.
 // Identity on Unix: symlink resolution already happens in the callers
 // (EvalSymlinks + securejoin).

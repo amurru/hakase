@@ -3,6 +3,7 @@
 package main
 
 import (
+	"syscall"
 	"testing"
 
 	"amurru/hakase/internal/sandbox"
@@ -25,10 +26,9 @@ func TestBuildExecCommandSysProcAttr(t *testing.T) {
 		t.Error("Setpgid: expected true")
 	}
 	// Pdeathsig is Linux-specific; on this Linux-only project it must be
-	// SIGKILL.
-	if cmd.SysProcAttr.Pdeathsig != 0 { // syscall.SIGKILL == 0x9
-		// Just verify it is non-zero (set); comparing to syscall.SIGKILL
-		// would require importing syscall here which is overkill.
+	// exactly SIGKILL so the kernel reaps the child if the agent dies.
+	if cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
+		t.Errorf("Pdeathsig: expected SIGKILL, got %v", cmd.SysProcAttr.Pdeathsig)
 	}
 }
 

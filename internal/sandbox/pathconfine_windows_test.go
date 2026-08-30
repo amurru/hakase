@@ -241,6 +241,34 @@ func TestLoadSandboxConfigCoercesOnWindows(t *testing.T) {
 	}
 }
 
+// TestAuditRejectsShellExpansionTokens verifies %VAR% and !VAR! operands are
+// rejected by the audit BEFORE cmd.exe runs, so an approved-looking command
+// like `type %USERPROFILE%\.hakase\credentials.json` cannot reach the denied
+// credential file.
+func TestAuditRejectsShellExpansionTokens(t *testing.T) {
+	ws := t.TempDir()
+	sb := &SandboxConfig{
+		Mode:           SandboxModePaths,
+		WorkspaceRoots: []string{ws},
+		ReadRoots:      []string{ws},
+	}
+	withTestSandbox(t, sb)
+
+	for _, command := range []string{
+		`type %USERPROFILE%\.hakase\credentials.json`,
+		`type !USERPROFILE!\.hakase\credentials.json`,
+	} {
+		_, err := BuildExecCommand(command, nil, "", nil)
+		if err == nil {
+			t.Errorf("BuildExecCommand(%q): expected expansion-token rejection, got nil", command)
+			continue
+		}
+		if !strings.Contains(err.Error(), "expansion") {
+			t.Errorf("BuildExecCommand(%q): error should name shell expansion, got: %v", command, err)
+		}
+	}
+}
+
 func writeFileForTest(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }

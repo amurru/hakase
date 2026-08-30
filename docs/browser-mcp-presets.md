@@ -14,8 +14,13 @@ to a server literally named `lightpanda`, so existing configs keep working.
 
 Labeled **default-when-available**: lightest resource footprint, fully
 headless, ideal for research/navigation tasks. Install from
-[lightpanda.ai](https://lightpanda.ai) and start it before running the agent
-(serves the MCP endpoint on `localhost:9223` by default).
+[lightpanda.ai](https://lightpanda.ai), then start the MCP server in HTTP
+mode (the MCP server defaults to stdio; `--port` switches it to the HTTP
+endpoint the preset below connects to):
+
+```bash
+lightpanda mcp --port 9223
+```
 
 ```json
 {
@@ -25,7 +30,7 @@ headless, ideal for research/navigation tasks. Install from
         "type": "http",
         "url": "http://localhost:9223/mcp",
         "tools": {
-          "include": ["mcp_lightpanda_web_search", "mcp_lightpanda_web_fetch"]
+          "include": ["mcp_lightpanda_search", "mcp_lightpanda_markdown"]
         }
       }
     }
@@ -37,7 +42,9 @@ headless, ideal for research/navigation tasks. Install from
 
 Drives a real Chrome-family browser through the DevTools protocol: richer DOM
 inspection, screenshots, and profiling, at the cost of a full browser
-process. On Windows it runs on **Edge** (`msedge`), which ships with the OS.
+process. On Windows it runs on **Edge** (`msedge`), which ships with the OS -
+pass the browser binary via the supported `--executablePath` flag (the server
+does not read `CHROME_PATH`):
 
 ```json
 {
@@ -45,9 +52,11 @@ process. On Windows it runs on **Edge** (`msedge`), which ships with the OS.
     "servers": {
       "browser": {
         "type": "stdio",
-        "command": ["npx", "-y", "chrome-devtools-mcp@latest"],
-        "env": { "CHROME_PATH": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" },
-        "tools": { "exclude": ["mcp_browser_performance_trace"] }
+        "command": [
+          "npx", "-y", "chrome-devtools-mcp@latest",
+          "--executablePath", "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+        ],
+        "tools": { "exclude": ["mcp_browser_performance_start_trace"] }
       }
     }
   }
@@ -67,7 +76,7 @@ headed browser window.
       "browser": {
         "type": "stdio",
         "command": ["npx", "-y", "@playwright/mcp@latest", "--headless"],
-        "tools": { "exclude": ["mcp_browser_pdf"] }
+        "tools": { "exclude": ["mcp_browser_browser_pdf_save"] }
       }
     }
   }
@@ -79,6 +88,12 @@ headed browser window.
 Attaches to **your** everyday browser profile, so authenticated pages and
 cookies are visible to the agent. Highest-fidelity option; also the highest
 blast radius - you are pointing the agent at your live session.
+
+Prerequisite: install the [Browser MCP Chrome
+extension](https://chromewebstore.google.com/detail/browser-mcp-automate-your/bjfgambnhccakkhmkepdoekmckoijdlc),
+then click **Connect** in the extension to link it to the local MCP server -
+the server below only bridges to the extension, so authenticated access does
+not work without it.
 
 ```json
 {

@@ -35,6 +35,12 @@ import (
 // driveRelativeRe matches drive-relative paths like C:foo (but not C:\ or C:).
 var driveRelativeRe = regexp.MustCompile(`^[A-Za-z]:[^\\/]`)
 
+// envExpansionRe matches cmd.exe %VAR% environment-variable expansion and
+// delayed-expansion !VAR! (cmd /V or a nested `cmd /V /C`) inside a command
+// token. The audit sees the literal while cmd expands it to the OS path just
+// before execution.
+var envExpansionRe = regexp.MustCompile(`%[^%\s]+%|![^!\s]+!`)
+
 // checkPathAlias returns an error naming the alias class when p is a Win32
 // path alias that could bypass string-based confinement checks.
 func checkPathAlias(p string) error {
@@ -70,6 +76,18 @@ func checkPathAlias(p string) error {
 			(strings.HasSuffix(comp, ".") || strings.HasSuffix(comp, " ")) {
 			return fmt.Errorf("path component %q ends with a trailing dot or space, which Win32 strips before opening the file", comp)
 		}
+	}
+	return nil
+}
+
+// checkShellExpansionAlias rejects command tokens carrying cmd.exe
+// environment-variable expansion (%VAR%) or delayed expansion (!VAR!). The
+// audit would treat "%USERPROFILE%\.hakase\credentials.json" as a
+// workspace-relative literal while cmd expands it to the denied absolute
+// path just before execution - so sandbox mode refuses such tokens outright.
+func checkShellExpansionAlias(tok string) error {
+	if envExpansionRe.MatchString(tok) {
+		return fmt.Errorf("token contains %%VAR%% or !VAR! shell expansion, which the path audit cannot resolve; use a literal path (add sandbox.read_roots entries for locations outside the workspace)")
 	}
 	return nil
 }

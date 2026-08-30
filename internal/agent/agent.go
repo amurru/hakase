@@ -534,20 +534,34 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			// Job Object on Windows).
 			sandbox.ConfigureProcess(cmd)
 			// Pdeathsig fires on the OS thread that calls Start; lock it
-			// so the runtime does not recycle it before Wait reaps the
-			// child (golang/go#27505). Harmless on Windows.
+			// so the runtime does not recycle it before the child is
+			// started (golang/go#27505). Harmless on Windows.
 			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
 			var outBuf bytes.Buffer
 			cmd.Stdout = &outBuf
 			cmd.Stderr = &outBuf
 			if err := cmd.Start(); err != nil {
+				runtime.UnlockOSThread()
 				return "", err.Error()
 			}
 			if err := sandbox.AttachProcessTree(cmd); err != nil {
 				util.DebugWarn("python_job_attach_failed", "error", err.Error())
 			}
-			errOut := cmd.Wait()
+			runtime.UnlockOSThread()
+
+			// Bounded wait: CommandContext cancels only the direct child;
+			// Wait cannot return while a descendant still holds the
+			// inherited output pipe. On cancellation, kill the whole tree
+			// first so Wait is guaranteed to complete.
+			waitCh := make(chan error, 1)
+			go func() { waitCh <- cmd.Wait() }()
+			var errOut error
+			select {
+			case errOut = <-waitCh:
+			case <-ctx.Done():
+				_ = sandbox.KillProcessTree(cmd)
+				errOut = <-waitCh
+			}
 			sandbox.ReleaseProcessTree(cmd)
 			errStr := ""
 			if errOut != nil {
@@ -619,7 +633,8 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 					}
 				}
 				// Same platform process hardening as the script-run
-				// command.
+				// command, with the same bounded wait so a descendant
+				// holding the output pipe cannot block cancellation.
 				sandbox.ConfigureProcess(installCmd)
 				runtime.LockOSThread()
 				if startErr := installCmd.Start(); startErr == nil {
@@ -627,9 +642,16 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 						util.DebugWarn("pip_job_attach_failed", "error", aerr.Error())
 					}
 				}
-				_ = installCmd.Wait()
-				sandbox.ReleaseProcessTree(installCmd)
 				runtime.UnlockOSThread()
+				pipWait := make(chan error, 1)
+				go func() { pipWait <- installCmd.Wait() }()
+				select {
+				case <-pipWait:
+				case <-ctx.Done():
+					_ = sandbox.KillProcessTree(installCmd)
+					<-pipWait
+				}
+				sandbox.ReleaseProcessTree(installCmd)
 
 				if log != nil {
 					log(

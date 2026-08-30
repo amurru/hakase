@@ -232,7 +232,7 @@ jobs:
           printf 'admin\nsmoke-test-password\nsmoke-test-password\n' | ./hakase.exe auth set-password
           ./hakase.exe web --port 18080 &
           WEB_PID=$!
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -sf http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
               echo "health OK"
               kill "$WEB_PID" 2>/dev/null || true
