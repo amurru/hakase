@@ -43,12 +43,14 @@ func makeGitDir(t *testing.T, dir string) string {
 }
 
 // isolateHome redirects $HOME and $XDG_CONFIG_HOME to fresh temp dirs so
-// discovery tests are not polluted by real user-level directories.
+// discovery tests are not polluted by real user-level directories. On
+// Windows USERPROFILE is redirected too (os.UserHomeDir reads it).
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("USERPROFILE", home)
 	return home
 }
 

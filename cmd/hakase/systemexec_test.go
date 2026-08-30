@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,10 @@ func withApproval(t *testing.T, approved bool) {
 // whole command line is routed through "sh -c" (P0-1), and when args are
 // provided the explicit executable+args form is used.
 func TestBuildExecCommandShellRouting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: asserts sh -c routing; Windows uses cmd /D /C (covered by internal/sandbox windows tests)")
+	}
+
 	withNilSandbox(t)
 
 	// No args -> sh -c <command>.
@@ -159,29 +164,6 @@ func TestBuildExecCommandEnvOverride(t *testing.T) {
 	}
 }
 
-// TestBuildExecCommandSysProcAttr verifies the process hardening attributes
-// are set on every spawned command.
-func TestBuildExecCommandSysProcAttr(t *testing.T) {
-	withNilSandbox(t)
-
-	cmd, err := sandbox.BuildExecCommand("true", nil, "", nil)
-	if err != nil {
-		t.Fatalf("sandbox.BuildExecCommand: %v", err)
-	}
-	if cmd.SysProcAttr == nil {
-		t.Fatal("SysProcAttr is nil")
-	}
-	if !cmd.SysProcAttr.Setpgid {
-		t.Error("Setpgid: expected true")
-	}
-	// Pdeathsig is Linux-specific; on this Linux-only project it must be
-	// SIGKILL.
-	if cmd.SysProcAttr.Pdeathsig != 0 { // syscall.SIGKILL == 0x9
-		// Just verify it is non-zero (set); comparing to syscall.SIGKILL
-		// would require importing syscall here which is overkill.
-	}
-}
-
 // runSystemExecTool invokes the system_exec tool (index 0) with the given
 // args map and returns the deserialized output.
 func runSystemExecTool(t *testing.T, tools []tool.Tool, args map[string]any) (sandbox.SystemExecOutput, error) {
@@ -213,6 +195,10 @@ func runSystemExecTool(t *testing.T, tools []tool.Tool, args map[string]any) (sa
 // TestSystemExecSyncEcho verifies the sync tool handler runs a compound
 // shell command (echo a; echo b) through sh -c and captures combined output.
 func TestSystemExecSyncEcho(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: ; command separator is sh syntax")
+	}
+
 	withNilSandbox(t)
 
 	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
@@ -238,6 +224,10 @@ func TestSystemExecSyncEcho(t *testing.T) {
 // TestSystemExecSyncFalse verifies the sync tool handler returns exit code 1
 // for the false command without treating it as a start error.
 func TestSystemExecSyncFalse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: /bin/false does not exist on Windows")
+	}
+
 	withNilSandbox(t)
 
 	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
@@ -260,6 +250,10 @@ func TestSystemExecSyncFalse(t *testing.T) {
 // non-zero exit code with stderr for a command that fails (ls on a missing
 // path), and that this is NOT a "failed to start" error.
 func TestSystemExecSyncNonexistent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: ls is a Unix binary")
+	}
+
 	withNilSandbox(t)
 
 	tools, err := sandbox.CreateSystemExecTools(nil, nil, "")
@@ -424,6 +418,10 @@ func TestBuildExecCommandGateDeny(t *testing.T) {
 // approval granted passes the gate and builds (audit may still reject it
 // if sandboxed, but the gate itself allows it).
 func TestBuildExecCommandGateAskApproved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: asserts sh -c routing; Windows uses cmd /D /C")
+	}
+
 	withNilSandbox(t)
 	withApproval(t, true)
 
@@ -560,6 +558,10 @@ func TestBuildExecCommandEnvScrubOffMode(t *testing.T) {
 // TestSystemExecStartTimeout verifies the background start tool respects
 // the optional timeout_seconds field and kills the process group.
 func TestSystemExecStartTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: sleep is a Unix binary")
+	}
+
 	withNilSandbox(t)
 	withApproval(t, true)
 

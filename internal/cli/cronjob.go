@@ -26,7 +26,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	cron "github.com/robfig/cron/v3"
@@ -318,16 +317,18 @@ func saveCronRegistryLocked(reg CronRegistry) error {
 	tmp := file + ".tmp"
 	lockFile := file + ".lock"
 
-	// Acquire exclusive flock for cross-process safety.
-	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_WRONLY, 0644)
+	// Acquire exclusive flock for cross-process safety. The lock file is
+	// opened read+write so the Windows handle carries the access rights
+	// LockFileEx requires.
+	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
 	defer lf.Close()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+	if err := util.FlockExclusive(lf); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	defer util.FlockUnlock(lf)
 
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,10 @@ func TestNewReporterMissingPane(t *testing.T) {
 }
 
 func TestResolveHerdrBin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: executes a #!/bin/sh script")
+	}
+
 	t.Run("hint", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "calls.txt")
 		bin := writeFakeBin(t, out)

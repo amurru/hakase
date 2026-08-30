@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,10 @@ exit 1
 }
 
 func TestReadImageFromClipboardWayland(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: image paste probes wl-paste/xclip/xsel; unsupported on Windows v1")
+	}
+
 	fakeWaylandPaste(t)
 
 	data, mimeType, err := readImageFromClipboard()
@@ -44,6 +49,10 @@ func TestReadImageFromClipboardWayland(t *testing.T) {
 }
 
 func TestReadImageFromClipboardNoTool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: image paste probes wl-paste/xclip/xsel; unsupported on Windows v1")
+	}
+
 	t.Setenv("PATH", "")
 	_, _, err := readImageFromClipboard()
 	if err == nil {
@@ -52,6 +61,10 @@ func TestReadImageFromClipboardNoTool(t *testing.T) {
 }
 
 func TestReadImageFromClipboardEmptyOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: image paste probes wl-paste/xclip/xsel; unsupported on Windows v1")
+	}
+
 	// A fake wl-paste that always exits non-zero: no image -> error.
 	dir := t.TempDir()
 	script := "#!/bin/sh\nexit 1\n"

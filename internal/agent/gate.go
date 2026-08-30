@@ -127,7 +127,9 @@ func classifyRisk(argv []string) CommandRisk {
 
 	basename := strings.ToLower(resolveBinaryBase(argv[0]))
 
-	// HIGH risk binaries (check first - destructive/privileged)
+	// HIGH risk binaries (check first - destructive/privileged). del/rd are
+	// Windows entries (cmd built-ins; they appear as inner tokens of
+	// string-form commands, which is where the gate evaluates them).
 	highRisk := map[string]bool{
 		"rm": true, "rmdir": true, "dd": true, "mkfs": true,
 		"fdisk": true, "parted": true, "shred": true, "format": true,
@@ -136,12 +138,15 @@ func classifyRisk(argv []string) CommandRisk {
 		"halt": true, "init": true, "mount": true, "umount": true,
 		"chroot": true, "mkswap": true, "swapon": true, "swapoff": true,
 		"blkdiscard": true,
+		"del": true, "rd": true,
 		"mkfs.ext2":  true, "mkfs.ext3": true, "mkfs.ext4": true,
 		"mkfs.xfs": true, "mkfs.btrfs": true, "mkfs.vfat": true,
 		"mkfs.fat": true, "mkfs.ntfs": true, "mkfs.exfat": true,
 	}
 
-	// MEDIUM risk binaries
+	// MEDIUM risk binaries. reg/regsvr32/schtasks/sc/netsh/diskpart/
+	// certutil/bitsadmin are Windows entries (registry, services, firewall,
+	// task scheduling, certificates, transfer jobs).
 	mediumRisk := map[string]bool{
 		"touch": true, "mkdir": true, "cp": true, "mv": true,
 		"chmod": true, "chown": true, "ln": true,
@@ -155,6 +160,8 @@ func classifyRisk(argv []string) CommandRisk {
 		"ruby": true, "perl": true, "php": true,
 		"tee": true, "systemctl": true, "service": true,
 		"docker": true, "podman": true, "nohup": true,
+		"reg": true, "regsvr32": true, "schtasks": true, "sc": true,
+		"netsh": true, "diskpart": true, "certutil": true, "bitsadmin": true,
 	}
 
 	// LOW risk binaries
@@ -778,11 +785,17 @@ func resolveBinaryBase(name string) string {
 }
 
 // codeInterpreters is the set of binaries that can execute opaque scripts
-// or inline code (12.2).
+// or inline code (12.2). Windows interpreters (cmd, powershell, pwsh,
+// wscript, cscript, mshta) MUST stay in this set: membership drives the
+// permission-mode-independent opaque-code escalation. Never add them to the
+// risk tables alone - under permissions {"system_exec": "allow"} that
+// combination would let opaque shell/code execute silently on Windows.
 var codeInterpreters = map[string]bool{
 	"python": true, "python3": true, "node": true, "ruby": true,
 	"perl": true, "php": true, "lua": true, "r": true,
 	"bash": true, "sh": true, "zsh": true, "dash": true, "fish": true,
+	"cmd": true, "powershell": true, "pwsh": true,
+	"wscript": true, "cscript": true, "mshta": true,
 }
 
 // hasOpaqueCodeArg reports whether argv[1:] contains a code-execution flag

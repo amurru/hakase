@@ -127,3 +127,119 @@ jobs:
     with:
       base64-subjects: "${{ needs.build.outputs.hashes }}"
       upload-assets: true # attaches <binary>.intoto.jsonl to the tagged release
+
+  # ---------------------------------------------------------------------------
+  # Windows (native port, v1)
+  #
+  # Both jobs are independent of `build` so they never gate the Linux release
+  # (Windows guardrail). The zip is uploaded as a workflow artifact, not a
+  # release asset, in v1; it is unsigned - Authenticode signing and SLSA
+  # subjects for the zip are the designated follow-up (code-signing spec).
+  # ---------------------------------------------------------------------------
+
+  windows-cross:
+    name: Cross-compile Windows zip
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Checkout (full history + tags for git describe)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go (version from go.mod)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.3.0
+
+      # make build-frontend runs first inside build-windows: a prod build
+      # fails on a fresh checkout until internal/web/dist exists (go:embed
+      # gotcha).
+      - name: Build Windows zip (frontend + cross-compile + package)
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make build-windows VERSION="$TAG"
+
+      - name: Upload Windows zip artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hakase-${{ github.ref_name }}-windows-amd64.zip
+          path: dist/hakase-${{ github.ref_name }}-windows-amd64.zip
+          if-no-files-found: error
+
+  windows-test:
+    name: Windows tests and smoke
+    runs-on: windows-latest
+    permissions: {}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go (version from go.mod)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.3.0
+
+      # go:embed gotcha: go test ./... fails on a fresh checkout until the
+      # frontend mirror exists.
+      - name: Build frontend mirror
+        run: make build-frontend
+
+      - name: Run tests (zero network/MCP dependencies)
+        run: go test ./...
+
+      - name: Build native binary for smoke
+        run: go build -tags prod -o hakase.exe ./cmd/hakase/
+
+      - name: Smoke - hakase.exe version
+        run: ./hakase.exe version
+
+      # Web shutdown smoke: boot the SSE server, hit the unauthenticated
+      # health endpoint, then stop it (SIGTERM is not externally deliverable
+      # on Windows; ctrl-c is the documented shutdown path).
+      - name: Smoke - hakase.exe web boots and serves /api/health
+        env:
+          HAKASE_HOME: ${{ runner.temp }}/.hakase-smoke
+        run: |
+          set -euo pipefail
+          mkdir -p "$HAKASE_HOME"
+          printf 'admin\nsmoke-test-password\nsmoke-test-password\n' | ./hakase.exe auth set-password
+          ./hakase.exe web --port 18080 &
+          WEB_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
+              echo "health OK"
+              kill "$WEB_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "web server did not become healthy" >&2
+          kill "$WEB_PID" 2>/dev/null || true
+          exit 1
