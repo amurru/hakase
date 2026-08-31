@@ -10,16 +10,26 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
-### Added
-
-- **Web UI slash-command palette** - typing `/` in the web chat input opens an autocomplete popup (arrow keys navigate, Tab/Enter complete, Esc dismisses) exposing the TUI commands except `/exit`: `/compact [focus]` (new `POST /api/sessions/{id}/compact` endpoint running the same snip + async summary cascade), `/sidekick <question>`, `/new`, `/sessions`, `/board`, `/mcp`, `/help`. Unknown `/tokens` pass through as ordinary text.
-- **Sidekick agent** - a second, independently-configured LLM that answers direct questions (`/sidekick <question>` in the TUI or typed in the web chat) or quietly watches a run and surfaces advisory notes as quiet inline chips. On-demand asks are framed with a bounded recent-conversation transcript (`transcript_window_chars`, tail-biased) so follow-up questions have context. Explicit interactions are persisted to the session file under `"kind": "sidekick"` (answers carry `"role": "sidekick"`) so provenance is auditable. Modes `off` / `on_demand` / `watch` / `full`; no notification dispatch; local `openai-compatible` models keep conversation excerpts on-machine. See the README Sidekick section.
-
 ### Planned
 
 - `generate_audio` implementation (currently a stub wired for v2)
 - `landlock` sandbox mode (in-process Landlock + seccomp confinement, Phase 3)
 - ComfyUI / TouchDesigner / Suno native integrations (see README TODO)
+
+## [0.1.0-alpha.4] - 2026-08-31
+
+### Added
+
+- **Native Windows port (Path A)** - hakase now builds and runs natively on Windows (`GOOS=windows`, no WSL2 required). Shell routing uses `cmd /D /C`, executable lookup is PATH-only with `NoDefaultCurrentDirectoryInExePath=1` and workspace-hijack rejection, the Python interpreter probes `py -3` then `python` with `.venv\Scripts` layout, file locking uses `LockFileEx`, process trees are tracked via Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), and Win32 path aliases (trailing dots/spaces, ADS streams, `\\?\`/`\\.\` namespaces, drive-relative `C:foo`, 8.3 short names, `%VAR%`/`!VAR!` expansion including whitespace names) are rejected or canonicalized via `GetFinalPathNameByHandle`. Bubblewrap/landlock modes coerce to `paths` with a warning on Windows. A `windows-latest` CI job runs the full test suite and a web boot smoke test; `make build-windows` cross-compiles `hakase.exe` and assembles the unsigned `dist/hakase-<version>-windows-amd64.zip` (see Windows notes in the README).
+- **Any-browser MCP presets** - `docs/browser-mcp-presets.md` ships four copy-pasteable MCP server presets for the `web_researcher` (Lightpanda, `chrome-devtools-mcp` on Edge, `@playwright/mcp`, `@browsermcp/mcp`) with `tools.include`/`tools.exclude` shaping and a runtime tradeoff matrix. The browsing stack is a config-only swap on Linux and Windows alike.
+- **Web UI slash-command palette** - typing `/` in the web chat input opens an autocomplete popup (arrow keys navigate, Tab/Enter complete, Esc dismisses) exposing the TUI commands except `/exit`: `/compact [focus]` (new `POST /api/sessions/{id}/compact` endpoint running the same snip + async summary cascade), `/sidekick <question>`, `/new`, `/sessions`, `/board`, `/mcp`, `/help`. Unknown `/tokens` pass through as ordinary text.
+- **Sidekick agent** - a second, independently-configured LLM that answers direct questions (`/sidekick <question>` in the TUI or typed in the web chat) or quietly watches a run and surfaces advisory notes as quiet inline chips. On-demand asks are framed with a bounded recent-conversation transcript (`transcript_window_chars`, tail-biased) so follow-up questions have context. Explicit interactions are persisted to the session file under `"kind": "sidekick"` (answers carry `"role": "sidekick"`) so provenance is auditable. Modes `off` / `on_demand` / `watch` / `full`; no notification dispatch; local `openai-compatible` models keep conversation excerpts on-machine. See the README Sidekick section.
+
+### Fixed
+
+- Windows sandbox audit now rejects `%VAR%` and `!VAR!` (including `!X Y!`) expansion tokens before `cmd.exe` expands them (CWE-22).
+- Python `pip` spawns use bounded waits: on cancellation the whole process tree is killed before `Wait` so output pipes inherited by descendants cannot block forever.
+- Tightened several Windows correctness and docs issues flagged in CodeRabbit reviews (Pdeathsig assertion, symlink test scoping, `USERPROFILE`/`HOME` alignment in skill discovery tests, zip fallback, shell-routing docs).
 
 ## [0.1.0-alpha.3] - 2026-08-24
 
@@ -113,5 +123,8 @@ First testing release. Linux-only; developed and tested on Arch Linux.
   version stamping from `git describe` (`make VERSION=vX.Y.Z` to override),
   and this changelog.
 
-[Unreleased]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.4...HEAD
+[0.1.0-alpha.4]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
+[0.1.0-alpha.3]: https://github.com/amurru/hakase/releases/tag/v0.1.0-alpha.3
+[0.1.0-alpha.2]: https://github.com/amurru/hakase/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/amurru/hakase/releases/tag/v0.1.0-alpha.1
