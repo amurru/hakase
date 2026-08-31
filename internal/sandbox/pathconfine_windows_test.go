@@ -257,6 +257,8 @@ func TestAuditRejectsShellExpansionTokens(t *testing.T) {
 	for _, command := range []string{
 		`type %USERPROFILE%\.hakase\credentials.json`,
 		`type !USERPROFILE!\.hakase\credentials.json`,
+		`type !X Y!\secret.txt`,
+		`type %X Y%\secret.txt`,
 	} {
 		_, err := BuildExecCommand(command, nil, "", nil)
 		if err == nil {

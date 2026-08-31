@@ -38,8 +38,10 @@ var driveRelativeRe = regexp.MustCompile(`^[A-Za-z]:[^\\/]`)
 // envExpansionRe matches cmd.exe %VAR% environment-variable expansion and
 // delayed-expansion !VAR! (cmd /V or a nested `cmd /V /C`) inside a command
 // token. The audit sees the literal while cmd expands it to the OS path just
-// before execution.
-var envExpansionRe = regexp.MustCompile(`%[^%\s]+%|![^!\s]+!`)
+// before execution. Whitespace is allowed inside the delimiters because
+// cmd.exe permits spaces in variable names (e.g. `!X Y!`); the previous
+// `[^%\s]` form missed that case (CWE-22).
+var envExpansionRe = regexp.MustCompile(`%[^%]+%|![^!]+!`)
 
 // checkPathAlias returns an error naming the alias class when p is a Win32
 // path alias that could bypass string-based confinement checks.
