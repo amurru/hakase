@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"amurru/hakase/internal/interfaces"
@@ -211,6 +210,20 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 		return nil, fmt.Errorf("command must not be empty")
 	}
 
+	// WIN-005 defensive mode coercion: bubblewrap/landlock do not exist on
+	// Windows and tests construct CurrentSandbox directly (bypassing
+	// LoadSandboxConfig), so the coercion also happens here. Mutating the
+	// mode in place is idempotent and makes every audit entry below record
+	// the effective mode (paths).
+	if CurrentSandbox != nil && runtime.GOOS == "windows" &&
+		(CurrentSandbox.Mode == SandboxModeBubblewrap || CurrentSandbox.Mode == SandboxModeLandlock) {
+		util.DebugWarn("sandbox_mode_coerced",
+			"from", string(CurrentSandbox.Mode),
+			"to", string(SandboxModePaths),
+			"reason", "bubblewrap and landlock are unsupported on windows")
+		CurrentSandbox.Mode = SandboxModePaths
+	}
+
 	// Harmful-command protection gate: policy decision + approval.
 	// Runs BEFORE AuditSystemCommandPaths so denied commands never reach
 	// path auditing. The audit entries record the decision at the gate
@@ -338,19 +351,30 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 			if wd != "" {
 				bwCmd.Dir = wd
 			}
-			bwCmd.SysProcAttr = &syscall.SysProcAttr{
-				Setpgid:   true,
-				Pdeathsig: syscall.SIGKILL,
-			}
+			configureProcess(bwCmd)
 			return bwCmd, nil
 		}
 	}
 
 	var cmd *exec.Cmd
 	if len(args) == 0 {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		// P0-1: route through the platform shell when no args are
+		// provided (sh -c on Unix, cmd /D /C on Windows) so the model's
+		// natural whole-command-line input (pipes, redirects) works.
+		shellCmd, err := buildShellCommand(ctx, command, effectiveChildDir(workingDir))
+		if err != nil {
+			return nil, err
+		}
+		cmd = shellCmd
 	} else {
-		cmd = exec.CommandContext(ctx, command, args...)
+		// Explicit executable+args form; on Windows bare names are
+		// resolved against PATH only (never the working directory) and
+		// rewritten to absolute paths before exec.
+		directCmd, err := buildDirectCommand(ctx, command, args, effectiveChildDir(workingDir))
+		if err != nil {
+			return nil, err
+		}
+		cmd = directCmd
 	}
 
 	// Env merge: start from the agent process env, overlay caller overrides.
@@ -363,6 +387,8 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	// GITHUB_*, OPENAI_*) never leak into subprocesses, even in sandbox-off
 	// mode (Phase 2.5).
 	cmd.Env = ScrubEnv(cmd.Env)
+	// Platform hardening (Windows: NoDefaultCurrentDirectoryInExePath=1).
+	cmd.Env = hardenChildEnv(cmd.Env)
 
 	// Working directory: sandbox-aware resolution.
 	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
@@ -382,26 +408,26 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	}
 
 	// Process hardening: new process group + death signal so children
-	// (and grandchildren) die if the agent crashes. Linux-only fields.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:   true,
-		Pdeathsig: syscall.SIGKILL,
-	}
+	// (and grandchildren) die if the agent crashes (Linux); Job Object
+	// tracking on Windows (assigned after Start).
+	configureProcess(cmd)
 
 	return cmd, nil
 }
 
 // ScrubEnv returns env with entries whose key starts with any of the
 // sensitive prefixes removed. Used when the sandbox is active so secret
-// material does not leak into sandboxed subprocesses.
+// material does not leak into sandboxed subprocesses. On Windows the prefix
+// match is case-insensitive (Windows environment names are case-insensitive,
+// so "Aws_secret_access_key" is still readable by children and must not
+// survive the scrub); the Linux match stays byte-exact.
 func ScrubEnv(env []string) []string {
+	prefixes := [...]string{"HAKASE_", "AWS_", "GITHUB_", "OPENAI_"}
+	caseInsensitive := runtime.GOOS == "windows"
 	scrubbed := make([]string, 0, len(env))
 	for _, kv := range env {
 		key, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(key, "HAKASE_") ||
-			strings.HasPrefix(key, "AWS_") ||
-			strings.HasPrefix(key, "GITHUB_") ||
-			strings.HasPrefix(key, "OPENAI_") {
+		if envKeyIsSensitive(key, prefixes[:], caseInsensitive) {
 			continue
 		}
 		scrubbed = append(scrubbed, kv)
@@ -409,16 +435,39 @@ func ScrubEnv(env []string) []string {
 	return scrubbed
 }
 
-// trustedExecDirs are host paths a system_exec command may reference without
-// requiring an explicit read root. They mirror the read-only system bindings
-// bubblewrap provides (sandboxexec.go: systemROBindDirs) plus the minimal
-// virtual/scratch filesystems bwrap mounts (/proc, /dev, /tmp, /run) and
-// /sys, which common diagnostic commands read. Everything else must live
-// under a sandbox read root.
-var trustedExecDirs = []string{
-	"/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/nix",
-	"/proc", "/dev", "/sys", "/tmp", "/run",
+// envKeyIsSensitive reports whether key starts with any sensitive prefix.
+func envKeyIsSensitive(key string, prefixes []string, caseInsensitive bool) bool {
+	for _, p := range prefixes {
+		if caseInsensitive {
+			if len(key) >= len(p) && strings.EqualFold(key[:len(p)], p) {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
 }
+
+// effectiveChildDir returns the directory the spawned process will actually
+// run in: the caller-supplied workingDir when set, the sandbox workspace root
+// when the sandbox pins it, or the agent process working directory.
+func effectiveChildDir(workingDir string) string {
+	if workingDir != "" {
+		return workingDir
+	}
+	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
+		if root := CurrentSandbox.WorkspaceRoot(); root != "" {
+			return root
+		}
+	}
+	wd, _ := os.Getwd()
+	return wd
+}
+
+// trustedExecDirs is declared per-OS in pathdirs_unix.go / pathdirs_windows.go.
 
 // AuditSystemCommandPaths is the confinement guard for system_exec. When the
 // sandbox is active (mode != off), every absolute path token in the command
@@ -484,11 +533,27 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 		return nil
 	}
 	expanded := expandHome(p)
+	// WIN-005: reject Win32 path aliases (trailing dots/spaces, ADS,
+	// device namespaces, drive-relative forms) before any containment
+	// math - the OS would open the base path the string checks approve.
+	if err := checkPathAlias(expanded); err != nil {
+		return fmt.Errorf("command references %q which is rejected: %w", tok, err)
+	}
+	// WIN-005 (Windows): reject cmd.exe expansion tokens - the audit sees
+	// the literal while cmd expands %VAR% to the OS path just before exec.
+	if err := checkShellExpansionAlias(expanded); err != nil {
+		return fmt.Errorf("command references %q which is rejected: %w", tok, err)
+	}
 	if !filepath.IsAbs(expanded) {
 		if relativeBase == "" || !relativeOperandNeedsAudit(expanded) {
 			return nil
 		}
 		resolved := filepath.Clean(filepath.Join(relativeBase, expanded))
+		// Canonicalize the joined absolute form (handle-based on Windows)
+		// so deny checks run against what the OS would open.
+		if canon, cerr := canonicalizePath(resolved, false); cerr == nil {
+			resolved = canon
+		}
 		if err := auditCandidatePaths(sb, resolveWithSymlinks(resolved), tok, true); err != nil {
 			return err
 		}
@@ -499,6 +564,11 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 			return auditGlobExpansions(sb, resolved, tok)
 		}
 		return nil
+	}
+	// WIN-005: canonicalize absolute tokens (folds junctions, 8.3 short
+	// names, and case on Windows) before the deny/scope checks.
+	if canon, cerr := canonicalizePath(expanded, false); cerr == nil {
+		expanded = canon
 	}
 	for _, d := range sb.DenyRoots {
 		if within(d, expanded) {
@@ -555,6 +625,12 @@ func auditGlobExpansions(sb *SandboxConfig, pattern, tok string) error {
 // trusted system directory, so "../"-style escapes cannot leave the sandbox.
 func auditCandidatePaths(sb *SandboxConfig, candidates []string, tok string, requireScope bool) error {
 	for _, candidate := range candidates {
+		// WIN-005: canonicalize every candidate (handle-based on Windows)
+		// so a symlink/8.3/case alias cannot string-match past the deny
+		// rules.
+		if canon, cerr := canonicalizePath(candidate, false); cerr == nil {
+			candidate = canon
+		}
 		for _, d := range sb.DenyRoots {
 			if within(d, candidate) {
 				return fmt.Errorf("command references %q which resolves into a denied sandbox root", tok)
@@ -760,8 +836,8 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 
 	// system_exec: synchronous fire-and-wait execution.
 	execTool, err := util.NewDocTool(functiontool.Config{
-		Name:        "system_exec",
-		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). Commands are checked against a harmful-command policy and may require approval. When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter.",
+		Name: "system_exec",
+		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). Commands are checked against a harmful-command policy and may require approval. When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter." + shellRoutingNote,
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
 		procID := m.allocateID()
@@ -799,6 +875,11 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 				DurationMs: time.Since(start).Milliseconds(),
 			}, fmt.Errorf("failed to start command %q: %w", input.Command, err)
 		}
+		// Windows: assign the started process to its kill-on-close Job
+		// Object (no-op on Unix, where Setpgid already grouped the tree).
+		if err := attachProcessTree(cmd); err != nil {
+			util.DebugWarn("system_exec_job_attach_failed", "process_id", procID, "error", err.Error())
+		}
 
 		var timeoutTimer *time.Timer
 		if timeout := EffectiveExecTimeout(input.TimeoutSeconds); timeout > 0 {
@@ -806,16 +887,15 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 				timeout,
 				func() {
 					rp.markTimedOut()
-					// Group-kill so grandchildren die too (Setpgid).
-					if cmd.Process != nil {
-						_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-					}
+					// Tree-kill: process group (Unix) or Job Object (Windows).
+					_ = killProcessTree(cmd)
 				},
 			)
 			defer timeoutTimer.Stop()
 		}
 
 		runErr := cmd.Wait()
+		releaseProcessTree(cmd)
 		rp.setFinished(-1)
 
 		out := SystemExecOutput{
@@ -895,10 +975,13 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 				startCh <- startResult{err: err}
 				return
 			}
+			if err := attachProcessTree(cmd); err != nil {
+				util.DebugWarn("system_exec_job_attach_failed", "process_id", rp.id, "error", err.Error())
+			}
 			startCh <- startResult{err: nil}
 
-			// Optional timeout: kill the process group after
-			// TimeoutSeconds (same group-kill pattern as the sync
+			// Optional timeout: kill the process tree after
+			// TimeoutSeconds (same tree-kill pattern as the sync
 			// handler). Default 0 = no timeout.
 			var timeoutTimer *time.Timer
 			if input.TimeoutSeconds > 0 {
@@ -906,9 +989,7 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 					time.Duration(input.TimeoutSeconds*float64(time.Second)),
 					func() {
 						rp.markTimedOut()
-						if cmd.Process != nil {
-							_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-						}
+						_ = killProcessTree(cmd)
 					},
 				)
 				defer timeoutTimer.Stop()
@@ -923,6 +1004,7 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 					exitCode = -1
 				}
 			}
+			releaseProcessTree(cmd)
 			rp.setFinished(exitCode)
 			if log != nil {
 				log(fmt.Sprintf("✅ [system_exec] Background process #%d exited with code %d", rp.id, exitCode))
@@ -986,9 +1068,10 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 
 		_, _, _, alreadyFinished := rp.stateSnapshot()
 		rp.markCanceled()
-		// Group-kill (negative pid) so grandchildren die too (Setpgid).
-		if !alreadyFinished && rp.cmd.Process != nil {
-			_ = syscall.Kill(-rp.cmd.Process.Pid, syscall.SIGKILL)
+		// Tree-kill: process group (Unix) or Job Object (Windows) so
+		// grandchildren die too.
+		if !alreadyFinished {
+			_ = killProcessTree(rp.cmd)
 		}
 		rp.waitFinished()
 		m.remove(input.ProcessID)

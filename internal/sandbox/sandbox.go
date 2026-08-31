@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -86,6 +87,17 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 	switch sb.Mode {
 	case SandboxModeOff, SandboxModePaths, SandboxModeBubblewrap, SandboxModeLandlock:
 	default:
+		sb.Mode = SandboxModePaths
+	}
+
+	// WIN-005: bubblewrap and landlock do not exist on Windows - coerce to
+	// paths mode (the only supported v1 mode) with a logged warning. No
+	// hard error, no silent bare-exec fallback; the audit trail shows the
+	// effective mode.
+	if runtime.GOOS == "windows" &&
+		(sb.Mode == SandboxModeBubblewrap || sb.Mode == SandboxModeLandlock) {
+		fmt.Printf("hakase: sandbox mode %q is not supported on Windows; coercing to %q\n",
+			sb.Mode, SandboxModePaths)
 		sb.Mode = SandboxModePaths
 	}
 
@@ -198,8 +210,14 @@ func expandHome(p string) string {
 	return p
 }
 
-// within reports whether target is contained under root.
+// within reports whether target is contained under root. On Windows the
+// comparison is case-insensitive (NTFS/Win32 path case-insensitivity:
+// C:\Foo and c:\foo are the same path).
 func within(root, target string) bool {
+	if runtime.GOOS == "windows" {
+		root = strings.ToLower(root)
+		target = strings.ToLower(target)
+	}
 	rel, err := filepath.Rel(root, target)
 	if err != nil {
 		return false
@@ -230,6 +248,21 @@ func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, err
 		p = filepath.Join(cwd, p)
 	}
 	p = filepath.Clean(p)
+
+	// WIN-005: reject Win32 path aliases (trailing dots/spaces, ADS,
+	// device namespaces, drive-relative forms) on the raw input before any
+	// containment math - the OS would resolve them onto the base path the
+	// string checks just approved.
+	if err := checkPathAlias(path); err != nil {
+		return "", fmt.Errorf("path %q rejected: %w", path, err)
+	}
+	// Canonicalize (handle-based on Windows): folds junctions, reparse
+	// points, 8.3 short names, and case, so every check below runs against
+	// the path the OS would actually open. Existing paths are opened with
+	// the caller's intended access mode.
+	if canon, cerr := canonicalizePath(p, write); cerr == nil {
+		p = filepath.Clean(canon)
+	}
 
 	for _, d := range sb.DenyRoots {
 		if within(d, p) {
@@ -311,13 +344,20 @@ func (sb *SandboxConfig) Permitted(tool string) (action string, ok bool) {
 }
 
 // deniedBasename reports whether the base name of p matches an implicitly
-// denied sensitive basename (e.g. .env anywhere under a scoped root).
+// denied sensitive basename (e.g. .env anywhere under a scoped root). The
+// comparison is case-insensitive on Windows, where file names are too.
 func (sb *SandboxConfig) deniedBasename(p string) bool {
 	if sb == nil || len(sb.DenyBasenames) == 0 {
 		return false
 	}
 	base := filepath.Base(p)
 	for _, b := range sb.DenyBasenames {
+		if runtime.GOOS == "windows" {
+			if strings.EqualFold(base, b) {
+				return true
+			}
+			continue
+		}
 		if base == b {
 			return true
 		}
@@ -333,6 +373,11 @@ func (sb *SandboxConfig) deniedBasename(p string) bool {
 func (sb *SandboxConfig) DeniedPath(target string) bool {
 	if sb == nil {
 		return false
+	}
+	// WIN-005: alias rejection first - a listing entry like "config.json."
+	// or "config.json:ads" must be treated as the denied base file.
+	if err := checkPathAlias(target); err != nil {
+		return true
 	}
 	if sb.deniedBasename(target) {
 		return true

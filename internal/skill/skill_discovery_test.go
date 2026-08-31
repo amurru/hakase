@@ -45,6 +45,8 @@ func isolateHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// os.UserHomeDir reads USERPROFILE on Windows.
+	t.Setenv("USERPROFILE", home)
 	return home
 }
 
@@ -385,6 +387,8 @@ func TestDiscoverMarkdownSkillsHakaseHome(t *testing.T) {
 	makeGitDir(t, root)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows.
+	t.Setenv("USERPROFILE", home)
 
 	writeSkillAt(t, filepath.Join(home, ".hakase", "skills"), "user-home-skill", "user home")
 
@@ -433,6 +437,8 @@ func TestDiscoverMarkdownSkillsProjectBeatsHakaseHome(t *testing.T) {
 	makeGitDir(t, root)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows.
+	t.Setenv("USERPROFILE", home)
 
 	projectSkill := writeSkillAt(t, filepath.Join(root, ".agents", "skills"), "dup-skill", "project version")
 	writeSkillAt(t, filepath.Join(home, ".hakase", "skills"), "dup-skill", "user version")

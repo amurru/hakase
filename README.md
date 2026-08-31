@@ -433,7 +433,7 @@ Search is hardened against pathological trees: `head_limit` defaults to `100` wh
 
 A `system_exec` toolset runs shell commands, scripts, and executables directly on the host machine, with several safety guarantees:
 
-- **Shell routing** — when no `args` are provided the whole command line is passed to `sh -c`, so pipes, redirects, globs, `&&`/`||`, and compound commands work naturally; explicit `(command, args...)` calls keep full control
+- **Shell routing** — when no `args` are provided the whole command line is passed to the platform shell (`sh -c` on Unix, `cmd /D /C` on Windows), so pipes, redirects, and compound commands work naturally; explicit `(command, args...)` calls keep full control
 - **Process hardening** — spawned processes are placed in their own process group with a parent-death signal, so they and their children are reaped if the agent dies
 - **Path confinement (all sandbox modes)** — when the sandbox is active, absolute path arguments in the command line are audited against the sandbox read roots and trusted system dirs (`/usr`, `/lib`, `/bin`, `/etc`, `/proc`, `/dev`, `/sys`, `/tmp`, `/run`); anything else is rejected with an actionable error. This stops whole-filesystem scans like `find / -type d -name skills` from escaping the workspace. Add directories to `sandbox.read_roots` in `config.json` to permit them.
 - **Default timeout** — synchronous `system_exec` kills the command after 120s when `timeout_seconds` is omitted, so a hung command can never block the agent indefinitely. Long-running work should use `system_exec_start` (background) or an explicit `timeout_seconds`.
@@ -502,6 +502,19 @@ written by the app) merged with the user registry at `~/.hakase/mcp.json`
 
 The legacy single-server `mcp_server_url` field still works and is
 auto-migrated to a server named `lightpanda`.
+
+#### Browser MCP presets
+
+Any spec-compliant browser MCP is a config-only swap, on Linux and Windows
+alike. [docs/browser-mcp-presets.md](docs/browser-mcp-presets.md) ships four
+copy-pasteable presets with `web_researcher` tool shaping:
+
+| Preset | Runtime tradeoff |
+| --- | --- |
+| **Lightpanda** (default when available) | dedicated headless engine - lightest, fastest |
+| `chrome-devtools-mcp` | controlled real browser (Edge on Windows, Chrome elsewhere) |
+| `@playwright/mcp` | real browser, headless or headed, deterministic selectors |
+| `@browsermcp/mcp` | your live signed-in browser session |
 
 <a id="media-generation"></a>
 
@@ -606,6 +619,7 @@ The [Makefile](Makefile) drives the build pipeline. Two build modes are supporte
 | ------------------ | ----------------------------------------------------------------------------------------------- |
 | `make build`       | Full production binary: frontend build + `go build -tags prod -o hakase ./cmd/hakase/`          |
 | `make release`     | Same as `make build`, then echo the stamped version (run after tagging)                          |
+| `make build-windows` | Cross-compile `hakase.exe` (windows/amd64, unsigned) and assemble `dist/hakase-<version>-windows-amd64.zip` with SHA256SUMS.txt |
 | `make build-frontend` | `pnpm install && pnpm build` in `webui/`, then mirror `webui/dist/` into `internal/web/dist/` |
 | `make dev`         | Prints the two-terminal development mode instructions                                           |
 | `make dev-frontend` | Vite dev server with HMR on port 5173                                                          |
@@ -643,6 +657,8 @@ Arch Linux users can also install the prebuilt binary from the AUR as [`hakase-b
 
 Release flow: update `CHANGELOG.md`, commit, then `git tag -a vX.Y.Z && git push origin vX.Y.Z` - the pipeline handles the rest. Every third-party action in the workflow is pinned to a full commit SHA; the SLSA reusable workflow is pinned to its release tag (`@v2.1.0`) because that ref is what `slsa-verifier` validates against.
 
+Windows: the release pipeline also runs a cross-compile job (unsigned `hakase-<tag>-windows-amd64.zip` uploaded as a workflow artifact) and a `windows-latest` job that runs the test suite plus a `hakase.exe` boot smoke. Neither gates the Linux release; Authenticode signing for the Windows binary is a designated follow-up.
+
 #### Verifying release binaries
 
 Release assets ship with SLSA L3 provenance. Verify a downloaded binary with [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
@@ -671,7 +687,42 @@ make dev-backend    # terminal 2 - Go server with the dev tag, port 8080
 
 ### Development Platform
 
-hakase is currently being developed and tested on **Linux**.
+hakase is developed and tested on **Linux** (primary platform) and builds
+natively on **Windows** (`make build-windows` - no WSL2 required). On
+Windows the `system_exec` toolset routes shell commands through
+`cmd /D /C` and the sandbox runs in `paths` mode (`bubblewrap`/`landlock`
+are Linux-only and coerce with a warning). See [Windows notes](#windows-notes)
+for the full list of platform differences.
+
+### <a id="windows-notes"></a>Windows notes
+
+- **Shell semantics** - string commands run via `cmd /D /C` (`/D` suppresses
+  per-user AutoRun registry scripts). POSIX-only constructs - globs, `$()`,
+  backticks, `VAR=x cmd` - are NOT interpreted; use cmd syntax (`%VAR%`,
+  `&&`, `|`, `>`). The `system_exec` tool description carries the same note
+  so the model adapts.
+- **Executable resolution** - bare executable names resolve from PATH only,
+  never the working directory: hakase sets
+  `NoDefaultCurrentDirectoryInExePath=1` process-wide, rewrites bare names to
+  absolute PATH paths before exec, and refuses to execute a file planted in
+  the workspace under a bare command name.
+- **Python** - install Python from [python.org](https://www.python.org/downloads/)
+  so the `py` launcher (or `python`) is on PATH; the code interpreter probes
+  `py -3` then `python` and creates the venv under `.venv\Scripts\`.
+- **Sandbox** - `bubblewrap` and `landlock` modes are Linux-only; on Windows
+  they coerce to `paths` mode with a warning (audit entries record the
+  effective mode).
+- **Unsigned binary** - v1 Windows builds are not code-signed; SmartScreen
+  and antivirus heuristics may flag `hakase.exe`. Verify the sha256 in
+  `SHA256SUMS.txt` and, once installed, the binary behaves like any local
+  tool.
+- **Browser MCP** - the browsing stack is a config swap; on Windows use the
+  [presets](docs/browser-mcp-presets.md) with Lightpanda (headless) or
+  `chrome-devtools-mcp` on Edge.
+- **Known differences (v1)** - TUI image paste is unsupported on Windows
+  (text paste works; `readImageFromClipboard` probes only the Wayland/X11
+  tools), and the web server shuts down via ctrl-c only (SIGTERM is not
+  externally deliverable on Windows).
 
 ### Configuration
 

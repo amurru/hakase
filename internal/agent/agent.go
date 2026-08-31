@@ -10,6 +10,7 @@ import (
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -349,6 +349,22 @@ type PythonExecOutput struct {
 	Stderr string `json:"stderr" doc:"Standard error or execution trace"`
 }
 
+// venvCreatorCommands returns the platform-ordered launcher probes used to
+// create the virtual environment, tried in order. On Windows the py launcher
+// is probed before python (fixed order, per WIN-004); never shell out to
+// python3 on Windows.
+func venvCreatorCommands(venvDir string) [][]string {
+	if runtime.GOOS == "windows" {
+		return [][]string{
+			{"py", "-3", "-m", "venv", venvDir},
+			{"python", "-m", "venv", venvDir},
+		}
+	}
+	return [][]string{
+		{"python3", "-m", "venv", venvDir},
+	}
+}
+
 // getVenvPython returns the executable path to the virtualenv python binary, creating .venv if missing.
 func getVenvPython(log LogFunc) (string, error) {
 	venvDir := "./.venv"
@@ -362,9 +378,20 @@ func getVenvPython(log LogFunc) (string, error) {
 		if log != nil {
 			log("📦 [sys] Initializing local Python virtual environment in ./.venv ...")
 		}
-		cmd := exec.Command("python3", "-m", "venv", venvDir)
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("failed to create virtual environment: %w", err)
+		var lastErr error
+		for _, spec := range venvCreatorCommands(venvDir) {
+			cmd := exec.Command(spec[0], spec[1:]...)
+			sandbox.ConfigureProcess(cmd)
+			lastErr = cmd.Run()
+			if lastErr == nil {
+				break
+			}
+		}
+		if lastErr != nil {
+			if runtime.GOOS == "windows" {
+				return "", fmt.Errorf("failed to create virtual environment: %w (install Python from https://www.python.org/downloads/ so the 'py' launcher or 'python' is on PATH)", lastErr)
+			}
+			return "", fmt.Errorf("failed to create virtual environment: %w", lastErr)
 		}
 	}
 
@@ -502,24 +529,45 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 					cmd.Dir = root
 				}
 			}
-			// Process hardening: new process group + death signal so
-			// children (and grandchildren) die if the agent crashes.
-			// Linux-only fields (project is Linux-only per README).
-			cmd.SysProcAttr = &syscall.SysProcAttr{
-				Setpgid:   true,
-				Pdeathsig: syscall.SIGKILL,
-			}
+			// Process hardening: platform tree management via the
+			// sandbox helpers (process group + Pdeathsig on Unix,
+			// Job Object on Windows).
+			sandbox.ConfigureProcess(cmd)
 			// Pdeathsig fires on the OS thread that calls Start; lock it
-			// so the runtime does not recycle it before CombinedOutput
-			// reaps the child (golang/go#27505).
+			// so the runtime does not recycle it before the child is
+			// started (golang/go#27505). Harmless on Windows.
 			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
-			out, errOut := cmd.CombinedOutput()
+			var outBuf bytes.Buffer
+			cmd.Stdout = &outBuf
+			cmd.Stderr = &outBuf
+			if err := cmd.Start(); err != nil {
+				runtime.UnlockOSThread()
+				return "", err.Error()
+			}
+			if err := sandbox.AttachProcessTree(cmd); err != nil {
+				util.DebugWarn("python_job_attach_failed", "error", err.Error())
+			}
+			runtime.UnlockOSThread()
+
+			// Bounded wait: CommandContext cancels only the direct child;
+			// Wait cannot return while a descendant still holds the
+			// inherited output pipe. On cancellation, kill the whole tree
+			// first so Wait is guaranteed to complete.
+			waitCh := make(chan error, 1)
+			go func() { waitCh <- cmd.Wait() }()
+			var errOut error
+			select {
+			case errOut = <-waitCh:
+			case <-ctx.Done():
+				_ = sandbox.KillProcessTree(cmd)
+				errOut = <-waitCh
+			}
+			sandbox.ReleaseProcessTree(cmd)
 			errStr := ""
 			if errOut != nil {
 				errStr = errOut.Error()
 			}
-			return string(out), errStr
+			return outBuf.String(), errStr
 		}
 
 		stdout, stderr := runScript()
@@ -584,14 +632,26 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 						installCmd.Dir = root
 					}
 				}
-				// Same process hardening as the script-run command.
-				installCmd.SysProcAttr = &syscall.SysProcAttr{
-					Setpgid:   true,
-					Pdeathsig: syscall.SIGKILL,
-				}
+				// Same platform process hardening as the script-run
+				// command, with the same bounded wait so a descendant
+				// holding the output pipe cannot block cancellation.
+				sandbox.ConfigureProcess(installCmd)
 				runtime.LockOSThread()
-				_ = installCmd.Run()
+				if startErr := installCmd.Start(); startErr == nil {
+					if aerr := sandbox.AttachProcessTree(installCmd); aerr != nil {
+						util.DebugWarn("pip_job_attach_failed", "error", aerr.Error())
+					}
+				}
 				runtime.UnlockOSThread()
+				pipWait := make(chan error, 1)
+				go func() { pipWait <- installCmd.Wait() }()
+				select {
+				case <-pipWait:
+				case <-ctx.Done():
+					_ = sandbox.KillProcessTree(installCmd)
+					<-pipWait
+				}
+				sandbox.ReleaseProcessTree(installCmd)
 
 				if log != nil {
 					log(

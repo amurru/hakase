@@ -12,9 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/util"
 )
 
 // Skill kinds used in the disabled-state keys.
@@ -76,15 +76,15 @@ func saveSkillStateLocked(st SkillState) error {
 	tmp := file + ".tmp"
 	lockFile := file + ".lock"
 
-	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_WRONLY, 0o644)
+	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return err
 	}
 	defer lf.Close()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+	if err := util.FlockExclusive(lf); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	defer util.FlockUnlock(lf)
 
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err

@@ -48,7 +48,7 @@ LDFLAGS := -s -w \
 	-X amurru/hakase/internal/cli.Commit=$(COMMIT) \
 	-X amurru/hakase/internal/cli.Date=$(DATE)
 
-.PHONY: build-frontend build release package-deb package-rpm package-linux dev dev-frontend dev-backend test clean
+.PHONY: build-frontend build release package-deb package-rpm package-linux build-windows dev dev-frontend dev-backend test clean
 
 # ---------------------------------------------------------------------------
 # Frontend
@@ -93,6 +93,18 @@ package-rpm: build
 
 package-linux: build
 	./packaging/build-packages.sh deb rpm
+
+# ---------------------------------------------------------------------------
+# Windows cross-compile (native port, v1 unsigned)
+# ---------------------------------------------------------------------------
+
+# Cross-compiles the production binary for windows/amd64 (CGO_ENABLED=0 stays;
+# all deps are pure Go) and assembles the unsigned release zip
+# dist/hakase-<version>-windows-amd64.zip with SHA256SUMS.txt. The frontend
+# mirror is built first (go:embed gotcha - see build-frontend).
+build-windows: build-frontend
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase.exe ./cmd/hakase/
+	bash packaging/build-windows-zip.sh "$(VERSION)"
 
 # ---------------------------------------------------------------------------
 # Development
