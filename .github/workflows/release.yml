@@ -132,15 +132,17 @@ jobs:
   # Windows (native port, v1)
   #
   # Both jobs are independent of `build` so they never gate the Linux release
-  # (Windows guardrail). The zip is uploaded as a workflow artifact, not a
-  # release asset, in v1; it is unsigned - Authenticode signing and SLSA
-  # subjects for the zip are the designated follow-up (code-signing spec).
+  # (Windows guardrail). The zip is uploaded as a workflow artifact for
+  # debugging and also published to the GitHub release as
+  # hakase-<tag>-windows-amd64.zip (unsigned - Authenticode signing and SLSA
+  # subjects for the zip are the designated follow-up, code-signing spec).
   # ---------------------------------------------------------------------------
 
   windows-cross:
     name: Cross-compile Windows zip
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: write # publish the zip to the release (gated by polling, not by needs)
     steps:
       - name: Checkout (full history + tags for git describe)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,6 +179,38 @@ jobs:
           name: hakase-${{ github.ref_name }}-windows-amd64.zip
           path: dist/hakase-${{ github.ref_name }}-windows-amd64.zip
           if-no-files-found: error
+
+      - name: Publish Windows zip to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The build job creates the release; wait up to 5 min for it to appear
+          # so this job stays non-gating (no `needs:`) but still publishes.
+          for _ in $(seq 1 60); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          gh release view "$TAG" >/dev/null 2>&1 || {
+            echo "release $TAG not found after wait; skipping publish" >&2
+            exit 0
+          }
+          gh release upload "$TAG" --clobber "dist/hakase-${TAG}-windows-amd64.zip"
+          echo "published Windows zip to release $TAG"
+          # Best-effort: keep the top-level SHA256SUMS.txt in sync.
+          # Re-download the current SHA256SUMS.txt, append the Windows hash if
+          # it is not already present, and re-upload.
+          if gh release download "$TAG" --pattern "SHA256SUMS.txt" --dir /tmp 2>/dev/null; then
+            WIN_HASH=$(sha256sum "dist/hakase-${TAG}-windows-amd64.zip" | awk '{print $1}')
+            if ! grep -q "hakase-${TAG}-windows-amd64.zip" /tmp/SHA256SUMS.txt; then
+              echo "${WIN_HASH}  hakase-${TAG}-windows-amd64.zip" >> /tmp/SHA256SUMS.txt
+              gh release upload "$TAG" --clobber /tmp/SHA256SUMS.txt
+              echo "updated SHA256SUMS.txt with Windows zip hash"
+            fi
+          fi
 
   windows-test:
     name: Windows tests and smoke
