@@ -2044,9 +2044,18 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		return nil, err
 	}
 
+	// Structured git tools (status/diff/log/branch read-only; stage/commit
+	// mutation). These run git through the same harmful-command policy,
+	// approval gate, and audit path as system_exec. Created before the
+	// general-purpose agent so it can share them.
+	gitTools, err := sandbox.CreateGitOpsTools(interfaces.LogFunc(log))
+	if err != nil {
+		return nil, err
+	}
+
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:        "general_purpose",
-		Description: "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
+		Description: "General-purpose agent for workspace tasks: file operations, git operations, content management, and general-purpose execution.",
 		Instruction: GeneralPurposeSystemInstruction + ContextBlockFor(
 			"general_purpose",
 			ctxBlock,
@@ -2057,7 +2066,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			cfg.SystemEnv.ApplyTo,
 		) + "\n\n" + unitsBlock,
 		Model:                 model,
-		Tools:                 append(fileOpsTools, visionTool),
+		Tools:                 append(append(fileOpsTools, gitTools...), visionTool),
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			vision.VisionInjectionCallback,
@@ -2163,6 +2172,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	orchestratorTools = append(orchestratorTools, mediaTools...)
 	orchestratorTools = append(orchestratorTools, delegateTaskT)
 	orchestratorTools = append(orchestratorTools, fileOpsTools...)
+	orchestratorTools = append(orchestratorTools, gitTools...)
 	orchestratorTools = append(orchestratorTools, systemExecTools...)
 
 	// Expose the sidekick as a side-process tool when enabled, so the
@@ -2199,8 +2209,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			ToolResultGuard,
 		},
 		AfterModelCallbacks: makeSidekickWatcher(sk, cfg),
-		Tools:    orchestratorTools,
-		Toolsets: []tool.Toolset{mcpManager},
+		Tools:               orchestratorTools,
+		Toolsets:            []tool.Toolset{mcpManager},
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,

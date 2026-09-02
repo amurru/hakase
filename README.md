@@ -96,7 +96,7 @@ make dev-frontend   # terminal 1 - Vite dev server, HMR, port 5173
 make dev-backend    # terminal 2 - Go server with the dev tag, port 8080
 ```
 
-Open http://localhost:5173 -- Vite proxies `/api` to the Go server on :8080. No Go rebuild needed for frontend changes. Frontend tests: `cd webui && pnpm test`.
+Open <http://localhost:5173> -- Vite proxies `/api` to the Go server on :8080. No Go rebuild needed for frontend changes. Frontend tests: `cd webui && pnpm test`.
 
 </details>
 
@@ -228,6 +228,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 | **Python Interpreter** | Isolated `.venv`, auto pip install on `ModuleNotFoundError`, sandbox-aware |
 | **Skill Library** | Persisted Python skills + markdown skills, with a darwinian evolver loop |
 | **Knowledge Base** | Wiki-style notes with `[[wikilinks]]`, 8 knowledge tools, `hakase knowledge` CLI |
+| **Git Operations** | Structured `git_status`/`git_diff`/`git_log`/`git_branch` (read-only) and `git_stage`/`git_commit` (mutating, approval-gated) through the same policy as `system_exec` |
 | **Sandboxing** | `paths` by default (bubblewrap optional), secret-file deny list, symlink-safe |
 | **MCP Client** | Any number of stdio/HTTP MCP servers as `mcp_<server>_<tool>` tools, `/mcp` panel |
 | **Media Generation** | `generate_image`/`generate_video` (OpenAI/fal/pil fallback), sandboxed to `outputs/media/` |

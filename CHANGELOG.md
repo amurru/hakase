@@ -10,10 +10,15 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Structured git tools** - `git_status`, `git_diff`, `git_log`, `git_branch` (read-only, no approval) and `git_stage`, `git_commit` (mutating) for the orchestrator and general-purpose agent. Every tool runs `git` through the same harmful-command policy, interactive approval gate, path audit, env scrubbing, and audit log as `system_exec` (`status`/`diff`/`log`/`branch` classify LOW/allow; `add`/`commit` MEDIUM/ask). Repo directories are sandbox-confined (write containment for mutations), output is bounded (256 KiB combined, 20k diff lines) and wrapped as untrusted data, and `GIT_TERMINAL_PROMPT=0` prevents hanging on credential prompts. Push/pull/clone/checkout/reset/clean are deferred to v2 - see [docs/git-tools/](docs/git-tools/).
+
 ### Planned
 
 - `generate_audio` implementation (currently a stub wired for v2)
 - `landlock` sandbox mode (in-process Landlock + seccomp confinement, Phase 3)
+- `git push` / `git pull` / `git clone` and destructive git ops (`checkout`/`reset`/`clean`) - [docs/git-tools/](docs/git-tools/)
 - ComfyUI / TouchDesigner / Suno native integrations (see README TODO)
 
 ## [0.1.0-alpha.4] - 2026-08-31
