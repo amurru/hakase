@@ -21,6 +21,13 @@ import (
 	"amurru/hakase/internal/sandbox"
 )
 
+// Current is the process-wide registry service, set at boot by the main
+// package (cmd/hakase/web.go). Web handlers and the chat run-binder consult
+// it; nil means the registry was not loaded and project features are
+// unavailable. Follows the mcp.MCPManager / sandbox.CurrentSandbox precedent
+// of boot-configured package globals.
+var Current *Service
+
 // Service registers, materializes, syncs, and deletes projects, persisting
 // every state transition through the Store.
 type Service struct {

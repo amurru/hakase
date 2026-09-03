@@ -10,8 +10,8 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
-	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
 	"amurru/hakase/internal/web/middleware"
@@ -42,6 +42,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		if sessionSvc != nil {
 			handlers.RegisterSessionRoutes(r, sessionSvc)
 		}
+		// Registered remote projects (project-registry DP-6..DP-10).
+		handlers.RegisterProjectRoutes(r)
 		// Chat (SSE streaming + message endpoint - task 21)
 		if bridge != nil && runner != nil && runtime != nil && sessionSvc != nil {
 			handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)

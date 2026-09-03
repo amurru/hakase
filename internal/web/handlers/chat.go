@@ -17,6 +17,9 @@ import (
 	hakaseagent "amurru/hakase/internal/agent"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
+	"amurru/hakase/internal/registry"
+	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	hakasesidekick "amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/web/sse"
@@ -485,6 +488,39 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// boundProject resolves the registered project a chat session is bound to
+// (session.project_id, project-registry DP-7). Returns nil when the session is
+// unbound or the binding is unusable (entry missing, or not in status ready),
+// so a run always proceeds - just without a project anchor.
+func (api *ChatAPI) boundProject(sessionID string) *registry.Project {
+	if api.sessionSvc == nil || registry.Current == nil {
+		return nil
+	}
+	sess, err := api.sessionSvc.Store().Load(sessionID)
+	if err != nil || strings.TrimSpace(sess.ProjectID) == "" {
+		return nil
+	}
+	p, err := registry.Current.Store().Get(sess.ProjectID)
+	if err != nil {
+		log.Printf("chat: session %s bound to unknown project %s: %v", sessionID, sess.ProjectID, err)
+		return nil
+	}
+	if p.Status != registry.StatusReady {
+		log.Printf("chat: session %s bound to project %s in status %s; skipping project anchor", sessionID, p.Name, p.Status)
+		return nil
+	}
+	return &p
+}
+
+// projectWorkspaceSnapshot renders a fresh GIT WORKSPACE snapshot for a bound
+// project checkout. Mirrors agent.SetupRunner's boot-time snapshot (status +
+// latest commits) but reflects the session's project at run start.
+func projectWorkspaceSnapshot(checkout string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return sandbox.BuildGitWorkspaceBlock(ctx, checkout, nil)
+}
+
 // runAgentTask runs the agent in a goroutine, streaming all events through
 // the SSE bridge. This mirrors internal/tui/ui.go:runAgentTask but writes
 // to SSE channels instead of tea.Msg. The agent's final answer is also
@@ -512,6 +548,23 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 
 	runCtx := ctx
 	msg := content
+
+	// Project-bound sessions (project-registry DP-7): anchor the run to the
+	// registered project's checkout so git tools default there (resolveRepoDir
+	// consults project.RootFrom) and inject a fresh per-session GIT WORKSPACE
+	// snapshot ahead of the user message. Delegated runs inherit the ctx root
+	// (delegate.go reuses the agent.Context as the sub-run ctx).
+	if bind := api.boundProject(sessionID); bind != nil {
+		checkout := registry.Current.Store().CheckoutDir(*bind)
+		runCtx = project.WithRoot(runCtx, checkout)
+		if snap, serr := projectWorkspaceSnapshot(checkout); serr == nil && strings.TrimSpace(snap) != "" {
+			header := fmt.Sprintf("\n### GIT WORKSPACE — session bound to registered project %q\n(checkout: %s)\n%s", bind.Name, checkout, snap)
+			msg = &genai.Content{
+				Role:  content.Role,
+				Parts: append([]*genai.Part{{Text: header}}, content.Parts...),
+			}
+		}
+	}
 
 	// Generate task ID once before the retry loop so all repair attempts
 	// preserve the same session context

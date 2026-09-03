@@ -68,8 +68,8 @@ read-modify-write with a lock mirroring `tasks.json` handling.
   materialization, where the sandbox state actually lives (amended
   2026-09-03).
 - **DP-7 (session binding)** — Sessions created from the web UI may carry a
-  `project_id`. When present, the session's workspace roots are pinned to
-  the project checkout (this finally resolves the "pin workspace to
+  `project_id`. When present, the session's workspace roots are pinned to the
+  project checkout (this finally resolves the "pin workspace to
   project" item deferred in D-P2 — but **only for registered projects**,
   where the pin is explicit and never a silent widening of a derived
   layout). The existing per-process project root/snapshot machinery then
@@ -80,6 +80,14 @@ read-modify-write with a lock mirroring `tasks.json` handling.
   to `internal/project`: make the session root settable per session
   (thread/context-scoped value consulted by `resolveRepoDir` and the
   snapshot builder) instead of a process global.
+  *Implemented scope (2026-09-03):* the per-session root is the ctx-scoped
+  `project.WithRoot` value that web chat wraps onto each project-bound run —
+  git tool defaults (`resolveRepoDir`) and the injected run snapshot read it,
+  including delegated sub-runs (they inherit the run ctx). OS-level workspace
+  confinement still comes from the process-wide sandbox (`sandbox.CurrentSandbox`
+  is a boot singleton), so a bound session on a sandboxed host needs sandbox
+  mode off or read/write roots covering the hakase home; per-run sandbox
+  contexts are future work.
 - **DP-8 (credentials)** — hakase never stores git credentials. Clone/push/
   pull authenticate through the host's own mechanisms: git credential
   helpers, `gh auth`, or SSH agents - exactly what `system_exec` git would
@@ -140,10 +148,21 @@ project identity as today. The registry is additive.
   tests registering a local bare remote (`file://`, sandbox-off per D9),
   syncing after an external push, diverged pull → sync_error without
   clobbering; headless-binary test proves DP-11 under the real wiring.
-- **P3 - Web API + session binding [BE]**: the four endpoints under the
-  existing auth middleware; session model gains `project_id`; workspace
-  roots pinning per DP-7; snapshot per session. Verify: handler tests with
-  isolated home; `go test ./internal/web/...`.
+- **P3 - Web API + session binding [BE]** *(done 2026-09-03)*: the four
+  `/api/projects` endpoints (list / register / delete / sync) under the
+  existing auth group, served by the boot-configured registry service
+  (`registry.Current`, set in `cmd/hakase/web.go`; 503 when not loaded). The
+  session model gained `project_id`/`project_name` and `POST /sessions`
+  binds to a ready registered project (unknown/unready project = 400);
+  session DTOs carry the binding for the chat header. Project-bound chat
+  runs anchor to the checkout per DP-7: `runAgentTask` wraps the run ctx
+  with `project.WithRoot(checkout)` so git tools - delegated runs included -
+  default to that checkout, and injects a fresh per-run `GIT WORKSPACE`
+  snapshot ahead of the user message. Verify: handler tests with isolated
+  home against a local bare remote (register → list → sync after an external
+  push → delete, plus 409/400/404 paths, 503 without a registry, and session
+  project binding persisted on the session file); `go test ./internal/web/...`
+  and the full suite green.
 - **P4 - UI + docs [QA]**: project selector in the web sidebar, chat header
   chip, README remote-deployment section (incl. the credential note DP-8).
   Verify: `cd webui && pnpm test`, manual smoke against a local server.
