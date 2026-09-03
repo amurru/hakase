@@ -155,3 +155,19 @@ git command.
   signing, and remote/tag management remain system_exec domain: they either
   rewrite history or need interactive workflows the structured tools should
   not paper over.
+
+## 9. v3 decisions (Phase 7 first slice, 2026-09-03)
+
+- **D17 (stash/tag slice)** — D16 partially revisited with product approval:
+  `git_stash` (list/push/pop) and `git_tag` (list/create/delete) join the
+  toolset as the workspace-hygiene slice. Stash never loses work it cannot
+  restore (pop conflicts are left in the tree and reported, matching git);
+  tag delete is explicit `-d` and approval-gated. Tag names are validated
+  with git's check-ref-format rules (no `..`, `@{`, leading `.`, `.lock`).
+  rebase/merge, `--amend`/signing, and `git_remote` management stay out.
+- **D18 (remote/branch classification caveat)** — a future `git_remote`
+  (or mutating `git_branch`) tool must first tighten `classifyGitRisk`: the
+  gate today classifies the whole `remote` and `branch` subcommands LOW
+  (read-mostly), so `git remote remove`/`git branch -D` through system_exec
+  would not ask. Structured tools built on that classification would inherit
+  the hole, so the tightening is a prerequisite, not a cosmetic change.

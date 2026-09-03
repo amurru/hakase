@@ -105,10 +105,10 @@ func TestCreateGitOpsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGitOpsTools: %v", err)
 	}
-	if len(tools) != 12 {
-		t.Fatalf("expected 12 tools, got %d", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("expected 14 tools, got %d", len(tools))
 	}
-	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull", "git_checkout", "git_reset", "git_clean"}
+	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull", "git_checkout", "git_reset", "git_clean", "git_stash", "git_tag"}
 	for i, name := range want {
 		if tools[i].Name() != name {
 			t.Errorf("tool[%d] = %q, want %q", i, tools[i].Name(), name)
@@ -1162,5 +1162,130 @@ func TestGitCleanDryRunRemoveAndDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
 		t.Errorf("keep.txt removed by path-filtered clean: %v", err)
+	}
+}
+
+func TestGitStashPushListPop(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	// An uncommitted edit to a tracked file.
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	push, err := gitStashContent(context.Background(), GitStashInput{
+		RepoDir:   dir,
+		Operation: "push",
+		Message:   "wip",
+	}, nil)
+	if err != nil {
+		t.Fatalf("stash push: %v", err)
+	}
+	if push.Message == "" {
+		t.Error("stash push returned no message")
+	}
+
+	// The working tree is clean again after the push.
+	status, err := gitStatusContent(context.Background(), GitStatusInput{RepoDir: dir}, nil)
+	if err != nil {
+		t.Fatalf("status after stash push: %v", err)
+	}
+	if len(status.Entries) != 0 {
+		t.Errorf("working tree not clean after stash push: %+v", status.Entries)
+	}
+
+	// list shows the stash entry.
+	list, err := gitStashContent(context.Background(), GitStashInput{RepoDir: dir, Operation: "list"}, nil)
+	if err != nil {
+		t.Fatalf("stash list: %v", err)
+	}
+	if len(list.Stashes) != 1 {
+		t.Fatalf("stash list = %+v, want one entry", list.Stashes)
+	}
+
+	// pop restores the edit.
+	pop, err := gitStashContent(context.Background(), GitStashInput{RepoDir: dir, Operation: "pop"}, nil)
+	if err != nil {
+		t.Fatalf("stash pop: %v", err)
+	}
+	if pop.Message == "" {
+		t.Error("stash pop returned no message")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "# edited" {
+		t.Errorf("README after pop = %q, want the stashed edit", string(data))
+	}
+
+	// Unknown operation is rejected.
+	if _, err := gitStashContent(context.Background(), GitStashInput{RepoDir: dir, Operation: "explode"}, nil); err == nil {
+		t.Error("unknown stash operation accepted")
+	}
+}
+
+func TestGitTagCreateListDelete(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	// Lightweight tag at HEAD.
+	_, err := gitTagContent(context.Background(), GitTagInput{
+		RepoDir:   dir,
+		Operation: "create",
+		Name:      "v1.0.0",
+	}, nil)
+	if err != nil {
+		t.Fatalf("tag create: %v", err)
+	}
+
+	// Annotated tag with a message at a named ref.
+	if _, err := gitTagContent(context.Background(), GitTagInput{
+		RepoDir:   dir,
+		Operation: "create",
+		Name:      "release/stable",
+		Message:   "stable cut",
+		Ref:       "HEAD",
+	}, nil); err != nil {
+		t.Fatalf("annotated tag create: %v", err)
+	}
+
+	list, err := gitTagContent(context.Background(), GitTagInput{RepoDir: dir, Operation: "list"}, nil)
+	if err != nil {
+		t.Fatalf("tag list: %v", err)
+	}
+	if len(list.Tags) != 2 {
+		t.Fatalf("tag list = %+v, want two tags", list.Tags)
+	}
+
+	// Delete one tag.
+	del, err := gitTagContent(context.Background(), GitTagInput{
+		RepoDir:   dir,
+		Operation: "delete",
+		Name:      "v1.0.0",
+	}, nil)
+	if err != nil {
+		t.Fatalf("tag delete: %v", err)
+	}
+	if del.Message == "" {
+		t.Error("tag delete returned no message")
+	}
+	list, err = gitTagContent(context.Background(), GitTagInput{RepoDir: dir, Operation: "list"}, nil)
+	if err != nil {
+		t.Fatalf("tag list after delete: %v", err)
+	}
+	if len(list.Tags) != 1 || strings.TrimSpace(list.Tags[0]) != "release/stable" {
+		t.Errorf("tag list after delete = %+v, want [release/stable]", list.Tags)
+	}
+
+	// Bad names/refs are rejected up front.
+	if _, err := gitTagContent(context.Background(), GitTagInput{RepoDir: dir, Operation: "create", Name: "bad..name"}, nil); err == nil {
+		t.Error("invalid tag name accepted")
+	}
+	if _, err := gitTagContent(context.Background(), GitTagInput{RepoDir: dir, Operation: "delete", Name: "v1.0.0", Ref: "HEAD"}, nil); err == nil {
+		t.Error("delete with a ref argument accepted")
 	}
 }

@@ -802,6 +802,19 @@ func validGitName(s string, allowSlash bool) bool {
 	return true
 }
 
+// validGitTagName adds git's check-ref-format rules on top of validGitName:
+// no "..", no "@{", no leading ".", and no ".lock" suffix. These produce refs
+// git itself would reject, so they are caught here for clearer errors.
+func validGitTagName(s string) bool {
+	if !validGitName(s, true) {
+		return false
+	}
+	if strings.HasPrefix(s, ".") || strings.Contains(s, "..") || strings.Contains(s, "@{") || strings.HasSuffix(s, ".lock") {
+		return false
+	}
+	return true
+}
+
 // validateCloneSource checks where git_clone may read from. Remote URLs need
 // an explicit allowlisted scheme. file:// URLs and scheme-less local paths
 // read the host filesystem directly - bypassing the sandbox read roots - so
@@ -1230,10 +1243,194 @@ func gitCleanContent(ctx context.Context, input GitCleanInput, log interfaces.Lo
 }
 
 // ---------------------------------------------------------------------------
+// git_stash / git_tag (workspace hygiene, v3 - Phase 7 first slice)
+// ---------------------------------------------------------------------------
+
+// GitStashInput is the input schema for the git_stash tool.
+type GitStashInput struct {
+	RepoDir          string `json:"repo_dir,omitempty"     doc:"Repository directory (defaults to the project root / working directory)"`
+	Operation        string `json:"operation"              doc:"Operation: list, push, or pop"`
+	Message          string `json:"message,omitempty"      doc:"Push message (git stash push -m; push only)"`
+	IncludeUntracked *bool  `json:"include_untracked,omitempty" doc:"Also stash untracked files (git stash push -u; push only)"`
+	Stash            string `json:"stash,omitempty"        doc:"Which stash entry to pop, e.g. stash@{1} (defaults to the newest)"`
+}
+
+// GitStashOutput is the output schema of the git_stash tool.
+type GitStashOutput struct {
+	RepoDir   string   `json:"repo_dir"`
+	Operation string   `json:"operation"`
+	Stashes   []string `json:"stashes,omitempty" doc:"Stash entries (list operation only)"`
+	Message   string   `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo  bool     `json:"not_a_repo,omitempty"`
+	Stderr    string   `json:"stderr,omitempty"`
+}
+
+// GitTagInput is the input schema for the git_tag tool.
+type GitTagInput struct {
+	RepoDir   string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Operation string `json:"operation"          doc:"Operation: list, create, or delete"`
+	Name      string `json:"name,omitempty"     doc:"Tag name (create/delete)"`
+	Message   string `json:"message,omitempty"  doc:"Annotated-tag message (create only; absent creates a lightweight tag)"`
+	Ref       string `json:"ref,omitempty"      doc:"Commit-ish the tag points at (create only; defaults to HEAD)"`
+}
+
+// GitTagOutput is the output schema of the git_tag tool.
+type GitTagOutput struct {
+	RepoDir   string   `json:"repo_dir"`
+	Operation string   `json:"operation"`
+	Tags      []string `json:"tags,omitempty" doc:"Tag names (list operation only)"`
+	Message   string   `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo  bool     `json:"not_a_repo,omitempty"`
+	Stderr    string   `json:"stderr,omitempty"`
+}
+
+// gitStashContent is the package-level handler for the git_stash tool.
+func gitStashContent(ctx context.Context, input GitStashInput, log interfaces.LogFunc) (GitStashOutput, error) {
+	out := GitStashOutput{}
+	op := strings.TrimSpace(input.Operation)
+	switch op {
+	case "list", "push", "pop":
+	default:
+		return out, fmt.Errorf("git_stash: unsupported operation %q (allowed: list, push, pop)", input.Operation)
+	}
+	out.Operation = op
+
+	// list only reads; push/pop move working-tree state.
+	dir, err := resolveRepoDir(ctx, input.RepoDir, op != "list")
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	args := []string{"stash"}
+	switch op {
+	case "list":
+		args = append(args, "list")
+	case "push":
+		args = append(args, "push")
+		if msg := strings.TrimSpace(input.Message); msg != "" {
+			args = append(args, "-m", msg)
+		}
+		if input.IncludeUntracked != nil && *input.IncludeUntracked {
+			args = append(args, "-u")
+		}
+	case "pop":
+		args = append(args, "pop")
+		if stash := strings.TrimSpace(input.Stash); stash != "" {
+			if !validGitRevision(stash) {
+				return out, fmt.Errorf("git_stash: invalid stash ref %q", stash)
+			}
+			args = append(args, stash)
+		}
+	}
+
+	res, err := runGit(ctx, dir, args, op != "list", log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	if op == "list" {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+			if line != "" {
+				out.Stashes = append(out.Stashes, wrapUntrustedData(line))
+			}
+		}
+	} else {
+		out.Message = wrapUntrustedData(firstGitMessage(res))
+	}
+	return out, nil
+}
+
+// firstGitMessage returns the operation's informational line, preferring
+// stderr (where git usually writes progress) but falling back to stdout -
+// some operations (e.g. tag delete) report on stdout.
+func firstGitMessage(res gitResult) string {
+	if msg := splitGitOut(res.Stderr); msg != "" {
+		return msg
+	}
+	return splitGitOut(res.Stdout)
+}
+
+// gitTagContent is the package-level handler for the git_tag tool.
+func gitTagContent(ctx context.Context, input GitTagInput, log interfaces.LogFunc) (GitTagOutput, error) {
+	out := GitTagOutput{}
+	op := strings.TrimSpace(input.Operation)
+	switch op {
+	case "list", "create", "delete":
+	default:
+		return out, fmt.Errorf("git_tag: unsupported operation %q (allowed: list, create, delete)", input.Operation)
+	}
+	out.Operation = op
+	if op != "create" && strings.TrimSpace(input.Ref) != "" {
+		return out, fmt.Errorf("git_tag: ref is only valid for the create operation")
+	}
+
+	dir, err := resolveRepoDir(ctx, input.RepoDir, op != "list")
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	name := strings.TrimSpace(input.Name)
+	args := []string{"tag"}
+	switch op {
+	case "list":
+		args = append(args, "--list")
+	case "create":
+		if !validGitTagName(name) {
+			return out, fmt.Errorf("git_tag: invalid tag name %q", name)
+		}
+		if msg := strings.TrimSpace(input.Message); msg != "" {
+			// Annotated tag (has a message) vs lightweight (name only).
+			args = append(args, "-a", name, "-m", msg)
+		} else {
+			args = append(args, name)
+		}
+		if ref := strings.TrimSpace(input.Ref); ref != "" {
+			if !validGitRevision(ref) {
+				return out, fmt.Errorf("git_tag: invalid ref %q", ref)
+			}
+			args = append(args, ref)
+		}
+	case "delete":
+		if !validGitTagName(name) {
+			return out, fmt.Errorf("git_tag: invalid tag name %q", name)
+		}
+		args = append(args, "-d", name)
+	}
+
+	res, err := runGit(ctx, dir, args, op != "list", log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	if op == "list" {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+			if line != "" {
+				out.Tags = append(out.Tags, wrapUntrustedData(line))
+			}
+		}
+	} else {
+		out.Message = wrapUntrustedData(firstGitMessage(res))
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
-// CreateGitOpsTools builds the twelve-tool git toolset shared by the
+// CreateGitOpsTools builds the fourteen-tool git toolset shared by the
 // orchestrator and the general-purpose agent. Every tool runs git through
 // BuildExecCommand, so the harmful-command policy, approval gate, path
 // audit, env scrubbing, and audit log apply to structured git operations
@@ -1359,7 +1556,27 @@ func CreateGitOpsTools(log interfaces.LogFunc) ([]tool.Tool, error) {
 		return nil, err
 	}
 
-	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool, checkoutTool, resetTool, cleanTool}, nil
+	stashTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_stash",
+		Description: "Stashes uncommitted changes away and brings them back: list shows the stash, push saves the working tree (message + include_untracked supported), pop restores a saved stash (default the newest). Mutating for push/pop; approval-gated like system_exec. Conflicts on pop are left in the working tree by git and reported in the message.",
+	}, func(ctx agent.Context, input GitStashInput) (GitStashOutput, error) {
+		return gitStashContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	tagTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_tag",
+		Description: "Manages tags: list shows the repository tags, create makes a lightweight tag (or an annotated one when message is set) at a commit-ish ref (default HEAD), delete removes a local tag (-d). Mutating for create/delete; approval-gated like system_exec.",
+	}, func(ctx agent.Context, input GitTagInput) (GitTagOutput, error) {
+		return gitTagContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool, checkoutTool, resetTool, cleanTool, stashTool, tagTool}, nil
 }
 
 // ---------------------------------------------------------------------------

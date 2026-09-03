@@ -113,9 +113,22 @@ Legend: `[BE]` Go backend, `[QA]` test/docs. Status: TODO unless marked.
 - [x] **T6.5 [QA]** research.md D13-D16, spec GT-012..014, CHANGELOG.
       Verify: manual read.
 
-## Phase 7 - Remaining git surface (pending)
+## Phase 7 - Remaining git surface (partial, 2026-09-03)
 
-- [ ] **T7.x** `git_stash` / `git_rebase` / `git_merge` (interactive
-      workflows), `git_commit --amend` / signing, `git_remote` / `git_tag` -
-      currently system_exec domain per D16; revisit only with explicit
-      product decisions.
+- [x] **T7.1 [BE]** `git_stash` (list/push/pop) - workspace hygiene slice:
+      push saves the working tree (optional `-m`, `-u` for untracked), pop
+      restores the newest entry or a named `stash@{n}` (git leaves pop
+      conflicts in the tree and reports them), list shows entries. Mutating
+      ops flow through the existing gate (MEDIUM/ask). Verify: stash an edit
+      -> clean tree -> list -> pop restores. Spec: GT-015.
+- [x] **T7.2 [BE]** `git_tag` (list/create/delete) - lightweight or annotated
+      (message set) tags at a commit-ish (default HEAD); delete is
+      `tag -d`. Names validated with git's check-ref-format rules (no `..`,
+      `@{`, leading `.`, `.lock`). Mutating ops approval-gated. Verify:
+      create/list/delete + validation. Spec: GT-016.
+- [ ] **T7.x** `git_remote` management, `git_rebase` / `git_merge`, `git_commit
+      --amend` / signing - still system_exec domain; revisit with explicit
+      product decisions. `git_remote add/remove/set-url` and mutating
+      `git_branch` need a separate slice: the gate classifies the whole
+      `remote`/`branch` subcommands LOW today (read-mostly), so structured
+      tools for them require a classification tightening first.

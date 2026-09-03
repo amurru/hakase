@@ -375,3 +375,29 @@ before Go commands.
   Output parses "Removing X"/"Would remove X" lines into `Removed`. Paths
   repo-relative and traversal-checked; only untracked data is ever touched.
 - **Verify**: `TestGitCleanDryRunRemoveAndDirs`.
+
+## GT-015: `git_stash` tool (mutating for push/pop, MEDIUM/ask)
+
+- **Objective**: Save and restore uncommitted working-tree changes (D17).
+- **Contracts**: `GitStashInput{RepoDir, Operation (list|push|pop), Message,
+  IncludeUntracked *bool (-u), Stash (e.g. stash@{1})}`.
+- **Behavior**: list reads `git stash list`; push runs
+  `git stash push [-m msg] [-u]`; pop runs `git stash pop [stash]` (default
+  newest, ref revision-validated). Push/pop messages fall back from stderr to
+  stdout (which stream git uses varies by operation/version). Pop conflicts
+  are left in the working tree by git and reported in the message - the tool
+  never drops a stash it could not restore cleanly.
+- **Verify**: `TestGitStashPushListPop`.
+
+## GT-016: `git_tag` tool (mutating for create/delete, MEDIUM/ask)
+
+- **Objective**: List, create, and delete tags (D17).
+- **Contracts**: `GitTagInput{RepoDir, Operation (list|create|delete), Name,
+  Message, Ref}`.
+- **Behavior**: list reads `git tag --list`; create makes a lightweight tag
+  (name only) or an annotated one when `message` is set (`-a -m`), at an
+  optional revision-validated `ref` (default HEAD; only valid for create);
+  delete runs `git tag -d <name>`. Names are validated with git's
+  check-ref-format rules (`validGitTagName`): no `..`, `@{`, leading `.`, or
+  `.lock` suffix.
+- **Verify**: `TestGitTagCreateListDelete`.
