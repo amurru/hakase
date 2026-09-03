@@ -31,15 +31,20 @@ func TestStoreCRUD(t *testing.T) {
 	if _, err := s.Create("Hakase-Web", "https://example.com/other.git", ""); err == nil {
 		t.Error("duplicate name accepted")
 	}
-	// Validation rejects bad names and non-network sources.
+	// Validation rejects bad names and unsupported sources. file:// is allowed:
+	// it is a local bare remote for CLI operation (the D9 sandbox gate applies
+	// at materialization, not at entry creation).
 	if _, err := s.Create("../evil", "https://example.com/x.git", ""); err == nil {
 		t.Error("invalid name accepted")
 	}
-	if _, err := s.Create("local", "file:///tmp/seed", ""); err == nil {
-		t.Error("file:// source accepted for a registered project")
+	if !ValidSourceURL("file:///tmp/seed") {
+		t.Error("file:// source rejected for a registered project")
 	}
-	if _, err := s.Create("plain", "/tmp/seed", ""); err == nil {
-		t.Error("local path accepted for a registered project")
+	if ValidSourceURL("/tmp/seed") {
+		t.Error("scheme-less local path accepted for a registered project")
+	}
+	if ValidSourceURL("ftp://example.com/seed.git") {
+		t.Error("non-git scheme accepted for a registered project")
 	}
 
 	// Update transitions status and keeps CreatedAt stable.

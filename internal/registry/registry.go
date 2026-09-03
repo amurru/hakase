@@ -46,7 +46,11 @@ var ErrNotFound = errors.New("project not found")
 
 var (
 	nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	urlRe  = regexp.MustCompile(`^(https|http|git|ssh)://`)
+	// urlRe mirrors the git_clone D9 scheme allowlist plus file://. Scheme-less
+	// local paths are left to git_clone (they are accepted there only when no
+	// sandbox is active); the registry keeps an explicit scheme so entries are
+	// unambiguous and the full sandbox gate is applied at materialization.
+	urlRe = regexp.MustCompile(`^(https|http|git|ssh|file)://`)
 )
 
 // ValidName reports whether name is usable as a project name.
@@ -55,10 +59,10 @@ func ValidName(name string) bool {
 }
 
 // ValidSourceURL reports whether url is an acceptable clone source for a
-// registered project. Registry sources are always remote URLs (network
-// schemes only): file:// and local paths make no sense for a host that
-// materializes the client's code, and keeping the allowlist strict mirrors
-// the git_clone D9 policy for sandboxed runs.
+// registered project. Network schemes (https/http/git/ssh) are always fine -
+// they are the point of a remote-web host. file:// points at a local bare
+// remote and is accepted for local/CLI operation; per D9 the sandbox gate
+// rejects it again at materialization while a sandbox is active.
 func ValidSourceURL(url string) bool {
 	return urlRe.MatchString(strings.TrimSpace(url))
 }
@@ -131,6 +135,33 @@ func (s *Store) Get(id string) (Project, error) {
 	return *p, nil
 }
 
+// GetByName returns a copy of the project whose name matches (case-insensitive;
+// names are unique per registry).
+func (s *Store) GetByName(name string) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.projects {
+		if strings.EqualFold(p.Name, strings.TrimSpace(name)) {
+			return *p, nil
+		}
+	}
+	return Project{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+}
+
+// CheckoutRoot returns the managed directory that holds every project
+// checkout. It is derived from the store's own location (<store dir>/projects)
+// so checkouts always live under the same tree as the registry that owns them.
+func (s *Store) CheckoutRoot() string {
+	return filepath.Join(filepath.Dir(s.path), "projects")
+}
+
+// CheckoutDir returns the managed checkout directory for p. The path is
+// derived from the project id (never from user input), so it is always inside
+// CheckoutRoot.
+func (s *Store) CheckoutDir(p Project) string {
+	return filepath.Join(s.CheckoutRoot(), p.ID)
+}
+
 // Create registers a new project with status cloning. Name and source URL
 // are validated; both id and name must be unique.
 func (s *Store) Create(name, sourceURL, ref string) (Project, error) {
@@ -140,7 +171,7 @@ func (s *Store) Create(name, sourceURL, ref string) (Project, error) {
 		return Project{}, fmt.Errorf("registry: invalid project name %q", name)
 	}
 	if !ValidSourceURL(sourceURL) {
-		return Project{}, fmt.Errorf("registry: unsupported source URL %q (allowed: https://, http://, git://, ssh://)", sourceURL)
+		return Project{}, fmt.Errorf("registry: unsupported source URL %q (allowed: https://, http://, git://, ssh://, or file:// for a local bare remote)", sourceURL)
 	}
 
 	s.mu.Lock()

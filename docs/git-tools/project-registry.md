@@ -62,7 +62,11 @@ read-modify-write with a lock mirroring `tasks.json` handling.
   engine (`sandbox.gitCloneContent`), into `~/.hakase/projects/<id>`.
   Clone-source policy is the v2.1 D9 allowlist (https/git/ssh over the
   network; local paths only when no sandbox is active) — on a remote host
-  the network forms are the point.
+  the network forms are the point. Entry validation mirrors that allowlist
+  as https/http/git/ssh/**file** (file:// is the explicit "local bare
+  remote" form); the sandbox half of D9 is enforced again at
+  materialization, where the sandbox state actually lives (amended
+  2026-09-03).
 - **DP-7 (session binding)** — Sessions created from the web UI may carry a
   `project_id`. When present, the session's workspace roots are pinned to
   the project checkout (this finally resolves the "pin workspace to
@@ -89,6 +93,15 @@ read-modify-write with a lock mirroring `tasks.json` handling.
 - **DP-10 (deletion)** — Deleting a project removes the registry entry and
   the local checkout; it never touches the remote (no force-push, no remote
   deletion). Re-registering re-clones.
+- **DP-11 (operator materialization)** — register/sync/delete run git through
+  the same hardened executor as `git_clone`/`git_pull` (argv hygiene,
+  `GIT_TERMINAL_PROMPT=0`, bounded output, timeout, process-tree kill, env
+  scrub) but under operator authority: the interactive approval gate's ask is
+  bypassed because there is no agent to answer it headless
+  (`agent.ApproveExec` fails closed without a runtime, so a bare
+  `hakase projects register` would otherwise be blocked on its own clone).
+  The human issuing the command is the authorizer. Agent-facing git tools are
+  unchanged and stay approval-gated.
 
 ## 4. Web surface (remote deployments)
 
@@ -110,16 +123,23 @@ project identity as today. The registry is additive.
 
 - **P1 - Registry core [BE]** *(done 2026-09-03)*: `internal/registry`
   package: entry model, `projects.json` load/save with lock, CRUD + id/name
-  uniqueness, source-URL allowlist (https/http/git/ssh). Session-scoped
-  project root: `internal/project` gained `WithRoot`/`RootFrom`
-  (context-scoped value with process-root fallback), threaded through
-  `resolveRepoDir` + `BuildGitWorkspaceBlock`. Verify: package tests;
-  existing git-tools tests stay green.
-- **P2 - Materialization + CLI [BE]**: register/sync/delete wired to the
-  git_clone/git_pull content functions (reuse, no new exec surface),
-  `~/.hakase/projects/<id>` layout, status transitions, `hakase projects`
-  CLI subcommand. Verify: temp-home tests registering a local bare remote
-  (sandbox-off, per D9), syncing after an external push.
+  uniqueness, source-URL allowlist (https/http/git/ssh, + file:// amended
+  2026-09-03 for local bare remotes). Session-scoped project root:
+  `internal/project` gained `WithRoot`/`RootFrom` (context-scoped value with
+  process-root fallback), threaded through `resolveRepoDir` +
+  `BuildGitWorkspaceBlock`. Verify: package tests; existing git-tools tests
+  stay green.
+- **P2 - Materialization + CLI [BE]** *(done 2026-09-03)*: `registry.Service`
+  registers/syncs/deletes through the git_clone/git_pull content functions
+  (`sandbox.OperatorClone`/`OperatorPull` — same engine, operator-authorized
+  exec per DP-11; no new exec surface), checkouts live at
+  `<store dir>/projects/<id>`, statuses transition cloning → ready /
+  sync_error (failed register leaves a sync_error entry that Sync retries by
+  re-cloning; a failed pull on an existing tree never deletes local work).
+  `hakase projects list|register|sync|delete` CLI added. Verify: temp-home
+  tests registering a local bare remote (`file://`, sandbox-off per D9),
+  syncing after an external push, diverged pull → sync_error without
+  clobbering; headless-binary test proves DP-11 under the real wiring.
 - **P3 - Web API + session binding [BE]**: the four endpoints under the
   existing auth middleware; session model gains `project_id`; workspace
   roots pinning per DP-7; snapshot per session. Verify: handler tests with

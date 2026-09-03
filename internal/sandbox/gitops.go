@@ -138,6 +138,18 @@ func (cw captureWriter) Write(p []byte) (int, error) {
 // directory (never -C), so classifyGitRisk sees the subcommand in argv[1]
 // (status/log/diff/branch = LOW; add/commit = MEDIUM).
 func runGit(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc) (gitResult, error) {
+	return runGitOpt(ctx, repoDir, args, write, log)
+}
+
+// runGitOperator is runGit under operator authority (see
+// ExecOperatorAuthorized): same hardening, but the interactive approval gate
+// is bypassed because the human operator issued the command directly. Used by
+// the project-registry materialization, never by agent-facing tools.
+func runGitOperator(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc) (gitResult, error) {
+	return runGitOpt(ctx, repoDir, args, write, log, ExecOperatorAuthorized())
+}
+
+func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc, opts ...ExecOption) (gitResult, error) {
 	if len(args) == 0 {
 		return gitResult{}, fmt.Errorf("git: no subcommand")
 	}
@@ -150,7 +162,7 @@ func runGit(ctx context.Context, repoDir string, args []string, write bool, log 
 	// instead of hanging the run waiting on a TTY.
 	cmd, err := BuildExecCommand("git", args, dir, map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
-	})
+	}, opts...)
 	if err != nil {
 		return gitResult{Stdout: "", Stderr: err.Error()}, err
 	}
@@ -823,6 +835,17 @@ func validateCloneSource(source string) error {
 
 // gitCloneContent is the package-level handler for the git_clone tool.
 func gitCloneContent(ctx context.Context, input GitCloneInput, log interfaces.LogFunc) (GitCloneOutput, error) {
+	return cloneContent(ctx, input, log, false)
+}
+
+// OperatorClone clones through the same engine as git_clone but under direct
+// operator authority (no interactive approval - the human issuing the command
+// is the authorizer). Used by the project-registry materialization.
+func OperatorClone(ctx context.Context, input GitCloneInput, log interfaces.LogFunc) (GitCloneOutput, error) {
+	return cloneContent(ctx, input, log, true)
+}
+
+func cloneContent(ctx context.Context, input GitCloneInput, log interfaces.LogFunc, operator bool) (GitCloneOutput, error) {
 	out := GitCloneOutput{}
 	if err := validateCloneSource(input.URL); err != nil {
 		return out, fmt.Errorf("git_clone: %w", err)
@@ -853,7 +876,11 @@ func gitCloneContent(ctx context.Context, input GitCloneInput, log interfaces.Lo
 	// clone is a mutating + network op: MEDIUM risk, approval-gated. The
 	// target parent is the working directory; git receives the bare name so
 	// the URL stays the only remote-controlled token in argv.
-	res, err := runGit(ctx, parent, args, true, log)
+	run := runGit
+	if operator {
+		run = runGitOperator
+	}
+	res, err := run(ctx, parent, args, true, log)
 	if err != nil {
 		return out, err
 	}
@@ -908,6 +935,16 @@ func gitPushContent(ctx context.Context, input GitPushInput, log interfaces.LogF
 
 // gitPullContent is the package-level handler for the git_pull tool.
 func gitPullContent(ctx context.Context, input GitPullInput, log interfaces.LogFunc) (GitPullOutput, error) {
+	return pullContent(ctx, input, log, false)
+}
+
+// OperatorPull mirrors git_pull under direct operator authority (see
+// OperatorClone). Used by the project-registry sync.
+func OperatorPull(ctx context.Context, input GitPullInput, log interfaces.LogFunc) (GitPullOutput, error) {
+	return pullContent(ctx, input, log, true)
+}
+
+func pullContent(ctx context.Context, input GitPullInput, log interfaces.LogFunc, operator bool) (GitPullOutput, error) {
 	out := GitPullOutput{}
 	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
@@ -937,7 +974,11 @@ func gitPullContent(ctx context.Context, input GitPullInput, log interfaces.LogF
 	if branch != "" {
 		args = append(args, branch)
 	}
-	res, err := runGit(ctx, dir, args, true, log)
+	run := runGit
+	if operator {
+		run = runGitOperator
+	}
+	res, err := run(ctx, dir, args, true, log)
 	if err != nil {
 		if isNotARepoErr(res) {
 			out.NotARepo = true

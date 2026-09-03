@@ -205,7 +205,35 @@ func (m *systemExecManager) snapshot() []*runningProcess {
 // pinned to the workspace root (or verified against it when workingDir is
 // set), and sensitive env entries (HAKASE_*, AWS_*, GITHUB_*, OPENAI_*) are
 // scrubbed so they never leak into sandboxed subprocesses.
-func BuildExecCommand(command string, args []string, workingDir string, env map[string]string) (*exec.Cmd, error) {
+// execOptions carries the optional build behaviors for BuildExecCommand.
+type execOptions struct {
+	// operatorAuthorized records that the human operator issued the command
+	// directly (e.g. the `hakase projects` registry CLI), so the interactive
+	// approval gate is bypassed - there is no agent/UI to answer it, and the
+	// human typing the command IS the authorization. Hard denies and sandbox
+	// confinement still apply.
+	operatorAuthorized bool
+}
+
+// ExecOption customizes how BuildExecCommand constructs a command.
+type ExecOption func(*execOptions)
+
+// ExecOperatorAuthorized marks the command as issued directly by the operator
+// rather than by an agent. Approvals that would normally be asked are recorded
+// as operator-authorized instead of consulting ApproveFunc.
+func ExecOperatorAuthorized() ExecOption {
+	return func(o *execOptions) { o.operatorAuthorized = true }
+}
+
+// BuildExecCommand builds the hardened exec.Cmd for a system command: harmful-
+// command policy evaluation (+ interactive approval), path confinement,
+// env scrubbing, and bubblewrap wrapping. `env` overlays the process env;
+// `opts` customize the build (see ExecOperatorAuthorized).
+func BuildExecCommand(command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
+	bo := &execOptions{}
+	for _, o := range opts {
+		o(bo)
+	}
 	if strings.TrimSpace(command) == "" {
 		return nil, fmt.Errorf("command must not be empty")
 	}
@@ -255,6 +283,20 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 		})
 		return nil, fmt.Errorf("command denied by protection policy: %s", decision.Reason)
 	case ActionAsk:
+		if bo.operatorAuthorized {
+			AuditCommandFunc(CommandAuditEntry{
+				Timestamp:   time.Now(),
+				Tool:        "system_exec",
+				Command:     command,
+				Args:        args,
+				CWD:         cd,
+				SandboxMode: sandboxMode,
+				Decision:    "operator_approved",
+				Risk:        decision.Risk.String(),
+				Reason:      decision.Reason,
+			})
+			break
+		}
 		approved, aerr := ApproveFunc(interfaces.ApprovalRequest{
 			Tool:      "system_exec",
 			Command:   command,
