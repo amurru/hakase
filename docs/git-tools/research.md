@@ -119,3 +119,39 @@ gets `append(fileOpsTools, visionTool)`. Git tools follow the same pattern.
   never silently create merge commits. Diverged branches error out and the
   model proposes an explicit rebase/merge workflow through system_exec with
   the user's approval. Push/pull surface `NotARepo` like `git_commit` does.
+
+## 7. v2.2 decisions (destructive operations, 2026-09-03)
+
+Gate semantics that make these tools safe: `classifyGitRisk` already elevates
+`checkout --force/-f`, `reset --hard`, and `clean -fdx` combinations to HIGH,
+and HIGH always maps to an approval ask (never silent run, never auto-deny
+outside configured permissions/deny-patterns). The tools below therefore
+never add their own policy vocabulary - they expose flags and let the
+existing gate classify the exact argv, so the approval card shows the real
+git command.
+
+- **D13 (checkout scope)** — `git_checkout` supports branch switching
+  (`create=true` maps to `-b`) and single-path restore (`checkout -- <path>`);
+  the two modes are mutually exclusive and both require their argument. The
+  tool never passes `-f`/`--force`: force-discard stays a system_exec HIGH-ask
+  action, and without it git itself refuses destructive switches (dirty
+  conflicting files) so the working tree is protected by git, not by us.
+  Restore paths must be repository-relative with no traversal/absolute/NUL
+  shapes.
+- **D14 (reset scope)** — `git_reset` exposes `mode` soft|mixed|hard
+  (default mixed) and an optional ref (default HEAD, charset-validated).
+  `--hard` is passed through verbatim so the gate classifies it HIGH and the
+  approval card shows `git reset --hard ...`; soft/mixed stay MEDIUM. No
+  `--keep`/`--merge` variants in v1 (system_exec domain).
+- **D15 (clean scope)** — `git_clean` always passes a removal flag (`-f`, or
+  `-n` for `dry_run=true` which removes nothing and only lists what would be
+  removed). `include_dirs` and `include_ignored` map to `-d`/`-x`; their
+  combined form trips the existing HIGH classifier, anything else stays
+  MEDIUM. Only untracked files are ever touched - tracked history and
+  worktree content are never at risk from this tool. Optional `paths` filter
+  (repo-relative, traversal-checked) narrows the scope; without it git clean
+  considers the whole untracked tree, which the approval card makes visible.
+- **D16 (still out of scope)** — stash/rebase/merge, `commit --amend`,
+  signing, and remote/tag management remain system_exec domain: they either
+  rewrite history or need interactive workflows the structured tools should
+  not paper over.

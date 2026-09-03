@@ -1,11 +1,14 @@
 # Spec: Structured Git Tools (atomic specs)
 
 Feature: `git-tools`. Source of truth for scope. Companion: `research.md`
-(decisions D1-D7, v2.1 D9-D12), `plan.md` (phases). Specs GT-001..GT-011.
+(decisions D1-D7, v2.1 D9-D12, v2.2 D13-D16), `plan.md` (phases).
+Specs GT-001..GT-014.
 r1: v1 scope = read-only `status`/`diff`/`log`/`branch` + mutating
 `stage`/`commit`; push/pull/clone/checkout/reset/clean deferred to v2 (D4).
 r2: v2.1 scope (shipped) = `git_clone` / `git_push` / `git_pull`
-(GT-009..GT-011, decisions D9-D12). Destructive ops remain v2.2.
+(GT-009..GT-011, decisions D9-D12).
+r3: v2.2 scope (shipped) = `git_checkout` / `git_reset` / `git_clean`
+(GT-012..GT-014, decisions D13-D16).
 
 Verification baseline: `go build ./...`, `go test ./...`,
 `cd webui && pnpm test`. Remember `make build-frontend` on fresh clones
@@ -325,3 +328,50 @@ before Go commands.
   model proposes an explicit rebase/merge workflow.
 - **Verify**: `TestGitPushPullLoop` (second clone fast-forwards after push),
   `TestGitPushPullValidationAndNotARepo`.
+
+## GT-012: `git_checkout` tool (mutating, MEDIUM)
+
+- **Objective**: Branch switching and single-path restore without force
+  flags (D13).
+- **Contracts**:
+
+  ```go
+  type GitCheckoutInput struct {
+      RepoDir string `json:"repo_dir,omitempty"`
+      Branch  string `json:"branch,omitempty"`   // xor path
+      Create  *bool  `json:"create,omitempty"`   // -b
+      Path    string `json:"path,omitempty"`     // xor branch
+  }
+  ```
+
+- **Behavior**: `git checkout [-b branch]` or `git checkout -- <path>`.
+  Exactly one of branch/path required; branch charset-validated, path must
+  be repo-relative without traversal. `-f`/`--force` is never passed: git
+  itself refuses switches that would clobber uncommitted changes, so the
+  working tree is protected by git. Path restore overwrites local edits to
+  that path (destructive, approval-gated).
+- **Verify**: `TestGitCheckoutBranchAndRestore`.
+
+## GT-013: `git_reset` tool (mutating, MEDIUM/HIGH by mode)
+
+- **Objective**: Unstage / move HEAD / discard with the gate classifying the
+  real argv (D14).
+- **Contracts**: `GitResetInput{RepoDir, Mode string (soft|mixed|hard,
+  default mixed), Ref string (default HEAD, revision-validated)}`.
+- **Behavior**: `git reset [--soft|--hard] [ref]`. `--hard` passes through
+  verbatim so classifyGitRisk sees it and the approval card shows the real
+  command (HIGH ask). soft/mixed stay MEDIUM. Revisions allow `~`/`^`/`@{u}`
+  syntax (`validGitRevision`); ranges (`..`) are rejected.
+- **Verify**: `TestGitResetSoftThenMixed`,
+  `TestGitResetHardDestroysWorkingTreeChange`.
+
+## GT-014: `git_clean` tool (mutating, MEDIUM/HIGH by flags)
+
+- **Objective**: Remove untracked files/directories, dry-run support (D15).
+- **Contracts**: `GitCleanInput{RepoDir, DryRun *bool, IncludeDirs *bool
+  (-d), IncludeIgnored *bool (-x), Paths []string}`.
+- **Behavior**: `git clean -n|-f [-d] [-x] [-- paths...]`. Always passes a
+  removal flag; `-d`+`-x` combined trips the existing HIGH classifier.
+  Output parses "Removing X"/"Would remove X" lines into `Removed`. Paths
+  repo-relative and traversal-checked; only untracked data is ever touched.
+- **Verify**: `TestGitCleanDryRunRemoveAndDirs`.

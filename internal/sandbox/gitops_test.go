@@ -105,10 +105,10 @@ func TestCreateGitOpsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGitOpsTools: %v", err)
 	}
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 tools, got %d", len(tools))
+	if len(tools) != 12 {
+		t.Fatalf("expected 12 tools, got %d", len(tools))
 	}
-	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull"}
+	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull", "git_checkout", "git_reset", "git_clean"}
 	for i, name := range want {
 		if tools[i].Name() != name {
 			t.Errorf("tool[%d] = %q, want %q", i, tools[i].Name(), name)
@@ -926,5 +926,216 @@ func TestGitPushPullValidationAndNotARepo(t *testing.T) {
 	}
 	if !pull.NotARepo {
 		t.Errorf("pull in non-repo did not report NotARepo: %+v", pull)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// git_checkout / git_reset / git_clean (destructive operations)
+// ---------------------------------------------------------------------------
+
+func TestGitCheckoutBranchAndRestore(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	create := true
+	co, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "feature", Create: &create}, nil)
+	if err != nil {
+		t.Fatalf("checkout -b: %v", err)
+	}
+	if co.NotARepo {
+		t.Fatal("checkout reported NotARepo on a valid repo")
+	}
+	st, err := gitStatusContent(context.Background(), GitStatusInput{RepoDir: dir}, nil)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if st.Branch != "feature" {
+		t.Errorf("current branch = %q, want feature", st.Branch)
+	}
+
+	// Restore a locally modified tracked file from the index.
+	changed := "# repo\nlocal edit\n"
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ro, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Path: "README.md"}, nil)
+	if err != nil {
+		t.Fatalf("checkout -- path: %v", err)
+	}
+	if ro.Path != "README.md" {
+		t.Errorf("restore path = %q, want README.md", ro.Path)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "# repo\n" {
+		t.Errorf("README not restored: %q", string(got))
+	}
+
+	// Mode validation: both branch and path, or neither, is an error.
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir}, nil); err == nil {
+		t.Error("checkout with neither branch nor path accepted")
+	}
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "a", Path: "b"}, nil); err == nil {
+		t.Error("checkout with both branch and path accepted")
+	}
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Path: "../escape"}, nil); err == nil {
+		t.Error("traversal path accepted")
+	}
+}
+
+func TestGitResetSoftThenMixed(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitStageContent(context.Background(), GitStageInput{RepoDir: dir, Paths: []string{"b.txt"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "second"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// soft reset: HEAD moves back, b.txt stays staged.
+	res, err := gitResetContent(context.Background(), GitResetInput{RepoDir: dir, Mode: "soft", Ref: "HEAD~1"}, nil)
+	if err != nil {
+		t.Fatalf("reset soft: %v", err)
+	}
+	if res.Mode != "soft" {
+		t.Errorf("mode = %q, want soft", res.Mode)
+	}
+	st, err := gitStatusContent(context.Background(), GitStatusInput{RepoDir: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundStaged := false
+	for _, e := range st.Entries {
+		if e.Path == "b.txt" && e.Staged {
+			foundStaged = true
+		}
+	}
+	if !foundStaged {
+		t.Errorf("after soft reset b.txt should still be staged: %+v", st.Entries)
+	}
+
+	// mixed reset (default): index resets too, b.txt becomes untracked.
+	if _, err := gitResetContent(context.Background(), GitResetInput{RepoDir: dir}, nil); err != nil {
+		t.Fatalf("reset mixed: %v", err)
+	}
+	st, err = gitStatusContent(context.Background(), GitStatusInput{RepoDir: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range st.Entries {
+		if e.Path == "b.txt" && e.Status != "??" {
+			t.Errorf("after mixed reset b.txt should be untracked: %+v", st.Entries)
+		}
+	}
+
+	// Invalid mode is an argument error.
+	if _, err := gitResetContent(context.Background(), GitResetInput{RepoDir: dir, Mode: "nuke"}, nil); err == nil {
+		t.Error("invalid reset mode accepted")
+	}
+}
+
+func TestGitResetHardDestroysWorkingTreeChange(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitStageContent(context.Background(), GitStageInput{RepoDir: dir, Paths: []string{"c.txt"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "third"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Local edit on top of the committed file - hard reset must destroy it.
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("local uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := gitResetContent(context.Background(), GitResetInput{RepoDir: dir, Mode: "hard", Ref: "HEAD~1"}, nil); err != nil {
+		t.Fatalf("reset hard: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "c.txt")); !os.IsNotExist(err) {
+		t.Errorf("c.txt still exists after hard reset (err %v)", err)
+	}
+	logOut, err := gitLogContent(context.Background(), GitLogInput{RepoDir: dir, Limit: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logOut.Commits) == 0 || logOut.Commits[0].Subject != "initial" {
+		t.Errorf("top commit after hard reset = %+v, want initial", logOut.Commits)
+	}
+}
+
+func TestGitCleanDryRunRemoveAndDirs(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+	junk := filepath.Join(dir, "junk.txt")
+	if err := os.WriteFile(junk, []byte("junk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "inner.txt"), []byte("inner\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry run removes nothing but lists the file.
+	dry := true
+	out, err := gitCleanContent(context.Background(), GitCleanInput{RepoDir: dir, DryRun: &dry}, nil)
+	if err != nil {
+		t.Fatalf("clean dry-run: %v", err)
+	}
+	if len(out.Removed) != 1 || out.Removed[0] != "junk.txt" {
+		t.Errorf("dry-run removed = %+v, want [junk.txt]", out.Removed)
+	}
+	if _, err := os.Stat(junk); err != nil {
+		t.Errorf("dry run deleted junk.txt: %v", err)
+	}
+
+	// Real clean with -d removes the file and the untracked directory.
+	noDry := false
+	dirs := true
+	out, err = gitCleanContent(context.Background(), GitCleanInput{RepoDir: dir, DryRun: &noDry, IncludeDirs: &dirs}, nil)
+	if err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Errorf("junk.txt still exists after clean (err %v)", err)
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Errorf("subdir still exists after clean -d (err %v)", err)
+	}
+	if len(out.Removed) != 2 {
+		t.Errorf("removed list = %+v, want 2 entries", out.Removed)
+	}
+
+	// Path filtering cleans only the given paths.
+	if err := os.WriteFile(junk, []byte("junk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = gitCleanContent(context.Background(), GitCleanInput{RepoDir: dir, DryRun: &noDry, Paths: []string{"junk.txt"}}, nil)
+	if err != nil {
+		t.Fatalf("clean paths: %v", err)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Errorf("junk.txt still exists after path clean (err %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
+		t.Errorf("keep.txt removed by path-filtered clean: %v", err)
 	}
 }

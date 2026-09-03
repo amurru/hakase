@@ -741,15 +741,34 @@ type GitPullOutput struct {
 }
 
 // validGitRemote and validGitRef keep remote/branch inputs in the character
-// set git itself accepts for names. They are validation for UX and argv
-// clarity - there is no shell involved, so nothing here is an injection
-// boundary.
+// set git itself accepts for names. validGitRevision additionally allows the
+// revision syntax reset accepts (HEAD~2, a1b2c3d^, @{u}, origin/main). They
+// are validation for UX and argv clarity - there is no shell involved, so
+// nothing here is an injection boundary.
 func validGitRemote(s string) bool {
 	return validGitName(s, false)
 }
 
 func validGitRef(s string) bool {
 	return validGitName(s, true)
+}
+
+func validGitRevision(s string) bool {
+	if s == "" || s[0] == '-' || strings.ContainsAny(s, " \t\r\n\x00") {
+		return false
+	}
+	if strings.Contains(s, "..") || strings.HasSuffix(s, "/") {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("._/@~^:{}-", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validGitName(s string, allowSlash bool) bool {
@@ -930,10 +949,244 @@ func gitPullContent(ctx context.Context, input GitPullInput, log interfaces.LogF
 }
 
 // ---------------------------------------------------------------------------
+// git_checkout / git_reset / git_clean (destructive operations)
+// ---------------------------------------------------------------------------
+
+// GitCheckoutInput is the input schema for the git_checkout tool.
+type GitCheckoutInput struct {
+	RepoDir string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Branch  string `json:"branch,omitempty"   doc:"Branch to switch to (mutually exclusive with path)"`
+	Create  *bool  `json:"create,omitempty"   doc:"Create the branch first (git checkout -b; defaults to false)"`
+	Path    string `json:"path,omitempty"     doc:"Repository-relative path to restore from the index (mutually exclusive with branch)"`
+}
+
+// GitCheckoutOutput is the output schema of the git_checkout tool.
+type GitCheckoutOutput struct {
+	RepoDir  string `json:"repo_dir"`
+	Branch   string `json:"branch,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Message  string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo bool   `json:"not_a_repo,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+// GitResetInput is the input schema for the git_reset tool.
+type GitResetInput struct {
+	RepoDir string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Mode    string `json:"mode,omitempty"     doc:"Reset mode: soft, mixed, or hard (defaults to mixed; hard destroys working-tree changes and is HIGH-risk)"`
+	Ref     string `json:"ref,omitempty"      doc:"Commit to reset to (defaults to HEAD)"`
+}
+
+// GitResetOutput is the output schema of the git_reset tool.
+type GitResetOutput struct {
+	RepoDir  string `json:"repo_dir"`
+	Mode     string `json:"mode"`
+	Ref      string `json:"ref,omitempty"`
+	Message  string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo bool   `json:"not_a_repo,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+// GitCleanInput is the input schema for the git_clean tool.
+type GitCleanInput struct {
+	RepoDir        string   `json:"repo_dir,omitempty"        doc:"Repository directory (defaults to the project root / working directory)"`
+	DryRun         *bool    `json:"dry_run,omitempty"         doc:"Only list what would be removed (git clean -n; defaults to false)"`
+	IncludeDirs    *bool    `json:"include_dirs,omitempty"    doc:"Also remove untracked directories (git clean -d; defaults to false)"`
+	IncludeIgnored *bool    `json:"include_ignored,omitempty" doc:"Also remove ignored files (git clean -x; defaults to false)"`
+	Paths          []string `json:"paths,omitempty"           doc:"Optional repository-relative paths to limit the clean to"`
+}
+
+// GitCleanOutput is the output schema of the git_clean tool.
+type GitCleanOutput struct {
+	RepoDir  string   `json:"repo_dir"`
+	Removed  []string `json:"removed,omitempty" doc:"Paths the clean removed (or would remove with dry_run)"`
+	NotARepo bool     `json:"not_a_repo,omitempty"`
+	Stderr   string   `json:"stderr,omitempty"`
+}
+
+// validRelRepoPath validates a repository-relative path input: no absolute
+// forms, no NUL, no traversal segments. Returns the cleaned path.
+func validRelRepoPath(p string) (string, error) {
+	if p == "" || strings.ContainsRune(p, 0) {
+		return "", fmt.Errorf("invalid path")
+	}
+	clean := filepath.Clean(filepath.FromSlash(p))
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path must stay inside the repository")
+	}
+	return clean, nil
+}
+
+// gitCheckoutContent is the package-level handler for the git_checkout tool.
+func gitCheckoutContent(ctx context.Context, input GitCheckoutInput, log interfaces.LogFunc) (GitCheckoutOutput, error) {
+	out := GitCheckoutOutput{}
+	branch := strings.TrimSpace(input.Branch)
+	path := strings.TrimSpace(input.Path)
+	if (branch == "") == (path == "") {
+		return out, fmt.Errorf("git_checkout: exactly one of branch or path is required")
+	}
+	if branch != "" && !validGitRef(branch) {
+		return out, fmt.Errorf("git_checkout: invalid branch %q", branch)
+	}
+
+	dir, err := resolveRepoDir(input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	// Path restores resolve against the index; the working tree content the
+	// path currently holds is overwritten, so this is destructive by design
+	// and stays approval-gated. Never passes -f: without it git refuses to
+	// switch branches when it would clobber uncommitted changes (D13).
+	var args []string
+	switch {
+	case branch != "":
+		if input.Create != nil && *input.Create {
+			args = []string{"checkout", "-b", branch}
+		} else {
+			args = []string{"checkout", branch}
+		}
+		out.Branch = branch
+	case path != "":
+		cleanPath, perr := validRelRepoPath(path)
+		if perr != nil {
+			return out, fmt.Errorf("git_checkout: %w", perr)
+		}
+		args = []string{"checkout", "--", cleanPath}
+		out.Path = cleanPath
+	}
+
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	if msg := splitGitOut(res.Stdout); msg != "" {
+		out.Message = wrapUntrustedData(msg)
+	} else {
+		out.Message = wrapUntrustedData(splitGitOut(res.Stderr))
+	}
+	return out, nil
+}
+
+// gitResetContent is the package-level handler for the git_reset tool.
+func gitResetContent(ctx context.Context, input GitResetInput, log interfaces.LogFunc) (GitResetOutput, error) {
+	out := GitResetOutput{}
+	mode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if mode == "" {
+		mode = "mixed"
+	}
+	switch mode {
+	case "soft", "mixed", "hard":
+	default:
+		return out, fmt.Errorf("git_reset: mode must be soft, mixed, or hard (got %q)", input.Mode)
+	}
+	ref := strings.TrimSpace(input.Ref)
+	if ref != "" && !validGitRevision(ref) {
+		return out, fmt.Errorf("git_reset: invalid ref %q", ref)
+	}
+
+	dir, err := resolveRepoDir(input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+	out.Mode = mode
+	out.Ref = ref
+
+	// hard passes through verbatim so classifyGitRisk sees --hard and the
+	// approval card shows the real command (D14).
+	args := []string{"reset"}
+	if mode != "mixed" {
+		args = append(args, "--"+mode)
+	}
+	if ref != "" {
+		args = append(args, ref)
+	}
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	out.Message = wrapUntrustedData(splitGitOut(res.Stdout))
+	return out, nil
+}
+
+// gitCleanContent is the package-level handler for the git_clean tool.
+func gitCleanContent(ctx context.Context, input GitCleanInput, log interfaces.LogFunc) (GitCleanOutput, error) {
+	out := GitCleanOutput{}
+	dir, err := resolveRepoDir(input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	args := []string{"clean"}
+	dryRun := input.DryRun != nil && *input.DryRun
+	if dryRun {
+		args = append(args, "-n")
+	} else {
+		args = append(args, "-f")
+	}
+	if input.IncludeDirs != nil && *input.IncludeDirs {
+		args = append(args, "-d")
+	}
+	if input.IncludeIgnored != nil && *input.IncludeIgnored {
+		args = append(args, "-x")
+	}
+	if len(input.Paths) > 0 {
+		cleaned := make([]string, 0, len(input.Paths))
+		for _, p := range input.Paths {
+			cp, perr := validRelRepoPath(p)
+			if perr != nil {
+				return out, fmt.Errorf("git_clean: %w", perr)
+			}
+			cleaned = append(cleaned, cp)
+		}
+		args = append(args, "--")
+		args = append(args, cleaned...)
+	}
+
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		// clean prints one line per path: "Removing X" (-f) or
+		// "Would remove X" (-n). Keep the path, skip the rest.
+		switch {
+		case strings.HasPrefix(line, "Removing "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "Removing "))
+		case strings.HasPrefix(line, "Would remove "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "Would remove "))
+		}
+		if line != "" {
+			out.Removed = append(out.Removed, wrapUntrustedData(line))
+		}
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
-// CreateGitOpsTools builds the nine-tool git toolset shared by the
+// CreateGitOpsTools builds the twelve-tool git toolset shared by the
 // orchestrator and the general-purpose agent. Every tool runs git through
 // BuildExecCommand, so the harmful-command policy, approval gate, path
 // audit, env scrubbing, and audit log apply to structured git operations
@@ -1029,7 +1282,37 @@ func CreateGitOpsTools(log interfaces.LogFunc) ([]tool.Tool, error) {
 		return nil, err
 	}
 
-	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool}, nil
+	checkoutTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_checkout",
+		Description: "Switches to a branch (create=true makes git checkout -b) or restores one repository-relative path from the index (checkout -- path; overwrites local edits to that path). Mutating: approval-gated like system_exec. Force flags are never passed - git itself refuses switches that would clobber uncommitted changes.",
+	}, func(ctx agent.Context, input GitCheckoutInput) (GitCheckoutOutput, error) {
+		return gitCheckoutContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resetTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_reset",
+		Description: "Resets the current branch to a ref (default HEAD): mode=mixed unstages (default), soft moves HEAD only, hard ALSO destroys working-tree changes and is HIGH-risk - approval-gated like system_exec, never silent.",
+	}, func(ctx agent.Context, input GitResetInput) (GitResetOutput, error) {
+		return gitResetContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	cleanTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_clean",
+		Description: "Removes untracked files (git clean -f; dry_run=true only lists them with -n). include_dirs/-ignored add -d/-x and their combination is HIGH-risk. Only untracked data is ever touched. Mutating: approval-gated like system_exec.",
+	}, func(ctx agent.Context, input GitCleanInput) (GitCleanOutput, error) {
+		return gitCleanContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool, checkoutTool, resetTool, cleanTool}, nil
 }
 
 // ---------------------------------------------------------------------------

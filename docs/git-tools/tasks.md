@@ -92,8 +92,30 @@ Legend: `[BE]` Go backend, `[QA]` test/docs. Status: TODO unless marked.
 - [x] **T5.5 [QA]** research.md decisions D9-D12, spec GT-009..011,
       CHANGELOG. Verify: manual read.
 
-## Phase 6 - Destructive operations (v2.2, pending)
+## Phase 6 - Destructive operations (v2.2)
 
-- [ ] **T6.x** `git_checkout` / `git_reset` / `git_clean` - force-flag
-      semantics mapping onto the existing HIGH-risk gate rules; needs the
-      D-notes decisions before implementation.
+- [x] **T6.1 [BE]** `git_checkout` in `gitops.go`: branch switch with
+      `create` (-b) and single-path restore (`checkout -- path`), mutually
+      exclusive inputs, path traversal checks, never `-f` (git itself
+      protects dirty trees). Verify: branch create/switch, restore from
+      index, input validation. Spec: GT-012.
+- [x] **T6.2 [BE]** `git_reset`: mode soft|mixed|hard (default mixed), ref
+      validated as a revision (`HEAD~1`, `@{u}` allowed); `--hard` passes
+      through so the gate classifies HIGH. Verify: soft keeps staged, mixed
+      unstages, hard destroys a local edit. Spec: GT-013.
+- [x] **T6.3 [BE]** `git_clean`: always `-f` (or `-n` dry-run), optional
+      `-d`/`-x` mapped onto the existing HIGH combos, optional paths filter,
+      "Removing X"/"Would remove X" parsed into `Removed`. Verify: dry-run
+      lists only, remove file + dir with -d, path filtering. Spec: GT-014.
+- [x] **T6.4 [BE]** Register the three tools (twelve total) + toolset-shape
+      test update. Verify: `go test ./internal/sandbox/ -run
+      'TestGit(Checkout|Reset|Clean)'`.
+- [x] **T6.5 [QA]** research.md D13-D16, spec GT-012..014, CHANGELOG.
+      Verify: manual read.
+
+## Phase 7 - Remaining git surface (pending)
+
+- [ ] **T7.x** `git_stash` / `git_rebase` / `git_merge` (interactive
+      workflows), `git_commit --amend` / signing, `git_remote` / `git_tag` -
+      currently system_exec domain per D16; revisit only with explicit
+      product decisions.
