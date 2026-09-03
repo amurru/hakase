@@ -1,9 +1,11 @@
 # Spec: Structured Git Tools (atomic specs)
 
 Feature: `git-tools`. Source of truth for scope. Companion: `research.md`
-(decisions D1-D7), `plan.md` (phases). Specs GT-001..GT-008.
+(decisions D1-D7, v2.1 D9-D12), `plan.md` (phases). Specs GT-001..GT-011.
 r1: v1 scope = read-only `status`/`diff`/`log`/`branch` + mutating
 `stage`/`commit`; push/pull/clone/checkout/reset/clean deferred to v2 (D4).
+r2: v2.1 scope (shipped) = `git_clone` / `git_push` / `git_pull`
+(GT-009..GT-011, decisions D9-D12). Destructive ops remain v2.2.
 
 Verification baseline: `go build ./...`, `go test ./...`,
 `cd webui && pnpm test`. Remember `make build-frontend` on fresh clones
@@ -269,3 +271,57 @@ before Go commands.
     DEVELOPMENT.md deferred items in place of "git tools" TODOs.
 - **Verify**: `go build ./...`, `go test ./...` green; `go vet` clean;
   `grep -r git_status webui || true` shows no frontend surface needed.
+
+## GT-009: `git_clone` tool (mutating + network, MEDIUM)
+
+- **Objective**: Materialize a remote repository into the workspace so the
+  agent can work on code that is not on the host yet (the remote-web
+  onboarding path).
+- **Contracts**:
+
+  ```go
+  type GitCloneInput struct {
+      URL    string `json:"url"              doc:"Remote repository URL"`
+      Dir    string `json:"dir"              doc:"Target directory (must not exist or be empty)"`
+      Branch string `json:"branch,omitempty" doc:"Clone only this branch"`
+  }
+  type GitCloneOutput struct {
+      Dir     string `json:"dir"`
+      Message string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+  }
+  ```
+
+- **Behavior**: Source allowlist per D9 (https/http/git/ssh always; file://
+  and scheme-less local paths only when no sandbox is active). Target
+  resolves through write containment (D10); runs
+  `git clone [--branch b] <url> <basename>` with the target parent as
+  working directory. Branch/remote name inputs pass charset checks.
+- **Verify**: `TestGitCloneLocal`, `TestGitCloneRejectsSandboxedLocalSource`,
+  `TestValidateCloneSource`.
+
+## GT-010: `git_push` tool (mutating + network, MEDIUM)
+
+- **Objective**: Publish local commits to a remote.
+- **Contracts**:
+
+  ```go
+  type GitPushInput struct {
+      RepoDir     string `json:"repo_dir,omitempty"`
+      Remote      string `json:"remote,omitempty"       doc:"defaults to origin"`
+      Branch      string `json:"branch,omitempty"`
+      SetUpstream *bool  `json:"set_upstream,omitempty" doc:"--set-upstream"`
+  }
+  ```
+
+- **Behavior**: `git push [--set-upstream] <remote> [<branch>]`. Never passes
+  force flags (D11). `NotARepo` surfaces like `git_commit` does.
+- **Verify**: `TestGitPushPullLoop` (push to a local bare remote).
+
+## GT-011: `git_pull` tool (mutating + network, MEDIUM)
+
+- **Objective**: Bring the working tree up to date with a remote.
+- **Behavior**: `git pull --ff-only <remote> [<branch>]` (D12): never creates
+  merge commits; diverged branches fail with git's own bounded stderr so the
+  model proposes an explicit rebase/merge workflow.
+- **Verify**: `TestGitPushPullLoop` (second clone fast-forwards after push),
+  `TestGitPushPullValidationAndNotARepo`.

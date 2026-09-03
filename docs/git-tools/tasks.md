@@ -69,3 +69,31 @@ Legend: `[BE]` Go backend, `[QA]` test/docs. Status: TODO unless marked.
 - [x] **T4.2 [QA]** CHANGELOG Unreleased bullet, README capability line,
       DEVELOPMENT.md deferred-items link to `docs/git-tools/`. Verify:
       manual read of the three docs. Spec: GT-008.
+
+## Phase 5 - Remote operations (v2.1)
+
+- [x] **T5.1 [BE]** `git_clone` in `gitops.go`: URL scheme allowlist
+      (https/git/ssh/http; file:// or scheme-less local paths only when no
+      sandbox is active - they bypass the sandbox read roots), optional
+      `--branch`, target resolved through write containment with the parent
+      as working directory. Verify: local file:// clone, sandboxed-source
+      rejection, scheme rejection. Spec: GT-009.
+- [x] **T5.2 [BE]** `git_push`: remote/branch name validation, optional
+      `--set-upstream`; force-push deliberately NOT exposed (use
+      system_exec). MEDIUM risk, approval-gated. Verify: push to a local
+      bare remote. Spec: GT-010.
+- [x] **T5.3 [BE]** `git_pull`: always `--ff-only` so an agent can never
+      silently create merge commits; diverged branches error out for an
+      explicit rebase/merge workflow. MEDIUM risk. Verify: second clone
+      fast-forwards after a push. Spec: GT-011.
+- [x] **T5.4 [BE]** Register the three tools in `CreateGitOpsTools` (nine
+      total) + toolset-shape test update; NotARepo surfaced like `git_commit`.
+      Verify: `go test ./internal/sandbox/ -run 'TestGit(Clone|Push|Pull)'`.
+- [x] **T5.5 [QA]** research.md decisions D9-D12, spec GT-009..011,
+      CHANGELOG. Verify: manual read.
+
+## Phase 6 - Destructive operations (v2.2, pending)
+
+- [ ] **T6.x** `git_checkout` / `git_reset` / `git_clean` - force-flag
+      semantics mapping onto the existing HIGH-risk gate rules; needs the
+      D-notes decisions before implementation.

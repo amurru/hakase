@@ -87,11 +87,35 @@ gets `append(fileOpsTools, visionTool)`. Git tools follow the same pattern.
 
 ## 5. Deferred to v2 (recorded, out of scope)
 
-- `git_push` / `git_pull` / `git_clone` — need a decision on `allow_network`
-  interplay and remote/credential handling (D4).
+- ~~`git_push` / `git_pull` / `git_clone`~~ — **shipped 2026-09-03 (v2.1)**:
+  decisions D9-D12 below. Remote/credential handling: prompts fail fast via
+  `GIT_TERMINAL_PROMPT=0`; real remotes need host-side credentials or an
+  agent-approved `gh auth` flow, exactly like system_exec would.
 - `git_checkout` / `git_reset` / `git_clean` — destructive; need explicit
-  force-flag policy mapping onto the existing HIGH-risk rules.
-- `git_stash` / `git_rebase` / `git_merge` — workflow depth beyond the initial
-  commit loop.
+  force-flag policy mapping onto the existing HIGH-risk rules (v2.2, pending).
+- `git_stash` / `git_rebase` / `git_merge` — workflow depth beyond the
+  commit loop; `git_pull` is deliberately `--ff-only` so merges/rebase stays
+  an explicit user-approved system_exec action.
 - `git_commit --amend` / signing / GPG key handling.
 - `git_remote` / `git_tag` management.
+
+## 6. v2.1 decisions (remote operations, 2026-09-03)
+
+- **D9 (clone sources)** — `git_clone` accepts explicit URLs with schemes
+  https/http/git/ssh. `file://` URLs and scheme-less local paths read the
+  host filesystem directly and would bypass the sandbox read roots, so they
+  are accepted only when no sandbox is active (local runs with the user's
+  filesystem trust); an active sandbox keeps clone sources strictly remote.
+- **D10 (clone target)** — The target directory resolves through write
+  containment (`taskResolve(write=true)`), git runs with the target's parent
+  as working directory and receives the bare directory name, so the URL is
+  the only remote-controlled token in argv. `--branch` input passes a
+  name-charset check.
+- **D11 (no force push)** — `git_push` never passes force flags: the
+  HIGH-risk `push --force` path stays a system_exec + approval concern
+  (gate.go already classifies it HIGH). The tool exposes optional
+  `--set-upstream` and explicit remote/branch (name-validated).
+- **D12 (ff-only pull)** — `git_pull` always runs `--ff-only`: an agent must
+  never silently create merge commits. Diverged branches error out and the
+  model proposes an explicit rebase/merge workflow through system_exec with
+  the user's approval. Push/pull surface `NotARepo` like `git_commit` does.

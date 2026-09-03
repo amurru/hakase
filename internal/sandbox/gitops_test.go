@@ -105,10 +105,10 @@ func TestCreateGitOpsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGitOpsTools: %v", err)
 	}
-	if len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("expected 9 tools, got %d", len(tools))
 	}
-	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit"}
+	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull"}
 	for i, name := range want {
 		if tools[i].Name() != name {
 			t.Errorf("tool[%d] = %q, want %q", i, tools[i].Name(), name)
@@ -765,5 +765,166 @@ func TestResolveRepoDirDefaultsToProjectRoot(t *testing.T) {
 	cwd, _ := os.Getwd()
 	if dir, err := resolveRepoDir("", false); err != nil || dir != cwd {
 		t.Errorf("resolveRepoDir without project = %q, want cwd %q (err %v)", dir, cwd, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// git_clone / git_push / git_pull
+// ---------------------------------------------------------------------------
+
+// bareCloneOf creates a bare repository from a seeded worktree (no network).
+func bareCloneOf(t *testing.T, seed string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	g := gitBin(t)
+	cmd := &exec.Cmd{Path: g, Args: []string{g, "clone", "--bare", seed, bare}, Dir: t.TempDir(), Env: gitTestEnv()}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v (%s)", err, out)
+	}
+	return bare
+}
+
+func TestValidateCloneSource(t *testing.T) {
+	origSB := CurrentSandbox
+	defer func() { CurrentSandbox = origSB }()
+
+	if err := validateCloneSource("https://example.com/repo.git"); err != nil {
+		t.Errorf("https URL rejected: %v", err)
+	}
+	if err := validateCloneSource("git@example.com:repo.git"); err == nil {
+		t.Error("scp-style source accepted (no scheme)")
+	} else if err := validateCloneSource("ssh://git@example.com/repo.git"); err != nil {
+		t.Errorf("ssh URL rejected: %v", err)
+	}
+	if err := validateCloneSource("ftp://example.com/repo.git"); err == nil {
+		t.Error("ftp scheme accepted")
+	}
+	if err := validateCloneSource(""); err == nil {
+		t.Error("empty source accepted")
+	}
+
+	// file:// and local paths are fine without a sandbox...
+	CurrentSandbox = nil
+	if err := validateCloneSource("file:///tmp/seed"); err != nil {
+		t.Errorf("file:// without sandbox rejected: %v", err)
+	}
+	if err := validateCloneSource("/tmp/seed"); err != nil {
+		t.Errorf("local path without sandbox rejected: %v", err)
+	}
+	// ...and rejected while a sandbox is active (they bypass read roots).
+	CurrentSandbox = LoadSandboxConfig(&SandboxJSON{Mode: "paths"})
+	if err := validateCloneSource("file:///tmp/seed"); err == nil {
+		t.Error("file:// with active sandbox accepted")
+	}
+	if err := validateCloneSource("/tmp/seed"); err == nil {
+		t.Error("local path with active sandbox accepted")
+	}
+}
+
+func TestGitCloneLocal(t *testing.T) {
+	stubGitPolicy(t, false)
+	seed := t.TempDir()
+	initRepo(t, seed)
+
+	target := filepath.Join(t.TempDir(), "clone-a")
+	out, err := gitCloneContent(context.Background(), GitCloneInput{URL: "file://" + seed, Dir: target}, nil)
+	if err != nil {
+		t.Fatalf("gitCloneContent: %v", err)
+	}
+	if out.Dir == "" {
+		t.Error("clone output missing dir")
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Errorf("clone target missing README.md: %v", err)
+	}
+}
+
+func TestGitCloneRejectsSandboxedLocalSource(t *testing.T) {
+	stubGitPolicy(t, false)
+	origSB := CurrentSandbox
+	CurrentSandbox = LoadSandboxConfig(&SandboxJSON{Mode: "paths"})
+	defer func() { CurrentSandbox = origSB }()
+
+	_, err := gitCloneContent(context.Background(), GitCloneInput{
+		URL: "file://" + t.TempDir(),
+		Dir: filepath.Join(t.TempDir(), "out"),
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "sandbox") {
+		t.Errorf("expected sandbox rejection, got %v", err)
+	}
+}
+
+func TestGitPushPullLoop(t *testing.T) {
+	stubGitPolicy(t, false)
+	seed := t.TempDir()
+	initRepo(t, seed)
+	bare := bareCloneOf(t, seed)
+
+	workA := filepath.Join(t.TempDir(), "work-a")
+	if _, err := gitCloneContent(context.Background(), GitCloneInput{URL: bare, Dir: workA}, nil); err != nil {
+		t.Fatalf("clone work-a: %v", err)
+	}
+	workB := filepath.Join(t.TempDir(), "work-b")
+	if _, err := gitCloneContent(context.Background(), GitCloneInput{URL: bare, Dir: workB}, nil); err != nil {
+		t.Fatalf("clone work-b: %v", err)
+	}
+
+	// work-a adds a commit and pushes it to origin/main.
+	if err := os.WriteFile(filepath.Join(workA, "extra.txt"), []byte("extra\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitStageContent(context.Background(), GitStageInput{RepoDir: workA, Paths: []string{"extra.txt"}}, nil); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: workA, Message: "feat: extra"}, nil); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	upstream := true
+	pushOut, err := gitPushContent(context.Background(), GitPushInput{RepoDir: workA, Remote: "origin", Branch: "main", SetUpstream: &upstream}, nil)
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if pushOut.NotARepo || pushOut.Message == "" {
+		t.Errorf("unexpected push output: %+v", pushOut)
+	}
+
+	// work-b fast-forwards from the bare remote and sees the new commit.
+	pullOut, err := gitPullContent(context.Background(), GitPullInput{RepoDir: workB, Remote: "origin", Branch: "main"}, nil)
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if pullOut.NotARepo {
+		t.Error("pull reported NotARepo on a valid repo")
+	}
+	if _, err := os.Stat(filepath.Join(workB, "extra.txt")); err != nil {
+		t.Errorf("work-b missing pushed file after pull: %v", err)
+	}
+}
+
+func TestGitPushPullValidationAndNotARepo(t *testing.T) {
+	stubGitPolicy(t, false)
+
+	if _, err := gitPushContent(context.Background(), GitPushInput{Remote: "bad remote"}, nil); err == nil {
+		t.Error("invalid remote name accepted")
+	}
+	if _, err := gitPullContent(context.Background(), GitPullInput{Remote: "origin", Branch: "-force"}, nil); err == nil {
+		t.Error("invalid branch name accepted")
+	}
+
+	// Not a repository: push/pull surface NotARepo, not a hard error.
+	dir := t.TempDir()
+	po, err := gitPushContent(context.Background(), GitPushInput{RepoDir: dir}, nil)
+	if err != nil {
+		t.Fatalf("push in non-repo: %v", err)
+	}
+	if !po.NotARepo {
+		t.Errorf("push in non-repo did not report NotARepo: %+v", po)
+	}
+	pull, err := gitPullContent(context.Background(), GitPullInput{RepoDir: dir}, nil)
+	if err != nil {
+		t.Fatalf("pull in non-repo: %v", err)
+	}
+	if !pull.NotARepo {
+		t.Errorf("pull in non-repo did not report NotARepo: %+v", pull)
 	}
 }

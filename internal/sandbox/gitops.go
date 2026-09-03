@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -687,10 +689,251 @@ func gitCommitContent(ctx context.Context, input GitCommitInput, log interfaces.
 }
 
 // ---------------------------------------------------------------------------
+// git_clone / git_push / git_pull (remote operations)
+// ---------------------------------------------------------------------------
+
+// GitCloneInput is the input schema for the git_clone tool.
+type GitCloneInput struct {
+	URL    string `json:"url"              doc:"Remote repository URL (https://, git://, ssh://, or file:// when no sandbox is active)"`
+	Dir    string `json:"dir"              doc:"Target directory for the clone (must not exist or must be empty)"`
+	Branch string `json:"branch,omitempty" doc:"Clone only this branch (git clone --branch)"`
+}
+
+// GitCloneOutput is the output schema of the git_clone tool.
+type GitCloneOutput struct {
+	Dir     string `json:"dir"`
+	Message string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+}
+
+// GitPushInput is the input schema for the git_push tool.
+type GitPushInput struct {
+	RepoDir     string `json:"repo_dir,omitempty"     doc:"Repository directory (defaults to the project root / working directory)"`
+	Remote      string `json:"remote,omitempty"       doc:"Remote name (defaults to origin)"`
+	Branch      string `json:"branch,omitempty"       doc:"Branch to push (defaults to the branch's configured upstream, if any)"`
+	SetUpstream *bool  `json:"set_upstream,omitempty" doc:"Set the upstream tracking ref (git push --set-upstream; defaults to false)"`
+}
+
+// GitPushOutput is the output schema of the git_push tool.
+type GitPushOutput struct {
+	RepoDir  string `json:"repo_dir"`
+	Remote   string `json:"remote"`
+	Branch   string `json:"branch,omitempty"`
+	Message  string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo bool   `json:"not_a_repo,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+// GitPullInput is the input schema for the git_pull tool.
+type GitPullInput struct {
+	RepoDir string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Remote  string `json:"remote,omitempty"   doc:"Remote name (defaults to origin)"`
+	Branch  string `json:"branch,omitempty"   doc:"Branch to pull (defaults to the branch's configured upstream, if any)"`
+}
+
+// GitPullOutput is the output schema of the git_pull tool.
+type GitPullOutput struct {
+	RepoDir  string `json:"repo_dir"`
+	Remote   string `json:"remote"`
+	Branch   string `json:"branch,omitempty"`
+	Message  string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo bool   `json:"not_a_repo,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+// validGitRemote and validGitRef keep remote/branch inputs in the character
+// set git itself accepts for names. They are validation for UX and argv
+// clarity - there is no shell involved, so nothing here is an injection
+// boundary.
+func validGitRemote(s string) bool {
+	return validGitName(s, false)
+}
+
+func validGitRef(s string) bool {
+	return validGitName(s, true)
+}
+
+func validGitName(s string, allowSlash bool) bool {
+	if s == "" || s[0] == '-' || strings.ContainsAny(s, " \t\r\n\x00~^:?*[\\") {
+		return false
+	}
+	if strings.HasSuffix(s, "/") || strings.HasSuffix(s, ".") {
+		return false
+	}
+	if !allowSlash && strings.Contains(s, "/") {
+		return false
+	}
+	return true
+}
+
+// validateCloneSource checks where git_clone may read from. Remote URLs need
+// an explicit allowlisted scheme. file:// URLs and scheme-less local paths
+// read the host filesystem directly - bypassing the sandbox read roots - so
+// they are accepted only when no sandbox is active (local runs where the
+// agent already acts with the user's filesystem trust). An active sandbox
+// keeps clone sources strictly remote.
+func validateCloneSource(source string) error {
+	s := strings.TrimSpace(source)
+	if s == "" || strings.ContainsAny(s, "\x00\r\n") {
+		return fmt.Errorf("invalid clone source")
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid clone source: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "https", "http", "git", "ssh":
+		return nil
+	case "file":
+		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
+			return nil
+		}
+		return fmt.Errorf("file:// clone sources are not allowed while the sandbox is active (they bypass the sandbox read roots); clone from https://, git://, or ssh:// instead")
+	case "":
+		// Scheme-less input is a local path; same rule as file://.
+		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
+			return nil
+		}
+		return fmt.Errorf("local-path clone sources are not allowed while the sandbox is active (they bypass the sandbox read roots); clone from https://, git://, or ssh:// instead")
+	default:
+		return fmt.Errorf("unsupported clone scheme %q (allowed: https, git, ssh, http, and file:// or a local path when no sandbox is active)", u.Scheme)
+	}
+}
+
+// gitCloneContent is the package-level handler for the git_clone tool.
+func gitCloneContent(ctx context.Context, input GitCloneInput, log interfaces.LogFunc) (GitCloneOutput, error) {
+	out := GitCloneOutput{}
+	if err := validateCloneSource(input.URL); err != nil {
+		return out, fmt.Errorf("git_clone: %w", err)
+	}
+	if strings.TrimSpace(input.Dir) == "" {
+		return out, fmt.Errorf("git_clone: a target directory is required")
+	}
+	if input.Branch != "" && !validGitRef(input.Branch) {
+		return out, fmt.Errorf("git_clone: invalid branch %q", input.Branch)
+	}
+
+	// Resolve the target through write containment, then let git create it.
+	target, err := taskResolve(input.Dir, true, "")
+	if err != nil {
+		return out, err
+	}
+	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return out, fmt.Errorf("git_clone: cannot create target parent: %w", err)
+	}
+
+	args := []string{"clone"}
+	if input.Branch != "" {
+		args = append(args, "--branch", input.Branch)
+	}
+	args = append(args, strings.TrimSpace(input.URL), filepath.Base(target))
+
+	// clone is a mutating + network op: MEDIUM risk, approval-gated. The
+	// target parent is the working directory; git receives the bare name so
+	// the URL stays the only remote-controlled token in argv.
+	res, err := runGit(ctx, parent, args, true, log)
+	if err != nil {
+		return out, err
+	}
+	out.Dir = wrapUntrustedData(target)
+	out.Message = wrapUntrustedData(splitGitOut(res.Stderr))
+	return out, nil
+}
+
+// gitPushContent is the package-level handler for the git_push tool.
+func gitPushContent(ctx context.Context, input GitPushInput, log interfaces.LogFunc) (GitPushOutput, error) {
+	out := GitPushOutput{}
+	dir, err := resolveRepoDir(input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	remote := strings.TrimSpace(input.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	if !validGitRemote(remote) {
+		return out, fmt.Errorf("git_push: invalid remote %q", remote)
+	}
+	branch := strings.TrimSpace(input.Branch)
+	if branch != "" && !validGitRef(branch) {
+		return out, fmt.Errorf("git_push: invalid branch %q", branch)
+	}
+	out.Remote = remote
+	out.Branch = branch
+
+	args := []string{"push"}
+	if input.SetUpstream != nil && *input.SetUpstream {
+		args = append(args, "--set-upstream")
+	}
+	args = append(args, remote)
+	if branch != "" {
+		args = append(args, branch)
+	}
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	out.Message = wrapUntrustedData(splitGitOut(res.Stderr))
+	return out, nil
+}
+
+// gitPullContent is the package-level handler for the git_pull tool.
+func gitPullContent(ctx context.Context, input GitPullInput, log interfaces.LogFunc) (GitPullOutput, error) {
+	out := GitPullOutput{}
+	dir, err := resolveRepoDir(input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	remote := strings.TrimSpace(input.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	if !validGitRemote(remote) {
+		return out, fmt.Errorf("git_pull: invalid remote %q", remote)
+	}
+	branch := strings.TrimSpace(input.Branch)
+	if branch != "" && !validGitRef(branch) {
+		return out, fmt.Errorf("git_pull: invalid branch %q", branch)
+	}
+	out.Remote = remote
+	out.Branch = branch
+
+	// --ff-only: an agent must never silently create merge commits. When the
+	// branches diverged, git refuses and the model can choose a rebase/merge
+	// workflow through system_exec with the user's approval.
+	args := []string{"pull", "--ff-only"}
+	args = append(args, remote)
+	if branch != "" {
+		args = append(args, branch)
+	}
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	out.Message = wrapUntrustedData(splitGitOut(res.Stderr))
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
-// CreateGitOpsTools builds the six-tool git toolset shared by the
+// CreateGitOpsTools builds the nine-tool git toolset shared by the
 // orchestrator and the general-purpose agent. Every tool runs git through
 // BuildExecCommand, so the harmful-command policy, approval gate, path
 // audit, env scrubbing, and audit log apply to structured git operations
@@ -756,7 +999,37 @@ func CreateGitOpsTools(log interfaces.LogFunc) ([]tool.Tool, error) {
 		return nil, err
 	}
 
-	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool}, nil
+	cloneTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_clone",
+		Description: "Clones a remote repository into a target directory (https://, git://, ssh:// URLs; file:// or a local path only when no sandbox is active). Mutating + network: approval-gated like system_exec.",
+	}, func(ctx agent.Context, input GitCloneInput) (GitCloneOutput, error) {
+		return gitCloneContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	pushTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_push",
+		Description: "Pushes commits to a remote (default remote origin; set_upstream=true adds --set-upstream). Mutating + network: approval-gated like system_exec. Force-push is intentionally not exposed - use system_exec with explicit approval for that.",
+	}, func(ctx agent.Context, input GitPushInput) (GitPushOutput, error) {
+		return gitPushContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	pullTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_pull",
+		Description: "Fast-forwards the current branch from a remote (git pull --ff-only; default remote origin). Refuses to create merge commits - diverged branches need an explicit rebase/merge workflow via system_exec. Mutating + network: approval-gated like system_exec.",
+	}, func(ctx agent.Context, input GitPullInput) (GitPullOutput, error) {
+		return gitPullContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool}, nil
 }
 
 // ---------------------------------------------------------------------------
