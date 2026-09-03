@@ -9,6 +9,7 @@
 package project
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -38,10 +39,34 @@ func FindRoot(dir string) string {
 
 // Session root state. Set once per session in SetupRunner so every agent,
 // tool, and prompt block in that session shares one project identity.
+// A context-scoped root (WithRoot) overrides the process root for the
+// duration of one run - the mechanism registered remote projects use so a
+// server hosting several checkouts resolves each session against its own
+// project (docs/git-tools/project-registry.md DP-7).
 var (
 	mu   sync.RWMutex
 	root string
 )
+
+// ctxKey is the context key for a per-run project root.
+type ctxKey struct{}
+
+// WithRoot returns a context whose project root is root, overriding the
+// process-wide root for everything downstream.
+func WithRoot(ctx context.Context, root string) context.Context {
+	return context.WithValue(ctx, ctxKey{}, root)
+}
+
+// RootFrom returns the context-scoped project root when set, falling back
+// to the process root. ctx may be nil.
+func RootFrom(ctx context.Context) string {
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxKey{}).(string); ok && v != "" {
+			return v
+		}
+	}
+	return CurrentRoot()
+}
 
 // SetCurrentRoot records the session project root. An empty root clears the
 // identity (no project).

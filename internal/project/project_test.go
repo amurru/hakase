@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +55,29 @@ func TestSessionRoot(t *testing.T) {
 	SetCurrentRoot("")
 	if got := CurrentRoot(); got != "" {
 		t.Errorf("CurrentRoot after clear = %q, want empty", got)
+	}
+}
+
+func TestContextRoot(t *testing.T) {
+	SetCurrentRoot("/proc/root")
+	defer SetCurrentRoot("")
+
+	// No context value: the process root is the fallback.
+	if got := RootFrom(nil); got != "/proc/root" {
+		t.Errorf("RootFrom(nil) = %q, want process root", got)
+	}
+	if got := RootFrom(context.Background()); got != "/proc/root" {
+		t.Errorf("RootFrom(background) = %q, want process root", got)
+	}
+
+	// A context value overrides the process root and propagates.
+	ctx := WithRoot(context.Background(), "/srv/checkouts/proj_x")
+	if got := RootFrom(ctx); got != "/srv/checkouts/proj_x" {
+		t.Errorf("RootFrom(ctx) = %q, want context root", got)
+	}
+
+	// Empty context root falls back to the process root.
+	if got := RootFrom(WithRoot(ctx, "")); got != "/proc/root" {
+		t.Errorf("RootFrom(empty ctx root) = %q, want process root", got)
 	}
 }

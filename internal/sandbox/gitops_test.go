@@ -752,7 +752,7 @@ func TestResolveRepoDirDefaultsToProjectRoot(t *testing.T) {
 	project.SetCurrentRoot(root)
 	defer project.SetCurrentRoot("")
 
-	dir, err := resolveRepoDir("", false)
+	dir, err := resolveRepoDir(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("resolveRepoDir: %v", err)
 	}
@@ -763,8 +763,33 @@ func TestResolveRepoDirDefaultsToProjectRoot(t *testing.T) {
 	// Without a session project root the working directory fallback applies.
 	project.SetCurrentRoot("")
 	cwd, _ := os.Getwd()
-	if dir, err := resolveRepoDir("", false); err != nil || dir != cwd {
+	if dir, err := resolveRepoDir(context.Background(), "", false); err != nil || dir != cwd {
 		t.Errorf("resolveRepoDir without project = %q, want cwd %q (err %v)", dir, cwd, err)
+	}
+}
+
+func TestResolveRepoDirContextRootOverridesProcess(t *testing.T) {
+	origSB := CurrentSandbox
+	CurrentSandbox = nil
+	defer func() { CurrentSandbox = origSB }()
+
+	// Context-scoped root (registered-project sessions, DP-7) wins over the
+	// process-wide root and over the cwd fallback.
+	ctxRoot := t.TempDir()
+	initRepo(t, ctxRoot)
+	procRoot := t.TempDir()
+	initRepo(t, procRoot)
+
+	project.SetCurrentRoot(procRoot)
+	defer project.SetCurrentRoot("")
+
+	ctx := project.WithRoot(context.Background(), ctxRoot)
+	dir, err := resolveRepoDir(ctx, "", false)
+	if err != nil {
+		t.Fatalf("resolveRepoDir: %v", err)
+	}
+	if dir != ctxRoot {
+		t.Errorf("resolveRepoDir(ctx) = %q, want context root %q", dir, ctxRoot)
 	}
 }
 

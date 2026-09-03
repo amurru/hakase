@@ -66,9 +66,10 @@ func isNotARepoErr(res gitResult) bool {
 // write=true for mutating tools selects the stricter write containment.
 // Resolution order for an empty input: a pinned sandbox workspace root first
 // (an explicitly configured workspace is the deliberate default, e.g. a web
-// server pointed at a code directory), then the session project root, then
-// the process working directory.
-func resolveRepoDir(repoDir string, write bool) (string, error) {
+// server pointed at a code directory), then the project root for ctx (the
+// context-scoped root set for registered-project sessions, falling back to
+// the process-wide session root), then the process working directory.
+func resolveRepoDir(ctx context.Context, repoDir string, write bool) (string, error) {
 	if strings.TrimSpace(repoDir) != "" {
 		return taskResolve(repoDir, write, "")
 	}
@@ -80,10 +81,11 @@ func resolveRepoDir(repoDir string, write bool) (string, error) {
 			return root, nil
 		}
 	}
-	// Session project root (set once in SetupRunner from the process cwd)
-	// defaults repo-wide git operations to the repository root. Under an
-	// active sandbox it is used only when it sits inside the approved scope.
-	if pr := project.CurrentRoot(); pr != "" {
+	// Project root for this run (context-scoped for registered-project
+	// sessions; process-wide root otherwise) defaults repo-wide git
+	// operations to the repository root. Under an active sandbox it is used
+	// only when it sits inside the approved scope.
+	if pr := project.RootFrom(ctx); pr != "" {
 		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
 			return pr, nil
 		}
@@ -139,7 +141,7 @@ func runGit(ctx context.Context, repoDir string, args []string, write bool, log 
 	if len(args) == 0 {
 		return gitResult{}, fmt.Errorf("git: no subcommand")
 	}
-	dir, err := resolveRepoDir(repoDir, write)
+	dir, err := resolveRepoDir(ctx, repoDir, write)
 	if err != nil {
 		return gitResult{}, err
 	}
@@ -339,7 +341,7 @@ func unquotePorcelainPath(s string) string {
 // gitStatusContent is the package-level handler for the git_status tool.
 func gitStatusContent(ctx context.Context, input GitStatusInput, log interfaces.LogFunc) (GitStatusOutput, error) {
 	out := GitStatusOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, false)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, false)
 	if err != nil {
 		return out, err
 	}
@@ -396,7 +398,7 @@ type GitDiffOutput struct {
 // gitDiffContent is the package-level handler for the git_diff tool.
 func gitDiffContent(ctx context.Context, input GitDiffInput, log interfaces.LogFunc) (GitDiffOutput, error) {
 	out := GitDiffOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, false)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, false)
 	if err != nil {
 		return out, err
 	}
@@ -458,7 +460,7 @@ type GitLogOutput struct {
 // gitLogContent is the package-level handler for the git_log tool.
 func gitLogContent(ctx context.Context, input GitLogInput, log interfaces.LogFunc) (GitLogOutput, error) {
 	out := GitLogOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, false)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, false)
 	if err != nil {
 		return out, err
 	}
@@ -530,7 +532,7 @@ type GitBranchOutput struct {
 // gitBranchContent is the package-level handler for the git_branch tool.
 func gitBranchContent(ctx context.Context, input GitBranchInput, log interfaces.LogFunc) (GitBranchOutput, error) {
 	out := GitBranchOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, false)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, false)
 	if err != nil {
 		return out, err
 	}
@@ -595,7 +597,7 @@ func gitStageContent(ctx context.Context, input GitStageInput, log interfaces.Lo
 	if len(input.Paths) == 0 {
 		return out, fmt.Errorf("git_stage: at least one path is required")
 	}
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -648,7 +650,7 @@ func gitCommitContent(ctx context.Context, input GitCommitInput, log interfaces.
 	if strings.TrimSpace(input.Message) == "" {
 		return out, fmt.Errorf("git_commit: a commit message is required")
 	}
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -863,7 +865,7 @@ func gitCloneContent(ctx context.Context, input GitCloneInput, log interfaces.Lo
 // gitPushContent is the package-level handler for the git_push tool.
 func gitPushContent(ctx context.Context, input GitPushInput, log interfaces.LogFunc) (GitPushOutput, error) {
 	out := GitPushOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -907,7 +909,7 @@ func gitPushContent(ctx context.Context, input GitPushInput, log interfaces.LogF
 // gitPullContent is the package-level handler for the git_pull tool.
 func gitPullContent(ctx context.Context, input GitPullInput, log interfaces.LogFunc) (GitPullOutput, error) {
 	out := GitPullOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -1029,7 +1031,7 @@ func gitCheckoutContent(ctx context.Context, input GitCheckoutInput, log interfa
 		return out, fmt.Errorf("git_checkout: invalid branch %q", branch)
 	}
 
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -1091,7 +1093,7 @@ func gitResetContent(ctx context.Context, input GitResetInput, log interfaces.Lo
 		return out, fmt.Errorf("git_reset: invalid ref %q", ref)
 	}
 
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -1124,7 +1126,7 @@ func gitResetContent(ctx context.Context, input GitResetInput, log interfaces.Lo
 // gitCleanContent is the package-level handler for the git_clean tool.
 func gitCleanContent(ctx context.Context, input GitCleanInput, log interfaces.LogFunc) (GitCleanOutput, error) {
 	out := GitCleanOutput{}
-	dir, err := resolveRepoDir(input.RepoDir, true)
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
 	if err != nil {
 		return out, err
 	}
@@ -1357,7 +1359,7 @@ func countGitEntries(entries []GitStatusEntry) (staged, modified, untracked, con
 // booting; errors are reserved for genuine failures. The whole block is
 // wrapped as untrusted data: every repo-derived line is attacker-controllable.
 func BuildGitWorkspaceBlock(ctx context.Context, repoDir string, log interfaces.LogFunc) (string, error) {
-	dir, err := resolveRepoDir(repoDir, false)
+	dir, err := resolveRepoDir(ctx, repoDir, false)
 	if err != nil {
 		return "", err
 	}
