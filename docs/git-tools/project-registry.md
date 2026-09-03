@@ -80,14 +80,16 @@ read-modify-write with a lock mirroring `tasks.json` handling.
   to `internal/project`: make the session root settable per session
   (thread/context-scoped value consulted by `resolveRepoDir` and the
   snapshot builder) instead of a process global.
-  *Implemented scope (2026-09-03):* the per-session root is the ctx-scoped
-  `project.WithRoot` value that web chat wraps onto each project-bound run —
-  git tool defaults (`resolveRepoDir`) and the injected run snapshot read it,
-  including delegated sub-runs (they inherit the run ctx). OS-level workspace
-  confinement still comes from the process-wide sandbox (`sandbox.CurrentSandbox`
-  is a boot singleton), so a bound session on a sandboxed host needs sandbox
-  mode off or read/write roots covering the hakase home; per-run sandbox
-  contexts are future work.
+  *Implemented scope (2026-09-03, incl. per-run sandbox pinning):* the
+  per-session root is the ctx-scoped `project.WithRoot` value that web chat
+  wraps onto each project-bound run — git tool defaults (`resolveRepoDir`)
+  and the injected run snapshot read it, including delegated sub-runs (they
+  inherit the run ctx). When the host sandbox is active, the run context also
+  carries a per-run sandbox derived with `sandbox.PinnedTo` (a copy of the
+  process sandbox whose workspace/read roots are the checkout), consulted by
+  the exec builder (`BuildExecCommandFor`), file-ops resolution
+  (`taskResolve`), and the git engine — so a bound session is confined to its
+  project checkout. Sandbox-off hosts are unchanged.
 - **DP-8 (credentials)** — hakase never stores git credentials. Clone/push/
   pull authenticate through the host's own mechanisms: git credential
   helpers, `gh auth`, or SSH agents - exactly what `system_exec` git would
@@ -163,6 +165,20 @@ project identity as today. The registry is additive.
   push → delete, plus 409/400/404 paths, 503 without a registry, and session
   project binding persisted on the session file); `go test ./internal/web/...`
   and the full suite green.
+- **P5 - Per-run sandbox pinning [BE]** *(done 2026-09-03)*: closes the DP-7
+  gap recorded in P3. `internal/sandbox` gained context-scoped sandbox
+  plumbing: `WithConfig`/`ConfigFrom` (a per-run override consulted before the
+  process `CurrentSandbox`) and `PinnedTo` (a copy of the active sandbox with
+  workspace/read roots replaced by the checkout; sandbox-off stays off).
+  Consumers switched to the ctx-aware resolver: `taskResolve` (file ops),
+  `resolveRepoDir` + `runGit` (git engine, via `BuildExecCommandFor`), and
+  the system_exec tool handlers. Web chat applies it: `runAgentTask` wraps
+  project-bound runs with `sandbox.WithConfig(runCtx, sandbox.PinnedTo(base,
+  checkout))` when the host sandbox is active, so git, file, and exec
+  operations of a bound session are confined to the checkout; delegated runs
+  inherit it through the run ctx. Verify: sandbox unit tests (PinnedTo
+  semantics, ConfigFrom precedence, pinned git/file resolution) + handler
+  tests; full suite green.
 - **P4 - UI + docs [QA]** *(done 2026-09-03)*: the New Session dialog gained
   a registered-project selector (lists ready projects from `/api/projects`;
   choosing one creates a project-bound session and jumps into it); session

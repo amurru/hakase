@@ -415,12 +415,11 @@ the host materializes into a managed checkout. See
   through the host's own mechanisms -- git credential helpers, `gh auth`, or
   an SSH agent -- exactly what running git yourself would use. Nothing secret
   is written into `projects.json` (clone URLs only).
-- **Sandbox note**: per-session OS-level confinement is not implemented yet;
-  git/file operations of a bound session anchor to the checkout, but the
-  process sandbox still governs absolute-path access. On a remote host, run
-  the server with `sandbox.mode: "off"` in `config.json` (or add the hakase
-  home to the sandbox read/write roots) so the managed checkouts are
-  reachable.
+- **Sandbox confinement is per-session**: when the host sandbox is active, a
+  project-bound session's git, file, and exec operations are confined to the
+  project checkout (the run derives a per-session sandbox pinned to the
+  checkout). Sessions not bound to a project keep the process-wide
+  configuration.
 - **Deleting a project** removes the registry entry and the local checkout; it
   never touches the remote. Re-registering re-clones.
 

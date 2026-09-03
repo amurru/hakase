@@ -512,13 +512,30 @@ func (api *ChatAPI) boundProject(sessionID string) *registry.Project {
 	return &p
 }
 
+// withBoundSandbox pins the effective sandbox of a project-bound run to the
+// checkout (sandbox.PinnedTo -> sandbox.WithConfig), closing DP-7: while the
+// host sandbox is active, the session's workspace/read roots are the project
+// checkout. When the host sandbox is off nothing changes - confinement
+// disabled stays disabled and the checkout is simply the git project root.
+func withBoundSandbox(ctx context.Context, checkout string) context.Context {
+	base := sandbox.CurrentSandbox
+	if base == nil || base.Mode == sandbox.SandboxModeOff {
+		return ctx
+	}
+	return sandbox.WithConfig(ctx, sandbox.PinnedTo(base, checkout))
+}
+
 // projectWorkspaceSnapshot renders a fresh GIT WORKSPACE snapshot for a bound
 // project checkout. Mirrors agent.SetupRunner's boot-time snapshot (status +
-// latest commits) but reflects the session's project at run start.
-func projectWorkspaceSnapshot(checkout string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+// latest commits) but reflects the session's project at run start. ctx carries
+// the bound project root/sandbox so the snapshot resolves under confinement.
+func projectWorkspaceSnapshot(ctx context.Context, checkout string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	return sandbox.BuildGitWorkspaceBlock(ctx, checkout, nil)
+	return sandbox.BuildGitWorkspaceBlock(runCtx, checkout, nil)
 }
 
 // runAgentTask runs the agent in a goroutine, streaming all events through
@@ -551,13 +568,16 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 
 	// Project-bound sessions (project-registry DP-7): anchor the run to the
 	// registered project's checkout so git tools default there (resolveRepoDir
-	// consults project.RootFrom) and inject a fresh per-session GIT WORKSPACE
-	// snapshot ahead of the user message. Delegated runs inherit the ctx root
-	// (delegate.go reuses the agent.Context as the sub-run ctx).
+	// consults project.RootFrom), pin the effective sandbox to the checkout
+	// when the host sandbox is active (per-run workspace roots), and inject a
+	// fresh per-session GIT WORKSPACE snapshot ahead of the user message.
+	// Delegated runs inherit the ctx root and sandbox override (delegate.go
+	// reuses the agent.Context as the sub-run ctx).
 	if bind := api.boundProject(sessionID); bind != nil {
 		checkout := registry.Current.Store().CheckoutDir(*bind)
 		runCtx = project.WithRoot(runCtx, checkout)
-		if snap, serr := projectWorkspaceSnapshot(checkout); serr == nil && strings.TrimSpace(snap) != "" {
+		runCtx = withBoundSandbox(runCtx, checkout)
+		if snap, serr := projectWorkspaceSnapshot(runCtx, checkout); serr == nil && strings.TrimSpace(snap) != "" {
 			header := fmt.Sprintf("\n### GIT WORKSPACE — session bound to registered project %q\n(checkout: %s)\n%s", bind.Name, checkout, snap)
 			msg = &genai.Content{
 				Role:  content.Role,

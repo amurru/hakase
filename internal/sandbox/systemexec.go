@@ -230,6 +230,21 @@ func ExecOperatorAuthorized() ExecOption {
 // env scrubbing, and bubblewrap wrapping. `env` overlays the process env;
 // `opts` customize the build (see ExecOperatorAuthorized).
 func BuildExecCommand(command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
+	return buildExecCommand(CurrentSandbox, command, args, workingDir, env, opts...)
+}
+
+// BuildExecCommandFor is BuildExecCommand, except the effective sandbox comes
+// from ctx (sandbox.ConfigFrom: a context-scoped override for project-bound
+// runs, else the process CurrentSandbox). The exec tool handlers and the git
+// engine call this so a per-session pinned sandbox actually constrains the
+// subprocess.
+func BuildExecCommandFor(ctx context.Context, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
+	return buildExecCommand(ConfigFrom(ctx), command, args, workingDir, env, opts...)
+}
+
+// buildExecCommand applies the policy/sandbox pipeline to one command using
+// the supplied sandbox configuration instead of reading CurrentSandbox.
+func buildExecCommand(sb *SandboxConfig, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
 	bo := &execOptions{}
 	for _, o := range opts {
 		o(bo)
@@ -239,17 +254,17 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	}
 
 	// WIN-005 defensive mode coercion: bubblewrap/landlock do not exist on
-	// Windows and tests construct CurrentSandbox directly (bypassing
+	// Windows and tests construct sb directly (bypassing
 	// LoadSandboxConfig), so the coercion also happens here. Mutating the
 	// mode in place is idempotent and makes every audit entry below record
 	// the effective mode (paths).
-	if CurrentSandbox != nil && runtime.GOOS == "windows" &&
-		(CurrentSandbox.Mode == SandboxModeBubblewrap || CurrentSandbox.Mode == SandboxModeLandlock) {
+	if sb != nil && runtime.GOOS == "windows" &&
+		(sb.Mode == SandboxModeBubblewrap || sb.Mode == SandboxModeLandlock) {
 		util.DebugWarn("sandbox_mode_coerced",
-			"from", string(CurrentSandbox.Mode),
+			"from", string(sb.Mode),
 			"to", string(SandboxModePaths),
 			"reason", "bubblewrap and landlock are unsupported on windows")
-		CurrentSandbox.Mode = SandboxModePaths
+		sb.Mode = SandboxModePaths
 	}
 
 	// Harmful-command protection gate: policy decision + approval.
@@ -257,10 +272,10 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	// path auditing. The audit entries record the decision at the gate
 	// level (DurationMs=0, ExitCode=0) - the post-execution audit is in
 	// the sync/start handlers.
-	decision := EvaluateCommandFunc(CurrentSandbox, command, args)
+	decision := EvaluateCommandFunc(sb, command, args)
 	var sandboxMode string
-	if CurrentSandbox != nil {
-		sandboxMode = string(CurrentSandbox.Mode)
+	if sb != nil {
+		sandboxMode = string(sb.Mode)
 	} else {
 		sandboxMode = "off"
 	}
@@ -352,7 +367,7 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	// sandbox's trusted folders (read roots + system dirs). Applies to both
 	// the sync and background tools since both go through here. workingDir
 	// threads through so relative operands resolve the way the process will.
-	if err := AuditSystemCommandPaths(CurrentSandbox, command, args, workingDir); err != nil {
+	if err := AuditSystemCommandPaths(sb, command, args, workingDir); err != nil {
 		return nil, err
 	}
 
@@ -364,7 +379,7 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	// Phase 2: when bubblewrap mode is active, wrap the inner command in
 	// bwrap for kernel-enforced filesystem + network isolation. The inner
 	// argv (sh -c or direct) becomes the command bwrap executes.
-	if CurrentSandbox != nil && CurrentSandbox.Mode == SandboxModeBubblewrap {
+	if sb != nil && sb.Mode == SandboxModeBubblewrap {
 		var innerArgv []string
 		if len(args) == 0 {
 			innerArgv = []string{"sh", "-c", command}
@@ -373,11 +388,11 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 		}
 		wd := workingDir
 		if wd == "" {
-			wd = CurrentSandbox.WorkspaceRoot()
+			wd = sb.WorkspaceRoot()
 		}
-		bwCmd, err := wrapBwrapCmd(CurrentSandbox, innerArgv, wd, CurrentSandbox.AllowNetwork, nil)
+		bwCmd, err := wrapBwrapCmd(sb, innerArgv, wd, sb.AllowNetwork, nil)
 		if err != nil {
-			if CurrentSandbox.AllowFallback {
+			if sb.AllowFallback {
 				// Explicitly configured to allow fallback: warn and
 				// fall through to the plain exec path below.
 				util.DebugWarn("sandbox_bwrap_fallback", "error", err)
@@ -403,7 +418,7 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 		// P0-1: route through the platform shell when no args are
 		// provided (sh -c on Unix, cmd /D /C on Windows) so the model's
 		// natural whole-command-line input (pipes, redirects) works.
-		shellCmd, err := buildShellCommand(ctx, command, effectiveChildDir(workingDir))
+		shellCmd, err := buildShellCommand(ctx, command, effectiveChildDir(sb, workingDir))
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +427,7 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 		// Explicit executable+args form; on Windows bare names are
 		// resolved against PATH only (never the working directory) and
 		// rewritten to absolute paths before exec.
-		directCmd, err := buildDirectCommand(ctx, command, args, effectiveChildDir(workingDir))
+		directCmd, err := buildDirectCommand(ctx, command, args, effectiveChildDir(sb, workingDir))
 		if err != nil {
 			return nil, err
 		}
@@ -433,13 +448,13 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 	cmd.Env = hardenChildEnv(cmd.Env)
 
 	// Working directory: sandbox-aware resolution.
-	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
+	if sb != nil && sb.Mode != SandboxModeOff {
 		if workingDir == "" {
-			if root := CurrentSandbox.WorkspaceRoot(); root != "" {
+			if root := sb.WorkspaceRoot(); root != "" {
 				cmd.Dir = root
 			}
 		} else {
-			resolved, err := CurrentSandbox.ResolveScopedPath(workingDir, false)
+			resolved, err := sb.ResolveScopedPath(workingDir, false)
 			if err != nil {
 				return nil, fmt.Errorf("working_dir %q rejected by sandbox: %w", workingDir, err)
 			}
@@ -496,7 +511,7 @@ func envKeyIsSensitive(key string, prefixes []string, caseInsensitive bool) bool
 // effectiveChildDir returns the directory the spawned process will actually
 // run in: the caller-supplied workingDir when set, the sandbox workspace root
 // when the sandbox pins it, or the agent process working directory.
-func effectiveChildDir(workingDir string) string {
+func effectiveChildDir(sb *SandboxConfig, workingDir string) string {
 	if workingDir != "" {
 		return workingDir
 	}
@@ -878,7 +893,7 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 
 	// system_exec: synchronous fire-and-wait execution.
 	execTool, err := util.NewDocTool(functiontool.Config{
-		Name: "system_exec",
+		Name:        "system_exec",
 		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). Commands are checked against a harmful-command policy and may require approval. When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter." + shellRoutingNote,
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
@@ -887,7 +902,7 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 		if workingDir == "" {
 			workingDir = taskCWD
 		}
-		cmd, err := BuildExecCommand(input.Command, input.Args, workingDir, input.Env)
+		cmd, err := BuildExecCommandFor(ctx, input.Command, input.Args, workingDir, input.Env)
 		if err != nil {
 			return SystemExecOutput{ProcessID: procID}, err
 		}
@@ -989,7 +1004,7 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 		if workingDir == "" {
 			workingDir = taskCWD
 		}
-		cmd, err := BuildExecCommand(input.Command, input.Args, workingDir, input.Env)
+		cmd, err := BuildExecCommandFor(ctx, input.Command, input.Args, workingDir, input.Env)
 		if err != nil {
 			return SystemExecStartOutput{Started: false, Message: err.Error()}, err
 		}

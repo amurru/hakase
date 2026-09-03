@@ -6,6 +6,7 @@ import (
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -101,6 +102,38 @@ func installRegistry(t *testing.T, home string) *registry.Service {
 	registry.Current = registry.NewService(st, nil)
 	t.Cleanup(func() { registry.Current = orig })
 	return registry.Current
+}
+
+// TestWithBoundSandbox verifies the chat run helper pins the effective
+// sandbox to the project checkout when the host sandbox is active, and leaves
+// the context untouched when it is off (DP-7).
+func TestWithBoundSandbox(t *testing.T) {
+	origSB := sandbox.CurrentSandbox
+	t.Cleanup(func() { sandbox.CurrentSandbox = origSB })
+	checkout := t.TempDir()
+
+	// Host sandbox off: no override is installed.
+	sandbox.CurrentSandbox = nil
+	plain := withBoundSandbox(context.Background(), checkout)
+	if sb := sandbox.ConfigFrom(plain); sb != nil {
+		t.Errorf("sandbox-off run got an override: %+v", sb)
+	}
+
+	// Host sandbox active: the run's sandbox is pinned to the checkout.
+	procRoot := t.TempDir()
+	sandbox.CurrentSandbox = &sandbox.SandboxConfig{
+		Mode:           sandbox.SandboxModePaths,
+		WorkspaceRoots: []string{procRoot},
+		ReadRoots:      []string{procRoot},
+	}
+	bound := withBoundSandbox(context.Background(), checkout)
+	sb := sandbox.ConfigFrom(bound)
+	if sb == nil {
+		t.Fatal("project-bound run did not install a sandbox override")
+	}
+	if len(sb.WorkspaceRoots) != 1 || sb.WorkspaceRoots[0] != checkout {
+		t.Errorf("bound workspace roots = %v, want [%s]", sb.WorkspaceRoots, checkout)
+	}
 }
 
 func doJSON(t *testing.T, h http.Handler, method, target string, body any) (*httptest.ResponseRecorder, ProjectDTO) {

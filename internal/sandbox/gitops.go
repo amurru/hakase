@@ -71,13 +71,16 @@ func isNotARepoErr(res gitResult) bool {
 // the process-wide session root), then the process working directory.
 func resolveRepoDir(ctx context.Context, repoDir string, write bool) (string, error) {
 	if strings.TrimSpace(repoDir) != "" {
-		return taskResolve(repoDir, write, "")
+		return taskResolve(ctx, repoDir, write, "")
 	}
+	// The sandbox that applies to this run (context-scoped override for
+	// project-bound sessions, else the process CurrentSandbox).
+	sb := ConfigFrom(ctx)
 	// Pinned sandbox roots win over every other default: BuildExecCommand
 	// rejects working directories outside the roots, so this is also the
 	// only sandbox-safe fallback while a workspace is configured.
-	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
-		if root := CurrentSandbox.WorkspaceRoot(); root != "" {
+	if sb != nil && sb.Mode != SandboxModeOff {
+		if root := sb.WorkspaceRoot(); root != "" {
 			return root, nil
 		}
 	}
@@ -86,10 +89,10 @@ func resolveRepoDir(ctx context.Context, repoDir string, write bool) (string, er
 	// operations to the repository root. Under an active sandbox it is used
 	// only when it sits inside the approved scope.
 	if pr := project.RootFrom(ctx); pr != "" {
-		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
+		if sb == nil || sb.Mode == SandboxModeOff {
 			return pr, nil
 		}
-		if _, err := CurrentSandbox.ResolveScopedPath(pr, false); err == nil {
+		if _, err := sb.ResolveScopedPath(pr, false); err == nil {
 			return pr, nil
 		}
 	}
@@ -159,8 +162,9 @@ func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, l
 	}
 
 	// GIT_TERMINAL_PROMPT=0 makes credential/confirmation prompts fail fast
-	// instead of hanging the run waiting on a TTY.
-	cmd, err := BuildExecCommand("git", args, dir, map[string]string{
+	// instead of hanging the run waiting on a TTY. The sandbox comes from the
+	// run context so a project-bound session's pinned sandbox constrains git.
+	cmd, err := BuildExecCommandFor(ctx, "git", args, dir, map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
 	}, opts...)
 	if err != nil {
@@ -858,7 +862,7 @@ func cloneContent(ctx context.Context, input GitCloneInput, log interfaces.LogFu
 	}
 
 	// Resolve the target through write containment, then let git create it.
-	target, err := taskResolve(input.Dir, true, "")
+	target, err := taskResolve(ctx, input.Dir, true, "")
 	if err != nil {
 		return out, err
 	}
