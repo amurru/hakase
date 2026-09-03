@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"amurru/hakase/internal/util"
 )
 
 const (
@@ -340,8 +342,8 @@ func (r *Reporter) flush(timeout time.Duration) bool {
 func (r *Reporter) execSync(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, r.bin, args...)
+	cmd := &exec.Cmd{Path: r.bin, Args: append([]string{r.bin}, args...)}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	_ = cmd.Run()
+	_ = util.RunContext(ctx, cmd)
 }

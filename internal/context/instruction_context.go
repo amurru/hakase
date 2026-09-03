@@ -101,6 +101,12 @@ type InstructionFile struct {
 // context.go so large AGENTS.md files do not silently blow the token budget.
 var ContextBlockTokens int
 
+// GitWorkspaceBlockTokens is the token estimate of the rendered git workspace
+// snapshot block, set once in setupRunner next to ContextBlockTokens. Folded
+// into the same compaction reserve so the snapshot cannot silently blow the
+// token budget.
+var GitWorkspaceBlockTokens int
+
 // FindProjectRootFunc resolves the project root from a starting directory.
 // Set by root's skill_discovery.go in sandbox_hooks_init.go.
 var FindProjectRootFunc func(cwd string) string

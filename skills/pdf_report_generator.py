@@ -185,6 +185,15 @@ def compile_report(title, sections, output_md='./outputs/report.md', output_pdf=
             output_pdf='./outputs/report.pdf'
         )
     """
+    # Canonicalize the output location and keep relative outputs inside the
+    # current directory tree: a caller-supplied relative path with traversal
+    # segments must never write elsewhere.
+    if os.path.isabs(output_md):
+        output_md = os.path.realpath(output_md)
+    else:
+        output_md = os.path.realpath(os.path.join(os.getcwd(), output_md))
+        if os.path.commonpath([os.path.realpath(os.getcwd()), output_md]) != os.path.realpath(os.getcwd()):
+            raise ValueError("output_md must stay inside the current directory")
     os.makedirs(os.path.dirname(output_md) or '.', exist_ok=True)
     
     md_parts = [f"# {title}\n\n"]

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/util"
 
 	"google.golang.org/adk/v2/agent"
@@ -61,22 +62,38 @@ func isNotARepoErr(res gitResult) bool {
 
 // resolveRepoDir resolves the tool's repo_dir input through the sandbox.
 // write=true for mutating tools selects the stricter write containment.
-// An empty input defaults to the agent working directory, or the sandbox
-// workspace root when the sandbox pins one.
+// Resolution order for an empty input: a pinned sandbox workspace root first
+// (an explicitly configured workspace is the deliberate default, e.g. a web
+// server pointed at a code directory), then the session project root, then
+// the process working directory.
 func resolveRepoDir(repoDir string, write bool) (string, error) {
-	if strings.TrimSpace(repoDir) == "" {
-		if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
-			if root := CurrentSandbox.WorkspaceRoot(); root != "" {
-				return root, nil
-			}
-		}
-		wd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("git: cannot determine working directory: %w", err)
-		}
-		return wd, nil
+	if strings.TrimSpace(repoDir) != "" {
+		return taskResolve(repoDir, write, "")
 	}
-	return taskResolve(repoDir, write, "")
+	// Pinned sandbox roots win over every other default: BuildExecCommand
+	// rejects working directories outside the roots, so this is also the
+	// only sandbox-safe fallback while a workspace is configured.
+	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
+		if root := CurrentSandbox.WorkspaceRoot(); root != "" {
+			return root, nil
+		}
+	}
+	// Session project root (set once in SetupRunner from the process cwd)
+	// defaults repo-wide git operations to the repository root. Under an
+	// active sandbox it is used only when it sits inside the approved scope.
+	if pr := project.CurrentRoot(); pr != "" {
+		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
+			return pr, nil
+		}
+		if _, err := CurrentSandbox.ResolveScopedPath(pr, false); err == nil {
+			return pr, nil
+		}
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("git: cannot determine working directory: %w", err)
+	}
+	return wd, nil
 }
 
 // cappedCapture buffers stdout and stderr against a single combined budget.
@@ -246,11 +263,16 @@ type GitStatusOutput struct {
 	Stderr   string           `json:"stderr,omitempty"`
 }
 
-var porcBranchRe = regexp.MustCompile(`\[(ahead|behind) (\d+)\]`)
+// porcBranchRe matches the "[ahead N, behind M]" tracking counts in the
+// porcelain -b header. Both counts share one bracket ("[ahead 2, behind 1]"),
+// so the counts are matched anywhere in the header, not bracket-anchored.
+var porcBranchRe = regexp.MustCompile(`(ahead|behind) (\d+)`)
 
 // parsePorcelainStatus parses `git status --porcelain=v1 -b` output into a
-// branch header plus per-file entries.
-func parsePorcelainStatus(raw string) (branch string, ahead, behind int, entries []GitStatusEntry) {
+// branch header plus per-file entries. Returns raw (unwrapped) values; the
+// tool handler wraps them as untrusted data when building its output schema,
+// and the workspace snapshot wraps the whole rendered block once.
+func parsePorcelainStatus(raw string) (branch, upstream string, ahead, behind int, entries []GitStatusEntry) {
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
@@ -263,6 +285,9 @@ func parsePorcelainStatus(raw string) (branch string, ahead, behind int, entries
 				branchPart = hdr[:idx]
 			}
 			branch = strings.SplitN(branchPart, "...", 2)[0]
+			if idx := strings.Index(branchPart, "..."); idx >= 0 {
+				upstream = branchPart[idx+3:]
+			}
 			for _, m := range porcBranchRe.FindAllStringSubmatch(hdr, -1) {
 				n, _ := strconv.Atoi(m[2])
 				if m[1] == "ahead" {
@@ -275,7 +300,7 @@ func parsePorcelainStatus(raw string) (branch string, ahead, behind int, entries
 		}
 		// Skip the "?? placeholder" edge; require "XY " shape.
 		if len(line) < 4 || (line[2] != ' ' && line[2] != '\t') {
-			entries = append(entries, GitStatusEntry{Status: wrapUntrustedData(line), Path: wrapUntrustedData(line)})
+			entries = append(entries, GitStatusEntry{Status: line, Path: line})
 			continue
 		}
 		code := line[:2]
@@ -290,11 +315,11 @@ func parsePorcelainStatus(raw string) (branch string, ahead, behind int, entries
 		entries = append(entries, GitStatusEntry{
 			Status: code,
 			Staged: staged,
-			Path:   wrapUntrustedData(path),
-			From:   wrapUntrustedData(from),
+			Path:   path,
+			From:   from,
 		})
 	}
-	return branch, ahead, behind, entries
+	return branch, upstream, ahead, behind, entries
 }
 
 // unquotePorcelainPath strips porcelain v1 C-style quoting around paths
@@ -331,10 +356,18 @@ func gitStatusContent(ctx context.Context, input GitStatusInput, log interfaces.
 		}
 		return out, err
 	}
-	branch, ahead, behind, entries := parsePorcelainStatus(res.Stdout)
+	branch, _, ahead, behind, entries := parsePorcelainStatus(res.Stdout)
 	out.Branch = wrapUntrustedData(branch)
 	out.Ahead = ahead
 	out.Behind = behind
+	// D7: repo-derived strings are untrusted data. The parser returns raw
+	// values; wrap each field once here (the workspace snapshot wraps the
+	// whole rendered block instead).
+	for i := range entries {
+		entries[i].Status = wrapUntrustedData(entries[i].Status)
+		entries[i].Path = wrapUntrustedData(entries[i].Path)
+		entries[i].From = wrapUntrustedData(entries[i].From)
+	}
 	out.Entries = entries
 	return out, nil
 }
@@ -724,4 +757,117 @@ func CreateGitOpsTools(log interfaces.LogFunc) ([]tool.Tool, error) {
 	}
 
 	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Git workspace snapshot (session-start repo awareness)
+// ---------------------------------------------------------------------------
+
+// gitWorkspaceCommitCount is how many recent commits the workspace snapshot
+// lists. Kept tiny: the block is orientation, not history.
+const gitWorkspaceCommitCount = 3
+
+// countGitEntries buckets porcelain entries into the category counts shown in
+// the workspace snapshot: staged (index column differs from space), modified
+// (worktree column differs while the index is clean), untracked ("??"), and
+// conflicted (a U in either column, or both sides added/deleted). Categories
+// are disjoint: a conflicted entry is never also staged or modified.
+func countGitEntries(entries []GitStatusEntry) (staged, modified, untracked, conflicts int) {
+	for _, e := range entries {
+		if len(e.Status) < 2 {
+			continue
+		}
+		x, y := e.Status[0], e.Status[1]
+		switch {
+		case x == '?':
+			untracked++
+		case x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D'):
+			conflicts++
+		case x != ' ':
+			staged++
+		case y != ' ':
+			modified++
+		}
+	}
+	return staged, modified, untracked, conflicts
+}
+
+// BuildGitWorkspaceBlock renders a compact session-start snapshot of the
+// repository at repoDir for injection into agent instructions: branch and
+// upstream tracking, per-category working-tree counts, and the newest
+// commits. It is a snapshot with an explicit re-check note, never a live
+// view, so the prompt stays stable. Returns "" (no error) when repoDir is
+// not inside a git repository, so callers can skip the block and keep
+// booting; errors are reserved for genuine failures. The whole block is
+// wrapped as untrusted data: every repo-derived line is attacker-controllable.
+func BuildGitWorkspaceBlock(ctx context.Context, repoDir string, log interfaces.LogFunc) (string, error) {
+	dir, err := resolveRepoDir(repoDir, false)
+	if err != nil {
+		return "", err
+	}
+
+	res, err := runGit(ctx, dir, []string{"status", "--porcelain=v1", "-b"}, false, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			return "", nil
+		}
+		return "", err
+	}
+	branch, upstream, ahead, behind, entries := parsePorcelainStatus(res.Stdout)
+	staged, modified, untracked, conflicts := countGitEntries(entries)
+
+	detached := strings.HasSuffix(branch, " (no branch)")
+	unborn := strings.HasPrefix(branch, "No commits yet on ")
+	branchLabel := branch
+	if detached {
+		branchLabel = "(detached HEAD)"
+	} else if unborn {
+		branchLabel = strings.TrimPrefix(branch, "No commits yet on ")
+	}
+
+	var b strings.Builder
+	b.WriteString("### GIT WORKSPACE (snapshot at session start - re-check with git_status/git_diff before acting on it):\n")
+	fmt.Fprintf(&b, "Root: %s\n", dir)
+	switch {
+	case detached:
+		fmt.Fprintf(&b, "Branch: %s\n", branchLabel)
+	case unborn:
+		fmt.Fprintf(&b, "Branch: %s (no commits yet)\n", branchLabel)
+	case upstream != "":
+		fmt.Fprintf(&b, "Branch: %s -> %s (ahead %d, behind %d)\n", branchLabel, upstream, ahead, behind)
+	default:
+		fmt.Fprintf(&b, "Branch: %s\n", branchLabel)
+	}
+	if staged+modified+untracked+conflicts == 0 {
+		b.WriteString("Status: clean\n")
+	} else {
+		var parts []string
+		if staged > 0 {
+			parts = append(parts, fmt.Sprintf("staged %d", staged))
+		}
+		if modified > 0 {
+			parts = append(parts, fmt.Sprintf("modified %d", modified))
+		}
+		if untracked > 0 {
+			parts = append(parts, fmt.Sprintf("untracked %d", untracked))
+		}
+		if conflicts > 0 {
+			parts = append(parts, fmt.Sprintf("conflicts %d", conflicts))
+		}
+		fmt.Fprintf(&b, "Status: %s\n", strings.Join(parts, ", "))
+	}
+
+	if cres, err := runGit(ctx, dir, []string{"log", "--pretty=format:%h%x09%s", "-n", strconv.Itoa(gitWorkspaceCommitCount)}, false, log); err == nil && strings.TrimSpace(cres.Stdout) != "" {
+		b.WriteString("Recent commits (newest first):\n")
+		for _, line := range strings.Split(cres.Stdout, "\n") {
+			parts := strings.SplitN(line, "\t", 2)
+			sha := parts[0]
+			subject := ""
+			if len(parts) == 2 {
+				subject = parts[1]
+			}
+			fmt.Fprintf(&b, "  %s %s\n", sha, subject)
+		}
+	}
+	return wrapUntrustedData(b.String()), nil
 }

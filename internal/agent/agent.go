@@ -5,6 +5,7 @@ import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/skill"
@@ -380,7 +381,19 @@ func getVenvPython(log LogFunc) (string, error) {
 		}
 		var lastErr error
 		for _, spec := range venvCreatorCommands(venvDir) {
-			cmd := exec.Command(spec[0], spec[1:]...)
+			cmd := &exec.Cmd{Path: spec[0], Args: append([]string(nil), spec...)}
+			// Mirror the stdlib os/exec PATH resolution of a bare name; a
+			// lookup failure is stored on cmd.Err and surfaces from cmd.Run.
+			if filepath.Base(spec[0]) == spec[0] {
+				if lp, lerr := exec.LookPath(spec[0]); lp != "" {
+					cmd.Path = lp
+					if lerr != nil {
+						cmd.Err = lerr
+					}
+				} else if lerr != nil {
+					cmd.Err = lerr
+				}
+			}
 			sandbox.ConfigureProcess(cmd)
 			lastErr = cmd.Run()
 			if lastErr == nil {
@@ -514,7 +527,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 		}
 
 		runScript := func() (string, string) {
-			cmd := exec.CommandContext(ctx, pyBin, scriptPath)
+			cmd := &exec.Cmd{Path: pyBin, Args: []string{pyBin, scriptPath}}
 			cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
 			// If a parent environment was captured at delegation time,
 			// merge it on top so the sub-agent inherits the parent's
@@ -621,7 +634,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 						),
 					)
 				}
-				installCmd := exec.CommandContext(ctx, pipBin, "install", missingPkg)
+				installCmd := &exec.Cmd{Path: pipBin, Args: []string{pipBin, "install", missingPkg}}
 				// Merge parent env into the pip install command too
 				if len(parentEnv) > 0 && parentEnv[0] != nil {
 					installCmd.Env = append(parentEnv[0], installCmd.Env...)
@@ -1801,6 +1814,40 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}
 	}
 
+	// Session project identity: the repository (or fallback cwd) this session
+	// is anchored to. Git tools default repo_dir to it, and context-file and
+	// skill discovery already walk to the same git root. Computed once per
+	// session so every agent and delegated tool call shares one identity.
+	proot := project.FindRoot(cwd)
+	project.SetCurrentRoot(proot)
+
+	// Render a compact repo-state snapshot (branch, status counts, recent
+	// commits) for the agents that own the structured git tools. It is a
+	// session-start snapshot with an explicit re-check note, never a live
+	// view, so the prompt stays cacheable. Best effort: a non-repo cwd or a
+	// git failure yields no block and must never block booting.
+	var gitBlock string
+	if proot != "" {
+		gbCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		gb, gerr := sandbox.BuildGitWorkspaceBlock(gbCtx, proot, interfaces.LogFunc(log))
+		cancel()
+		switch {
+		case gerr != nil:
+			if log != nil {
+				log(fmt.Sprintf("⚠ Git workspace snapshot skipped: %v", gerr))
+			}
+		case gb != "":
+			gitBlock = gb
+			if log != nil {
+				log(fmt.Sprintf("🌿 Git workspace: %s", proot))
+			}
+		}
+	}
+	hctx.GitWorkspaceBlockTokens = util.EstimateTokens(gitBlock)
+	// gitBlockAgents lists the agents that receive the snapshot: exactly the
+	// ones whose tool list includes the structured git tools.
+	gitBlockAgents := []string{"orchestrator", "general_purpose"}
+
 	// Render the preferred-measurement-units system-reminder block once per
 	// session (metric/ISO by default, imperial when selected) and inject it
 	// into every agent's instruction so the agent reports physical quantities
@@ -2064,6 +2111,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"general_purpose",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
+		) + ContextBlockFor(
+			"general_purpose",
+			gitBlock,
+			gitBlockAgents,
 		) + "\n\n" + unitsBlock,
 		Model:                 model,
 		Tools:                 append(append(fileOpsTools, gitTools...), visionTool),
@@ -2200,6 +2251,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"orchestrator",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
+		) + ContextBlockFor(
+			"orchestrator",
+			gitBlock,
+			gitBlockAgents,
 		) + "\n\n" + unitsBlock,
 		Model:                 model,
 		GenerateContentConfig: genCfg,

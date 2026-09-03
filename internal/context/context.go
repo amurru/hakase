@@ -296,12 +296,13 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 
 	// Reserve budget for the system prompt + tool schemas + current run
 	// contents, plus the rendered project-context block (contextBlockTokens,
-	// set in setupRunner from the discovered AGENTS.md files) and the
+	// set in setupRunner from the discovered AGENTS.md files), the git
+	// workspace snapshot (gitWorkspaceBlockTokens), and the
 	// runtime-environment block (env.SystemEnvBlockTokens, set in setupRunner).
 	// The flat baseline plus the blocks is a conservative approximation since
 	// we cannot see the fully rendered prompt.
 	const baseReserveTokens = 8000
-	reserveTokens := baseReserveTokens + ContextBlockTokens + env.SystemEnvBlockTokens
+	reserveTokens := baseReserveTokens + ContextBlockTokens + GitWorkspaceBlockTokens + env.SystemEnvBlockTokens
 
 	currentTokens := util.EstimateContentsTokens(current)
 	trigger := int64(effectiveMax * 9 / 10)

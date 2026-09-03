@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
 )
 
 // gitBin returns the git executable, skipping the test when git is absent.
@@ -22,6 +23,13 @@ func gitBin(t *testing.T) string {
 	return p
 }
 
+// gitTestEnv returns the environment test git runs use: no global/system
+// config, no terminal prompts, so a stray interactive prompt can never hang a
+// test.
+func gitTestEnv() []string {
+	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+}
+
 // initRepo creates a git repository at dir with a local identity and one
 // "initial" commit. Uses the system git directly (not runGit) so test setup
 // bypasses the policy stubs.
@@ -29,9 +37,12 @@ func initRepo(t *testing.T, dir string) {
 	t.Helper()
 	g := gitBin(t)
 	run := func(args ...string) error {
-		cmd := exec.Command(g, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+		cmd := &exec.Cmd{
+			Path: g,
+			Args: append([]string{g}, args...),
+			Dir:  dir,
+			Env:  gitTestEnv(),
+		}
 		_, err := cmd.CombinedOutput()
 		return err
 	}
@@ -380,11 +391,13 @@ func TestGitBranch(t *testing.T) {
 	initRepo(t, dir)
 
 	g := gitBin(t)
-	if out, err := exec.Command(g, "-C", dir, "branch", "feature").CombinedOutput(); err != nil {
+	branchCmd := &exec.Cmd{Path: g, Args: []string{g, "-C", dir, "branch", "feature"}, Dir: dir, Env: gitTestEnv()}
+	if out, err := branchCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git branch feature: %v (%s)", err, out)
 	}
 	// Simulated remote-tracking branch (no network needed).
-	if out, err := exec.Command(g, "-C", dir, "update-ref", "refs/remotes/origin/main", "HEAD").CombinedOutput(); err != nil {
+	refCmd := &exec.Cmd{Path: g, Args: []string{g, "-C", dir, "update-ref", "refs/remotes/origin/main", "HEAD"}, Dir: dir, Env: gitTestEnv()}
+	if out, err := refCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git update-ref: %v (%s)", err, out)
 	}
 
@@ -600,5 +613,157 @@ func TestCappedCapture(t *testing.T) {
 	}
 	if c.stdout.String() != "0123456789" {
 		t.Errorf("buffer grew after cap: %q", c.stdout.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Git workspace snapshot + project-root defaults
+// ---------------------------------------------------------------------------
+
+func TestParsePorcelainStatusUpstream(t *testing.T) {
+	branch, upstream, ahead, behind, _ := parsePorcelainStatus("## main...origin/main [ahead 2, behind 1]\n M file.txt\n")
+	if branch != "main" {
+		t.Errorf("branch = %q, want main", branch)
+	}
+	if upstream != "origin/main" {
+		t.Errorf("upstream = %q, want origin/main", upstream)
+	}
+	if ahead != 2 || behind != 1 {
+		t.Errorf("ahead/behind = %d/%d, want 2/1", ahead, behind)
+	}
+}
+
+func TestParsePorcelainStatusDetached(t *testing.T) {
+	branch, upstream, _, _, _ := parsePorcelainStatus("## HEAD (no branch)\n")
+	if !strings.HasSuffix(branch, " (no branch)") {
+		t.Errorf("detached header branch = %q, want suffix \" (no branch)\"", branch)
+	}
+	if upstream != "" {
+		t.Errorf("detached upstream = %q, want empty", upstream)
+	}
+}
+
+func TestCountGitEntries(t *testing.T) {
+	_, _, _, _, entries := parsePorcelainStatus(strings.Join([]string{
+		"## main",
+		"M  staged.txt",   // staged only
+		" M unstaged.txt", // modified only
+		"MM both.txt",     // staged + modified in worktree
+		"?? new.txt",
+		"UU conflict.txt",
+		"AA added-both.txt",
+	}, "\n"))
+	staged, modified, untracked, conflicts := countGitEntries(entries)
+	if staged != 2 {
+		t.Errorf("staged = %d, want 2 (staged.txt, both.txt)", staged)
+	}
+	if modified != 1 {
+		t.Errorf("modified = %d, want 1 (unstaged.txt)", modified)
+	}
+	if untracked != 1 {
+		t.Errorf("untracked = %d, want 1", untracked)
+	}
+	if conflicts != 2 {
+		t.Errorf("conflicts = %d, want 2 (conflict.txt, added-both.txt)", conflicts)
+	}
+}
+
+func TestBuildGitWorkspaceBlock(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	// Dirty tree: one staged, one modified, one untracked file.
+	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitStageContent(context.Background(), GitStageInput{RepoDir: dir, Paths: []string{"staged.txt"}}, nil); err != nil {
+		t.Fatalf("gitStageContent: %v", err)
+	}
+	// README.md is tracked (committed by initRepo); edit it for " M ".
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# repo\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := BuildGitWorkspaceBlock(context.Background(), dir, nil)
+	if err != nil {
+		t.Fatalf("BuildGitWorkspaceBlock: %v", err)
+	}
+	if block == "" {
+		t.Fatal("expected a non-empty workspace block")
+	}
+	for _, want := range []string{
+		"Root: " + dir,
+		"Branch: main",
+		"staged 1",
+		"modified 1",
+		"untracked 1",
+		"Recent commits (newest first):",
+		"initial",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block missing %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "conflicts") {
+		t.Errorf("block reports conflicts on a clean-merge tree:\n%s", block)
+	}
+}
+
+func TestBuildGitWorkspaceBlockCleanRepo(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	block, err := BuildGitWorkspaceBlock(context.Background(), dir, nil)
+	if err != nil {
+		t.Fatalf("BuildGitWorkspaceBlock: %v", err)
+	}
+	if !strings.Contains(block, "Status: clean") {
+		t.Errorf("clean repo block missing \"Status: clean\":\n%s", block)
+	}
+	if !strings.Contains(block, "Branch: main") {
+		t.Errorf("clean repo block missing branch:\n%s", block)
+	}
+}
+
+func TestBuildGitWorkspaceBlockNotARepo(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	block, err := BuildGitWorkspaceBlock(context.Background(), dir, nil)
+	if err != nil {
+		t.Fatalf("BuildGitWorkspaceBlock(non-repo): %v", err)
+	}
+	if block != "" {
+		t.Errorf("non-repo block = %q, want empty", block)
+	}
+}
+
+func TestResolveRepoDirDefaultsToProjectRoot(t *testing.T) {
+	origSB := CurrentSandbox
+	CurrentSandbox = nil
+	defer func() { CurrentSandbox = origSB }()
+
+	root := t.TempDir()
+	initRepo(t, root)
+	project.SetCurrentRoot(root)
+	defer project.SetCurrentRoot("")
+
+	dir, err := resolveRepoDir("", false)
+	if err != nil {
+		t.Fatalf("resolveRepoDir: %v", err)
+	}
+	if dir != root {
+		t.Errorf("resolveRepoDir default = %q, want project root %q", dir, root)
+	}
+
+	// Without a session project root the working directory fallback applies.
+	project.SetCurrentRoot("")
+	cwd, _ := os.Getwd()
+	if dir, err := resolveRepoDir("", false); err != nil || dir != cwd {
+		t.Errorf("resolveRepoDir without project = %q, want cwd %q (err %v)", dir, cwd, err)
 	}
 }

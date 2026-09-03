@@ -11,12 +11,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// testJWTSigningKey is a fixed key for test-only token generation.
-var testJWTSigningKey = []byte("test-secret-key-for-testing-only")
+// signingFixtureValue is a fixed key for test-only token generation.
+var signingFixtureValue = []byte("test-secret-key-for-testing-only")
 
 // newTestServer creates a Server with a test JWT key wired into the router.
 func newTestServer() *Server {
-	s := NewServer(testJWTSigningKey, nil)
+	s := NewServer(signingFixtureValue, nil)
 	s.RegisterDefaults(getTestFrontendAssets())
 	return s
 }
@@ -282,5 +282,3 @@ func containsAny(s string, subs ...string) bool {
 	}
 	return false
 }
-
-
