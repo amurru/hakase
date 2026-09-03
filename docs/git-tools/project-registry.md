@@ -163,9 +163,14 @@ project identity as today. The registry is additive.
   push → delete, plus 409/400/404 paths, 503 without a registry, and session
   project binding persisted on the session file); `go test ./internal/web/...`
   and the full suite green.
-- **P4 - UI + docs [QA]**: project selector in the web sidebar, chat header
-  chip, README remote-deployment section (incl. the credential note DP-8).
-  Verify: `cd webui && pnpm test`, manual smoke against a local server.
+- **P4 - UI + docs [QA]** *(done 2026-09-03)*: the New Session dialog gained
+  a registered-project selector (lists ready projects from `/api/projects`;
+  choosing one creates a project-bound session and jumps into it); session
+  list rows and the chat header show a git-branch chip with the bound project
+  name. README gained a "Remote web deployments (registered projects)"
+  section covering registration, session binding, and the DP-8 credential
+  note. Verify: `cd webui && pnpm build` (vue-tsc typecheck) + `pnpm test`
+  green; manual browser smoke not run in this environment.
 
 ## 6. Non-goals (recorded)
 

@@ -394,6 +394,36 @@ See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [
 - Rotate `~/.hakase/jwt-secret` periodically to invalidate outstanding tokens.
 - TLS is the proxy's job -- never run `--host 0.0.0.0` without a reverse proxy.
 
+### Remote web deployments (registered projects)
+
+When hakase web runs on a host that does *not* already have the client's code,
+there is nothing for `git_status`/`git_commit`/the workspace snapshot to anchor
+to. Registered projects fix that: an explicit `{name, clone source}` entry that
+the host materializes into a managed checkout. See
+[docs/git-tools/project-registry.md](docs/git-tools/project-registry.md).
+
+- **Register a project** on the host with
+  `hakase projects register <name> <url> [--ref <branch>]` (list/sync/delete
+  too), or from the web API via `POST /api/projects`. Checkouts live under
+  `~/.hakase/projects/<id>`; entries and statuses persist in
+  `~/.hakase/projects.json`.
+- **Sessions bind to a project** by picking it in the web UI's New Session
+  dialog (or `POST /api/sessions` with `project_id`). Bound sessions anchor
+  every git tool to the project checkout and start each run with a fresh
+  `GIT WORKSPACE` snapshot of that checkout.
+- **Credentials are never stored** (DP-8): clone/push/pull authenticate
+  through the host's own mechanisms -- git credential helpers, `gh auth`, or
+  an SSH agent -- exactly what running git yourself would use. Nothing secret
+  is written into `projects.json` (clone URLs only).
+- **Sandbox note**: per-session OS-level confinement is not implemented yet;
+  git/file operations of a bound session anchor to the checkout, but the
+  process sandbox still governs absolute-path access. On a remote host, run
+  the server with `sandbox.mode: "off"` in `config.json` (or add the hakase
+  home to the sandbox read/write roots) so the managed checkouts are
+  reachable.
+- **Deleting a project** removes the registry entry and the local checkout; it
+  never touches the remote. Re-registering re-clones.
+
 ---
 
 <details>

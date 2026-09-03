@@ -13,7 +13,7 @@ import { apiFetch } from '@/lib/api'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 
 const route = useRoute()
@@ -135,9 +135,18 @@ watch(
 async function loadSessionHistory(sid: string) {
   isLoadingHistory.value = true
   try {
-    const data = await apiFetch<{ messages?: Array<{ role: string; content: string; thinking?: string; kind?: string }> }>(
+    const data = await apiFetch<{
+      title?: string
+      project_name?: string
+      messages?: Array<{ role: string; content: string; thinking?: string; kind?: string }>
+    }>(
       `/sessions/${sid}`,
     )
+    if (data.title) {
+      appStore.setActiveSessionTitle(data.title)
+    }
+    // Project-bound sessions show their registered project as a header chip.
+    appStore.setActiveProjectName(data.project_name ?? '')
     if (data.messages) {
       for (const msg of data.messages) {
         // Persisted sidekick answers carry role "sidekick" + kind "sidekick";
@@ -209,6 +218,7 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
     }
     sessionId.value = created.id
     appStore.setActiveSessionTitle(created.title || title)
+    appStore.setActiveProjectName(created.project_name ?? '')
     // Keep the URL in sync so a refresh resumes this session. We are already
     // on /chat, so this is a query-only navigation - no remount, no reload.
     router.replace({ path: '/chat', query: { session: created.id } })
@@ -282,6 +292,7 @@ async function startNewSession() {
   clearMessages()
   sessionId.value = created.id
   appStore.setActiveSessionTitle(created.title || 'New Session')
+  appStore.setActiveProjectName(created.project_name ?? '')
   router.replace({ path: '/chat', query: { session: created.id } })
 }
 
@@ -330,6 +341,15 @@ onMounted(() => {
         <span class="text-sm font-medium text-foreground">
           {{ appStore.activeSessionTitle || 'New Session' }}
         </span>
+        <Badge
+          v-if="appStore.activeProjectName"
+          variant="secondary"
+          class="gap-1 text-xs"
+          :title="`Session bound to registered project ${appStore.activeProjectName}`"
+        >
+          <GitBranch class="h-3 w-3" />
+          {{ appStore.activeProjectName }}
+        </Badge>
         <span
           v-if="isStreaming"
           class="flex items-center gap-1.5 text-xs text-primary"

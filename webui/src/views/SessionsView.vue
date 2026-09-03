@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSessionStore, type SessionSummary } from '@/stores/session'
+import { useSessionStore, type SessionSummary, type ProjectSummary } from '@/stores/session'
 import { useAppStore } from '@/stores/app'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,7 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Plus, Search, MoreVertical, Archive, Trash2, MessageSquare, Loader2, FolderOpen } from '@lucide/vue'
+import { Plus, Search, MoreVertical, Archive, Trash2, MessageSquare, Loader2, FolderOpen, GitBranch } from '@lucide/vue'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -33,11 +33,44 @@ const appStore = useAppStore()
 const searchQuery = ref('')
 const createDialogOpen = ref(false)
 const newSessionTitle = ref('')
+const newProjectId = ref('')
+const projects = ref<ProjectSummary[]>([])
 const deleteTarget = ref<SessionSummary | null>(null)
 const deleteDialogOpen = ref(false)
 const creating = ref(false)
 const deleting = ref(false)
 const archivingId = ref<string | null>(null)
+
+// Registered projects that are ready to be bound to a new session (DP-7).
+const readyProjects = computed(() => projects.value.filter((p) => p.status === 'ready'))
+
+// Refresh the project list when the create dialog opens so newly registered
+// projects are selectable without a page reload.
+watch(createDialogOpen, (open) => {
+  if (open) {
+    sessionStore.fetchProjects().then((list) => {
+      projects.value = list
+    })
+  }
+})
+
+async function handleCreate() {
+  const title = newSessionTitle.value.trim() || 'New Session'
+  creating.value = true
+  const created = await sessionStore.createSession(title, newProjectId.value || undefined)
+  creating.value = false
+  if (created) {
+    newSessionTitle.value = ''
+    newProjectId.value = ''
+    createDialogOpen.value = false
+    if (created.project_id) {
+      // Jump straight into the bound session like handleSwitch does.
+      appStore.setActiveSessionTitle(created.title)
+      appStore.setActiveProjectName(created.project_name ?? '')
+      router.push({ path: '/chat', query: { session: created.id } })
+    }
+  }
+}
 
 const filteredSessions = computed(() => {
   if (!searchQuery.value.trim()) return sessionStore.sessions
@@ -64,20 +97,10 @@ function isActiveSession(session: SessionSummary): boolean {
   return sessionStore.activeSession?.active === true && sessionStore.activeSession?.session_id === session.id
 }
 
-async function handleCreate() {
-  const title = newSessionTitle.value.trim() || 'New Session'
-  creating.value = true
-  const created = await sessionStore.createSession(title)
-  creating.value = false
-  if (created) {
-    newSessionTitle.value = ''
-    createDialogOpen.value = false
-  }
-}
-
 async function handleSwitch(session: SessionSummary) {
   await sessionStore.switchSession(session.id)
   appStore.setActiveSessionTitle(session.title)
+  appStore.setActiveProjectName(session.project_name ?? '')
   // ChatView reads ?session= on mount to load history and attach the SSE stream.
   router.push({ path: '/chat', query: { session: session.id } })
 }
@@ -133,13 +156,44 @@ onMounted(() => {
               Give your session a name to easily find it later.
             </DialogDescription>
           </DialogHeader>
-          <div class="py-4">
+          <div class="py-4 space-y-3">
             <Input
               v-model="newSessionTitle"
               placeholder="Session title (optional)"
               autofocus
               @keydown.enter="handleCreate"
             />
+            <div>
+              <label
+                for="new-session-project"
+                class="mb-1 block text-xs font-medium text-muted-foreground"
+              >
+                Registered project (optional)
+              </label>
+              <select
+                id="new-session-project"
+                v-model="newProjectId"
+                class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3"
+              >
+                <option value="">
+                  No project (local session)
+                </option>
+                <option
+                  v-for="p in readyProjects"
+                  :key="p.id"
+                  :value="p.id"
+                >
+                  {{ p.name }}
+                </option>
+              </select>
+              <p
+                v-if="readyProjects.length === 0"
+                class="mt-1 text-xs text-muted-foreground"
+              >
+                No ready projects on this server yet. Sessions bound to a
+                project work against its managed checkout (remote-web mode).
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" @click="createDialogOpen = false">
@@ -227,6 +281,14 @@ onMounted(() => {
               </Badge>
             </div>
             <div class="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+              <span
+                v-if="session.project_name"
+                class="flex items-center gap-1"
+                :title="`Bound to registered project ${session.project_name}`"
+              >
+                <GitBranch class="h-3 w-3" />
+                {{ session.project_name }}
+              </span>
               <span>{{ relativeTime(session.updated_at) }}</span>
               <span class="flex items-center gap-1">
                 <MessageSquare class="h-3 w-3" />
