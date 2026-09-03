@@ -50,6 +50,25 @@ func NewService(s *Store, log interfaces.LogFunc) *Service {
 	return &Service{store: s, log: log, busy: map[string]bool{}}
 }
 
+// operatorExecCtx returns a context whose effective sandbox is off for
+// operator-issued registry git work. Materialization is a direct human command
+// (DP-11) and must not be confined by the agent sandbox the host runs under: a
+// web server started inside a git repository defaults to a paths sandbox
+// rooted at that repo (LoadSandboxConfig on an empty config), while managed
+// checkouts live under the hakase home - outside it - so confined clones/pulls
+// would fail instantly with "outside approved workspace". Host management
+// writes are the operator's own, like session files and cron state.
+func operatorExecCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sb := sandbox.ConfigFrom(ctx)
+	if sb == nil || sb.Mode == sandbox.SandboxModeOff {
+		return ctx
+	}
+	return sandbox.WithConfig(ctx, &sandbox.SandboxConfig{Mode: sandbox.SandboxModeOff})
+}
+
 // Store exposes the underlying store (listing/lookups for the CLI surface).
 func (svc *Service) Store() *Store { return svc.store }
 
@@ -83,6 +102,7 @@ func (svc *Service) materialize(ctx context.Context, p Project) (Project, error)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = operatorExecCtx(ctx)
 	dir := svc.store.CheckoutDir(p)
 	// The managed dir is exclusively this project's; remove any partial
 	// checkout a crashed run left behind before cloning fresh.
@@ -160,6 +180,7 @@ func (svc *Service) State(ctx context.Context, id string, fetch bool) (ProjectSt
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = operatorExecCtx(ctx)
 	p, err := svc.store.Get(id)
 	if err != nil {
 		return st, err
@@ -214,6 +235,7 @@ func (svc *Service) Sync(ctx context.Context, id string) (Project, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = operatorExecCtx(ctx)
 	p, err := svc.store.Get(id)
 	if err != nil {
 		return Project{}, err

@@ -813,35 +813,35 @@ func TestValidateCloneSource(t *testing.T) {
 	origSB := CurrentSandbox
 	defer func() { CurrentSandbox = origSB }()
 
-	if err := validateCloneSource("https://example.com/repo.git"); err != nil {
+	if err := validateCloneSource(context.Background(), "https://example.com/repo.git"); err != nil {
 		t.Errorf("https URL rejected: %v", err)
 	}
-	if err := validateCloneSource("git@example.com:repo.git"); err == nil {
+	if err := validateCloneSource(context.Background(), "git@example.com:repo.git"); err == nil {
 		t.Error("scp-style source accepted (no scheme)")
-	} else if err := validateCloneSource("ssh://git@example.com/repo.git"); err != nil {
+	} else if err := validateCloneSource(context.Background(), "ssh://git@example.com/repo.git"); err != nil {
 		t.Errorf("ssh URL rejected: %v", err)
 	}
-	if err := validateCloneSource("ftp://example.com/repo.git"); err == nil {
+	if err := validateCloneSource(context.Background(), "ftp://example.com/repo.git"); err == nil {
 		t.Error("ftp scheme accepted")
 	}
-	if err := validateCloneSource(""); err == nil {
+	if err := validateCloneSource(context.Background(), ""); err == nil {
 		t.Error("empty source accepted")
 	}
 
 	// file:// and local paths are fine without a sandbox...
 	CurrentSandbox = nil
-	if err := validateCloneSource("file:///tmp/seed"); err != nil {
+	if err := validateCloneSource(context.Background(), "file:///tmp/seed"); err != nil {
 		t.Errorf("file:// without sandbox rejected: %v", err)
 	}
-	if err := validateCloneSource("/tmp/seed"); err != nil {
+	if err := validateCloneSource(context.Background(), "/tmp/seed"); err != nil {
 		t.Errorf("local path without sandbox rejected: %v", err)
 	}
 	// ...and rejected while a sandbox is active (they bypass read roots).
 	CurrentSandbox = LoadSandboxConfig(&SandboxJSON{Mode: "paths"})
-	if err := validateCloneSource("file:///tmp/seed"); err == nil {
+	if err := validateCloneSource(context.Background(), "file:///tmp/seed"); err == nil {
 		t.Error("file:// with active sandbox accepted")
 	}
-	if err := validateCloneSource("/tmp/seed"); err == nil {
+	if err := validateCloneSource(context.Background(), "/tmp/seed"); err == nil {
 		t.Error("local path with active sandbox accepted")
 	}
 }

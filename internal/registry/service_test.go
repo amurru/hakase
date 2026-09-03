@@ -408,3 +408,49 @@ func TestServiceStateReportsAheadBehind(t *testing.T) {
 		t.Errorf("expected clean counts, got %+v", st)
 	}
 }
+
+// TestServiceNotConfinedByHostSandbox guards the DP-11 operator path against
+// the host agent sandbox: a web server started inside a git repository
+// defaults to a paths sandbox rooted at that repo, while registry checkouts
+// live under the hakase home - outside it. Operator register/sync/status must
+// run with that sandbox off, or every clone fails instantly with "outside
+// approved workspace".
+func TestServiceNotConfinedByHostSandbox(t *testing.T) {
+	stubOperatorGate(t)
+	origSB := sandbox.CurrentSandbox
+	defer func() { sandbox.CurrentSandbox = origSB }()
+
+	// Host sandbox: paths mode rooted in a directory that is NOT the store's
+	// checkout tree (as when the server runs from inside a repository).
+	hostRoot := t.TempDir()
+	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(&sandbox.SandboxJSON{
+		Mode:           "paths",
+		WorkspaceRoots: []string{hostRoot},
+	})
+
+	home := t.TempDir()
+	store, err := NewStore(filepath.Join(home, "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, nil)
+	bare := newSeedRemote(t)
+
+	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	if err != nil {
+		t.Fatalf("Register under host sandbox: %v", err)
+	}
+	if p.Status != StatusReady {
+		t.Errorf("status = %q, want ready", p.Status)
+	}
+
+	// Sync and the status read work under the same host sandbox.
+	if _, err := svc.Sync(context.Background(), p.ID); err != nil {
+		t.Fatalf("Sync under host sandbox: %v", err)
+	}
+	if st, err := svc.State(context.Background(), p.ID, true); err != nil {
+		t.Fatalf("State under host sandbox: %v", err)
+	} else if st.Branch != "main" {
+		t.Errorf("branch = %q, want main", st.Branch)
+	}
+}

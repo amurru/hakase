@@ -818,10 +818,14 @@ func validGitTagName(s string) bool {
 // validateCloneSource checks where git_clone may read from. Remote URLs need
 // an explicit allowlisted scheme. file:// URLs and scheme-less local paths
 // read the host filesystem directly - bypassing the sandbox read roots - so
-// they are accepted only when no sandbox is active (local runs where the
-// agent already acts with the user's filesystem trust). An active sandbox
-// keeps clone sources strictly remote.
-func validateCloneSource(source string) error {
+// they are accepted only when the *effective* sandbox (context override, else
+// CurrentSandbox) is off: local runs where the operator/agent already acts
+// with the user's filesystem trust. An active sandbox keeps clone sources
+// strictly remote. The context form matters for operator-issued registry
+// clones (DP-11): those run with a sandbox-off context, so a local bare
+// remote stays usable even when the host runs an agent sandbox.
+func validateCloneSource(ctx context.Context, source string) error {
+	sb := ConfigFrom(ctx)
 	s := strings.TrimSpace(source)
 	if s == "" || strings.ContainsAny(s, "\x00\r\n") {
 		return fmt.Errorf("invalid clone source")
@@ -835,13 +839,13 @@ func validateCloneSource(source string) error {
 	case "https", "http", "git", "ssh":
 		return nil
 	case "file":
-		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
+		if sb == nil || sb.Mode == SandboxModeOff {
 			return nil
 		}
 		return fmt.Errorf("file:// clone sources are not allowed while the sandbox is active (they bypass the sandbox read roots); clone from https://, git://, or ssh:// instead")
 	case "":
 		// Scheme-less input is a local path; same rule as file://.
-		if CurrentSandbox == nil || CurrentSandbox.Mode == SandboxModeOff {
+		if sb == nil || sb.Mode == SandboxModeOff {
 			return nil
 		}
 		return fmt.Errorf("local-path clone sources are not allowed while the sandbox is active (they bypass the sandbox read roots); clone from https://, git://, or ssh:// instead")
@@ -864,7 +868,7 @@ func OperatorClone(ctx context.Context, input GitCloneInput, log interfaces.LogF
 
 func cloneContent(ctx context.Context, input GitCloneInput, log interfaces.LogFunc, operator bool) (GitCloneOutput, error) {
 	out := GitCloneOutput{}
-	if err := validateCloneSource(input.URL); err != nil {
+	if err := validateCloneSource(ctx, input.URL); err != nil {
 		return out, fmt.Errorf("git_clone: %w", err)
 	}
 	if strings.TrimSpace(input.Dir) == "" {
