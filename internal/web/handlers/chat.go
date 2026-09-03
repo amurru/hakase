@@ -34,6 +34,52 @@ import (
 // allowed per session. Additional runs receive a 429 response.
 const maxConcurrentAgentRuns = 3
 
+// activeProjectRuns tracks in-flight agent runs per registered project id so
+// the registry endpoints refuse to sync/delete a checkout an agent is actively
+// working in (project-ui.md). Counts, not booleans: several sessions may run
+// against the same project concurrently. Follows the package-global precedent
+// of registry.Current.
+var activeProjectRuns = newProjectRunTracker()
+
+// projectRunTracker counts active agent runs per project id.
+type projectRunTracker struct {
+	mu    sync.Mutex
+	count map[string]int
+}
+
+func newProjectRunTracker() *projectRunTracker {
+	return &projectRunTracker{count: map[string]int{}}
+}
+
+func (t *projectRunTracker) begin(projectID string) {
+	if projectID == "" {
+		return
+	}
+	t.mu.Lock()
+	t.count[projectID]++
+	t.mu.Unlock()
+}
+
+func (t *projectRunTracker) end(projectID string) {
+	if projectID == "" {
+		return
+	}
+	t.mu.Lock()
+	if n := t.count[projectID]; n <= 1 {
+		delete(t.count, projectID)
+	} else {
+		t.count[projectID] = n - 1
+	}
+	t.mu.Unlock()
+}
+
+// countOn returns how many agent runs are active on projectID.
+func (t *projectRunTracker) countOn(projectID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.count[projectID]
+}
+
 // Web attachment caps, mirroring internal/tui/attach.go.
 const (
 	maxWebAttachImageBytes = 10 * 1024 * 1024
@@ -549,7 +595,15 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 	var contentBuf, thinkBuf strings.Builder
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
 
+	// boundProject is resolved below (after the defer is installed), so keep
+	// the resolved id here: the defer releases the active-run slot exactly
+	// once, whether the run ends normally, on error, or on a panic.
+	var runProjectID string
+
 	defer func() {
+		if runProjectID != "" {
+			activeProjectRuns.end(runProjectID)
+		}
 		if r := recover(); r != nil {
 			log.Printf("chat: panic in agent run for session %s: %v", sessionID, r)
 			api.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
@@ -574,6 +628,10 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 	// Delegated runs inherit the ctx root and sandbox override (delegate.go
 	// reuses the agent.Context as the sub-run ctx).
 	if bind := api.boundProject(sessionID); bind != nil {
+		// Register the active run against the bound project before the first
+		// agent step so the registry refuses to sync/delete under it.
+		runProjectID = bind.ID
+		activeProjectRuns.begin(bind.ID)
 		checkout := registry.Current.Store().CheckoutDir(*bind)
 		runCtx = project.WithRoot(runCtx, checkout)
 		runCtx = withBoundSandbox(runCtx, checkout)

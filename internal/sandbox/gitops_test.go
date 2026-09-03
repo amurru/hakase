@@ -879,6 +879,100 @@ func TestGitCloneRejectsSandboxedLocalSource(t *testing.T) {
 	}
 }
 
+// TestOperatorRepoStateDirtyCounts covers the operator-authority status read
+// used by the registry: branch plus the workspace-snapshot dirty counts.
+func TestOperatorRepoStateDirtyCounts(t *testing.T) {
+	stubGitPolicy(t, false)
+	seed := t.TempDir()
+	initRepo(t, seed)
+
+	st, err := OperatorRepoState(context.Background(), seed, nil)
+	if err != nil {
+		t.Fatalf("OperatorRepoState: %v", err)
+	}
+	if st.Branch != "main" {
+		t.Errorf("branch = %q, want main", st.Branch)
+	}
+	if st.Staged+st.Modified+st.Untracked+st.Conflicts != 0 {
+		t.Errorf("expected a clean tree, got %+v", st)
+	}
+
+	if err := os.WriteFile(filepath.Join(seed, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err = OperatorRepoState(context.Background(), seed, nil)
+	if err != nil {
+		t.Fatalf("OperatorRepoState after edits: %v", err)
+	}
+	if st.Modified != 1 {
+		t.Errorf("modified = %d, want 1", st.Modified)
+	}
+	if st.Untracked != 1 {
+		t.Errorf("untracked = %d, want 1", st.Untracked)
+	}
+}
+
+// TestOperatorFetchUpdatesBehindCount verifies OperatorFetch updates
+// remote-tracking refs (so a subsequent status read reports behind) without
+// touching the working tree.
+func TestOperatorFetchUpdatesBehindCount(t *testing.T) {
+	stubGitPolicy(t, false)
+	seed := t.TempDir()
+	initRepo(t, seed)
+	bare := bareCloneOf(t, seed)
+
+	work := filepath.Join(t.TempDir(), "work")
+	if _, err := gitCloneContent(context.Background(), GitCloneInput{URL: bare, Dir: work}, nil); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	// A new commit lands on the remote after the clone.
+	if err := os.WriteFile(filepath.Join(seed, "pushed.txt"), []byte("upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := gitBin(t)
+	add := &exec.Cmd{Path: g, Args: []string{g, "-C", seed, "add", "."}, Env: gitTestEnv()}
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("seed add: %v (%s)", err, out)
+	}
+	commit := &exec.Cmd{Path: g, Args: []string{g, "-C", seed, "commit", "-m", "upstream"}, Env: gitTestEnv()}
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("seed commit: %v (%s)", err, out)
+	}
+	push := &exec.Cmd{Path: g, Args: []string{g, "-C", seed, "push", bare, "main"}, Dir: t.TempDir(), Env: gitTestEnv()}
+	if out, err := push.CombinedOutput(); err != nil {
+		t.Fatalf("seed push: %v (%s)", err, out)
+	}
+
+	st, err := OperatorRepoState(context.Background(), work, nil)
+	if err != nil {
+		t.Fatalf("OperatorRepoState before fetch: %v", err)
+	}
+	if st.Behind != 0 {
+		t.Fatalf("behind before fetch = %d, want 0 (stale refs)", st.Behind)
+	}
+
+	if _, err := OperatorFetch(context.Background(), GitFetchInput{RepoDir: work}, nil); err != nil {
+		t.Fatalf("OperatorFetch: %v", err)
+	}
+	st, err = OperatorRepoState(context.Background(), work, nil)
+	if err != nil {
+		t.Fatalf("OperatorRepoState after fetch: %v", err)
+	}
+	if st.Branch != "main" {
+		t.Errorf("branch = %q, want main", st.Branch)
+	}
+	if st.Behind != 1 {
+		t.Errorf("behind after fetch = %d, want 1", st.Behind)
+	}
+	if _, err := os.Stat(filepath.Join(work, "pushed.txt")); !os.IsNotExist(err) {
+		t.Errorf("fetch touched the working tree (pushed.txt present, err=%v)", err)
+	}
+}
+
 func TestGitPushPullLoop(t *testing.T) {
 	stubGitPolicy(t, false)
 	seed := t.TempDir()

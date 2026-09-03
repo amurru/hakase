@@ -265,6 +265,116 @@ func TestProjectAPIUnavailable(t *testing.T) {
 	}
 }
 
+// TestProjectStatusEndpointAndSyncGuards covers the project-ui.md additions:
+// GET /projects/{id}/status reports branch + ahead/behind + dirty counts after
+// a best-effort fetch, and the /sync endpoint refuses (409, status untouched)
+// on an in-flight run or on uncommitted tracked changes.
+func TestProjectStatusEndpointAndSyncGuards(t *testing.T) {
+	projectStubGate(t)
+	home := t.TempDir()
+	installRegistry(t, home)
+	router := chi.NewRouter()
+	RegisterProjectRoutes(router)
+	bare := projectSeedRemote(t)
+	url := "file://" + bare
+
+	rec, dto := doJSON(t, router, http.MethodPost, "/projects", map[string]string{
+		"name": "demo", "url": url, "ref": "main",
+	})
+	if rec.Code != http.StatusCreated || dto.Status != registry.StatusReady {
+		t.Fatalf("register status %d dto %+v", rec.Code, dto)
+	}
+
+	// External push, then the status endpoint (fetch on) reports behind.
+	work := filepath.Join(t.TempDir(), "work")
+	projectGit(t, filepath.Dir(work), "clone", url, work)
+	if err := os.WriteFile(filepath.Join(work, "remote.txt"), []byte("remote work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectGit(t, work, "add", ".")
+	projectGit(t, work, "commit", "-m", "external push")
+	projectGit(t, work, "push", "origin", "main")
+
+	getStatus := func(target string) (*httptest.ResponseRecorder, ProjectStatusDTO) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		router.ServeHTTP(rec, req)
+		var st ProjectStatusDTO
+		if rec.Code == http.StatusOK {
+			_ = json.Unmarshal(rec.Body.Bytes(), &st)
+		}
+		return rec, st
+	}
+
+	rec2, st := getStatus("/projects/" + dto.ID + "/status")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status code %d: %s", rec2.Code, rec2.Body.String())
+	}
+	if st.Branch != "main" {
+		t.Errorf("branch = %q, want main", st.Branch)
+	}
+	if st.Behind != 1 {
+		t.Errorf("behind = %d, want 1 (fetch must update refs)", st.Behind)
+	}
+	if st.Dirty || st.Modified != 0 || st.Untracked != 0 {
+		t.Errorf("expected clean counts, got %+v", st)
+	}
+	if st.Error != "" {
+		t.Errorf("unexpected status error: %s", st.Error)
+	}
+
+	// Unknown id is a 404.
+	rec2, _ = getStatus("/projects/nope/status")
+	if rec2.Code != http.StatusNotFound {
+		t.Errorf("unknown status code %d, want 404", rec2.Code)
+	}
+
+	// Dirty tree: sync is refused as a 409 and the entry stays ready.
+	checkout := dto.Checkout
+	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("# edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = doJSON(t, router, http.MethodPost, "/projects/"+dto.ID+"/sync", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("dirty sync code %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "uncommitted tracked changes") {
+		t.Errorf("dirty sync body missing reason: %s", rec.Body.String())
+	}
+
+	// The refused sync left the entry ready (never a sync_error transition).
+	rec2, st = getStatus("/projects/" + dto.ID + "/status?fetch=0")
+	if rec2.Code != http.StatusOK || st.ProjectStatus != registry.StatusReady {
+		t.Errorf("status after refused sync = %d %s", rec2.Code, rec2.Body.String())
+	}
+
+	// Active agent run on the project refuses sync before any git work.
+	id := projectListID(t, router)
+	activeProjectRuns.begin(id)
+	t.Cleanup(func() { activeProjectRuns.end(id) })
+	rec, _ = doJSON(t, router, http.MethodPost, "/projects/"+id+"/sync", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("active-run sync code %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "agent run is active") {
+		t.Errorf("active-run sync body missing reason: %s", rec.Body.String())
+	}
+}
+
+// projectListID returns the id of the (single) registered project via the
+// list endpoint.
+func projectListID(t *testing.T, router http.Handler) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/projects", nil))
+	var list []ProjectDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+		t.Fatalf("list for guard test: %s (err %v)", rec.Body.String(), err)
+	}
+	return list[0].ID
+}
+
 // TestCreateSessionBindsProject covers POST /sessions accepting project_id and
 // persisting the binding (DP-7).
 func TestCreateSessionBindsProject(t *testing.T) {

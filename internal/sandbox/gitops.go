@@ -1009,6 +1009,102 @@ func pullContent(ctx context.Context, input GitPullInput, log interfaces.LogFunc
 }
 
 // ---------------------------------------------------------------------------
+// Operator fetch / repo state (registry status, operator authority)
+// ---------------------------------------------------------------------------
+
+// GitFetchInput is the input for OperatorFetch.
+type GitFetchInput struct {
+	RepoDir string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Remote  string `json:"remote,omitempty"   doc:"Remote name to fetch from (defaults to origin)"`
+}
+
+// GitFetchOutput is the output of OperatorFetch.
+type GitFetchOutput struct {
+	RepoDir string `json:"repo_dir"`
+	Remote  string `json:"remote,omitempty"`
+	Message string `json:"message,omitempty"`
+	Stderr  string `json:"stderr,omitempty"`
+}
+
+// OperatorFetch updates the remote-tracking refs of a checkout (git fetch)
+// under operator authority, without touching the working tree. Used by the
+// registry status endpoint so "behind" counts reflect the remote; the engine's
+// terminal-prompt disable makes an auth failure fail fast instead of hanging.
+func OperatorFetch(ctx context.Context, input GitFetchInput, log interfaces.LogFunc) (GitFetchOutput, error) {
+	return fetchContent(ctx, input, log, true)
+}
+
+func fetchContent(ctx context.Context, input GitFetchInput, log interfaces.LogFunc, operator bool) (GitFetchOutput, error) {
+	out := GitFetchOutput{}
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	remote := strings.TrimSpace(input.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	if !validGitRemote(remote) {
+		return out, fmt.Errorf("git_fetch: invalid remote %q", remote)
+	}
+	out.Remote = remote
+
+	run := runGit
+	if operator {
+		run = runGitOperator
+	}
+	// --quiet keeps progress chatter off the bounded output; errors still land
+	// on stderr.
+	res, err := run(ctx, dir, []string{"fetch", "--quiet", remote}, true, log)
+	if err != nil {
+		return out, err
+	}
+	out.Message = wrapUntrustedData(splitGitOut(res.Stderr))
+	return out, nil
+}
+
+// RepoState is a parsed `git status -sb` summary of one checkout, read under
+// operator authority for the registry status endpoint (branch/upstream,
+// ahead/behind, and the workspace-snapshot dirty counts).
+type RepoState struct {
+	Branch    string
+	Upstream  string
+	Ahead     int
+	Behind    int
+	Staged    int
+	Modified  int
+	Untracked int
+	Conflicts int
+	Stderr    string
+}
+
+// OperatorRepoState reports the current branch/upstream, ahead/behind, and
+// working-tree counts of the repo at repoDir without consulting the approval
+// gate (the operator issued the read). Values are raw repo strings - callers
+// that surface them to a human model should treat them as untrusted.
+func OperatorRepoState(ctx context.Context, repoDir string, log interfaces.LogFunc) (RepoState, error) {
+	var out RepoState
+	dir, err := resolveRepoDir(ctx, repoDir, false)
+	if err != nil {
+		return out, err
+	}
+	res, err := runGitOperator(ctx, dir, []string{"status", "--porcelain=v1", "-b"}, false, log)
+	if err != nil {
+		return out, err
+	}
+	out.Stderr = res.Stderr
+	branch, upstream, ahead, behind, entries := parsePorcelainStatus(res.Stdout)
+	out.Branch = branch
+	out.Upstream = upstream
+	out.Ahead = ahead
+	out.Behind = behind
+	out.Staged, out.Modified, out.Untracked, out.Conflicts = countGitEntries(entries)
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
 // git_checkout / git_reset / git_clean (destructive operations)
 // ---------------------------------------------------------------------------
 

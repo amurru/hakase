@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -300,5 +301,110 @@ func TestServiceSyncDivergedFailsWithoutDeletingWork(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.Checkout, ".git")); err != nil {
 		t.Errorf("checkout was destroyed on failed sync: %v", err)
+	}
+}
+
+// TestServiceSyncDirtyTreeGuard verifies the project-ui.md rule: Sync refuses
+// (ErrWorkingTreeDirty, status untouched) while the checkout holds uncommitted
+// tracked changes, but untracked files alone never block a pull.
+func TestServiceSyncDirtyTreeGuard(t *testing.T) {
+	stubOperatorGate(t)
+	home := t.TempDir()
+	store, err := NewStore(filepath.Join(home, "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, nil)
+	bare := newSeedRemote(t)
+
+	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Untracked-only dirtiness is fine: --ff-only never touches untracked
+	// files, and refusing on their presence would block agent-shaped trees.
+	if err := os.WriteFile(filepath.Join(p.Checkout, "scratch.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Sync(context.Background(), p.ID); err != nil {
+		t.Fatalf("Sync with only an untracked file: %v", err)
+	}
+
+	// A tracked modification refuses the pull and leaves status untouched.
+	if err := os.WriteFile(filepath.Join(p.Checkout, "README.md"), []byte("# edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Sync(context.Background(), p.ID)
+	if err == nil {
+		t.Fatal("sync under tracked uncommitted changes succeeded")
+	}
+	if !errors.Is(err, ErrWorkingTreeDirty) {
+		t.Errorf("err = %v, want ErrWorkingTreeDirty", err)
+	}
+	if got.Status != StatusReady {
+		t.Errorf("refused sync changed status to %q; want ready", got.Status)
+	}
+
+	// Once the work is committed (clean tree), sync proceeds again.
+	gitCmd(t, p.Checkout, "commit", "-am", "wip")
+	if _, err := svc.Sync(context.Background(), p.ID); err != nil {
+		t.Fatalf("Sync after committing the work: %v", err)
+	}
+}
+
+// TestServiceStateReportsAheadBehind verifies State() drives the Projects page
+// "behind upstream" affordance: a bounded fetch updates the remote-tracking
+// refs, then branch/upstream and ahead/behind counts reflect both sides.
+func TestServiceStateReportsAheadBehind(t *testing.T) {
+	stubOperatorGate(t)
+	home := t.TempDir()
+	store, err := NewStore(filepath.Join(home, "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, nil)
+	bare := newSeedRemote(t)
+
+	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// External push: the checkout is now one commit behind.
+	work := filepath.Join(t.TempDir(), "work")
+	gitCmd(t, filepath.Dir(work), "clone", "file://"+bare, work)
+	if err := os.WriteFile(filepath.Join(work, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "add", ".")
+	gitCmd(t, work, "commit", "-m", "upstream commit")
+	gitCmd(t, work, "push", "origin", "main")
+
+	// Local commit on top: the checkout is now one ahead AND one behind.
+	if err := os.WriteFile(filepath.Join(p.Checkout, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, p.Checkout, "add", ".")
+	gitCmd(t, p.Checkout, "commit", "-m", "local commit")
+
+	st, err := svc.State(context.Background(), p.ID, true)
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Branch != "main" {
+		t.Errorf("branch = %q, want main", st.Branch)
+	}
+	if st.Behind != 1 {
+		t.Errorf("behind = %d, want 1 (fetch must have updated refs)", st.Behind)
+	}
+	if st.Ahead != 1 {
+		t.Errorf("ahead = %d, want 1", st.Ahead)
+	}
+	if st.Upstream == "" {
+		t.Error("upstream not reported")
+	}
+	if st.Staged+st.Modified+st.Untracked+st.Conflicts != 0 {
+		t.Errorf("expected clean counts, got %+v", st)
 	}
 }

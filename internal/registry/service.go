@@ -16,10 +16,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 )
+
+// projectStatusFetchTimeout bounds the network fetch behind a status read so a
+// hung remote cannot stall the Projects page or chat header chip.
+const projectStatusFetchTimeout = 30 * time.Second
 
 // Current is the process-wide registry service, set at boot by the main
 // package (cmd/hakase/web.go). Web handlers and the chat run-binder consult
@@ -33,12 +39,15 @@ var Current *Service
 type Service struct {
 	store *Store
 	log   interfaces.LogFunc
+
+	slotMu sync.Mutex
+	busy   map[string]bool // project IDs with a materialize/sync in flight
 }
 
 // NewService returns a Service backed by s. log, when non-nil, receives
 // progress lines (clone/pull are otherwise silent).
 func NewService(s *Store, log interfaces.LogFunc) *Service {
-	return &Service{store: s, log: log}
+	return &Service{store: s, log: log, busy: map[string]bool{}}
 }
 
 // Store exposes the underlying store (listing/lookups for the CLI surface).
@@ -107,11 +116,100 @@ func (svc *Service) materialize(ctx context.Context, p Project) (Project, error)
 	return p, nil
 }
 
+// syncSlot reserves an exclusive materialize/sync slot for id. A second caller
+// (e.g. a page refresh racing an in-flight sync) is refused with ErrBusy
+// rather than queued, so two pulls/clones never touch the same checkout.
+func (svc *Service) syncSlot(id string) (func(), error) {
+	svc.slotMu.Lock()
+	defer svc.slotMu.Unlock()
+	if svc.busy[id] {
+		return nil, fmt.Errorf("%w: %s", ErrBusy, id)
+	}
+	svc.busy[id] = true
+	return func() {
+		svc.slotMu.Lock()
+		delete(svc.busy, id)
+		svc.slotMu.Unlock()
+	}, nil
+}
+
+// ProjectState is the live repo state of one ready project's checkout: current
+// branch/upstream, ahead/behind vs the upstream, and the workspace-snapshot
+// dirty counts (project-ui.md).
+type ProjectState struct {
+	Branch    string
+	Upstream  string
+	Ahead     int
+	Behind    int
+	Staged    int
+	Modified  int
+	Untracked int
+	Conflicts int
+	// FetchError is set when the optional status fetch failed; counts then
+	// reflect the last-known remote-tracking refs.
+	FetchError string
+}
+
+// State reports the live checkout state of a ready project (branch/upstream,
+// ahead/behind, dirty counts). When fetch is true, a bounded best-effort
+// fetch runs first so "behind" reflects the remote; a fetch failure is
+// reported in FetchError, never fatal. Not-ready or checkout-less projects
+// return an error - the UI treats them as "run Sync first".
+func (svc *Service) State(ctx context.Context, id string, fetch bool) (ProjectState, error) {
+	var st ProjectState
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p, err := svc.store.Get(id)
+	if err != nil {
+		return st, err
+	}
+	if p.Status != StatusReady || p.Checkout == "" {
+		return st, fmt.Errorf("projects: project %q is not ready (status %q); run sync first", p.Name, p.Status)
+	}
+	dir := svc.store.CheckoutDir(p)
+	if !isExistingRepo(dir) {
+		return st, fmt.Errorf("projects: checkout for %q is missing; run sync to re-clone", p.Name)
+	}
+	if fetch {
+		fctx, cancel := context.WithTimeout(ctx, projectStatusFetchTimeout)
+		defer cancel()
+		if _, ferr := sandbox.OperatorFetch(fctx, sandbox.GitFetchInput{RepoDir: dir}, svc.log); ferr != nil {
+			st.FetchError = ferr.Error()
+		}
+	}
+	rs, err := sandbox.OperatorRepoState(ctx, dir, svc.log)
+	if err != nil {
+		return st, err
+	}
+	// Translate the porcelain headers into display-ready labels, mirroring
+	// BuildGitWorkspaceBlock's detached/unborn handling.
+	switch {
+	case strings.HasSuffix(rs.Branch, " (no branch)"):
+		st.Branch = "(detached HEAD)"
+	case strings.HasPrefix(rs.Branch, "No commits yet on "):
+		st.Branch = strings.TrimPrefix(rs.Branch, "No commits yet on ")
+	default:
+		st.Branch = rs.Branch
+	}
+	st.Upstream = rs.Upstream
+	st.Ahead = rs.Ahead
+	st.Behind = rs.Behind
+	st.Staged = rs.Staged
+	st.Modified = rs.Modified
+	st.Untracked = rs.Untracked
+	st.Conflicts = rs.Conflicts
+	return st, nil
+}
+
 // Sync fast-forwards p's checkout from its remote (DP-9, git pull --ff-only).
 // When no checkout exists yet - registration previously failed, or the managed
 // dir was deleted - Sync re-materializes it. A working tree is never deleted
 // here: existing checkouts are only ever pulled, and a diverged or dirty tree
-// simply fails into sync_error.
+// simply fails into sync_error. Sync is exclusive per project (ErrBusy for a
+// concurrent request) and refuses to pull while the checkout holds uncommitted
+// tracked changes (ErrWorkingTreeDirty) so a sync never interleaves with
+// in-progress agent work.
 func (svc *Service) Sync(ctx context.Context, id string) (Project, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -120,9 +218,23 @@ func (svc *Service) Sync(ctx context.Context, id string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	release, err := svc.syncSlot(id)
+	if err != nil {
+		return p, err
+	}
+	defer release()
+
 	dir := svc.store.CheckoutDir(p)
 	if p.Checkout == "" || !isExistingRepo(dir) {
 		return svc.materialize(ctx, p)
+	}
+	// project-ui.md: refuse to fast-forward under tracked in-progress work.
+	// Untracked files do not block (git leaves them alone on --ff-only); a
+	// read failure falls through and lets the pull surface the real error.
+	if st, serr := sandbox.OperatorRepoState(ctx, dir, svc.log); serr == nil &&
+		st.Staged+st.Modified+st.Conflicts > 0 {
+		return p, fmt.Errorf("%w for project %q (staged %d, modified %d, conflicts %d)",
+			ErrWorkingTreeDirty, p.Name, st.Staged, st.Modified, st.Conflicts)
 	}
 	svc.logf(fmt.Sprintf("projects: syncing %s (%s)", p.Name, dir))
 	out, err := sandbox.OperatorPull(ctx, sandbox.GitPullInput{RepoDir: dir}, svc.log)
@@ -165,6 +277,11 @@ func (svc *Service) Delete(ctx context.Context, id string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	release, err := svc.syncSlot(id)
+	if err != nil {
+		return p, err
+	}
+	defer release()
 	dir := svc.store.CheckoutDir(p)
 	// Path hygiene: the managed root is derived from the store location and
 	// the project id from us, but a hand-edited projects.json must not be able

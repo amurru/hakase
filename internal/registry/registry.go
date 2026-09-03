@@ -44,6 +44,18 @@ type Project struct {
 // ErrNotFound is returned when a project id/name is unknown.
 var ErrNotFound = errors.New("project not found")
 
+// ErrBusy is returned when a clone/sync is already in flight for the project:
+// the operation is refused rather than queued so two pulls/clones never race
+// on the same checkout (project-ui.md "syncing guard").
+var ErrBusy = errors.New("a clone or sync is already running for this project")
+
+// ErrWorkingTreeDirty is returned by Sync when the checkout holds uncommitted
+// tracked changes. Pulling under in-progress work is refused (project-ui.md);
+// untracked files alone do not trip it - git handles those without touching
+// them, and refusing on mere untracked presence would block syncs in
+// agent-shaped checkouts.
+var ErrWorkingTreeDirty = errors.New("refusing to sync: the checkout has uncommitted tracked changes")
+
 var (
 	nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 	// urlRe mirrors the git_clone D9 scheme allowlist plus file://. Scheme-less
