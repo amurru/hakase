@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"amurru/hakase/internal/interfaces"
@@ -104,7 +106,10 @@ func resolveRepoDir(ctx context.Context, repoDir string, write bool) (string, er
 }
 
 // cappedCapture buffers stdout and stderr against a single combined budget.
+// os/exec drains the two pipes on separate goroutines, so remaining/truncated
+// are mutex-guarded.
 type cappedCapture struct {
+	mu        sync.Mutex
 	remaining int
 	stdout    bytes.Buffer
 	stderr    bytes.Buffer
@@ -118,6 +123,8 @@ type captureWriter struct {
 
 func (cw captureWriter) Write(p []byte) (int, error) {
 	c := cw.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.remaining > 0 {
 		n := len(p)
 		if n > c.remaining {
@@ -203,9 +210,9 @@ func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, l
 		}
 	}()
 
-	timedOut := false
+	var timedOut atomic.Bool
 	timeoutTimer := time.AfterFunc(gitExecTimeout, func() {
-		timedOut = true
+		timedOut.Store(true)
 		_ = killProcessTree(cmd)
 	})
 	defer timeoutTimer.Stop()
@@ -218,11 +225,11 @@ func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, l
 		Stdout:    splitGitOut(capture.stdout.String()),
 		Stderr:    splitGitOut(capture.stderr.String()),
 		ExitCode:  -1,
-		TimedOut:  timedOut,
+		TimedOut:  timedOut.Load(),
 		Truncated: capture.truncated,
 	}
 
-	if timedOut {
+	if timedOut.Load() {
 		return res, fmt.Errorf("git %s timed out after %s", args[0], gitExecTimeout.String())
 	}
 	if canceled {
@@ -695,9 +702,13 @@ func gitCommitContent(ctx context.Context, input GitCommitInput, log interfaces.
 	}
 	// Read the created commit back (read-only, LOW risk) for the response.
 	if shaRes, serr := runGit(ctx, dir, []string{"rev-parse", "HEAD"}, false, log); serr == nil && shaRes.ExitCode == 0 {
-		out.Sha = wrapUntrustedData(splitGitOut(shaRes.Stdout))
-		if len(out.Sha) > 7 {
-			out.ShortSha = out.Sha[:7]
+		// Slice the raw hash before wrapping: wrapUntrustedData prefixes the
+		// framing markers, so taking the first characters after wrapping would
+		// capture marker text, not the commit.
+		sha := splitGitOut(shaRes.Stdout)
+		out.Sha = wrapUntrustedData(sha)
+		if len(sha) > 7 {
+			out.ShortSha = sha[:7]
 		}
 	}
 	if subjRes, serr := runGit(ctx, dir, []string{"log", "-1", "--pretty=%s"}, false, log); serr == nil && subjRes.ExitCode == 0 {
@@ -829,6 +840,11 @@ func validateCloneSource(ctx context.Context, source string) error {
 	s := strings.TrimSpace(source)
 	if s == "" || strings.ContainsAny(s, "\x00\r\n") {
 		return fmt.Errorf("invalid clone source")
+	}
+	// A scheme-less source beginning with "-" would be parsed by git as an
+	// option (e.g. `clone -upload-pack ...`), never as a path.
+	if strings.HasPrefix(s, "-") {
+		return fmt.Errorf("invalid clone source %q: looks like a git option; use a URL or a path starting with ./", s)
 	}
 	u, err := url.Parse(s)
 	if err != nil {

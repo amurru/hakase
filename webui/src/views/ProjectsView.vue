@@ -71,6 +71,9 @@ function openRegister() {
 }
 
 async function submitRegister() {
+  // Guard against a double click firing before the button's disabled state
+  // re-renders.
+  if (registering.value) return
   const name = regName.value.trim()
   const url = regURL.value.trim()
   if (!name || !url) {
@@ -459,8 +462,8 @@ onMounted(async () => {
             />
           </div>
           <p class="text-[11px] leading-relaxed text-muted-foreground">
-            Allowed: https://, http://, git://, ssh:// (network remotes) or
-            file:// for a local bare remote. Names must be unique.
+            Allowed: https://, git://, ssh:// (network remotes) or file:// for a
+            local bare remote. Names must be unique.
           </p>
           <p v-if="regError" class="text-xs text-destructive">{{ regError }}</p>
         </div>

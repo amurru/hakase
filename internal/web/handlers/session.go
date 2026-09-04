@@ -123,15 +123,10 @@ func (api *SessionAPI) CreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID := strings.TrimSpace(req.ProjectID)
 
-	api.mu.Lock()
-	defer api.mu.Unlock()
-
-	sess, err := api.svc.CreateSession(title)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
+	// Validate the project binding BEFORE creating anything: an unknown or
+	// unready project must fail without persisting/activating an orphan
+	// session (the registry store is concurrency-safe, so this needs no lock).
+	var bind *registry.Project
 	if projectID != "" {
 		if registry.Current == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "project registry is not available on this server"})
@@ -146,12 +141,25 @@ func (api *SessionAPI) CreateSession(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("project %q is not ready (status %q); sync it first", p.Name, p.Status)})
 			return
 		}
-		if err := api.svc.BindProject(sess.ID, p.ID, p.Name); err != nil {
+		bind = &p
+	}
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+
+	sess, err := api.svc.CreateSession(title)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if bind != nil {
+		if err := api.svc.BindProject(sess.ID, bind.ID, bind.Name); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		sess.ProjectID = p.ID
-		sess.ProjectName = p.Name
+		sess.ProjectID = bind.ID
+		sess.ProjectName = bind.Name
 	}
 
 	writeJSON(w, http.StatusCreated, sessionDetailDTO(sess))

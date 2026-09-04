@@ -302,7 +302,7 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 	// The flat baseline plus the blocks is a conservative approximation since
 	// we cannot see the fully rendered prompt.
 	const baseReserveTokens = 8000
-	reserveTokens := baseReserveTokens + ContextBlockTokens + GitWorkspaceBlockTokens + env.SystemEnvBlockTokens
+	reserveTokens := baseReserveTokens + ContextBlockTokens() + GitWorkspaceBlockTokens() + env.SystemEnvBlockTokens
 
 	currentTokens := util.EstimateContentsTokens(current)
 	trigger := int64(effectiveMax * 9 / 10)

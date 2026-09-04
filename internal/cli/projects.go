@@ -51,7 +51,7 @@ func projectsCLIUsage() {
 	fmt.Fprintln(os.Stderr, "  sync NAME            fast-forward a project checkout from its remote")
 	fmt.Fprintln(os.Stderr, "  delete NAME          unregister a project and remove its local checkout")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Sources: https://, http://, git://, ssh:// (file:// for a local bare remote).")
+	fmt.Fprintln(os.Stderr, "Sources: https://, git://, ssh:// (file:// for a local bare remote).")
 	fmt.Fprintln(os.Stderr, "Credentials are never stored: clone/pull use the host's git auth (DP-8).")
 }
 
@@ -183,7 +183,7 @@ func runProjectsRegister(args []string) int {
 		return 2
 	}
 	if !registry.ValidSourceURL(url) {
-		fmt.Fprintf(os.Stderr, "unsupported source URL %q (allowed: https://, http://, git://, ssh://, or file:// for a local bare remote)\n", url)
+		fmt.Fprintf(os.Stderr, "unsupported source URL %q (allowed: https://, git://, ssh://, or file:// for a local bare remote)\n", url)
 		registerUsage()
 		return 2
 	}

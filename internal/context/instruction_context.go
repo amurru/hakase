@@ -32,6 +32,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -96,16 +97,46 @@ type InstructionFile struct {
 	Content string // full content (truncated and injection-scanned at render time)
 }
 
-// ContextBlockTokens is the token estimate of the rendered project-context
-// block, set once in setupRunner. It is folded into the compaction reserve in
-// context.go so large AGENTS.md files do not silently blow the token budget.
-var ContextBlockTokens int
+// Context block token estimates: the rendered project-context block and the
+// git workspace snapshot are folded into the compaction reserve in context.go
+// so large AGENTS.md files or repo snapshots do not silently blow the token
+// budget. SetupRunner may run for several sessions concurrently (web mode), so
+// the values are mutex-guarded instead of bare globals.
+var (
+	contextBlockTokensMu       sync.Mutex
+	contextBlockTokens         int
+	gitWorkspaceBlockTokensMu  sync.Mutex
+	gitWorkspaceBlockTokensVal int
+)
 
-// GitWorkspaceBlockTokens is the token estimate of the rendered git workspace
-// snapshot block, set once in setupRunner next to ContextBlockTokens. Folded
-// into the same compaction reserve so the snapshot cannot silently blow the
-// token budget.
-var GitWorkspaceBlockTokens int
+// ContextBlockTokens returns the project-context block token estimate.
+func ContextBlockTokens() int {
+	contextBlockTokensMu.Lock()
+	defer contextBlockTokensMu.Unlock()
+	return contextBlockTokens
+}
+
+// SetContextBlockTokens records the project-context block token estimate.
+func SetContextBlockTokens(n int) {
+	contextBlockTokensMu.Lock()
+	contextBlockTokens = n
+	contextBlockTokensMu.Unlock()
+}
+
+// GitWorkspaceBlockTokens returns the git workspace snapshot token estimate.
+func GitWorkspaceBlockTokens() int {
+	gitWorkspaceBlockTokensMu.Lock()
+	defer gitWorkspaceBlockTokensMu.Unlock()
+	return gitWorkspaceBlockTokensVal
+}
+
+// SetGitWorkspaceBlockTokens records the git workspace snapshot token
+// estimate.
+func SetGitWorkspaceBlockTokens(n int) {
+	gitWorkspaceBlockTokensMu.Lock()
+	gitWorkspaceBlockTokensVal = n
+	gitWorkspaceBlockTokensMu.Unlock()
+}
 
 // FindProjectRootFunc resolves the project root from a starting directory.
 // Set by root's skill_discovery.go in sandbox_hooks_init.go.

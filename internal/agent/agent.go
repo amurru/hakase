@@ -1793,7 +1793,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		cfg.Instruction,
 		cfg.ContextFiles.MaxChars,
 	)
-	hctx.ContextBlockTokens = util.EstimateTokens(ctxBlock)
+	hctx.SetContextBlockTokens(util.EstimateTokens(ctxBlock))
 	// Record session-scoped state for progressive subdirectory context hints
 	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
 	hctx.InitContextState(cwd, cfg, instructionFiles)
@@ -1843,7 +1843,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			}
 		}
 	}
-	hctx.GitWorkspaceBlockTokens = util.EstimateTokens(gitBlock)
+	hctx.SetGitWorkspaceBlockTokens(util.EstimateTokens(gitBlock))
 	// gitBlockAgents lists the agents that receive the snapshot: exactly the
 	// ones whose tool list includes the structured git tools.
 	gitBlockAgents := []string{"orchestrator", "general_purpose"}

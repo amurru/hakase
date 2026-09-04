@@ -185,15 +185,14 @@ def compile_report(title, sections, output_md='./outputs/report.md', output_pdf=
             output_pdf='./outputs/report.pdf'
         )
     """
-    # Canonicalize the output location and keep relative outputs inside the
-    # current directory tree: a caller-supplied relative path with traversal
-    # segments must never write elsewhere.
-    if os.path.isabs(output_md):
-        output_md = os.path.realpath(output_md)
-    else:
-        output_md = os.path.realpath(os.path.join(os.getcwd(), output_md))
-        if os.path.commonpath([os.path.realpath(os.getcwd()), output_md]) != os.path.realpath(os.getcwd()):
-            raise ValueError("output_md must stay inside the current directory")
+    # Canonicalize the output location and keep it inside the current
+    # directory tree: absolute paths must pass the same containment check as
+    # relative ones (including traversal segments), so a caller-supplied path
+    # can never write elsewhere.
+    cwd = os.path.realpath(os.getcwd())
+    output_md = os.path.realpath(os.path.join(cwd, output_md))
+    if os.path.commonpath([cwd, output_md]) != cwd:
+        raise ValueError("output_md must stay inside the current directory")
     os.makedirs(os.path.dirname(output_md) or '.', exist_ok=True)
     
     md_parts = [f"# {title}\n\n"]
@@ -232,6 +231,22 @@ def compile_report(title, sections, output_md='./outputs/report.md', output_pdf=
 
 
 if __name__ == "__main__":
+    # Path-confinement self-test: an absolute path outside the current
+    # directory must be rejected before any file is created.
+    import tempfile
+    outside_md = os.path.join(tempfile.gettempdir(), "hakase_pdf_outside_test.md")
+    try:
+        compile_report("x", [{'heading': 'h', 'content': 'c'}], output_md=outside_md)
+    except ValueError:
+        print("✅ Path confinement: absolute path outside cwd rejected")
+    else:
+        if os.path.exists(outside_md):
+            os.remove(outside_md)
+        raise SystemExit("path confinement failed: absolute output outside cwd was accepted")
+    finally:
+        if os.path.exists(outside_md):
+            os.remove(outside_md)
+
     # Sample mock data for testing
     print("Testing PDF Report Generator\n")
     

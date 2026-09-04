@@ -37,15 +37,14 @@ Registry entry (JSON, one file, no DB):
 
 ```json
 {
-  "id": "proj_01J...",            // ULID, stable across renames
+  "id": "proj_9f27f32a-2020-46d5-9541-f18246937b2b",  // proj_-prefixed UUIDv4, stable
   "name": "hakase-web",           // display name, unique per registry
-  "source": {
-    "url": "https://github.com/amurru/hakase.git",
-    "ref": "main"                 // default branch to clone/checkout
-  },
-  "checkout": "~/.hakase/projects/proj_01J...",  // managed dir (host-side)
-  "status": "ready" | "cloning" | "sync_error",
-  "created_at": "...", "updated_at": "..."
+  "source_url": "https://github.com/amurru/hakase.git",
+  "ref": "main",                  // branch/tag/commit to clone (optional)
+  "checkout": "/home/amurru/.hakase/projects/proj_9f27f32a-2020-46d5-9541-f18246937b2b", // managed dir (host-side)
+  "status": "ready",              // ready | cloning | sync_error
+  "created_at": "2026-09-03T22:55:56Z",
+  "updated_at": "2026-09-03T22:55:56Z"
 }
 ```
 
@@ -63,10 +62,11 @@ read-modify-write with a lock mirroring `tasks.json` handling.
   Clone-source policy is the v2.1 D9 allowlist (https/git/ssh over the
   network; local paths only when no sandbox is active) — on a remote host
   the network forms are the point. Entry validation mirrors that allowlist
-  as https/http/git/ssh/**file** (file:// is the explicit "local bare
-  remote" form); the sandbox half of D9 is enforced again at
-  materialization, where the sandbox state actually lives (amended
-  2026-09-03).
+  as https/git/ssh/**file** (file:// is the explicit "local bare remote"
+  form); plain http is excluded from the registry so credentials and
+  repository contents are never sent unencrypted. The sandbox half of D9 is
+  enforced again at materialization, where the sandbox state actually lives
+  (amended 2026-09-03).
 - **DP-7 (session binding)** — Sessions created from the web UI may carry a
   `project_id`. When present, the session's workspace roots are pinned to the
   project checkout (this finally resolves the "pin workspace to

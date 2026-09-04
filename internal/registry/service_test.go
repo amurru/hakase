@@ -54,7 +54,13 @@ func gitBin(t *testing.T) string {
 
 // gitTestEnv isolates git from global/system config and terminal prompts.
 func gitTestEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	// GIT_CONFIG_GLOBAL/SYSTEM pinning keeps the developer's ~/.gitconfig out
+	// of test checkouts; explicit author/committer env keeps commits working
+	// without it.
+	return append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=Hakase Test", "GIT_AUTHOR_EMAIL=hakase@test.local",
+		"GIT_COMMITTER_NAME=Hakase Test", "GIT_COMMITTER_EMAIL=hakase@test.local")
 }
 
 // gitCmd runs a system git command in dir with the test env.

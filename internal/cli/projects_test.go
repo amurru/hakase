@@ -51,7 +51,13 @@ func projectsGitBin(t *testing.T) string {
 }
 
 func projectsGitEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	// GIT_CONFIG_GLOBAL/SYSTEM pinning keeps the developer's ~/.gitconfig out
+	// of test checkouts; explicit author/committer env keeps commits working
+	// without it.
+	return append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=Hakase Test", "GIT_AUTHOR_EMAIL=hakase@test.local",
+		"GIT_COMMITTER_NAME=Hakase Test", "GIT_COMMITTER_EMAIL=hakase@test.local")
 }
 
 // projectsGit runs system git in dir with the isolated test env.

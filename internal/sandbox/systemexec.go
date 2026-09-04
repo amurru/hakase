@@ -509,14 +509,17 @@ func envKeyIsSensitive(key string, prefixes []string, caseInsensitive bool) bool
 }
 
 // effectiveChildDir returns the directory the spawned process will actually
-// run in: the caller-supplied workingDir when set, the sandbox workspace root
-// when the sandbox pins it, or the agent process working directory.
+// run in: the caller-supplied workingDir when set, the effective sandbox's
+// workspace root when the sandbox pins it, or the agent process working
+// directory. It derives the root from the sb argument (the context-scoped
+// override for pinned project-bound runs), never from CurrentSandbox, so a
+// per-run sandbox override is honored here exactly like everywhere else.
 func effectiveChildDir(sb *SandboxConfig, workingDir string) string {
 	if workingDir != "" {
 		return workingDir
 	}
-	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
-		if root := CurrentSandbox.WorkspaceRoot(); root != "" {
+	if sb != nil && sb.Mode != SandboxModeOff {
+		if root := sb.WorkspaceRoot(); root != "" {
 			return root
 		}
 	}

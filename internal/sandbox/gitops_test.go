@@ -550,6 +550,39 @@ func TestGitCommitLifecycle(t *testing.T) {
 	}
 }
 
+// TestGitCommitShortShaFromRawHash guards the short_sha field against the
+// untrusted-data framing: with wrapping enabled (as in the real binary), the
+// short hash must come from the raw rev-parse output, not from the wrapped
+// value (whose leading characters are the framing markers).
+func TestGitCommitShortShaFromRawHash(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	origWrap := WrapUntrustedDataFunc
+	WrapUntrustedDataFunc = func(s string) string {
+		return "\n<UNTRUSTED_DATA>\n" + s + "\n</UNTRUSTED_DATA>\n"
+	}
+	defer func() { WrapUntrustedDataFunc = origWrap }()
+
+	if err := os.WriteFile(filepath.Join(dir, "wrap.txt"), []byte("w\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitStageContent(context.Background(), GitStageInput{RepoDir: dir, Paths: []string{"wrap.txt"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	out, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "wrap test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.ShortSha) != 7 || strings.HasPrefix(out.ShortSha, "<") {
+		t.Errorf("short_sha must be the raw hash prefix under wrapping, got %q", out.ShortSha)
+	}
+	if !strings.Contains(out.Sha, "<UNTRUSTED_DATA>") {
+		t.Errorf("sha should remain wrapped for the model, got %q", out.Sha)
+	}
+}
+
 func TestGitCommitErrors(t *testing.T) {
 	stubGitPolicy(t, false)
 	dir := t.TempDir()
@@ -826,6 +859,12 @@ func TestValidateCloneSource(t *testing.T) {
 	}
 	if err := validateCloneSource(context.Background(), ""); err == nil {
 		t.Error("empty source accepted")
+	}
+	if err := validateCloneSource(context.Background(), "-upload-pack"); err == nil {
+		t.Error("option-like clone source accepted")
+	}
+	if err := validateCloneSource(context.Background(), "--depth=1"); err == nil {
+		t.Error("flag-like clone source accepted")
 	}
 
 	// file:// and local paths are fine without a sandbox...

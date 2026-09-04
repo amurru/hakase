@@ -132,7 +132,7 @@ func projectRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !registry.ValidSourceURL(url) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unsupported source URL %q (allowed: https://, http://, git://, ssh://, or file:// for a local bare remote)", url)})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unsupported source URL %q (allowed: https://, git://, ssh://, or file:// for a local bare remote)", url)})
 		return
 	}
 

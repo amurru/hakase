@@ -34,7 +34,13 @@ func projectGitBin(t *testing.T) string {
 }
 
 func projectGitEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	// GIT_CONFIG_GLOBAL/SYSTEM pinning keeps the developer's ~/.gitconfig out
+	// of test checkouts; explicit author/committer env keeps commits working
+	// without it.
+	return append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=Hakase Test", "GIT_AUTHOR_EMAIL=hakase@test.local",
+		"GIT_COMMITTER_NAME=Hakase Test", "GIT_COMMITTER_EMAIL=hakase@test.local")
 }
 
 func projectGit(t *testing.T, dir string, args ...string) {
@@ -91,9 +97,12 @@ func projectStubGate(t *testing.T) {
 }
 
 // installRegistry points registry.Current at a service backed by a store under
-// home, restoring the previous value on cleanup.
+// home, restoring the previous value on cleanup. Git subprocesses (engine and
+// helpers) get an isolated git config so the developer's ~/.gitconfig cannot
+// leak into assertions.
 func installRegistry(t *testing.T, home string) *registry.Service {
 	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	orig := registry.Current
 	st, err := registry.NewStore(filepath.Join(home, "projects.json"))
 	if err != nil {
@@ -254,6 +263,8 @@ func TestProjectAPIEndpointsLifecycle(t *testing.T) {
 // TestProjectAPIUnavailable verifies the 503 path when the registry is not
 // boot-configured.
 func TestProjectAPIUnavailable(t *testing.T) {
+	orig := registry.Current
+	t.Cleanup(func() { registry.Current = orig })
 	registry.Current = nil
 	router := chi.NewRouter()
 	RegisterProjectRoutes(router)

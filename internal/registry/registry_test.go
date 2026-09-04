@@ -46,6 +46,9 @@ func TestStoreCRUD(t *testing.T) {
 	if ValidSourceURL("ftp://example.com/seed.git") {
 		t.Error("non-git scheme accepted for a registered project")
 	}
+	if ValidSourceURL("http://example.com/seed.git") {
+		t.Error("plain-http source accepted for a registered project")
+	}
 
 	// Update transitions status and keeps CreatedAt stable.
 	p.Status = StatusReady

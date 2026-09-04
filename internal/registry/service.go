@@ -93,6 +93,13 @@ func (svc *Service) Register(ctx context.Context, name, sourceURL, ref string) (
 	if err != nil {
 		return Project{}, err
 	}
+	// Hold the per-project slot across materialization so a concurrent Sync or
+	// Delete cannot race the visible `cloning` entry mid-clone.
+	release, err := svc.syncSlot(p.ID)
+	if err != nil {
+		return p, err
+	}
+	defer release()
 	return svc.materialize(ctx, p)
 }
 

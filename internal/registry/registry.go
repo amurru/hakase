@@ -58,11 +58,11 @@ var ErrWorkingTreeDirty = errors.New("refusing to sync: the checkout has uncommi
 
 var (
 	nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	// urlRe mirrors the git_clone D9 scheme allowlist plus file://. Scheme-less
-	// local paths are left to git_clone (they are accepted there only when no
-	// sandbox is active); the registry keeps an explicit scheme so entries are
-	// unambiguous and the full sandbox gate is applied at materialization.
-	urlRe = regexp.MustCompile(`^(https|http|git|ssh|file)://`)
+	// urlRe accepts the encrypted/authenticated network schemes (https, git,
+	// ssh) plus file:// for a local bare remote. Plain http is excluded: a
+	// clone over http sends the repository unencrypted and would leak
+	// credentials when the source requires auth.
+	urlRe = regexp.MustCompile(`^(https|git|ssh|file)://`)
 )
 
 // ValidName reports whether name is usable as a project name.
@@ -71,10 +71,10 @@ func ValidName(name string) bool {
 }
 
 // ValidSourceURL reports whether url is an acceptable clone source for a
-// registered project. Network schemes (https/http/git/ssh) are always fine -
-// they are the point of a remote-web host. file:// points at a local bare
-// remote and is accepted for local/CLI operation; per D9 the sandbox gate
-// rejects it again at materialization while a sandbox is active.
+// registered project. Network schemes (https/git/ssh) are always fine - they
+// are the point of a remote-web host. file:// points at a local bare remote
+// and is accepted for local/CLI operation; per D9 the sandbox gate rejects it
+// again at materialization while a sandbox is active.
 func ValidSourceURL(url string) bool {
 	return urlRe.MatchString(strings.TrimSpace(url))
 }
@@ -183,7 +183,7 @@ func (s *Store) Create(name, sourceURL, ref string) (Project, error) {
 		return Project{}, fmt.Errorf("registry: invalid project name %q", name)
 	}
 	if !ValidSourceURL(sourceURL) {
-		return Project{}, fmt.Errorf("registry: unsupported source URL %q (allowed: https://, http://, git://, ssh://, or file:// for a local bare remote)", sourceURL)
+		return Project{}, fmt.Errorf("registry: unsupported source URL %q (allowed: https://, git://, ssh://, or file:// for a local bare remote)", sourceURL)
 	}
 
 	s.mu.Lock()

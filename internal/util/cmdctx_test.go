@@ -58,6 +58,38 @@ func TestRunContextNormalExit(t *testing.T) {
 	}
 }
 
+// TestRunContextCancelConcurrentWithStart cancels the context in the same
+// window cmd.Start runs in. Whether the cancellation lands before or after
+// the process spawns, RunContext must terminate the started process and
+// return context.Canceled - never leak a child - and the watcher must not
+// race with cmd.Process assignment (run under -race).
+func TestRunContextCancelConcurrentWithStart(t *testing.T) {
+	for i := 0; i < 25; i++ {
+		bin := "sleep"
+		argv := []string{bin, "5"}
+		if runtime.GOOS == "windows" {
+			bin = "ping"
+			argv = []string{bin, "-n", "6", "127.0.0.1"}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			cmd := &exec.Cmd{Path: bin, Args: argv}
+			done <- RunContext(ctx, cmd)
+		}()
+		time.Sleep(time.Microsecond)
+		cancel()
+		start := time.Now()
+		err := <-done
+		if err != context.Canceled {
+			t.Fatalf("iteration %d: RunContext = %v, want context.Canceled", i, err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("iteration %d: cancel took %v; process leaked", i, elapsed)
+		}
+	}
+}
+
 func TestCombinedOutputContextCapture(t *testing.T) {
 	ctx := context.Background()
 	cmd := &exec.Cmd{Path: "echo", Args: []string{"echo", "hello-ctx"}}
