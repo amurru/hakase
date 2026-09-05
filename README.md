@@ -96,7 +96,7 @@ make dev-frontend   # terminal 1 - Vite dev server, HMR, port 5173
 make dev-backend    # terminal 2 - Go server with the dev tag, port 8080
 ```
 
-Open http://localhost:5173 -- Vite proxies `/api` to the Go server on :8080. No Go rebuild needed for frontend changes. Frontend tests: `cd webui && pnpm test`.
+Open <http://localhost:5173> -- Vite proxies `/api` to the Go server on :8080. No Go rebuild needed for frontend changes. Frontend tests: `cd webui && pnpm test`.
 
 </details>
 
@@ -228,6 +228,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 | **Python Interpreter** | Isolated `.venv`, auto pip install on `ModuleNotFoundError`, sandbox-aware |
 | **Skill Library** | Persisted Python skills + markdown skills, with a darwinian evolver loop |
 | **Knowledge Base** | Wiki-style notes with `[[wikilinks]]`, 8 knowledge tools, `hakase knowledge` CLI |
+| **Git Operations** | Structured `git_status`/`git_diff`/`git_log`/`git_branch` (read-only) and `git_stage`/`git_commit` (mutating, approval-gated) through the same policy as `system_exec` |
 | **Sandboxing** | `paths` by default (bubblewrap optional), secret-file deny list, symlink-safe |
 | **MCP Client** | Any number of stdio/HTTP MCP servers as `mcp_<server>_<tool>` tools, `/mcp` panel |
 | **Media Generation** | `generate_image`/`generate_video` (OpenAI/fal/pil fallback), sandboxed to `outputs/media/` |
@@ -392,6 +393,35 @@ See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [
 - Keep the default `--host 127.0.0.1` and let the reverse proxy forward to it; never expose the Go server directly.
 - Rotate `~/.hakase/jwt-secret` periodically to invalidate outstanding tokens.
 - TLS is the proxy's job -- never run `--host 0.0.0.0` without a reverse proxy.
+
+### Remote web deployments (registered projects)
+
+When hakase web runs on a host that does *not* already have the client's code,
+there is nothing for `git_status`/`git_commit`/the workspace snapshot to anchor
+to. Registered projects fix that: an explicit `{name, clone source}` entry that
+the host materializes into a managed checkout. See
+[docs/git-tools/project-registry.md](docs/git-tools/project-registry.md).
+
+- **Register a project** on the host with
+  `hakase projects register <name> <url> [--ref <branch>]` (list/sync/delete
+  too), or from the web API via `POST /api/projects`. Checkouts live under
+  `~/.hakase/projects/<id>`; entries and statuses persist in
+  `~/.hakase/projects.json`.
+- **Sessions bind to a project** by picking it in the web UI's New Session
+  dialog (or `POST /api/sessions` with `project_id`). Bound sessions anchor
+  every git tool to the project checkout and start each run with a fresh
+  `GIT WORKSPACE` snapshot of that checkout.
+- **Credentials are never stored** (DP-8): clone/push/pull authenticate
+  through the host's own mechanisms -- git credential helpers, `gh auth`, or
+  an SSH agent -- exactly what running git yourself would use. Nothing secret
+  is written into `projects.json` (clone URLs only).
+- **Sandbox confinement is per-session**: when the host sandbox is active, a
+  project-bound session's git, file, and exec operations are confined to the
+  project checkout (the run derives a per-session sandbox pinned to the
+  checkout). Sessions not bound to a project keep the process-wide
+  configuration.
+- **Deleting a project** removes the registry entry and the local checkout; it
+  never touches the remote. Re-registering re-clones.
 
 ---
 

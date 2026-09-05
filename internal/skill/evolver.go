@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"amurru/hakase/internal/util"
 )
 
 // EvolveMutateFn is the model-backed mutation callback. It is set by the root
@@ -285,9 +287,10 @@ func evaluateSkillAt(skillsDir, name, filePath string) SkillEvalResult {
 
 	ctx, cancel := context.WithTimeout(context.Background(), evolveEvalTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, skillPythonBin(), runnerPath, filePath, evalPath, outPath)
+	py := skillPythonBin()
+	cmd := &exec.Cmd{Path: py, Args: []string{py, runnerPath, filePath, evalPath, outPath}}
 	cmd.Dir = skillsDir
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := util.CombinedOutputContext(ctx, cmd); err != nil {
 		if ctx.Err() != nil {
 			res.EvalSetError = "eval timed out"
 		} else {

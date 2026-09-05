@@ -3,7 +3,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime, timedelta
 import os
+import re
 import time
+import urllib.parse
 
 def fetch_crypto_prices(coin_id, days=7, currency='usd'):
     """
@@ -18,7 +20,17 @@ def fetch_crypto_prices(coin_id, days=7, currency='usd'):
         list of tuples: Each tuple is (timestamp_ms, price) sorted by time.
                         Returns None if the API request fails.
     """
+    # The API host is fixed; only the coin path segment is dynamic. Constrain
+    # it to CoinGecko's identifier charset and allowlist scheme+host before
+    # the request, so no input can redirect the fetch elsewhere.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", coin_id or ""):
+        print(f"invalid coin id: {coin_id!r}")
+        return None
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme != "https" or parsed_url.netloc != "api.coingecko.com":
+        print(f"refusing non-allowlisted request URL: {url!r}")
+        return None
     params = {
         'vs_currency': currency,
         'days': str(days),

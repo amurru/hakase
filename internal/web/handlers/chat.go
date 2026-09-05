@@ -17,6 +17,9 @@ import (
 	hakaseagent "amurru/hakase/internal/agent"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
+	"amurru/hakase/internal/registry"
+	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	hakasesidekick "amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/web/sse"
@@ -30,6 +33,52 @@ import (
 // maxConcurrentAgentRuns is the maximum number of concurrent agent runs
 // allowed per session. Additional runs receive a 429 response.
 const maxConcurrentAgentRuns = 3
+
+// activeProjectRuns tracks in-flight agent runs per registered project id so
+// the registry endpoints refuse to sync/delete a checkout an agent is actively
+// working in (project-ui.md). Counts, not booleans: several sessions may run
+// against the same project concurrently. Follows the package-global precedent
+// of registry.Current.
+var activeProjectRuns = newProjectRunTracker()
+
+// projectRunTracker counts active agent runs per project id.
+type projectRunTracker struct {
+	mu    sync.Mutex
+	count map[string]int
+}
+
+func newProjectRunTracker() *projectRunTracker {
+	return &projectRunTracker{count: map[string]int{}}
+}
+
+func (t *projectRunTracker) begin(projectID string) {
+	if projectID == "" {
+		return
+	}
+	t.mu.Lock()
+	t.count[projectID]++
+	t.mu.Unlock()
+}
+
+func (t *projectRunTracker) end(projectID string) {
+	if projectID == "" {
+		return
+	}
+	t.mu.Lock()
+	if n := t.count[projectID]; n <= 1 {
+		delete(t.count, projectID)
+	} else {
+		t.count[projectID] = n - 1
+	}
+	t.mu.Unlock()
+}
+
+// countOn returns how many agent runs are active on projectID.
+func (t *projectRunTracker) countOn(projectID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.count[projectID]
+}
 
 // Web attachment caps, mirroring internal/tui/attach.go.
 const (
@@ -485,6 +534,56 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// boundProject resolves the registered project a chat session is bound to
+// (session.project_id, project-registry DP-7). Returns nil when the session is
+// unbound or the binding is unusable (entry missing, or not in status ready),
+// so a run always proceeds - just without a project anchor.
+func (api *ChatAPI) boundProject(sessionID string) *registry.Project {
+	if api.sessionSvc == nil || registry.Current == nil {
+		return nil
+	}
+	sess, err := api.sessionSvc.Store().Load(sessionID)
+	if err != nil || strings.TrimSpace(sess.ProjectID) == "" {
+		return nil
+	}
+	p, err := registry.Current.Store().Get(sess.ProjectID)
+	if err != nil {
+		log.Printf("chat: session %s bound to unknown project %s: %v", sessionID, sess.ProjectID, err)
+		return nil
+	}
+	if p.Status != registry.StatusReady {
+		log.Printf("chat: session %s bound to project %s in status %s; skipping project anchor", sessionID, p.Name, p.Status)
+		return nil
+	}
+	return &p
+}
+
+// withBoundSandbox pins the effective sandbox of a project-bound run to the
+// checkout (sandbox.PinnedTo -> sandbox.WithConfig), closing DP-7: while the
+// host sandbox is active, the session's workspace/read roots are the project
+// checkout. When the host sandbox is off nothing changes - confinement
+// disabled stays disabled and the checkout is simply the git project root.
+func withBoundSandbox(ctx context.Context, checkout string) context.Context {
+	base := sandbox.CurrentSandbox
+	if base == nil || base.Mode == sandbox.SandboxModeOff {
+		return ctx
+	}
+	return sandbox.WithConfig(ctx, sandbox.PinnedTo(base, checkout))
+}
+
+// projectWorkspaceSnapshot renders a fresh GIT WORKSPACE snapshot for a bound
+// project checkout. Mirrors agent.SetupRunner's boot-time snapshot (status +
+// latest commits) but reflects the session's project at run start. ctx carries
+// the bound project root/sandbox so the snapshot resolves under confinement.
+func projectWorkspaceSnapshot(ctx context.Context, checkout string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	return sandbox.BuildGitWorkspaceBlock(runCtx, checkout, nil)
+}
+
 // runAgentTask runs the agent in a goroutine, streaming all events through
 // the SSE bridge. This mirrors internal/tui/ui.go:runAgentTask but writes
 // to SSE channels instead of tea.Msg. The agent's final answer is also
@@ -496,7 +595,15 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 	var contentBuf, thinkBuf strings.Builder
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
 
+	// boundProject is resolved below (after the defer is installed), so keep
+	// the resolved id here: the defer releases the active-run slot exactly
+	// once, whether the run ends normally, on error, or on a panic.
+	var runProjectID string
+
 	defer func() {
+		if runProjectID != "" {
+			activeProjectRuns.end(runProjectID)
+		}
 		if r := recover(); r != nil {
 			log.Printf("chat: panic in agent run for session %s: %v", sessionID, r)
 			api.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
@@ -512,6 +619,30 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 
 	runCtx := ctx
 	msg := content
+
+	// Project-bound sessions (project-registry DP-7): anchor the run to the
+	// registered project's checkout so git tools default there (resolveRepoDir
+	// consults project.RootFrom), pin the effective sandbox to the checkout
+	// when the host sandbox is active (per-run workspace roots), and inject a
+	// fresh per-session GIT WORKSPACE snapshot ahead of the user message.
+	// Delegated runs inherit the ctx root and sandbox override (delegate.go
+	// reuses the agent.Context as the sub-run ctx).
+	if bind := api.boundProject(sessionID); bind != nil {
+		// Register the active run against the bound project before the first
+		// agent step so the registry refuses to sync/delete under it.
+		runProjectID = bind.ID
+		activeProjectRuns.begin(bind.ID)
+		checkout := registry.Current.Store().CheckoutDir(*bind)
+		runCtx = project.WithRoot(runCtx, checkout)
+		runCtx = withBoundSandbox(runCtx, checkout)
+		if snap, serr := projectWorkspaceSnapshot(runCtx, checkout); serr == nil && strings.TrimSpace(snap) != "" {
+			header := fmt.Sprintf("\n### GIT WORKSPACE — session bound to registered project %q\n(checkout: %s)\n%s", bind.Name, checkout, snap)
+			msg = &genai.Content{
+				Role:  content.Role,
+				Parts: append([]*genai.Part{{Text: header}}, content.Parts...),
+			}
+		}
+	}
 
 	// Generate task ID once before the retry loop so all repair attempts
 	// preserve the same session context

@@ -31,12 +31,29 @@ type HistoryBuilder struct {
 	logf        func(format string, args ...any)
 	pending     *util.PendingQueue      // mid-run steering queue (may be nil)
 	sidekick    *util.SidekickNoteQueue // sidekick advisory notes (may be nil)
+
+	// Token estimates of the rendered project-context block and the git
+	// workspace snapshot that are folded into the system prompt
+	// (setupRunner). fitToBudget reserves them so large AGENTS.md files or
+	// repo snapshots do not silently blow the token budget. They live on the
+	// builder rather than in process-global state so concurrent runs keep
+	// their own accounting instead of overwriting each other's reserve.
+	contextBlockTokens      int
+	gitWorkspaceBlockTokens int
 }
 
 // NewHistoryBuilder creates a HistoryBuilder bound to the given session
 // service. svc may be nil (history injection is a no-op in that case).
 func NewHistoryBuilder(svc *sesspkg.SessionService) *HistoryBuilder {
 	return &HistoryBuilder{svc: svc}
+}
+
+// SetBlockTokenEstimates records the token estimates of the rendered
+// project-context block and git workspace snapshot folded into the system
+// prompt. Called once in setupRunner with the values rendered for this run.
+func (h *HistoryBuilder) SetBlockTokenEstimates(contextBlockTokens, gitWorkspaceBlockTokens int) {
+	h.contextBlockTokens = contextBlockTokens
+	h.gitWorkspaceBlockTokens = gitWorkspaceBlockTokens
 }
 
 // SetPendingQueue attaches the TUI's mid-run message queue so queued prompts
@@ -295,13 +312,14 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 	}
 
 	// Reserve budget for the system prompt + tool schemas + current run
-	// contents, plus the rendered project-context block (contextBlockTokens,
-	// set in setupRunner from the discovered AGENTS.md files) and the
+	// contents, plus the rendered project-context block and the git workspace
+	// snapshot (estimates recorded on this builder in setupRunner from the
+	// discovered AGENTS.md files and repo snapshot), and the
 	// runtime-environment block (env.SystemEnvBlockTokens, set in setupRunner).
 	// The flat baseline plus the blocks is a conservative approximation since
 	// we cannot see the fully rendered prompt.
 	const baseReserveTokens = 8000
-	reserveTokens := baseReserveTokens + ContextBlockTokens + env.SystemEnvBlockTokens
+	reserveTokens := baseReserveTokens + h.contextBlockTokens + h.gitWorkspaceBlockTokens + env.SystemEnvBlockTokens
 
 	currentTokens := util.EstimateContentsTokens(current)
 	trigger := int64(effectiveMax * 9 / 10)

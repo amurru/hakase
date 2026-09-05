@@ -30,6 +30,11 @@ const router = createRouter({
           component: () => import('@/views/SessionsView.vue'),
         },
         {
+          path: 'projects',
+          name: 'projects',
+          component: () => import('@/views/ProjectsView.vue'),
+        },
+        {
           path: 'tasks',
           name: 'tasks',
           component: () => import('@/views/TasksView.vue'),

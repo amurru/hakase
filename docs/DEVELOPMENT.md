@@ -177,7 +177,7 @@ A passing verification proves the binary was built by the release workflow from 
 
 ## Web UI Development Flow
 
-Run two processes; Vite proxies `/api` to the Go server on :8080, so open http://localhost:5173 in the browser:
+Run two processes; Vite proxies `/api` to the Go server on :8080, so open <http://localhost:5173> in the browser:
 
 ```
 make dev-frontend   # terminal 1 - Vite dev server, HMR, port 5173
@@ -857,3 +857,4 @@ The creative skills port (see `.omo/plans/creative-skills-port.md`) deliberately
 - `touchdesigner-mcp` - requires a TouchDesigner MCP server; can now be added via the generic `mcp` config once a server endpoint is available.
 - `comfyui` - ported as doctrine + gated on user infra (ComfyUI/comfy-cli, GPU or cloud); native image/video generation is now provided by the media layer, ComfyUI integration is deferred to v2 (GPU + local models).
 - `songwriting-and-ai-music` - doctrine ported; generation is external (Suno); native TTS/audio deferred to v2 (generate_audio stub).
+- `git push` / `git pull` / `git clone` and destructive git ops (`checkout`/`reset`/`clean`) - structured git tools ship read-only + stage/commit in v1 (see [docs/git-tools/](docs/git-tools/)); push/pull/clone (network policy interplay) and destructive ops (force-flag mapping) are deferred to v2.

@@ -146,6 +146,11 @@ func init() {
 		Handler:     RunCronCLI,
 	})
 	registerCommand(Command{
+		Name:        "projects",
+		Description: "manage registered remote projects (list, register, sync, delete)",
+		Handler:     RunProjectCLI,
+	})
+	registerCommand(Command{
 		Name:        "web",
 		Description: "serve the web UI",
 		Handler:     notMigrated("web"),

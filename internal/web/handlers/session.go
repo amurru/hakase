@@ -1,13 +1,15 @@
 package handlers
 
 import (
+	"amurru/hakase/internal/registry"
+	"amurru/hakase/internal/session"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"amurru/hakase/internal/session"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -15,18 +17,22 @@ import (
 type SessionSummaryDTO struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
+	ProjectID    string    `json:"project_id,omitempty"`
+	ProjectName  string    `json:"project_name,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	MessageCount int       `json:"message_count"`
 }
 
 // SessionDetailDTO is the API response for a single session with messages.
 type SessionDetailDTO struct {
-	ID        string       `json:"id"`
-	Title     string       `json:"title"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
-	Archived  bool         `json:"archived"`
-	Messages  []MessageDTO `json:"messages"`
+	ID          string       `json:"id"`
+	Title       string       `json:"title"`
+	ProjectID   string       `json:"project_id,omitempty"`
+	ProjectName string       `json:"project_name,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+	Archived    bool         `json:"archived"`
+	Messages    []MessageDTO `json:"messages"`
 }
 
 // MessageDTO is the API response for a single chat message.
@@ -89,6 +95,8 @@ func (api *SessionAPI) ListSessions(w http.ResponseWriter, r *http.Request) {
 		dtos = append(dtos, SessionSummaryDTO{
 			ID:           s.ID,
 			Title:        s.Title,
+			ProjectID:    s.ProjectID,
+			ProjectName:  s.ProjectName,
 			UpdatedAt:    s.UpdatedAt,
 			MessageCount: s.MessageCount,
 		})
@@ -98,10 +106,12 @@ func (api *SessionAPI) ListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateSession handles POST /sessions - creates a new session.
-// Accepts JSON body: {"title": "My new session"}
+// Accepts JSON body: {"title": "My new session", "project_id": "proj_..."}
+// project_id (optional) binds the session to a ready registered project.
 func (api *SessionAPI) CreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title string `json:"title"`
+		Title     string `json:"title"`
+		ProjectID string `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -110,6 +120,28 @@ func (api *SessionAPI) CreateSession(w http.ResponseWriter, r *http.Request) {
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		title = "Untitled session"
+	}
+	projectID := strings.TrimSpace(req.ProjectID)
+
+	// Validate the project binding BEFORE creating anything: an unknown or
+	// unready project must fail without persisting/activating an orphan
+	// session (the registry store is concurrency-safe, so this needs no lock).
+	var bind *registry.Project
+	if projectID != "" {
+		if registry.Current == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "project registry is not available on this server"})
+			return
+		}
+		p, err := registry.Current.Store().Get(projectID)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown project %q", projectID)})
+			return
+		}
+		if p.Status != registry.StatusReady {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("project %q is not ready (status %q); sync it first", p.Name, p.Status)})
+			return
+		}
+		bind = &p
 	}
 
 	api.mu.Lock()
@@ -121,14 +153,16 @@ func (api *SessionAPI) CreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, SessionDetailDTO{
-		ID:        sess.ID,
-		Title:     sess.Title,
-		CreatedAt: sess.CreatedAt,
-		UpdatedAt: sess.UpdatedAt,
-		Archived:  sess.Archived,
-		Messages:  messagesToDTO(sess.Messages),
-	})
+	if bind != nil {
+		if err := api.svc.BindProject(sess.ID, bind.ID, bind.Name); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		sess.ProjectID = bind.ID
+		sess.ProjectName = bind.Name
+	}
+
+	writeJSON(w, http.StatusCreated, sessionDetailDTO(sess))
 }
 
 // GetSession handles GET /sessions/{id} - returns session detail with messages.
@@ -162,14 +196,7 @@ func (api *SessionAPI) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, SessionDetailDTO{
-		ID:        sess.ID,
-		Title:     sess.Title,
-		CreatedAt: sess.CreatedAt,
-		UpdatedAt: sess.UpdatedAt,
-		Archived:  sess.Archived,
-		Messages:  messagesToDTO(sess.Messages),
-	})
+	writeJSON(w, http.StatusOK, sessionDetailDTO(sess))
 }
 
 // DeleteSession handles DELETE /sessions/{id} - removes a session.
@@ -244,14 +271,7 @@ func (api *SessionAPI) GetActiveSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	writeJSON(w, http.StatusOK, SessionDetailDTO{
-		ID:        sess.ID,
-		Title:     sess.Title,
-		CreatedAt: sess.CreatedAt,
-		UpdatedAt: sess.UpdatedAt,
-		Archived:  sess.Archived,
-		Messages:  messagesToDTO(sess.Messages),
-	})
+	writeJSON(w, http.StatusOK, sessionDetailDTO(sess))
 }
 
 // messagesToDTO converts internal Message slice to DTO slice.
@@ -269,4 +289,18 @@ func messagesToDTO(msgs []session.Message) []MessageDTO {
 		})
 	}
 	return dtos
+}
+
+// sessionDetailDTO maps a session to its API response shape.
+func sessionDetailDTO(s *session.Session) SessionDetailDTO {
+	return SessionDetailDTO{
+		ID:          s.ID,
+		Title:       s.Title,
+		ProjectID:   s.ProjectID,
+		ProjectName: s.ProjectName,
+		CreatedAt:   s.CreatedAt,
+		UpdatedAt:   s.UpdatedAt,
+		Archived:    s.Archived,
+		Messages:    messagesToDTO(s.Messages),
+	}
 }
