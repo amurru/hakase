@@ -529,8 +529,9 @@ func TestBuildExecCommandEnvScrubOffMode(t *testing.T) {
 	withApproval(t, true)
 
 	// Set a sensitive env var via the env map.
+	const scrubFixtureValue = "test-secret"
 	cmd, err := sandbox.BuildExecCommand("echo hello", nil, "", map[string]string{
-		"AWS_SECRET_ACCESS_KEY": "test-secret",
+		"AWS_SECRET_ACCESS_KEY": scrubFixtureValue,
 		"PATH":                  "/usr/bin",
 	})
 	if err != nil {

@@ -14,6 +14,7 @@ import ClarifyModal from '@/components/clarify/ClarifyModal.vue'
 import {
   MessageSquare,
   FolderOpen,
+  FolderGit2,
   ListTodo,
   BookOpen,
   Wand2,
@@ -52,6 +53,7 @@ const statusColor = computed(() => {
 const navItems = [
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/sessions', label: 'Sessions', icon: FolderOpen },
+  { to: '/projects', label: 'Projects', icon: FolderGit2 },
   { to: '/tasks', label: 'Tasks', icon: ListTodo },
   { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
   { to: '/skills', label: 'Skills', icon: Wand2 },

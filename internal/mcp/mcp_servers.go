@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -326,7 +327,20 @@ func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Tools
 		if len(argv) == 0 || argv[0] == "" {
 			return nil, fmt.Errorf("mcp server %q has an empty stdio command", name)
 		}
-		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd := &exec.Cmd{Path: argv[0], Args: append([]string(nil), argv...)}
+		// Mirror the stdlib os/exec PATH resolution of a bare name: the
+		// CommandTransport starts this process itself via cmd.Start, which
+		// returns cmd.Err when the lookup failed.
+		if filepath.Base(argv[0]) == argv[0] {
+			if lp, lerr := exec.LookPath(argv[0]); lp != "" {
+				cmd.Path = lp
+				if lerr != nil {
+					cmd.Err = lerr
+				}
+			} else if lerr != nil {
+				cmd.Err = lerr
+			}
+		}
 		cmd.Env = buildMCPChildEnv(cfg.Env)
 		return mcptoolset.New(mcptoolset.Config{
 			Transport: &mcp.CommandTransport{Command: cmd},

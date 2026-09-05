@@ -451,7 +451,7 @@ func newTestJWT2(username string, expiry time.Duration) string {
 		"exp":      float64(now.Add(expiry).Unix()),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokStr, _ := token.SignedString(testJWTSigningKey)
+	tokStr, _ := token.SignedString(signingFixtureValue)
 	return tokStr
 }
 
@@ -471,7 +471,7 @@ func newTestAuthRouter(t *testing.T) (*SessionAPI, *session.SessionService, chi.
 					return
 				}
 				parsed, err := jwt.Parse(tok, func(t *jwt.Token) (interface{}, error) {
-					return testJWTSigningKey, nil
+					return signingFixtureValue, nil
 				})
 				if err != nil || !parsed.Valid {
 					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})

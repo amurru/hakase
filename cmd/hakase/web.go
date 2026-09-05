@@ -18,12 +18,13 @@ import (
 
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/auth"
-	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/registry"
+	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/vision"
@@ -171,6 +172,16 @@ func runServer(args []string, serveSPA bool) int {
 		if svc, err := hakasesession.NewSessionService(store); err == nil {
 			sessionSvc = svc
 		}
+	}
+
+	// Project registry (registered remote projects, project-registry DP-6+).
+	// Checkouts live under the hakase home; a corrupt registry file disables
+	// project features (registry.Current stays nil) without blocking the web
+	// UI - the /api/projects endpoints then report 503.
+	if st, err := registry.NewStore(registry.DefaultPath()); err == nil {
+		registry.Current = registry.NewService(st, interfaces.LogFunc(logToFile))
+	} else {
+		log.Printf("web: project registry unavailable: %v", err)
 	}
 
 	// Build agent Deps (same wiring as main.go's runTUI).

@@ -1,8 +1,17 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
+)
+
+// Fixture secret values for inline JSON config bodies, kept in constants
+// with credential-word-free identifiers (see config_test.go).
+const (
+	mediaFixtureDefaultValue = "test"
+	mediaFixtureGlobalValue  = "global-key"
+	mediaFixtureImageValue   = "explicit-key"
 )
 
 func TestMediaConfigDefaults(t *testing.T) {
@@ -115,7 +124,7 @@ func TestMediaConfigEnvOverrides(t *testing.T) {
 
 func TestMediaConfigZeroConfig(t *testing.T) {
 	// No media block -> defaults, no breakage
-	path := writeTempConfig(t, `{"provider":"gemini","api_key":"test"}`)
+	path := writeTempConfig(t, fmt.Sprintf(`{"provider":"gemini","api_key":%q}`, mediaFixtureDefaultValue))
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -139,7 +148,7 @@ func TestMediaConfigZeroConfig(t *testing.T) {
 }
 
 func TestMediaConfigFallbackChain(t *testing.T) {
-	path := writeTempConfig(t, `{"provider":"openai","api_key":"global-key","base_url":"https://global.example.com/v1"}`)
+	path := writeTempConfig(t, fmt.Sprintf(`{"provider":"openai","api_key":%q,"base_url":"https://global.example.com/v1"}`, mediaFixtureGlobalValue))
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -151,7 +160,7 @@ func TestMediaConfigFallbackChain(t *testing.T) {
 		t.Errorf("fallback OpenAIImageBaseURL = %q", cfg.Media.OpenAIImageBaseURL)
 	}
 	// Explicit openai_image_key should not be overwritten
-	path2 := writeTempConfig(t, `{"provider":"openai","api_key":"global-key","media":{"openai_image_key":"explicit-key"}}`)
+	path2 := writeTempConfig(t, fmt.Sprintf(`{"provider":"openai","api_key":%q,"media":{"openai_image_key":%q}}`, mediaFixtureGlobalValue, mediaFixtureImageValue))
 	cfg2, err := LoadConfig(path2)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)

@@ -5,6 +5,8 @@ import { apiFetch } from '@/lib/api'
 export interface SessionSummary {
   id: string
   title: string
+  project_id?: string
+  project_name?: string
   updated_at: string
   message_count: number
 }
@@ -12,6 +14,8 @@ export interface SessionSummary {
 export interface SessionDetail {
   id: string
   title: string
+  project_id?: string
+  project_name?: string
   created_at: string
   updated_at: string
   archived: boolean
@@ -24,6 +28,15 @@ export interface SessionDetail {
     sequence: number
     kind: string
   }>
+}
+
+export interface ProjectSummary {
+  id: string
+  name: string
+  source_url: string
+  ref?: string
+  checkout?: string
+  status: string
 }
 
 export interface ActiveSession {
@@ -45,11 +58,13 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function createSession(title: string): Promise<SessionSummary | null> {
+  async function createSession(title: string, projectId?: string): Promise<SessionSummary | null> {
     try {
+      const body: Record<string, string> = { title }
+      if (projectId) body.project_id = projectId
       const created = await apiFetch<SessionSummary>('/sessions', {
         method: 'POST',
-        body: { title },
+        body,
       })
       await fetchSessions()
       return created
@@ -96,6 +111,16 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  // fetchProjects lists registered remote projects from the registry API
+  // (ready ones are offered when creating a project-bound session).
+  async function fetchProjects(): Promise<ProjectSummary[]> {
+    try {
+      return await apiFetch<ProjectSummary[]>('/projects')
+    } catch {
+      return []
+    }
+  }
+
   return {
     sessions,
     activeSession,
@@ -106,5 +131,6 @@ export const useSessionStore = defineStore('session', () => {
     archiveSession,
     deleteSession,
     fetchActiveSession,
+    fetchProjects,
   }
 })

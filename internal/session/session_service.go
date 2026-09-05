@@ -42,6 +42,20 @@ func (s *SessionService) CreateSession(title string) (*Session, error) {
 	return session, nil
 }
 
+// BindProject attaches a registered remote project (id + display name) to the
+// session (docs/git-tools/project-registry.md DP-7). The registry entry itself
+// is validated by the caller; this only persists the binding.
+func (s *SessionService) BindProject(sessionID, projectID, projectName string) error {
+	sess, err := s.store.Load(sessionID)
+	if err != nil {
+		return fmt.Errorf("cannot bind project: %w", err)
+	}
+	sess.ProjectID = projectID
+	sess.ProjectName = projectName
+	sess.UpdatedAt = time.Now().UTC()
+	return s.store.Save(sess)
+}
+
 // GetActiveSession returns the currently active session, or nil if none.
 // Loading seeds the subdirectory-hint dedup set from the session so hints
 // attached in a previous run are not re-attached on resume.
