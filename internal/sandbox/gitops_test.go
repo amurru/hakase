@@ -857,6 +857,12 @@ func TestValidateCloneSource(t *testing.T) {
 	if err := validateCloneSource(context.Background(), "ftp://example.com/repo.git"); err == nil {
 		t.Error("ftp scheme accepted")
 	}
+	// Plain http is excluded even without a sandbox: the clone would be
+	// unencrypted and could leak credentials (mirrors registry.ValidSourceURL).
+	CurrentSandbox = nil
+	if err := validateCloneSource(context.Background(), "http://example.com/repo.git"); err == nil {
+		t.Error("plain http clone source accepted")
+	}
 	if err := validateCloneSource(context.Background(), ""); err == nil {
 		t.Error("empty source accepted")
 	}

@@ -33,6 +33,18 @@ func projectGitBin(t *testing.T) string {
 	return p
 }
 
+// isolateHome redirects HOME/XDG_CONFIG_HOME/USERPROFILE to a fresh temp dir
+// so git-using tests never inherit the developer's user-home state.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// os.UserHomeDir reads USERPROFILE on Windows.
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
 func projectGitEnv() []string {
 	// GIT_CONFIG_GLOBAL/SYSTEM pinning keeps the developer's ~/.gitconfig out
 	// of test checkouts; explicit author/committer env keeps commits working
@@ -97,11 +109,12 @@ func projectStubGate(t *testing.T) {
 }
 
 // installRegistry points registry.Current at a service backed by a store under
-// home, restoring the previous value on cleanup. Git subprocesses (engine and
-// helpers) get an isolated git config so the developer's ~/.gitconfig cannot
-// leak into assertions.
+// home, restoring the previous value on cleanup. The test home is isolated and
+// Git subprocesses (engine and helpers) get GIT_CONFIG_GLOBAL=/dev/null so the
+// developer's ~/.gitconfig cannot leak into assertions.
 func installRegistry(t *testing.T, home string) *registry.Service {
 	t.Helper()
+	isolateHome(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	orig := registry.Current
 	st, err := registry.NewStore(filepath.Join(home, "projects.json"))

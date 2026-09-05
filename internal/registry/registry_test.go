@@ -139,3 +139,56 @@ func TestStoreEmptyAndCorruptFile(t *testing.T) {
 		t.Error("corrupt registry file loaded without error")
 	}
 }
+
+// TestStoreConcurrentProcessesKeepBothEntries simulates two separate hakase
+// processes (two independent Stores over the same file, both constructed
+// before either writes) registering different projects and then finishing
+// their materialization. Without the cross-process lock + reload-under-lock,
+// the second writer's whole-file rewrite drops the first process's entry.
+func TestStoreConcurrentProcessesKeepBothEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects.json")
+	a, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewStore(path) // "second process", constructed before A writes
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pa, err := a.Create("alpha", "https://example.com/alpha.git", "")
+	if err != nil {
+		t.Fatalf("process A create: %v", err)
+	}
+	pb, err := b.Create("beta", "https://example.com/beta.git", "")
+	if err != nil {
+		t.Fatalf("process B create: %v", err)
+	}
+
+	// Each process completes its materialization with a status transition.
+	pa.Status = StatusReady
+	pb.Status = StatusReady
+	if err := a.Update(pa); err != nil {
+		t.Fatalf("process A update: %v", err)
+	}
+	if err := b.Update(pb); err != nil {
+		t.Fatalf("process B update: %v", err)
+	}
+
+	// A fresh reader sees both entries - neither process lost the other's.
+	fresh, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := fresh.List()
+	if len(list) != 2 {
+		t.Fatalf("registry has %d entries after two concurrent processes, want 2: %+v", len(list), list)
+	}
+	got := map[string]string{}
+	for _, p := range list {
+		got[p.Name] = p.Status
+	}
+	if got["alpha"] != StatusReady || got["beta"] != StatusReady {
+		t.Errorf("entries after concurrent processes = %+v, want both ready", got)
+	}
+}

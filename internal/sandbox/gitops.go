@@ -827,14 +827,16 @@ func validGitTagName(s string) bool {
 }
 
 // validateCloneSource checks where git_clone may read from. Remote URLs need
-// an explicit allowlisted scheme. file:// URLs and scheme-less local paths
-// read the host filesystem directly - bypassing the sandbox read roots - so
-// they are accepted only when the *effective* sandbox (context override, else
-// CurrentSandbox) is off: local runs where the operator/agent already acts
-// with the user's filesystem trust. An active sandbox keeps clone sources
-// strictly remote. The context form matters for operator-issued registry
-// clones (DP-11): those run with a sandbox-off context, so a local bare
-// remote stays usable even when the host runs an agent sandbox.
+// an explicit allowlisted scheme (https, git, ssh; plain http is excluded -
+// the clone would be unencrypted and could leak credentials). file:// URLs
+// and scheme-less local paths read the host filesystem directly - bypassing
+// the sandbox read roots - so they are accepted only when the *effective*
+// sandbox (context override, else CurrentSandbox) is off: local runs where
+// the operator/agent already acts with the user's filesystem trust. An active
+// sandbox keeps clone sources strictly remote. The context form matters for
+// operator-issued registry clones (DP-11): those run with a sandbox-off
+// context, so a local bare remote stays usable even when the host runs an
+// agent sandbox.
 func validateCloneSource(ctx context.Context, source string) error {
 	sb := ConfigFrom(ctx)
 	s := strings.TrimSpace(source)
@@ -852,8 +854,13 @@ func validateCloneSource(ctx context.Context, source string) error {
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
-	case "https", "http", "git", "ssh":
+	case "https", "git", "ssh":
 		return nil
+	case "http":
+		// Plain http is excluded from the allowlist (mirroring
+		// registry.ValidSourceURL): the clone would transfer the repository
+		// unencrypted and leak credentials when the source requires auth.
+		return fmt.Errorf("plain http clone sources are not allowed (they transfer the repository unencrypted and can leak credentials); use https://, git://, or ssh://")
 	case "file":
 		if sb == nil || sb.Mode == SandboxModeOff {
 			return nil
@@ -866,7 +873,7 @@ func validateCloneSource(ctx context.Context, source string) error {
 		}
 		return fmt.Errorf("local-path clone sources are not allowed while the sandbox is active (they bypass the sandbox read roots); clone from https://, git://, or ssh:// instead")
 	default:
-		return fmt.Errorf("unsupported clone scheme %q (allowed: https, git, ssh, http, and file:// or a local path when no sandbox is active)", u.Scheme)
+		return fmt.Errorf("unsupported clone scheme %q (allowed: https, git, ssh, and file:// or a local path when no sandbox is active)", u.Scheme)
 	}
 }
 

@@ -32,7 +32,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -95,47 +94,6 @@ var whitespaceRun = regexp.MustCompile(`\s+`)
 type InstructionFile struct {
 	Path    string // absolute path or URL, used in the "Instructions from:" header
 	Content string // full content (truncated and injection-scanned at render time)
-}
-
-// Context block token estimates: the rendered project-context block and the
-// git workspace snapshot are folded into the compaction reserve in context.go
-// so large AGENTS.md files or repo snapshots do not silently blow the token
-// budget. SetupRunner may run for several sessions concurrently (web mode), so
-// the values are mutex-guarded instead of bare globals.
-var (
-	contextBlockTokensMu       sync.Mutex
-	contextBlockTokens         int
-	gitWorkspaceBlockTokensMu  sync.Mutex
-	gitWorkspaceBlockTokensVal int
-)
-
-// ContextBlockTokens returns the project-context block token estimate.
-func ContextBlockTokens() int {
-	contextBlockTokensMu.Lock()
-	defer contextBlockTokensMu.Unlock()
-	return contextBlockTokens
-}
-
-// SetContextBlockTokens records the project-context block token estimate.
-func SetContextBlockTokens(n int) {
-	contextBlockTokensMu.Lock()
-	contextBlockTokens = n
-	contextBlockTokensMu.Unlock()
-}
-
-// GitWorkspaceBlockTokens returns the git workspace snapshot token estimate.
-func GitWorkspaceBlockTokens() int {
-	gitWorkspaceBlockTokensMu.Lock()
-	defer gitWorkspaceBlockTokensMu.Unlock()
-	return gitWorkspaceBlockTokensVal
-}
-
-// SetGitWorkspaceBlockTokens records the git workspace snapshot token
-// estimate.
-func SetGitWorkspaceBlockTokens(n int) {
-	gitWorkspaceBlockTokensMu.Lock()
-	gitWorkspaceBlockTokensVal = n
-	gitWorkspaceBlockTokensMu.Unlock()
 }
 
 // FindProjectRootFunc resolves the project root from a starting directory.

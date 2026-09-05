@@ -1784,8 +1784,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Load the workspace root and project context files (AGENTS.md, with a
 	// project-scoped CLAUDE.md fallback) once at startup so every agent
 	// shares the same rendered block. Discovery walks from cwd up to the git
-	// root; user-global CLAUDE.md is never loaded. The rendered block size
-	// feeds the compaction reserve in context.go via contextBlockTokens.
+	// root; user-global CLAUDE.md is never loaded. The rendered block's token
+	// estimate is recorded on this run's HistoryBuilder (below) and feeds the
+	// compaction reserve in context.go.
 	cwd, _ := os.Getwd()
 	instructionFiles := hctx.DiscoveredInstructionFiles(cwd, cfg, log)
 	ctxBlock := hctx.RenderInstructionBlock(
@@ -1793,7 +1794,6 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		cfg.Instruction,
 		cfg.ContextFiles.MaxChars,
 	)
-	hctx.SetContextBlockTokens(util.EstimateTokens(ctxBlock))
 	// Record session-scoped state for progressive subdirectory context hints
 	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
 	hctx.InitContextState(cwd, cfg, instructionFiles)
@@ -1843,7 +1843,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			}
 		}
 	}
-	hctx.SetGitWorkspaceBlockTokens(util.EstimateTokens(gitBlock))
+	// The snapshot's token estimate is recorded on this run's HistoryBuilder
+	// (below) and feeds the compaction reserve in context.go.
 	// gitBlockAgents lists the agents that receive the snapshot: exactly the
 	// ones whose tool list includes the structured git tools.
 	gitBlockAgents := []string{"orchestrator", "general_purpose"}
@@ -2191,7 +2192,14 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 
 	// Context management: build history for the root orchestrator only.
 	// Sub-agents keep isolated context by design (delegate.go untouched).
+	// The rendered context/git block estimates are stored on this builder so
+	// fitToBudget reserves exactly this run's system-prompt overhead (they are
+	// per-run state, not process-global).
 	historyBuilder := hctx.NewHistoryBuilder(sessionSvc)
+	historyBuilder.SetBlockTokenEstimates(
+		util.EstimateTokens(ctxBlock),
+		util.EstimateTokens(gitBlock),
+	)
 	historyBuilder.SetLogFunc(func(format string, args ...any) {
 		log(fmt.Sprintf(format, args...))
 	})

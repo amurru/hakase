@@ -63,6 +63,20 @@ func gitTestEnv() []string {
 		"GIT_COMMITTER_NAME=Hakase Test", "GIT_COMMITTER_EMAIL=hakase@test.local")
 }
 
+// isolateHome redirects HOME/XDG_CONFIG_HOME/USERPROFILE to a fresh temp dir
+// so git-using tests never inherit the developer's user-home state (git
+// config is pinned separately in gitTestEnv, but nothing else from ~/ must
+// leak into assertions).
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// os.UserHomeDir reads USERPROFILE on Windows.
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
 // gitCmd runs a system git command in dir with the test env.
 func gitCmd(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -107,6 +121,7 @@ func newSeedRemote(t *testing.T) string {
 
 // TestServiceRegisterSyncDeleteLifecycle drives the full DP-6/DP-9/DP-10 loop.
 func TestServiceRegisterSyncDeleteLifecycle(t *testing.T) {
+	isolateHome(t)
 	approvals := stubOperatorGate(t)
 	home := t.TempDir()
 	store, err := NewStore(filepath.Join(home, "projects.json"))
@@ -186,6 +201,7 @@ func TestServiceRegisterSyncDeleteLifecycle(t *testing.T) {
 // clone that fails leaves a sync_error entry with no checkout, and Sync then
 // re-materializes it once the source is fixed.
 func TestServiceFailedRegisterLeavesSyncError(t *testing.T) {
+	isolateHome(t)
 	stubOperatorGate(t)
 	home := t.TempDir()
 	store, err := NewStore(filepath.Join(home, "projects.json"))
@@ -230,6 +246,7 @@ func TestServiceFailedRegisterLeavesSyncError(t *testing.T) {
 // TestServiceSyncRematerializesWhenCheckoutMissing covers a ready entry whose
 // managed checkout was deleted out from under the registry.
 func TestServiceSyncRematerializesWhenCheckoutMissing(t *testing.T) {
+	isolateHome(t)
 	stubOperatorGate(t)
 	home := t.TempDir()
 	store, err := NewStore(filepath.Join(home, "projects.json"))
@@ -263,6 +280,7 @@ func TestServiceSyncRematerializesWhenCheckoutMissing(t *testing.T) {
 // a sync that cannot fast-forward fails into sync_error and never touches the
 // working tree.
 func TestServiceSyncDivergedFailsWithoutDeletingWork(t *testing.T) {
+	isolateHome(t)
 	stubOperatorGate(t)
 	home := t.TempDir()
 	store, err := NewStore(filepath.Join(home, "projects.json"))
@@ -314,6 +332,7 @@ func TestServiceSyncDivergedFailsWithoutDeletingWork(t *testing.T) {
 // (ErrWorkingTreeDirty, status untouched) while the checkout holds uncommitted
 // tracked changes, but untracked files alone never block a pull.
 func TestServiceSyncDirtyTreeGuard(t *testing.T) {
+	isolateHome(t)
 	stubOperatorGate(t)
 	home := t.TempDir()
 	store, err := NewStore(filepath.Join(home, "projects.json"))
@@ -363,6 +382,7 @@ func TestServiceSyncDirtyTreeGuard(t *testing.T) {
 // "behind upstream" affordance: a bounded fetch updates the remote-tracking
 // refs, then branch/upstream and ahead/behind counts reflect both sides.
 func TestServiceStateReportsAheadBehind(t *testing.T) {
+	isolateHome(t)
 	stubOperatorGate(t)
 	home := t.TempDir()
 	store, err := NewStore(filepath.Join(home, "projects.json"))
@@ -422,6 +442,7 @@ func TestServiceStateReportsAheadBehind(t *testing.T) {
 // run with that sandbox off, or every clone fails instantly with "outside
 // approved workspace".
 func TestServiceNotConfinedByHostSandbox(t *testing.T) {
+	isolateHome(t)
 	stubOperatorGate(t)
 	origSB := sandbox.CurrentSandbox
 	defer func() { sandbox.CurrentSandbox = origSB }()

@@ -7,6 +7,8 @@
 package registry
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +83,12 @@ func ValidSourceURL(url string) bool {
 
 // Store is the projects.json registry: a mutex-guarded in-memory map with
 // atomic persistence. One file, small registry; no DB.
+//
+// Mutations are additionally serialized across processes (a sidecar .lock file,
+// see lockRegistry): every Create/Update/Delete re-reads the file under the
+// cross-process lock before applying its change, so two concurrent `hakase
+// projects register` invocations cannot let the last rename discard the other
+// process's entries.
 type Store struct {
 	path     string
 	mu       sync.Mutex
@@ -88,8 +96,9 @@ type Store struct {
 }
 
 // NewStore loads the registry file at path (creating an empty registry when
-// absent) and creates the parent directory. The file is re-read on every
-// construction; processes hold one Store for their lifetime.
+// absent) and creates the parent directory. Mutations re-read the file under
+// the cross-process lock before writing, so a Store constructed earlier picks
+// up entries another process committed by the time it next mutates.
 func NewStore(path string) (*Store, error) {
 	s := &Store{path: path, projects: map[string]*Project{}}
 	if dir := filepath.Dir(path); dir != "" {
@@ -97,26 +106,103 @@ func NewStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("registry: create dir: %w", err)
 		}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
-		}
-		return nil, fmt.Errorf("registry: read %s: %w", path, err)
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return s, nil
-	}
-	var entries []*Project
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, fmt.Errorf("registry: parse %s: %w", path, err)
-	}
-	for _, p := range entries {
-		if p != nil && p.ID != "" {
-			s.projects[p.ID] = p
-		}
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
 	}
 	return s, nil
+}
+
+// reloadLocked replaces s.projects with the registry file's current contents
+// (empty when the file is absent or blank). Callers hold s.mu. Re-reading
+// under the cross-process lock on every mutation is what stops two processes
+// from overwriting each other's entries with a stale in-memory snapshot.
+func (s *Store) reloadLocked() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.projects = map[string]*Project{}
+			return nil
+		}
+		return fmt.Errorf("registry: read %s: %w", s.path, err)
+	}
+	next := map[string]*Project{}
+	if len(strings.TrimSpace(string(data))) > 0 {
+		var entries []*Project
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return fmt.Errorf("registry: parse %s: %w", s.path, err)
+		}
+		for _, p := range entries {
+			if p != nil && p.ID != "" {
+				next[p.ID] = p
+			}
+		}
+	}
+	s.projects = next
+	return nil
+}
+
+// Registry writes hold the inter-process lock for milliseconds (reload +
+// rename), so the only way a lock file outlives its operation is a crashed
+// holder. Locks older than registryLockStaleAge are reclaimed as abandoned;
+// waiters keep retrying for up to registryLockWait so a fresh crash
+// self-heals without a manual delete.
+const (
+	registryLockWait     = 2 * time.Minute
+	registryLockStaleAge = 1 * time.Minute
+	registryLockRetry    = 50 * time.Millisecond
+)
+
+// lockRegistry acquires the cross-process registry lock: an atomically created
+// sidecar file next to the registry (<file>.lock). In-process Store.mu still
+// serializes goroutines within one process; this lock extends the same mutual
+// exclusion to concurrent hakase processes (two CLI invocations, or a CLI next
+// to a running web server). Returns a release func that removes only this
+// process's lock.
+func (s *Store) lockRegistry() (func(), error) {
+	lockPath := s.path + ".lock"
+	tokenBytes := make([]byte, 8)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("registry: lock token: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes)
+	deadline := time.Now().Add(registryLockWait)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, werr := f.WriteString(token + "\n")
+			cerr := f.Close()
+			if werr != nil || cerr != nil {
+				_ = os.Remove(lockPath)
+				if werr != nil {
+					return nil, fmt.Errorf("registry: lock write: %w", werr)
+				}
+				return nil, fmt.Errorf("registry: lock close: %w", cerr)
+			}
+			return func() { s.unlockRegistry(lockPath, token) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("registry: lock %s: %w", lockPath, err)
+		}
+		// The lock is held by another process; reclaim it when it looks
+		// abandoned (holder died between create and remove).
+		if st, serr := os.Stat(lockPath); serr == nil && time.Since(st.ModTime()) > registryLockStaleAge {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("registry: %s is locked by another process (delete the file if it is stale)", lockPath)
+		}
+		time.Sleep(registryLockRetry)
+	}
+}
+
+// unlockRegistry removes the lock file only when it still carries this
+// process's token, so an abandoned lock reclaimed after a very long pause is
+// never deleted from under its new holder.
+func (s *Store) unlockRegistry(lockPath, token string) {
+	if data, err := os.ReadFile(lockPath); err == nil && strings.TrimSpace(string(data)) == token {
+		_ = os.Remove(lockPath)
+	}
 }
 
 // DefaultPath returns the registry file location under the hakase home.
@@ -124,10 +210,13 @@ func DefaultPath() string {
 	return filepath.Join(hakaseHome(), "projects.json")
 }
 
-// List returns all projects sorted by name.
+// List returns all projects sorted by name. Reads refresh from the file first
+// so a Store that outlives a concurrent process still reports its committed
+// entries.
 func (s *Store) List() []Project {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_ = s.reloadLocked() // best effort: a corrupt file keeps the last good map
 	out := make([]Project, 0, len(s.projects))
 	for _, p := range s.projects {
 		out = append(out, *p)
@@ -140,6 +229,7 @@ func (s *Store) List() []Project {
 func (s *Store) Get(id string) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_ = s.reloadLocked() // best effort: a corrupt file keeps the last good map
 	p, ok := s.projects[id]
 	if !ok {
 		return Project{}, fmt.Errorf("%w: %s", ErrNotFound, id)
@@ -152,6 +242,7 @@ func (s *Store) Get(id string) (Project, error) {
 func (s *Store) GetByName(name string) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_ = s.reloadLocked() // best effort: a corrupt file keeps the last good map
 	for _, p := range s.projects {
 		if strings.EqualFold(p.Name, strings.TrimSpace(name)) {
 			return *p, nil
@@ -188,6 +279,17 @@ func (s *Store) Create(name, sourceURL, ref string) (Project, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := s.lockRegistry()
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+	// Re-read before mutating: the in-memory map may predate a concurrent
+	// process's committed entries, and the file is authoritative under the
+	// lock.
+	if err := s.reloadLocked(); err != nil {
+		return Project{}, err
+	}
 	for _, p := range s.projects {
 		if strings.EqualFold(p.Name, name) {
 			return Project{}, fmt.Errorf("registry: a project named %q already exists", name)
@@ -205,7 +307,7 @@ func (s *Store) Create(name, sourceURL, ref string) (Project, error) {
 	}
 	s.projects[p.ID] = p
 	if err := s.saveLocked(); err != nil {
-		delete(s.projects, p.ID)
+		_ = s.reloadLocked() // drop the unpersisted entry
 		return Project{}, err
 	}
 	return *p, nil
@@ -219,6 +321,14 @@ func (s *Store) Update(p Project) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := s.lockRegistry()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 	existing, ok := s.projects[p.ID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, p.ID)
@@ -231,7 +341,11 @@ func (s *Store) Update(p Project) error {
 	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now().UTC()
 	s.projects[p.ID] = &p
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		_ = s.reloadLocked() // restore the last persisted state
+		return err
+	}
+	return nil
 }
 
 // Delete removes the project entry (never the remote; the caller is
@@ -239,11 +353,23 @@ func (s *Store) Update(p Project) error {
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := s.lockRegistry()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 	if _, ok := s.projects[id]; !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	delete(s.projects, id)
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		_ = s.reloadLocked() // restore the last persisted state
+		return err
+	}
+	return nil
 }
 
 // saveLocked writes the registry atomically: temp file in the same directory

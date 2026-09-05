@@ -462,8 +462,9 @@ onMounted(async () => {
             />
           </div>
           <p class="text-[11px] leading-relaxed text-muted-foreground">
-            Allowed: https://, git://, ssh:// (network remotes) or file:// for a
-            local bare remote. Names must be unique.
+            Allowed: https://, git://, ssh:// (remote repositories - plain http
+            is not allowed, it is unencrypted), or file:// pointing at a local
+            bare remote. Names must be unique.
           </p>
           <p v-if="regError" class="text-xs text-destructive">{{ regError }}</p>
         </div>
