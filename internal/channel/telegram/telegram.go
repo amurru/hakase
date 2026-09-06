@@ -23,6 +23,7 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/web/sse"
 
 	"google.golang.org/genai"
 
@@ -59,6 +60,7 @@ type Bot struct {
 	driver   runTurner
 	sessions *hakasesession.SessionService
 	store    *state.Store
+	bridge   *sse.EventBridge
 	approval interfaces.ApprovalResponder
 	clarify  interfaces.ClarifyResponder
 	log      channel.LogFunc
@@ -128,6 +130,7 @@ func New(d Deps) (*Bot, error) {
 		driver:       svc.Driver(),
 		sessions:     svc.Sessions(),
 		store:        svc.Store(),
+		bridge:       svc.Bridge(),
 		approval:     svc.ApprovalResponder(),
 		clarify:      svc.ClarifyResponder(),
 		log:          logFn,

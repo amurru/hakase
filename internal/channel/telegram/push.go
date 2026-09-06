@@ -76,9 +76,9 @@ func (b *Bot) runningDestinations() []conv {
 }
 
 // gateConv resolves the conversation a gate prompt should go to: the one
-// whose thread (topics mode) or root area is bound to the gate's session.
-// ok is false when the session is unknown or unbound, so the caller falls
-// back to the fan-out.
+// whose thread (client-created or topics-mode) or root area is bound to the
+// gate's session. ok is false when the session is unknown or unbound, so the
+// caller falls back to the fan-out.
 func (b *Bot) gateConv(sessionID string) (conv, bool) {
 	if sessionID == "" {
 		return conv{}, false
@@ -89,7 +89,7 @@ func (b *Bot) gateConv(sessionID string) (conv, bool) {
 			continue
 		}
 		c, ok := parseThreadKey(key)
-		if !ok || c.threadID == 0 || !st.Chats[chatKey(c.chatID)].TopicsMode {
+		if !ok || c.threadID == 0 {
 			continue
 		}
 		return c, true

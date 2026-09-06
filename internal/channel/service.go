@@ -89,6 +89,11 @@ func (s *Service) Runs() *RunManager { return s.runs }
 // Driver exposes the shared agent-turn driver.
 func (s *Service) Driver() *agentrun.Driver { return s.driver }
 
+// Bridge exposes the host SSE bridge. Transports mirror their runs' events
+// onto it (the same stream the web chat handler publishes) so any session can
+// be watched live from the web UI regardless of which surface started it.
+func (s *Service) Bridge() *sse.EventBridge { return s.deps.Bridge }
+
 // Log returns the subsystem logger.
 func (s *Service) Log() LogFunc { return s.log }
 

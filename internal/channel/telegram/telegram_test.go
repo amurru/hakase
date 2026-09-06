@@ -226,8 +226,9 @@ func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service
 	}
 
 	responders := newFakeResponders()
+	bridge := sse.NewEventBridge()
 	svcDeps := channel.Deps{
-		Bridge:    sse.NewEventBridge(),
+		Bridge:    bridge,
 		Sessions:  svc,
 		Approval:  responders,
 		Clarify:   responders,
@@ -243,8 +244,10 @@ func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service
 		api:          api,
 		auth:         channel.NewAuthenticator(service.Store(), ChannelName, []int64{100}, ""),
 		runs:         service.Runs(),
+		driver:       nil,
 		sessions:     svc,
 		store:        service.Store(),
+		bridge:       service.Bridge(),
 		approval:     responders,
 		clarify:      responders,
 		log:          func(string, ...any) {},
@@ -364,36 +367,37 @@ func TestNormalizeThread(t *testing.T) {
 	}
 }
 
-// TestThreadedMessageBehavesAsLegacyWithoutTopics guards backward
-// compatibility: without topics mode there is no per-thread state, so a
-// client that still sends message_thread_id must flow through the exact
-// legacy behavior (same commands, same runtime guard, same chat binding).
-func TestThreadedMessageBehavesAsLegacyWithoutTopics(t *testing.T) {
+// TestThreadedMessagesRouteToTheirThread pins the conversation-identity rule:
+// a message that carries a thread id belongs to that thread — commands reply
+// in it and prompts bind it — regardless of whether /topic was ever run. Only
+// unthreaded messages use the legacy root path.
+func TestThreadedMessagesRouteToTheirThread(t *testing.T) {
 	b, api, _, _ := newTestBot(t)
 	ctx := context.Background()
 
-	m := privateMessage(100, "/help")
-	m.MessageThreadID = 1234
-	b.handleMessage(ctx, m)
-	sends := api.sends()
-	if len(sends) != 1 || len(sends[0].text) < 50 {
-		t.Fatalf("threaded /help not answered like legacy: %+v", sends)
+	threaded := func(text string) *models.Message {
+		m := privateMessage(100, text)
+		m.MessageThreadID = 1234
+		return m
 	}
 
-	// A prompt in a thread hits the same runtime guard and run key family as
-	// an unthreaded one (driver == nil) — no per-thread divergence.
-	b.handleMessage(ctx, privateMessage(100, "do a thing"))
-	threaded := privateMessage(100, "do another thing")
-	threaded.MessageThreadID = 1234
-	b.handleMessage(ctx, threaded)
-	guards := 0
+	b.handleMessage(ctx, threaded("/help"))
+	sends := api.sends()
+	if len(sends) != 1 || sends[0].threadID != 1234 {
+		t.Fatalf("threaded /help = %+v, want one reply in thread 1234", sends)
+	}
+
+	// A prompt in the thread hits the runtime guard — inside the thread.
+	b.handleMessage(ctx, threaded("do a thing"))
+	b.handleMessage(ctx, privateMessage(100, "do another thing"))
+	guards := map[int]int{} // thread -> guard count
 	for _, s := range api.sends() {
 		if contains(s.text, "runtime unavailable") {
-			guards++
+			guards[s.threadID]++
 		}
 	}
-	if guards != 2 {
-		t.Fatalf("expected 2 runtime guards (threaded + unthreaded), got %d", guards)
+	if guards[1234] != 1 || guards[0] != 1 {
+		t.Fatalf("guards per thread = %v, want one in thread 1234 and one in root", guards)
 	}
 }
 

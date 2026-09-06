@@ -279,8 +279,8 @@ func TestLobbyHint(t *testing.T) {
 }
 
 // TestTopicOffKeepsBindings is design scenario 4: /topic off restores the
-// legacy single-conversation behavior, threaded messages included; re-enabling
-// topics picks the persisted thread bindings back up.
+// legacy single-conversation root, while thread conversations (and their
+// bindings) keep working — with or without topics mode.
 func TestTopicOffKeepsBindings(t *testing.T) {
 	b, api := newRunTestBot(t)
 	enableTopics(t, b, 100)
@@ -290,16 +290,17 @@ func TestTopicOffKeepsBindings(t *testing.T) {
 	b.driver = d
 	ctx := context.Background()
 	root := rootConv(100)
+	topic := conv{chatID: 100, threadID: 555}
 
 	// A prompt in topic 555 binds session A to the thread.
 	b.handleMessage(ctx, threadMessage(100, 555, "topic session"))
-	waitRunDone(t, b, conv{chatID: 100, threadID: 555})
-	bindingA := b.store.Get().Threads[threadKey(conv{chatID: 100, threadID: 555})].SessionID
+	waitRunDone(t, b, topic)
+	bindingA := b.store.Get().Threads[threadKey(topic)].SessionID
 	if bindingA == "" {
 		t.Fatal("no thread binding created")
 	}
 
-	// /topic off: legacy behavior returns.
+	// /topic off: the root becomes a plain chat again.
 	b.handleMessage(ctx, threadMessage(100, 0, "/topic off"))
 	if b.topicsMode(100) {
 		t.Fatal("topics mode still on after /topic off")
@@ -313,26 +314,53 @@ func TestTopicOffKeepsBindings(t *testing.T) {
 		t.Fatalf("root binding = %q, want a fresh legacy session", rootBinding)
 	}
 
-	// A threaded message with topics off flows through the legacy path: same
-	// chat session, root run key.
+	// The thread conversation persists across /topic off: same binding,
+	// replies still delivered in-thread.
 	before := len(api.sends())
-	b.handleMessage(ctx, threadMessage(100, 555, "legacy prompt"))
-	waitRunDone(t, b, root)
-	if ran := d.ran(); len(ran) != 3 || ran[2] != rootBinding {
-		t.Fatalf("runs = %v, want the legacy chat session %q last", ran, rootBinding)
+	b.handleMessage(ctx, threadMessage(100, 555, "back to the topic"))
+	waitRunDone(t, b, topic)
+	ran := d.ran()
+	if len(ran) != 3 || ran[2] != bindingA {
+		t.Fatalf("runs = %v, want the thread's session %q last", ran, bindingA)
 	}
 	for _, s := range api.sends()[before:] {
-		if s.threadID != 0 {
-			t.Errorf("legacy-mode send %q carried thread %d, want 0 (root)", s.text, s.threadID)
+		if s.threadID != 555 {
+			t.Errorf("send %q carried thread %d, want 555 (the conversation's thread)", s.text, s.threadID)
 		}
 	}
+}
 
-	// Re-enabling picks the persisted binding back up.
-	b.handleMessage(ctx, privateMessage(100, "/topic"))
-	b.handleMessage(ctx, threadMessage(100, 555, "back to the topic"))
-	waitRunDone(t, b, conv{chatID: 100, threadID: 555})
-	if ran := d.ran(); len(ran) != 4 || ran[3] != bindingA {
-		t.Fatalf("runs = %v, want the original topic session %q last", ran, bindingA)
+// TestClientCreatedThreadWithoutTopicsMode is the field regression from
+// 2026-09-06: a user opens threads via the Telegram client (the ✚ composer)
+// without ever running /topic. Those threads are conversations: the first
+// prompt binds a session and every reply lands in that thread — never in
+// "(All Messages)".
+func TestClientCreatedThreadWithoutTopicsMode(t *testing.T) {
+	b, api := newRunTestBot(t)
+	if b.topicsMode(100) {
+		t.Fatal("precondition: topics mode must be off")
+	}
+	release := make(chan struct{})
+	close(release)
+	d := &gateDriver{release: release}
+	b.driver = d
+
+	b.handleMessage(context.Background(), threadMessage(100, 777, "ask in a client thread"))
+	topic := conv{chatID: 100, threadID: 777}
+	waitRunDone(t, b, topic)
+
+	ran := d.ran()
+	if len(ran) != 1 {
+		t.Fatalf("runs = %v, want exactly one", ran)
+	}
+	th := b.store.Get().Threads[threadKey(topic)]
+	if th.SessionID != ran[0] {
+		t.Fatalf("thread binding = %+v, want session %s", th, ran[0])
+	}
+	for _, s := range api.sends() {
+		if s.threadID != 777 {
+			t.Errorf("send %q carried thread %d, want 777 (never the root)", s.text, s.threadID)
+		}
 	}
 }
 

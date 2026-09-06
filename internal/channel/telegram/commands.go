@@ -94,10 +94,10 @@ const helpText = `<b>hakase over Telegram</b>
 Send any text as a prompt for the current session; a photo with a caption sends the image to the agent. The answer streams into one message with a quiet status line; <code>/stop</code> cancels.
 
 <b>Topics</b>
-/topic — turn the DM into topic conversations (one topic = one session)
+Every topic in this chat is its own conversation with its own session — create topics with the ✚ composer button, and the topic renames to its session title.
+/topic — make the root area a lobby (prompts there get a hint)
 /topic &lt;id-prefix&gt; — bind the current topic to a session
-/topic off — back to a single conversation (bindings kept)
-In topics mode, open topics with the ✚ composer button; the root area is a lobby.
+/topic off — root stops being a lobby (threads keep working)
 
 <b>Commands</b>
 /new [title] — start a fresh session (in a topic: resets that topic)
@@ -150,7 +150,7 @@ func (b *Bot) cmdTopic(ctx context.Context, c conv, m *models.Message, args stri
 			return
 		}
 		setTopics(false)
-		b.sendText(ctx, c, "💬 Topics mode is off — the root area is your chat again. Topic bindings are kept for when you re-enable it.", nil, false)
+		b.sendText(ctx, c, "💬 Topics mode is off — the root area is your chat again (no lobby hint). Existing thread conversations keep working as before.", nil, false)
 	default:
 		if c.threadID == 0 {
 			b.sendText(ctx, c, "Usage: <code>/topic &lt;session-id-prefix&gt;</code> inside a topic (see /sessions). Bare <code>/topic</code> enables topics mode.", nil, false)

@@ -106,17 +106,24 @@ func (b *Bot) editText(ctx context.Context, c conv, messageID int, text string, 
 			Text:      stripHTML(text),
 		})
 	}
+	// "message is not modified" means the content already matches — success
+	// by definition (the final render re-issuing the last streaming edit).
+	if err != nil && isNotModified(err) {
+		return
+	}
 	if err != nil {
 		b.log("edit %d/%d failed: %v", c.chatID, messageID, err)
 	}
 }
 
-// Reaction emoji receipts set on the user's prompt message (any emoji is
-// allowed in private chats).
+// Reaction emoji receipts set on the user's prompt message. 👀 processing is
+// on Telegram's bot reaction allowlist; ✅/❌ are NOT (REACTION_INVALID even
+// in private chats — field-verified 2026-09-06), so delivery/failure use the
+// allowlisted 👍/👎.
 const (
 	reactionLooking = "👀" // run started
-	reactionDone    = "✅" // answer delivered
-	reactionFailed  = "❌" // run failed
+	reactionDone    = "👍" // answer delivered
+	reactionFailed  = "👎" // run failed
 )
 
 // react sets the receipt reaction on a prompt message, replacing any previous
@@ -224,6 +231,12 @@ func isParseError(err error) bool {
 	return strings.Contains(msg, "can't parse entities") ||
 		strings.Contains(msg, "Unsupported start tag") ||
 		strings.Contains(msg, "Unclosed tag")
+}
+
+// isNotModified reports whether err is Telegram's "message is not modified"
+// 400: the edit is a no-op because the content already matches.
+func isNotModified(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "message is not modified")
 }
 
 // retryAfter extracts the 429 RetryAfter seconds, if present.

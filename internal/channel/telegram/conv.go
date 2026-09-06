@@ -33,15 +33,14 @@ func convFromMessage(m *models.Message) conv {
 	return conv{chatID: m.Chat.ID, threadID: normalizeThread(m.MessageThreadID)}
 }
 
-// effectiveConv is convFromMessage with the topics-mode gate: chats without
-// topics mode have no per-thread state, so every message — threaded or not —
-// belongs to the root area and the legacy chat binding keeps driving it.
+// effectiveConv derives the conversation of an inbound message: its thread,
+// verbatim (normalized). Client-created threads are conversations even when
+// the chat never ran /topic — the TopicsMode flag only governs root-area UX
+// (the lobby), never message identity. A field finding (2026-09-06): the
+// earlier downgrade of threaded messages to root in non-topics-mode chats
+// made the bot answer client-created threads in "(All Messages)".
 func (b *Bot) effectiveConv(m *models.Message) conv {
-	c := convFromMessage(m)
-	if c.threadID != 0 && !b.topicsMode(c.chatID) {
-		c.threadID = 0
-	}
-	return c
+	return convFromMessage(m)
 }
 
 // topicsMode reports whether the chat runs one-topic-per-session conversations.

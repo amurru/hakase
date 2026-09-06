@@ -9,6 +9,7 @@ import (
 
 	"amurru/hakase/internal/agentrun"
 	"amurru/hakase/internal/channel"
+	"amurru/hakase/internal/channel/state"
 
 	tgbot "github.com/go-telegram/bot"
 	"google.golang.org/genai"
@@ -202,6 +203,58 @@ func TestStreamingOverflowContinuation(t *testing.T) {
 	}
 	if !strings.Contains(finalTextOf(last), "END-MARKER") {
 		t.Error("continuation message missing the answer tail")
+	}
+}
+
+// TestRunMirrorsEventsToBridge pins web-UI parity: a channel-started run
+// publishes the same stream/log/done events the web chat handler does, so
+// the session can be watched live from the web UI.
+func TestRunMirrorsEventsToBridge(t *testing.T) {
+	b, _ := newRunTestBot(t)
+
+	// Bind the root to a known session and subscribe to it, like the web UI.
+	sess, err := b.sessions.CreateSession("watched")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := b.store.Update(func(s *state.State) error {
+		if s.Chats == nil {
+			s.Chats = map[string]state.Chat{}
+		}
+		s.Chats[chatKey(100)] = state.Chat{SessionID: sess.ID}
+		return nil
+	}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	subID, events := b.bridge.SubscribeEvents(sess.ID)
+	defer b.bridge.UnsubscribeEvents(sess.ID, subID)
+
+	b.driver = &fakeDriver{turned: make(chan struct{}), script: func(sink agentrun.EventSink) {
+		sink.OnLog(sess.ID, "Call: read_file(path)")
+		sink.OnStream(sess.ID, "partial answer ", "")
+		sink.OnUsage(sess.ID, 1200, 0)
+		time.Sleep(40 * time.Millisecond)
+	}}
+	b.startRun(context.Background(), rootConv(100), 21, "prompt", nil, nil, nil)
+	waitRunDone(t, b, rootConv(100))
+
+	seen := map[string]int{}
+	deadline := time.After(2 * time.Second)
+	for seen["done"] == 0 {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("bridge channel closed")
+			}
+			seen[ev.Name]++
+		case <-deadline:
+			t.Fatalf("bridge events = %v, want stream/log/usage/done", seen)
+		}
+	}
+	for _, name := range []string{"log", "stream", "usage", "done"} {
+		if seen[name] == 0 {
+			t.Errorf("bridge event %q missing: %v", name, seen)
+		}
 	}
 }
 

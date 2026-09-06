@@ -10,6 +10,7 @@ import (
 	"amurru/hakase/internal/channel"
 	"amurru/hakase/internal/channel/state"
 	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/web/sse"
 
 	"google.golang.org/genai"
 )
@@ -474,22 +475,36 @@ func statusFailed(elapsed time.Duration, lastError string, hasError bool) string
 
 // sink view ---------------------------------------------------------------
 
+// mirrorBridge forwards a sink event to the SSE bridge when the transport has
+// one, so a channel-started run is watchable live from the web UI exactly
+// like a web-started one (the webui consumes the same stream events).
+func (rv *runView) mirrorBridge(f func(bridge *sse.EventBridge)) {
+	if b := rv.b.bridge; b != nil {
+		f(b)
+	}
+}
+
 // OnStream implements agentrun.EventSink: content deltas stream into the
-// answer message; thinking is not displayed on Telegram.
+// answer message; thinking is not displayed on Telegram but is mirrored to
+// the web bridge.
 func (rv *runView) OnStream(sessionID, content, thinking string) {
-	if content == "" {
+	if content == "" && thinking == "" {
 		return
 	}
 	rv.mu.Lock()
-	rv.seg = append(rv.seg, []rune(content)...)
-	rv.streamedAny = rv.streamedAny || strings.TrimSpace(content) != ""
-	rv.dirty = true
+	if content != "" {
+		rv.seg = append(rv.seg, []rune(content)...)
+		rv.streamedAny = rv.streamedAny || strings.TrimSpace(content) != ""
+		rv.dirty = true
+	}
 	rv.mu.Unlock()
+	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendStreamContent(sessionID, content, thinking) })
 }
 
 // OnLog implements agentrun.EventSink: tool calls feed the status line's last
-// tool; error lines become the failure summary.
+// tool; error lines become the failure summary. All lines mirror to the bridge.
 func (rv *runView) OnLog(sessionID, line string) {
+	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendLog(sessionID, line) })
 	rv.mu.Lock()
 	defer rv.mu.Unlock()
 	if c, ok := strings.CutPrefix(line, "Call: "); ok {
@@ -510,6 +525,7 @@ func (rv *runView) OnLog(sessionID, line string) {
 
 // OnUsage implements agentrun.EventSink.
 func (rv *runView) OnUsage(sessionID string, tokens, percent int) {
+	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendUsage(sessionID, tokens, percent) })
 	rv.mu.Lock()
 	rv.tokens = tokens
 	rv.mu.Unlock()
@@ -517,7 +533,9 @@ func (rv *runView) OnUsage(sessionID string, tokens, percent int) {
 
 // OnDone implements agentrun.EventSink; terminal rendering happens in
 // finalize, which runs after the driver returns.
-func (rv *runView) OnDone(sessionID string) {}
+func (rv *runView) OnDone(sessionID string) {
+	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendDone(sessionID) })
+}
 
 func humanTokens(n int) string {
 	switch {
