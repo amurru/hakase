@@ -53,6 +53,11 @@ type ConfigResponse struct {
 	HasFalKey         bool `json:"has_fal_key"`
 	HasOpenAIImageKey bool `json:"has_openai_image_key"`
 	HasOpenAIVideoKey bool `json:"has_openai_video_key"`
+	// HasTelegramBotToken / HasTelegramPairingCode report channel secrets
+	// (values never returned). HasSidekickAPIKey reports the sidekick key.
+	HasTelegramBotToken     bool `json:"has_telegram_bot_token"`
+	HasTelegramPairingCode  bool `json:"has_telegram_pairing_code"`
+	HasSidekickAPIKey       bool `json:"has_sidekick_api_key"`
 	// EffectiveModel is the model the agent will actually use, resolved from the
 	// configured model_name or the provider default. Exposed so the web UI can
 	// label the active model without recomputing provider defaults client-side.
@@ -83,26 +88,35 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 	hasFalKey := cfg.Media.FalKey != ""
 	hasOpenAIImageKey := cfg.Media.OpenAIImageKey != ""
 	hasOpenAIVideoKey := cfg.Media.OpenAIVideoKey != ""
+	hasTelegramToken := cfg.Channels.Telegram.BotToken != ""
+	hasTelegramPairingCode := cfg.Channels.Telegram.PairingCode != ""
+	hasSidekickKey := cfg.Sidekick.APIKey != ""
 	// Blank secrets before returning.
 	cfg.APIKey = ""
 	cfg.VisionAPIKey = ""
 	cfg.Media.FalKey = ""
 	cfg.Media.OpenAIImageKey = ""
 	cfg.Media.OpenAIVideoKey = ""
+	cfg.Channels.Telegram.BotToken = ""
+	cfg.Channels.Telegram.PairingCode = ""
+	cfg.Sidekick.APIKey = ""
 
 	_, statErr := os.Stat(path)
 	writable := statErr == nil
 
 	writeJSON(w, http.StatusOK, ConfigResponse{
-		Path:              path,
-		Writable:          writable,
-		HasAPIKey:         hasKey,
-		HasVisionAPIKey:   hasVisionKey,
-		HasFalKey:         hasFalKey,
-		HasOpenAIImageKey: hasOpenAIImageKey,
-		HasOpenAIVideoKey: hasOpenAIVideoKey,
-		EffectiveModel:    cfg.EffectiveModelName(),
-		Config:            *cfg,
+		Path:                   path,
+		Writable:               writable,
+		HasAPIKey:              hasKey,
+		HasVisionAPIKey:        hasVisionKey,
+		HasFalKey:              hasFalKey,
+		HasOpenAIImageKey:      hasOpenAIImageKey,
+		HasOpenAIVideoKey:      hasOpenAIVideoKey,
+		HasTelegramBotToken:    hasTelegramToken,
+		HasTelegramPairingCode: hasTelegramPairingCode,
+		HasSidekickAPIKey:      hasSidekickKey,
+		EffectiveModel:         cfg.EffectiveModelName(),
+		Config:                 *cfg,
 	})
 }
 
