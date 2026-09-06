@@ -613,8 +613,8 @@ func TestPushHandlersRouteToDestinations(t *testing.T) {
 	}
 
 	b.CronEvent("completed", "j1", "backup", "done", "outputs/x.md")
-	b.ApprovalPrompt("appr_p", "system_exec", "high", "why", "ls")
-	b.ClarifyPrompt("clar_p", "Which one?", []string{"A", "B"}, false)
+	b.ApprovalPrompt("", "appr_p", "system_exec", "high", "why", "ls")
+	b.ClarifyPrompt("", "clar_p", "Which one?", []string{"A", "B"}, false)
 
 	sends := api.sends()
 	var cronPushes, approvalPushes, clarifyPushes int

@@ -75,8 +75,65 @@ func (b *Bot) runningDestinations() []conv {
 	return out
 }
 
-// ApprovalPrompt implements channel.PushHandler.
-func (b *Bot) ApprovalPrompt(id, tool, risk, reason, command string) {
+// gateConv resolves the conversation a gate prompt should go to: the one
+// whose thread (topics mode) or root area is bound to the gate's session.
+// ok is false when the session is unknown or unbound, so the caller falls
+// back to the fan-out.
+func (b *Bot) gateConv(sessionID string) (conv, bool) {
+	if sessionID == "" {
+		return conv{}, false
+	}
+	st := b.store.Get()
+	for key, th := range st.Threads {
+		if th.SessionID != sessionID {
+			continue
+		}
+		c, ok := parseThreadKey(key)
+		if !ok || c.threadID == 0 || !st.Chats[chatKey(c.chatID)].TopicsMode {
+			continue
+		}
+		return c, true
+	}
+	for key, chat := range st.Chats {
+		if chat.SessionID != sessionID {
+			continue
+		}
+		rest, ok := strings.CutPrefix(key, ChannelName+":")
+		if !ok {
+			continue
+		}
+		if id, err := strconv.ParseInt(rest, 10, 64); err == nil {
+			return rootConv(id), true
+		}
+	}
+	return conv{}, false
+}
+
+// parseThreadKey parses "<channel>:<chatID>:<threadID>" back into a conv.
+func parseThreadKey(key string) (conv, bool) {
+	rest, ok := strings.CutPrefix(key, ChannelName+":")
+	if !ok {
+		return conv{}, false
+	}
+	chatStr, threadStr, found := strings.Cut(rest, ":")
+	if !found {
+		return conv{}, false
+	}
+	chatID, err := strconv.ParseInt(chatStr, 10, 64)
+	if err != nil {
+		return conv{}, false
+	}
+	threadID, err := strconv.Atoi(threadStr)
+	if err != nil {
+		return conv{}, false
+	}
+	return conv{chatID: chatID, threadID: threadID}, true
+}
+
+// ApprovalPrompt implements channel.PushHandler: the prompt goes to the
+// conversation that started the run (notification on — it blocks), with the
+// paired-users fan-out as the fallback for unknown sessions.
+func (b *Bot) ApprovalPrompt(sessionID, id, tool, risk, reason, command string) {
 	kb := approvalKeyboard(id)
 	var txt strings.Builder
 	txt.WriteString("🔒 <b>Approval needed</b>\n")
@@ -92,13 +149,17 @@ func (b *Bot) ApprovalPrompt(id, tool, risk, reason, command string) {
 		txt.WriteString(esc(truncateRunes(reason, 512)) + "\n")
 	}
 	body := strings.TrimRight(txt.String(), "\n")
+	if c, ok := b.gateConv(sessionID); ok {
+		b.sendText(context.Background(), c, body, kb, false)
+		return
+	}
 	for _, c := range b.promptDestinations() {
 		b.sendText(context.Background(), c, body, kb, false)
 	}
 }
 
-// ClarifyPrompt implements channel.PushHandler.
-func (b *Bot) ClarifyPrompt(id, question string, choices []string, multiSelect bool) {
+// ClarifyPrompt implements channel.PushHandler; routing mirrors ApprovalPrompt.
+func (b *Bot) ClarifyPrompt(sessionID, id, question string, choices []string, multiSelect bool) {
 	if len(choices) > 0 {
 		b.rememberClarifyChoices(id, choices)
 	}
@@ -106,8 +167,13 @@ func (b *Bot) ClarifyPrompt(id, question string, choices []string, multiSelect b
 	txt.WriteString("❓ <b>Question</b>\n")
 	txt.WriteString(esc(truncateRunes(question, 1500)))
 	kb := clarifyKeyboard(id, choices)
+	body := strings.TrimRight(txt.String(), "\n")
+	if c, ok := b.gateConv(sessionID); ok {
+		b.sendText(context.Background(), c, body, kb, false)
+		return
+	}
 	for _, c := range b.promptDestinations() {
-		b.sendText(context.Background(), c, strings.TrimRight(txt.String(), "\n"), kb, false)
+		b.sendText(context.Background(), c, body, kb, false)
 	}
 }
 

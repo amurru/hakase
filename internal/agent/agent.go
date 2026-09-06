@@ -417,7 +417,11 @@ func getVenvPython(log LogFunc) (string, error) {
 //
 // The gate runs BEFORE getVenvPython (which has side effects - creates .venv) so
 // denied code never triggers venv creation.
-func checkPythonGate(sb *sandbox.SandboxConfig, code string) error {
+//
+// sessionID is the hakase session of the asking run (possibly empty); it is
+// attached to the approval prompt so transports can route it (gate prompt
+// routing).
+func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) error {
 	sandboxMode := "off"
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
@@ -449,6 +453,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string) error {
 		Reason:    "arbitrary Python code execution",
 		Source:    "direct",
 		ExpiresAt: time.Now().Add(ApprovalExpiry()),
+		SessionID: sessionID,
 	})
 	if aerr != nil || !approved {
 		AuditCommandExec(CommandAuditEntry{
@@ -485,7 +490,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		// Harmful-command protection gate: runs BEFORE getVenvPython so
 		// denied code never triggers venv creation side effects.
-		if err := checkPythonGate(deps.SandboxConfig, input.Code); err != nil {
+		if err := checkPythonGate(deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
 			return PythonExecOutput{}, err
 		}
 

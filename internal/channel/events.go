@@ -47,14 +47,16 @@ func (r *Router) Run(ctx context.Context) {
 // Bridge payload shapes (must match sse.EventBridge senders).
 type (
 	approvalPayload struct {
-		ID      string `json:"id"`
-		Tool    string `json:"tool"`
-		Risk    string `json:"risk"`
-		Reason  string `json:"reason"`
-		Command string `json:"command"`
+		ID        string `json:"id"`
+		SessionID string `json:"session_id"`
+		Tool      string `json:"tool"`
+		Risk      string `json:"risk"`
+		Reason    string `json:"reason"`
+		Command   string `json:"command"`
 	}
 	clarifyPayload struct {
 		ID          string   `json:"id"`
+		SessionID   string   `json:"session_id"`
 		Question    string   `json:"question"`
 		Choices     []string `json:"choices"`
 		MultiSelect bool     `json:"multi_select"`
@@ -94,7 +96,7 @@ func (r *Router) dispatch(ev sse.Event) {
 			return
 		}
 		for _, push := range r.pushes {
-			push.ApprovalPrompt(p.ID, p.Tool, p.Risk, p.Reason, p.Command)
+			push.ApprovalPrompt(p.SessionID, p.ID, p.Tool, p.Risk, p.Reason, p.Command)
 		}
 	case "clarify":
 		var p clarifyPayload
@@ -102,7 +104,7 @@ func (r *Router) dispatch(ev sse.Event) {
 			return
 		}
 		for _, push := range r.pushes {
-			push.ClarifyPrompt(p.ID, p.Question, p.Choices, p.MultiSelect)
+			push.ClarifyPrompt(p.SessionID, p.ID, p.Question, p.Choices, p.MultiSelect)
 		}
 	case "cron":
 		var p cronPayload

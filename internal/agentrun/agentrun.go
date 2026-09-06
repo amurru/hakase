@@ -16,6 +16,7 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/registry"
 	"amurru/hakase/internal/sandbox"
@@ -203,8 +204,12 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	}
 
 	// Generate task ID once before the retry loop so all repair attempts
-	// preserve the same session context
+	// preserve the same session context. The task doubles as the ADK session
+	// id, so register the hakase session under it: gate prompts raised inside
+	// tool execution resolve their session through it (gate prompt routing).
 	taskID := hakasesession.GenerateTaskID()
+	interfaces.RegisterTaskSession(taskID, sessionID)
+	defer interfaces.UnregisterTask(taskID)
 
 outer:
 	for attempt := 0; ; attempt++ {

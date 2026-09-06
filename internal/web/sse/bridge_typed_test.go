@@ -23,7 +23,7 @@ func TestTypedSubscription(t *testing.T) {
 	defer b.Unsubscribe("sess1", sRaw)
 	_ = sRaw
 
-	b.SendApprovalPrompt("", "appr_1", "system_exec", "high", "because", "rm -rf x")
+	b.SendApprovalPrompt("", "", "appr_1", "system_exec", "high", "because", "rm -rf x")
 	b.SendLog("sess1", "Call: read_file(path)")
 	b.SendDone("sess1")
 

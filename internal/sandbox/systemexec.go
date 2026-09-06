@@ -230,21 +230,24 @@ func ExecOperatorAuthorized() ExecOption {
 // env scrubbing, and bubblewrap wrapping. `env` overlays the process env;
 // `opts` customize the build (see ExecOperatorAuthorized).
 func BuildExecCommand(command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
-	return buildExecCommand(CurrentSandbox, command, args, workingDir, env, opts...)
+	return buildExecCommand(CurrentSandbox, "", command, args, workingDir, env, opts...)
 }
 
 // BuildExecCommandFor is BuildExecCommand, except the effective sandbox comes
 // from ctx (sandbox.ConfigFrom: a context-scoped override for project-bound
 // runs, else the process CurrentSandbox). The exec tool handlers and the git
 // engine call this so a per-session pinned sandbox actually constrains the
-// subprocess.
+// subprocess. When ctx is an ADK invocation context, the hakase session it
+// serves is resolved and attached to any approval prompt raised while
+// building the command (gate prompt routing).
 func BuildExecCommandFor(ctx context.Context, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
-	return buildExecCommand(ConfigFrom(ctx), command, args, workingDir, env, opts...)
+	return buildExecCommand(ConfigFrom(ctx), interfaces.SessionIDFromCtx(ctx), command, args, workingDir, env, opts...)
 }
 
 // buildExecCommand applies the policy/sandbox pipeline to one command using
 // the supplied sandbox configuration instead of reading CurrentSandbox.
-func buildExecCommand(sb *SandboxConfig, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
+// sessionID (possibly empty) is attached to approval prompts.
+func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
 	bo := &execOptions{}
 	for _, o := range opts {
 		o(bo)
@@ -320,6 +323,7 @@ func buildExecCommand(sb *SandboxConfig, command string, args []string, workingD
 			Reason:    decision.Reason,
 			Source:    "direct",
 			ExpiresAt: time.Now().Add(ApprovalExpiryFunc()),
+			SessionID: sessionID,
 		})
 		if aerr != nil || !approved {
 			AuditCommandFunc(CommandAuditEntry{

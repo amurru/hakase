@@ -37,6 +37,15 @@ func NewWebApprovalGate(bridge *sse.EventBridge, sessionID string, cfg interface
 	}
 }
 
+// promptSession resolves the session a prompt should advertise: the asking
+// request's session when known, the gate's fixed session otherwise.
+func (g *WebApprovalGate) promptSession(reqSession string) string {
+	if reqSession != "" {
+		return reqSession
+	}
+	return g.sessionID
+}
+
 // AskApproval blocks until the user approves/denies or the expiry deadline
 // is reached. Emits an SSE approval prompt, registers a response channel,
 // and waits. On timeout, emits approval_timeout SSE event and returns false
@@ -49,9 +58,12 @@ func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, err
 	g.pending[approvalID] = resp
 	g.mu.Unlock()
 
-	// Emit SSE approval prompt.
+	// Emit SSE approval prompt on the gate's routing topic; the payload
+	// carries the asking run's session (request wins over the gate's fixed
+	// session) so channel transports can route it to the bound conversation.
 	g.bridge.SendApprovalPrompt(
 		g.sessionID,
+		g.promptSession(req.SessionID),
 		approvalID,
 		req.Tool,
 		req.Risk,

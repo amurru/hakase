@@ -166,29 +166,36 @@ func (b *EventBridge) SendDone(sessionID string) {
 	b.publish(sessionID, "done", []byte("{}"))
 }
 
-// SendApprovalPrompt sends an approval request to SSE clients.
-// The id field is the approval request ID used for the response endpoint (task 22).
-func (b *EventBridge) SendApprovalPrompt(sessionID, approvalID, tool, risk, reason, command string) {
+// SendApprovalPrompt sends an approval request to SSE clients. routeSession
+// is the topic the event is published under ("" = the global topic every
+// gate consumer subscribes to); sessionID is the asking run's session, which
+// travels in the payload so channel transports can route the prompt to the
+// conversation bound to that session. The id field is the approval request
+// ID used for the response endpoint (task 22).
+func (b *EventBridge) SendApprovalPrompt(routeSession, sessionID, approvalID, tool, risk, reason, command string) {
 	payload, _ := json.Marshal(map[string]any{
-		"id":      approvalID,
-		"tool":    tool,
-		"risk":    risk,
-		"reason":  reason,
-		"command": command,
+		"id":         approvalID,
+		"session_id": sessionID,
+		"tool":       tool,
+		"risk":       risk,
+		"reason":     reason,
+		"command":    command,
 	})
-	b.publish(sessionID, "approval", payload)
+	b.publish(routeSession, "approval", payload)
 }
 
-// SendClarifyPrompt sends a clarify request to SSE clients.
-// The id field is the clarify request ID used for the response endpoint (task 22).
-func (b *EventBridge) SendClarifyPrompt(sessionID, id, question string, choices []string, multiSelect bool) {
+// SendClarifyPrompt sends a clarify request to SSE clients; routeSession and
+// sessionID follow SendApprovalPrompt's split. The id field is the clarify
+// request ID used for the response endpoint (task 22).
+func (b *EventBridge) SendClarifyPrompt(routeSession, sessionID, id, question string, choices []string, multiSelect bool) {
 	payload, _ := json.Marshal(map[string]any{
 		"id":           id,
+		"session_id":   sessionID,
 		"question":     question,
 		"choices":      choices,
 		"multi_select": multiSelect,
 	})
-	b.publish(sessionID, "clarify", payload)
+	b.publish(routeSession, "clarify", payload)
 }
 
 // SendApprovalTimeout sends an approval timeout event to SSE clients (task 22).

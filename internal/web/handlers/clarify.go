@@ -36,6 +36,15 @@ func NewWebClarifyGate(bridge *sse.EventBridge, sessionID string, cfg interfaces
 	}
 }
 
+// promptSession resolves the session a prompt should advertise: the asking
+// request's session when known, the gate's fixed session otherwise.
+func (g *WebClarifyGate) promptSession(reqSession string) string {
+	if reqSession != "" {
+		return reqSession
+	}
+	return g.sessionID
+}
+
 // AskClarify blocks until the user answers or the expiry deadline is reached.
 // Emits an SSE clarify prompt, registers a response channel, and waits.
 // On timeout, emits clarify_timeout SSE event and returns ClarifyResponse{TimedOut: true}.
@@ -47,9 +56,12 @@ func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.C
 	g.pending[clarifyID] = resp
 	g.mu.Unlock()
 
-	// Emit SSE clarify prompt.
+	// Emit SSE clarify prompt on the gate's routing topic; the payload
+	// carries the asking run's session (request wins over the gate's fixed
+	// session) so channel transports can route it to the bound conversation.
 	g.bridge.SendClarifyPrompt(
 		g.sessionID,
+		g.promptSession(req.SessionID),
 		clarifyID,
 		req.Question,
 		req.Choices,

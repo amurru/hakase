@@ -25,13 +25,15 @@ type Channel interface {
 // PushHandler receives routed bridge events. The core Router parses the
 // event payloads (approval/clarify prompts, cron/task/delegation lifecycle)
 // and hands them to each registered transport, which decides which of its
-// chats to notify and how to render them.
+// chats to notify and how to render them. Gate prompts carry the session id
+// so a transport can route the prompt to the conversation that started the
+// run (an empty id means the origin is unknown).
 type PushHandler interface {
 	// ApprovalPrompt asks the user to approve or deny a pending tool call.
-	ApprovalPrompt(id, tool, risk, reason, command string)
+	ApprovalPrompt(sessionID, id, tool, risk, reason, command string)
 	// ClarifyPrompt asks the user to answer a mid-task question, optionally
 	// from a list of choices (multiSelect allows several).
-	ClarifyPrompt(id, question string, choices []string, multiSelect bool)
+	ClarifyPrompt(sessionID, id, question string, choices []string, multiSelect bool)
 	// CronEvent reports a cron job lifecycle transition (completed, failed,
 	// silent) - only the user-relevant statuses are routed.
 	CronEvent(status, jobID, name, summary, outputPath string)

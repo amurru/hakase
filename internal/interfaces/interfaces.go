@@ -25,6 +25,11 @@ type ApprovalRequest struct {
 	Reason    string    // why approval is required
 	Source    string    // "direct" | "delegated"
 	ExpiresAt time.Time // deadline for user response
+	// SessionID is the hakase session the asking run serves, when known.
+	// Gate senders put it in the prompt payload so transports can route the
+	// prompt to the conversation bound to that session; empty in
+	// session-less surfaces (TUI, CLI utilities).
+	SessionID string
 }
 
 // ApprovalConfig tunes the interactive approval gate.
@@ -40,6 +45,9 @@ type ClarifyRequest struct {
 	Question    string   // question text
 	Choices     []string // optional answer choices (max 4)
 	MultiSelect bool     // allow multiple choices (only with Choices)
+	// SessionID is the hakase session the asking run serves, when known
+	// (see ApprovalRequest.SessionID).
+	SessionID string
 }
 
 // ClarifyResponse is the user's answer, plus cancel/timeout signals.

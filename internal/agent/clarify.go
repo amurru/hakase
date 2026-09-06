@@ -16,6 +16,7 @@ type ClarifyRequest struct {
 	Question    string   // question text
 	Choices     []string // optional answer choices (max 4, per Hermes)
 	MultiSelect bool     // allow multiple choices (only with Choices)
+	SessionID   string   // hakase session of the asking run (gate prompt routing)
 }
 
 // ClarifyResponse is the user's answer, plus cancel/timeout signals.
@@ -65,6 +66,7 @@ func askClarify(req ClarifyRequest) (ClarifyResponse, error) {
 		Question:    req.Question,
 		Choices:     req.Choices,
 		MultiSelect: req.MultiSelect,
+		SessionID:   req.SessionID,
 	})
 	if err != nil {
 		return ClarifyResponse{}, err
@@ -86,6 +88,7 @@ func registerClarifyTool() (tool.Tool, error) {
 			Question:    input.Question,
 			Choices:     input.Choices,
 			MultiSelect: input.MultiSelect,
+			SessionID:   interfaces.SessionIDFromCtx(ctx),
 		})
 		if err != nil {
 			return ClarifyOutput{}, err

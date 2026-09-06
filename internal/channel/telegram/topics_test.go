@@ -88,6 +88,79 @@ func waitRunning(t *testing.T, b *Bot, c conv, want bool) {
 	t.Fatalf("run in %s: want running=%v, timed out otherwise", threadKey(c), want)
 }
 
+// TestGatePromptRoutesToBoundConversation is design scenario 11: approval
+// and clarify prompts go to the conversation bound to the gate's session
+// (thread binding in topics mode, root binding otherwise); an unknown
+// session falls back to the paired-users fan-out.
+func TestGatePromptRoutesToBoundConversation(t *testing.T) {
+	b, api := newRunTestBot(t)
+	// A second paired user: fan-out would reach both, routing reaches one.
+	if err := b.store.Update(func(s *state.State) error {
+		s.PairedUsers = append(s.PairedUsers,
+			state.PairedUser{Channel: ChannelName, UserID: 100},
+			state.PairedUser{Channel: ChannelName, UserID: 200},
+		)
+		return nil
+	}); err != nil {
+		t.Fatalf("state update: %v", err)
+	}
+	enableTopics(t, b, 100)
+	topic := conv{chatID: 100, threadID: 555}
+
+	sessA, err := b.sessions.CreateSession("Topic session")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := b.bindThread(topic, sessA.ID, sessA.Title); err != nil {
+		t.Fatalf("bind thread: %v", err)
+	}
+	sessR, err := b.sessions.CreateSession("Root session")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := b.store.Update(func(s *state.State) error {
+		if s.Chats == nil {
+			s.Chats = map[string]state.Chat{}
+		}
+		ck := chatKey(200)
+		chat := s.Chats[ck]
+		chat.SessionID = sessR.ID
+		s.Chats[ck] = chat
+		return nil
+	}); err != nil {
+		t.Fatalf("bind chat: %v", err)
+	}
+
+	// Thread-bound session: the prompt lands in the topic only, buttons on.
+	b.ApprovalPrompt(sessA.ID, "appr_t", "system_exec", "high", "why", "ls")
+	sends := api.sends()
+	if len(sends) != 1 || sends[0].chatID != 100 || sends[0].threadID != 555 || !sends[0].hasKb || sends[0].silent {
+		t.Fatalf("topic approval = %+v, want one keyboarded, loud send in 100/555", sends)
+	}
+
+	// Root-bound session (no topics for chat 200): routes to that root DM.
+	b.ClarifyPrompt(sessR.ID, "clar_r", "Which one?", []string{"A"}, false)
+	sends = api.sends()
+	if len(sends) != 2 || sends[1].chatID != 200 || sends[1].threadID != 0 || !sends[1].hasKb {
+		t.Fatalf("root clarify = %+v, want one keyboarded send to chat 200 root", sends)
+	}
+
+	// Unknown session: fan-out to every paired user's root.
+	n := len(api.sends())
+	b.ApprovalPrompt("sess_unknown", "appr_u", "system_exec", "high", "why", "ls")
+	sends = api.sends()
+	got := map[int64]bool{}
+	for _, s := range sends[n:] {
+		got[s.chatID] = true
+		if s.threadID != 0 {
+			t.Errorf("fan-out send carried thread %d, want root", s.threadID)
+		}
+	}
+	if len(sends)-n != 2 || !got[100] || !got[200] {
+		t.Fatalf("fan-out = %+v, want one send each to chats 100 and 200", sends[n:])
+	}
+}
+
 // TestFirstPromptInTopicBindsAndRenames is design scenario 1: a prompt in an
 // unbound topic creates a session, binds it to the thread, renames the topic,
 // and runs against it — leaving the chat-level binding untouched.

@@ -9,6 +9,7 @@ import (
 )
 
 type fakePush struct {
+	sessionIDs  []string // session ids seen on gate prompts
 	approvals   []string // gate IDs
 	clarifies   []string
 	crons       [][2]string // status, name
@@ -16,10 +17,11 @@ type fakePush struct {
 	delegations [][2]string // status, agent
 }
 
-func (f *fakePush) ApprovalPrompt(id, tool, risk, reason, command string) {
+func (f *fakePush) ApprovalPrompt(sessionID, id, tool, risk, reason, command string) {
+	f.sessionIDs = append(f.sessionIDs, sessionID)
 	f.approvals = append(f.approvals, id)
 }
-func (f *fakePush) ClarifyPrompt(id, question string, choices []string, multiSelect bool) {
+func (f *fakePush) ClarifyPrompt(sessionID, id, question string, choices []string, multiSelect bool) {
 	f.clarifies = append(f.clarifies, id)
 }
 func (f *fakePush) CronEvent(status, jobID, name, summary, outputPath string) {
@@ -46,8 +48,8 @@ func TestRouterDispatchesGateAndLifecycleEvents(t *testing.T) {
 	// flake the test.
 	time.Sleep(50 * time.Millisecond)
 
-	bridge.SendApprovalPrompt("", "appr_1", "system_exec", "high", "because", "rm -rf")
-	bridge.SendClarifyPrompt("", "clar_1", "Which?", []string{"A", "B"}, false)
+	bridge.SendApprovalPrompt("", "sess_web", "appr_1", "system_exec", "high", "because", "rm -rf")
+	bridge.SendClarifyPrompt("", "", "clar_1", "Which?", []string{"A", "B"}, false)
 	bridge.SendCron("", "job1", "backup", "completed", "done", "outputs/x.md")
 	bridge.SendCron("", "job2", "ticker", "started", "", "") // must be filtered
 	bridge.SendTask("", map[string]any{"id": "t1", "title": "Write docs", "status": "completed"}, "completed")
@@ -67,6 +69,10 @@ func TestRouterDispatchesGateAndLifecycleEvents(t *testing.T) {
 
 	if len(push.approvals) != 1 || push.approvals[0] != "appr_1" {
 		t.Errorf("approvals = %v", push.approvals)
+	}
+	// The gate's session id must survive the router (topics-mode routing).
+	if len(push.sessionIDs) != 1 || push.sessionIDs[0] != "sess_web" {
+		t.Errorf("session ids = %v, want [sess_web]", push.sessionIDs)
 	}
 	if len(push.clarifies) != 1 || push.clarifies[0] != "clar_1" {
 		t.Errorf("clarifies = %v", push.clarifies)
@@ -96,7 +102,7 @@ func TestRouterSurvivesMalformedPayloads(t *testing.T) {
 	}()
 	time.Sleep(20 * time.Millisecond)
 
-	bridge.SendApprovalPrompt("", "", "", "", "", "") // empty ID ignored
+	bridge.SendApprovalPrompt("", "", "", "", "", "", "") // empty ID ignored
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 	select {
