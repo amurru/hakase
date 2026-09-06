@@ -69,9 +69,11 @@ func (b *Bot) cmdStart(ctx context.Context, m *models.Message, args string) {
 		return
 	}
 	if err := b.auth.TryPair(m.From.ID, m.From.Username, args); err != nil {
+		b.log("pairing failed for user %d (%s): %v", m.From.ID, m.From.Username, err)
 		b.sendText(ctx, m.Chat.ID, "❌ "+err.Error()+" — generate a fresh one with <code>hakase channels pair-code</code> on the server.", nil)
 		return
 	}
+	b.log("user %d (%s) paired successfully", m.From.ID, m.From.Username)
 	b.sendText(ctx, m.Chat.ID, "✅ Paired! You can now talk to hakase from here.\n\n"+greeting, nil)
 }
 

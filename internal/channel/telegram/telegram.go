@@ -309,6 +309,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 	userID := m.From.ID
+	b.log("message from user %d (%s), %d chars", userID, m.From.Username, len(m.Text))
 
 	if strings.HasPrefix(m.Text, "/") {
 		b.handleCommand(ctx, m)
@@ -322,6 +323,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		if b.auth.DenyReplyAllowed(userID) {
 			b.sendText(ctx, m.Chat.ID, "🔒 Unauthorized. Pair with <code>/start &lt;code&gt;</code> — the code is printed on the server console (or <code>hakase channels pair-code</code>).", nil)
 		}
+		b.log("denied message from unpaired user %d", userID)
 		return
 	}
 
