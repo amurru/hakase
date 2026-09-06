@@ -34,9 +34,22 @@ type PairedUser struct {
 
 // Chat is the per-chat binding: which hakase session the chat talks to and
 // whether lifecycle pushes (cron/task completions) are delivered to it.
+// TopicsMode enables one-topic-per-session conversations in the DM; while on,
+// the root area is a lobby and per-thread bindings live in Threads. The
+// legacy SessionID binding keeps driving the root area when TopicsMode is off.
 type Chat struct {
+	SessionID  string `json:"session_id,omitempty"`
+	Notify     bool   `json:"notify,omitempty"`
+	TopicsMode bool   `json:"topics_mode,omitempty"`
+}
+
+// Thread is the per-thread binding for one conversation inside a topics-mode
+// DM (one Telegram forum topic = one hakase session). Title caches the topic
+// name (the bound session's title) so clients can render it without an API
+// round-trip.
+type Thread struct {
 	SessionID string `json:"session_id,omitempty"`
-	Notify    bool   `json:"notify,omitempty"`
+	Title     string `json:"title,omitempty"`
 }
 
 // PendingPairing is a generated pairing code awaiting use.
@@ -47,14 +60,22 @@ type PendingPairing struct {
 
 // State is the on-disk document.
 type State struct {
-	PairedUsers    []PairedUser    `json:"paired_users,omitempty"`
-	Chats          map[string]Chat `json:"chats,omitempty"`
-	PendingPairing *PendingPairing `json:"pending_pairing,omitempty"`
+	PairedUsers    []PairedUser      `json:"paired_users,omitempty"`
+	Chats          map[string]Chat   `json:"chats,omitempty"`
+	Threads        map[string]Thread `json:"threads,omitempty"`
+	PendingPairing *PendingPairing   `json:"pending_pairing,omitempty"`
 }
 
 // ChatKey builds the canonical per-chat state key: "<channel>:<chatID>".
 func ChatKey(channel string, chatID int64) string {
 	return channel + ":" + strconv.FormatInt(chatID, 10)
+}
+
+// ThreadKey builds the canonical per-conversation state key:
+// "<channel>:<chatID>:<threadID>". threadID 0 is the DM's root area; the same
+// format keys per-conversation runtime state (e.g. active runs).
+func ThreadKey(channel string, chatID int64, threadID int) string {
+	return channel + ":" + strconv.FormatInt(chatID, 10) + ":" + strconv.Itoa(threadID)
 }
 
 // GenerateCode returns a random 6-digit pairing code (as a string, so a
@@ -253,11 +274,15 @@ func cloneState(st *State) State {
 		return State{}
 	}
 	out := State{
-		Chats: make(map[string]Chat, len(st.Chats)),
+		Chats:   make(map[string]Chat, len(st.Chats)),
+		Threads: make(map[string]Thread, len(st.Threads)),
 	}
 	out.PairedUsers = append(out.PairedUsers, st.PairedUsers...)
 	for k, v := range st.Chats {
 		out.Chats[k] = v
+	}
+	for k, v := range st.Threads {
+		out.Threads[k] = v
 	}
 	if st.PendingPairing != nil {
 		pp := *st.PendingPairing

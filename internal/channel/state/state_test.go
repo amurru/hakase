@@ -113,3 +113,49 @@ func TestChatKey(t *testing.T) {
 		t.Errorf("ChatKey = %q", got)
 	}
 }
+
+func TestThreadKey(t *testing.T) {
+	if got := ThreadKey("telegram", 50701365, 0); got != "telegram:50701365:0" {
+		t.Errorf("root ThreadKey = %q", got)
+	}
+	if got := ThreadKey("telegram", 50701365, 1234); got != "telegram:50701365:1234" {
+		t.Errorf("topic ThreadKey = %q", got)
+	}
+}
+
+func TestThreadsRoundtripAndCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "channels.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	err = store.Update(func(st *State) error {
+		st.Chats = map[string]Chat{"telegram:42": {TopicsMode: true}}
+		st.Threads = map[string]Thread{
+			"telegram:42:0":    {SessionID: "sess_root"},
+			"telegram:42:1234": {SessionID: "sess_topic", Title: "Fix the login bug"},
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got := reopened.Get()
+	if !got.Chats["telegram:42"].TopicsMode {
+		t.Error("TopicsMode did not survive the roundtrip")
+	}
+	if th := got.Threads["telegram:42:1234"]; th.SessionID != "sess_topic" || th.Title != "Fix the login bug" {
+		t.Errorf("thread binding = %+v", th)
+	}
+
+	// Mutating the returned copy must not touch the cache.
+	got.Threads["telegram:42:1234"] = Thread{SessionID: "mutated"}
+	if th := reopened.Get().Threads["telegram:42:1234"]; th.SessionID != "sess_topic" {
+		t.Errorf("Get() exposed the threads map to mutation: %+v", th)
+	}
+}

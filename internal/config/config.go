@@ -247,6 +247,9 @@ type TelegramChannelConfig struct {
 	// PairingCode optionally fixes a static pairing code for scripted setups
 	// instead of the generated rotating code. Stored plaintext, like api_key.
 	PairingCode string `json:"pairing_code,omitempty"`
+	// Pins pins the user's prompt message for the duration of each Telegram
+	// run and unpins it at completion (Hermes-style turn marker). Default off.
+	Pins bool `json:"pins,omitempty"`
 }
 
 // ApplyDefaults fills zero values with channel defaults. Call after load.
