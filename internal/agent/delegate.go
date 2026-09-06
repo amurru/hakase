@@ -501,7 +501,11 @@ func BuildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]to
 		return []tool.Tool{pyTool, visionTool}, nil
 	case "web_researcher":
 		dlTool, _ := createDownloadTool()
-		return []tool.Tool{dlTool, visionTool}, mcpToolsets
+		toolsets := mcpToolsets
+		if webSearchFallback != nil {
+			toolsets = append(toolsets, webSearchFallback)
+		}
+		return []tool.Tool{dlTool, visionTool}, toolsets
 	case "general_purpose":
 		fileTools, _ := sandbox.CreateFileOpsTools(interfaces.LogFunc(log), nil, "")
 		return append(fileTools, visionTool), nil

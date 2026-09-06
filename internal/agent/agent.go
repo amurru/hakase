@@ -1695,7 +1695,7 @@ When the user asks you to create a new markdown skill, prefer writing it to the 
 ### MEDIA GENERATION:
 You have media generation tools: 'generate_image' (always available via pil fallback; cloud providers openai and fal used when keys present - prefer for photorealistic images, infographics, posters), 'generate_video' (requires a cloud provider: the OpenAI-compatible router such as OpenRouter via openai_video_key or openai_image_key, or fal via fal_key), 'generate_audio' (stub in v1). For generate_image, pil is the offline fallback that renders structured graphics (diagrams, posters, cards) deterministically from prompt+seed - not photorealistic but always works. Cloud providers are tried first when configured (order: openai, fal, pil). All generated media is saved under outputs/media/<ulid>.<ext> and rendered inline via /api/files/inline and mediaLinks - just include the returned markdown snippet in your final answer. Never write outside outputs/media; the store handles paths. Use provider:"auto" by default; explicit provider overrides auto ordering.
 
-	` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildSidekickInstruction(cfg) + "\n\n" + buildTimeReminder()
+	` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildSidekickInstruction(cfg) + "\n\n" + buildWebSearchFallback(cfg) + "\n\n" + buildTimeReminder()
 }
 
 // buildSidekickInstruction returns the orchestrator instruction section that
@@ -1967,6 +1967,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			return nil, fmt.Errorf("mcp: manager does not implement tool.Toolset")
 		}
 	}
+	// Built-in keyless web search fallback (internal/websearch): shared by
+	// the orchestrator, web_researcher, and delegated sub-agents. nil when
+	// disabled by config or construction failed.
+	webSearchFallback = newFallbackSearchToolset(cfg, mcpManager, log)
 	// Researcher agent
 	downloadTool, err := createDownloadTool()
 	if err != nil {
@@ -1987,6 +1991,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if mcpManager != nil {
 		researcherToolsets = []tool.Toolset{mcpManager}
 	}
+	if webSearchFallback != nil {
+		researcherToolsets = append(researcherToolsets, webSearchFallback)
+	}
 
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
@@ -1995,7 +2002,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"web_researcher",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
-		) + "\n\n" + buildTimeReminder() + ContextBlockFor(
+		) + "\n\n" + buildTimeReminder() + "\n\n" + buildWebSearchFallback(cfg) + ContextBlockFor(
 			"web_researcher",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
@@ -2250,6 +2257,16 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}
 	}
 
+	// Orchestrator toolsets: MCP manager plus the web search fallback when
+	// enabled. A nil manager element is omitted (ADK would panic).
+	orchestratorToolsets := make([]tool.Toolset, 0, 2)
+	if mcpManager != nil {
+		orchestratorToolsets = append(orchestratorToolsets, mcpManager)
+	}
+	if webSearchFallback != nil {
+		orchestratorToolsets = append(orchestratorToolsets, webSearchFallback)
+	}
+
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
@@ -2278,7 +2295,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		},
 		AfterModelCallbacks: makeSidekickWatcher(sk, cfg),
 		Tools:               orchestratorTools,
-		Toolsets:            []tool.Toolset{mcpManager},
+		Toolsets:            orchestratorToolsets,
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,
