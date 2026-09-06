@@ -100,25 +100,22 @@ func (b *Bot) editText(ctx context.Context, chatID int64, messageID int, text st
 // waitTurn blocks until the chat's next send slot, sleeping out any 429
 // RetryAfter observed on the way. context cancellation aborts the wait.
 func (b *Bot) waitTurn(ctx context.Context, chatID int64) {
-	for {
-		b.limiterMu.Lock()
-		next := b.nextSend[chatID]
-		now := time.Now()
-		if next.IsZero() || now.After(next) {
-			b.nextSend[chatID] = now.Add(perChatSendInterval)
-			b.limiterMu.Unlock()
-			return
-		}
-		wait := next.Sub(now)
-		b.nextSend[chatID] = next.Add(perChatSendInterval)
-		b.limiterMu.Unlock()
+	b.limiterMu.Lock()
+	next := b.nextSend[chatID]
+	now := time.Now()
+	if next.IsZero() || now.After(next) {
+		next = now
+	}
+	b.nextSend[chatID] = next.Add(perChatSendInterval)
+	b.limiterMu.Unlock()
 
-		if ctx.Err() != nil {
-			return
-		}
+	// Sleep exactly to the slot reserved above. Re-deriving the wait on every
+	// wake-up would re-reserve (pushing the slot another full interval) and
+	// leave this and every later sender for the chat chasing the slot forever,
+	// silently dropping all output.
+	if wait := next.Sub(now); wait > 0 {
 		select {
 		case <-ctx.Done():
-			return
 		case <-time.After(wait):
 		}
 	}
