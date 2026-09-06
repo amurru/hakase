@@ -31,6 +31,8 @@ const ChannelName = "telegram"
 // api is the subset of *tgbot.Bot the transport uses; tests substitute a fake.
 type api interface {
 	Start(ctx context.Context)
+	GetWebhookInfo(ctx context.Context) (*models.WebhookInfo, error)
+	DeleteWebhook(ctx context.Context, params *tgbot.DeleteWebhookParams) (bool, error)
 	SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error)
 	EditMessageText(ctx context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error)
 	AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error)
@@ -126,6 +128,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := b.registerCommands(context.WithoutCancel(ctx)); err != nil {
 		b.log("telegram: command menu registration failed: %v", err)
 	}
+	b.clearStaleWebhook(context.WithoutCancel(ctx))
 	if !b.auth.HasAnyUser() {
 		code, err := b.auth.EnsurePairingCode()
 		if err != nil {
@@ -138,6 +141,20 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.api.Start(ctx)
 	// Start blocks until ctx is cancelled and reports poll errors itself.
 	return ctx.Err()
+}
+
+// clearStaleWebhook deletes any webhook left on the bot token by a previous
+// integration. hakase polls long-polling only: while a webhook is active,
+// Telegram rejects every getUpdates with 409 Conflict and the bot appears
+// completely silent, so this healing step runs before polling starts. It is
+// a no-op when no webhook is set, and pending updates are kept.
+func (b *Bot) clearStaleWebhook(ctx context.Context) {
+	if info, err := b.api.GetWebhookInfo(ctx); err == nil && info != nil && info.URL != "" {
+		b.log("telegram: stale webhook detected on this token (%s, %d pending updates) - deleting it so long polling can start", info.URL, info.PendingUpdateCount)
+	}
+	if _, err := b.api.DeleteWebhook(ctx, &tgbot.DeleteWebhookParams{DropPendingUpdates: false}); err != nil {
+		b.log("telegram: deleteWebhook failed (%v) - if polling then fails with 409 Conflict, delete the webhook manually via https://api.telegram.org/bot<token>/deleteWebhook", err)
+	}
 }
 
 // registerCommands sets the bot's command menu.

@@ -20,12 +20,14 @@ import (
 
 // fakeAPI records everything the transport sends.
 type fakeAPI struct {
-	mu        sync.Mutex
-	sent      []fakeSend
-	edited    []fakeEdit
-	answered  []string
-	cmds      bool
-	nextMsgID int
+	mu             sync.Mutex
+	sent           []fakeSend
+	edited         []fakeEdit
+	answered       []string
+	cmds           bool
+	deletedWebhook int
+	webhookURL     string // non-empty simulates a stale webhook on the token
+	nextMsgID      int
 }
 
 type fakeSend struct {
@@ -41,6 +43,20 @@ type fakeEdit struct {
 }
 
 func (f *fakeAPI) Start(ctx context.Context) {}
+
+func (f *fakeAPI) GetWebhookInfo(ctx context.Context) (*models.WebhookInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &models.WebhookInfo{URL: f.webhookURL}, nil
+}
+
+func (f *fakeAPI) DeleteWebhook(ctx context.Context, params *tgbot.DeleteWebhookParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedWebhook++
+	f.webhookURL = ""
+	return true, nil
+}
 
 func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
 	f.mu.Lock()
@@ -150,6 +166,34 @@ func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service
 		mediaGroup:   map[string]*mediaGroupBuf{},
 	}
 	return b, api, responders, service
+}
+
+// TestRunDeletesStaleWebhook guards the 409-healing path: a token that was
+// previously used with a webhook-based integration makes every getUpdates
+// fail with "Conflict: can't use getUpdates method while webhook is active",
+// so Run must delete any stale webhook before polling starts.
+func TestRunDeletesStaleWebhook(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	api.webhookURL = "https://old-integration.example.com/hook"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = b.Run(ctx)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+	if api.deletedWebhook != 1 {
+		t.Fatalf("DeleteWebhook calls = %d, want 1", api.deletedWebhook)
+	}
+	if api.webhookURL != "" {
+		t.Fatal("stale webhook was not cleared")
+	}
 }
 
 func privateMessage(userID int64, text string) *models.Message {
