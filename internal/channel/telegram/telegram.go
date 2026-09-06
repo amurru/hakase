@@ -336,6 +336,19 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 	c := b.effectiveConv(m)
 	b.log("message from user %d (%s), %d chars, thread %d", userID, m.From.Username, len(m.Text), c.threadID)
 
+	// Bots never converse here. Our own topic lifecycle actions (rename,
+	// create) arrive back as service messages authored by the bot itself —
+	// field-verified 2026-09-06: answering them had the bot deny itself with
+	// a pairing prompt in the user's topic.
+	if m.From.IsBot {
+		return
+	}
+	// Service messages (topic created/renamed/closed, pins, joins) carry no
+	// text, caption, or photo: not conversation input, stay silent.
+	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 {
+		return
+	}
+
 	if strings.HasPrefix(m.Text, "/") {
 		b.handleCommand(ctx, c, m)
 		return
@@ -372,11 +385,6 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 
 	if len(m.Photo) > 0 {
 		b.handlePhoto(ctx, m)
-		return
-	}
-
-	if m.Text == "" {
-		b.sendText(ctx, c, "🤷 I can handle text messages and photo captions here (voice/files are not supported yet).", nil, false)
 		return
 	}
 

@@ -51,17 +51,22 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 		return
 	}
 
-	// Persist the user turn (same contract as the web handler): make the
-	// session active, then record with attachment refs for history rebuilds.
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !b.runs.TryStart(rk, sessionID, cancel) {
+		cancel()
+		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
+		return
+	}
+
+	// Persist the user turn (same contract as the web handler): the prompt
+	// plus attachment refs, written to THIS run's session — never to the
+	// global active-session pointer, which parallel runs race over. After the
+	// TryStart gate, so a refused prompt does not pollute the session.
 	fullPrompt := prompt
 	if len(manifest) > 0 {
 		fullPrompt = strings.TrimSpace(fullPrompt + "\n[attachments]\n" + strings.Join(manifest, "\n"))
 	}
-	if err := b.sessions.SetActiveSession(sessionID); err != nil {
-		b.sendText(ctx, c, "⚠️ Session unavailable: "+err.Error(), nil, false)
-		return
-	}
-	if err := b.sessions.RecordUsageWithAttachments("user", fullPrompt, "", 0, refs); err != nil {
+	if err := b.sessions.RecordUsageInSession(sessionID, "user", fullPrompt, "", 0, refs); err != nil {
 		b.log("failed to save user message: %v", err)
 	}
 
@@ -71,16 +76,11 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 	}
 	parts = append(parts, photoParts...)
 	if len(parts) == 0 {
+		cancel()
+		b.runs.Finish(rk)
 		return
 	}
 	content := genai.NewContentFromParts(parts, genai.RoleUser)
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	if !b.runs.TryStart(rk, sessionID, cancel) {
-		cancel()
-		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
-		return
-	}
 
 	rv := newRunView(b, c, promptID, runCtx)
 	go func() {

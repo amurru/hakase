@@ -451,10 +451,11 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Save the user message to the session (prompt + manifest + attachment
 	// refs, same contract as the TUI; content is rebuilt from refs on resume).
+	// Written to THIS session directly: the global active-session pointer is
+	// a UI notion and races when several sessions run at once (web + channel
+	// threads).
 	if api.sessionSvc != nil {
-		// Ensure this session is active so AddMessage targets it.
-		_ = api.sessionSvc.SetActiveSession(sessionID)
-		if err := api.sessionSvc.RecordUsageWithAttachments("user", promptText, "", 0, refs); err != nil {
+		if err := api.sessionSvc.RecordUsageInSession(sessionID, "user", promptText, "", 0, refs); err != nil {
 			log.Printf("chat: warning: failed to save user message: %v", err)
 		}
 	}

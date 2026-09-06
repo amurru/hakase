@@ -102,9 +102,26 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		return nil, nil
 	}
 
-	// Load the active persisted session (the one the UI is writing to).
-	session, err := h.svc.GetActiveSession()
-	if err != nil || session == nil || len(session.Messages) == 0 {
+	// Resolve the session the invoking run serves. agentrun registers every
+	// driven run's task→session mapping, so parallel runs (web chat, channel
+	// threads) each inject their OWN history; a global active session here
+	// made whichever run called SetActiveSession last leak its history into
+	// the others. Surfaces without a registered run (the TUI loop) fall back
+	// to the active session, which they own exclusively.
+	var session *sesspkg.Session
+	if id := interfaces.SessionIDFromCtx(ctx); id != "" {
+		if s, loadErr := h.svc.Store().Load(id); loadErr == nil {
+			session = s
+		}
+	}
+	if session == nil {
+		var err error
+		session, err = h.svc.GetActiveSession()
+		if err != nil || session == nil {
+			return nil, nil
+		}
+	}
+	if len(session.Messages) == 0 {
 		return nil, nil
 	}
 

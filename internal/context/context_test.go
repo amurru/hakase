@@ -1,11 +1,13 @@
 package context
 
 import (
+	"path/filepath"
+	"strings"
+	"testing"
+
 	"amurru/hakase/internal/interfaces"
 	sesspkg "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
-	"path/filepath"
-	"testing"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -310,4 +312,87 @@ func TestSnipPreservesDedup(t *testing.T) {
 			t.Fatalf("current user message leaked back into history after snip")
 		}
 	}
+}
+
+// TestBeforeModelCallbackPerRunSession pins the parallel-run history rule:
+// a run registered in the task→session registry (every agentrun-driven run)
+// injects its OWN session's history, never another run's — two Telegram
+// threads running concurrently used to share whichever session was last
+// activated. Unregistered contexts (the TUI loop) fall back to the active
+// session, which they own exclusively.
+func TestBeforeModelCallbackPerRunSession(t *testing.T) {
+	b, svc := newTestBuilder(t)
+
+	sessA, err := svc.CreateSession("A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessB, err := svc.CreateSession("B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordUsageInSession(sessA.ID, "user", "question-A", "", 5, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordUsageInSession(sessB.ID, "user", "question-B", "", 5, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	interfaces.RegisterTaskSession("task_A", sessA.ID)
+	defer interfaces.UnregisterTask("task_A")
+	interfaces.RegisterTaskSession("task_B", sessB.ID)
+	defer interfaces.UnregisterTask("task_B")
+
+	run := func(sessionID, current string) []string {
+		req := &model.LLMRequest{
+			Contents: []*genai.Content{genai.NewContentFromText(current, genai.RoleUser)},
+		}
+		cctx := &testCallbackContext{
+			userContent: genai.NewContentFromText(current, genai.RoleUser),
+			sessionID:   sessionID,
+		}
+		if _, err := b.BeforeModelCallback(cctx, req); err != nil {
+			t.Fatalf("callback: %v", err)
+		}
+		var texts []string
+		for _, c := range req.Contents {
+			if len(c.Parts) > 0 && c.Parts[0].Text != "" {
+				texts = append(texts, c.Parts[0].Text)
+			}
+		}
+		return texts
+	}
+
+	// Run A: history from session A only.
+	textsA := run("task_A", "follow-up-A")
+	if !containsText(textsA, "question-A") {
+		t.Errorf("run A history missing question-A: %v", textsA)
+	}
+	if containsText(textsA, "question-B") {
+		t.Errorf("run A leaked session B history: %v", textsA)
+	}
+
+	// Run B: the mirror image.
+	textsB := run("task_B", "follow-up-B")
+	if !containsText(textsB, "question-B") || containsText(textsB, "question-A") {
+		t.Errorf("run B history = %v, want question-B without question-A", textsB)
+	}
+
+	// Unregistered context (sessionID "") falls back to the active session.
+	if err := svc.SetActiveSession(sessA.ID); err != nil {
+		t.Fatal(err)
+	}
+	textsFallback := run("", "follow-up-fallback")
+	if !containsText(textsFallback, "question-A") {
+		t.Errorf("fallback history = %v, want the active session's question-A", textsFallback)
+	}
+}
+
+func containsText(texts []string, needle string) bool {
+	for _, t := range texts {
+		if strings.Contains(t, needle) {
+			return true
+		}
+	}
+	return false
 }

@@ -354,6 +354,78 @@ func privateMessage(userID int64, text string) *models.Message {
 	}
 }
 
+// TestBotAndServiceMessagesIgnored pins the field fix from 2026-09-06: the
+// bot's own topic lifecycle actions arrive back as service messages authored
+// by the bot (From.IsBot), and topic creation arrives as a textless message
+// from the user. Neither is conversation input: no reply, no pairing denial
+// (the bot used to deny itself with "Unauthorized … /start" in the topic).
+func TestBotAndServiceMessagesIgnored(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	ctx := context.Background()
+
+	// The bot's own service message (topic rename echo).
+	botMsg := privateMessage(100, "")
+	botMsg.From = &models.User{ID: 8852003572, Username: "mangoslicecollectorbot", IsBot: true}
+	b.handleMessage(ctx, botMsg)
+
+	// A paired user's topic-created service message (textless).
+	b.handleMessage(ctx, privateMessage(100, ""))
+
+	// An unpaired user's textless service message: no pairing denial either.
+	b.handleMessage(ctx, privateMessage(999, ""))
+
+	if sends := api.sends(); len(sends) != 0 {
+		t.Fatalf("service messages produced replies: %+v", sends)
+	}
+	if b.auth.IsAllowed(8852003572) {
+		t.Fatal("the bot account was allowed into auth state")
+	}
+}
+
+// TestBusyRefusalDoesNotPersistPrompt guards the run-start ordering: a prompt
+// refused because the conversation already has a run must not be recorded
+// into the session (it used to be persisted before the TryStart gate).
+func TestBusyRefusalDoesNotPersistPrompt(t *testing.T) {
+	b, api := newRunTestBot(t)
+	release := make(chan struct{})
+	d := &gateDriver{release: release}
+	b.driver = d
+	ctx := context.Background()
+	root := rootConv(100)
+
+	// First prompt binds a session and occupies the run slot.
+	b.handleMessage(ctx, privateMessage(100, "first prompt"))
+	waitRunning(t, b, root, true)
+	sessID := b.store.Get().Chats[chatKey(100)].SessionID
+	sess, err := b.sessions.Store().Load(sessID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	persisted := len(sess.Messages)
+
+	// Second prompt while the run holds the slot: refused, not persisted.
+	b.handleMessage(ctx, privateMessage(100, "refused prompt"))
+	busy := 0
+	for _, s := range api.sends() {
+		if contains(s.text, "already active") {
+			busy++
+		}
+	}
+	if busy != 1 {
+		t.Fatalf("busy replies = %d, want 1", busy)
+	}
+	sess, err = b.sessions.Store().Load(sessID)
+	if err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	if len(sess.Messages) != persisted {
+		t.Fatalf("session messages = %d, want %d (refused prompt must not persist)", len(sess.Messages), persisted)
+	}
+
+	close(release)
+	waitRunDone(t, b, root)
+}
+
 func TestNormalizeThread(t *testing.T) {
 	for in, want := range map[int]int{
 		0:   0, // absent/root

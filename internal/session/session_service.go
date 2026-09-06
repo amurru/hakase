@@ -147,6 +147,27 @@ func (s *SessionService) RecordUsageWithAttachments(role, content, thinking stri
 	return s.store.Save(session)
 }
 
+// RecordUsageInSession is RecordUsageWithAttachments targeting an explicit
+// session id instead of the global active-session pointer. The agent-run
+// path (web chat, channels) uses it because parallel runs in different
+// sessions must not fight over that pointer: the last SetActiveSession
+// would otherwise receive the other run's user turns (and, before
+// HistoryBuilder resolved sessions per run, its whole history).
+func (s *SessionService) RecordUsageInSession(id, role, content, thinking string, tokens int, atts []AttachmentRef) error {
+	if id == "" {
+		return fmt.Errorf("no session id")
+	}
+	session, err := s.store.Load(id)
+	if err != nil {
+		return err
+	}
+	session.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, MessageKindText, atts)
+	if BuildHintedPathsHook != nil {
+		session.HintedContextFiles = BuildHintedPathsHook()
+	}
+	return s.store.Save(session)
+}
+
 // SetSummary persists the SummaryMessageID on the session. The ID is the
 // sequence of the summary message that the summarizer appended.
 func (s *SessionService) SetSummary(id, summaryMessageID string) error {
