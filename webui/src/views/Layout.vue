@@ -21,6 +21,7 @@ import {
   Puzzle,
   Clock,
   Files,
+  Send,
   Settings,
   LogOut,
   Bot,
@@ -59,6 +60,7 @@ const navItems = [
   { to: '/skills', label: 'Skills', icon: Wand2 },
   { to: '/mcp', label: 'MCP', icon: Puzzle },
   { to: '/cron', label: 'Cron', icon: Clock },
+  { to: '/channels', label: 'Channels', icon: Send },
   { to: '/files', label: 'Files', icon: Files },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]

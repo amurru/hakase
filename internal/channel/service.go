@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"amurru/hakase/internal/agentrun"
@@ -46,6 +47,7 @@ type Service struct {
 	cancel     context.CancelFunc
 	registerMu sync.Mutex
 	wg         sync.WaitGroup
+	running    atomic.Bool
 }
 
 type entry struct {
@@ -112,6 +114,7 @@ func (s *Service) Register(ch Channel, push PushHandler) {
 func (s *Service) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
+	s.running.Store(true)
 
 	s.registerMu.Lock()
 	entries := append([]entry(nil), s.entries...)
@@ -161,4 +164,9 @@ func (s *Service) Stop(timeout time.Duration) {
 	case <-time.After(timeout):
 		s.log("channels: stop timed out after %s", timeout)
 	}
+	s.running.Store(false)
 }
+
+// IsRunning reports whether the subsystem has been started and not yet
+// stopped (the web API surfaces this as the channel's live status).
+func (s *Service) IsRunning() bool { return s.running.Load() }

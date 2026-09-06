@@ -60,6 +60,11 @@ const router = createRouter({
           component: () => import('@/views/CronView.vue'),
         },
         {
+          path: 'channels',
+          name: 'channels',
+          component: () => import('@/views/ChannelsView.vue'),
+        },
+        {
           path: 'files',
           name: 'files',
           component: () => import('@/views/FilesView.vue'),

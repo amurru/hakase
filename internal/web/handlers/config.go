@@ -150,6 +150,7 @@ var editableConfigKeys = []string{
 	"approval",
 	"clarify",
 	"media",
+	"channels",
 }
 
 // apiKeyControlKeys are write-only keys for managing secrets in config.json.
@@ -168,6 +169,10 @@ var apiKeyControlKeys = []string{
 	"clear_openai_image_key",
 	"openai_video_key",
 	"clear_openai_video_key",
+	"telegram_bot_token",
+	"clear_telegram_bot_token",
+	"telegram_pairing_code",
+	"clear_telegram_pairing_code",
 }
 
 // UpdateConfig handles PUT /api/config. The request body is a partial JSON
@@ -220,6 +225,13 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			delete(m, secret)
 		}
 	}
+	// Same guard for the channels block (bot token, static pairing code).
+	if m, ok := req["channels"].(map[string]interface{}); ok {
+		if tg, ok := m["telegram"].(map[string]interface{}); ok {
+			delete(tg, "bot_token")
+			delete(tg, "pairing_code")
+		}
+	}
 
 	// Apply only the allowlisted keys, deep-merging nested object blocks so a
 	// partial update to e.g. loop_guard preserves its sibling fields.
@@ -249,6 +261,15 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			clearMediaSecret(raw, k)
 		} else if v, ok := req[k].(string); ok && v != "" {
 			setMediaSecret(raw, k, v)
+		}
+	}
+	// Telegram channel secrets live nested under channels.telegram and are
+	// managed through the same write-only control-key pattern.
+	for _, k := range []string{"bot_token", "pairing_code"} {
+		if clear, ok := req["clear_telegram_"+k].(bool); ok && clear {
+			clearTelegramSecret(raw, k)
+		} else if v, ok := req["telegram_"+k].(string); ok && v != "" {
+			setTelegramSecret(raw, k, v)
 		}
 	}
 
@@ -291,6 +312,31 @@ func clearMediaSecret(raw map[string]interface{}, key string) {
 		delete(m, key)
 	}
 	delete(raw, key)
+}
+
+// setTelegramSecret stores v under raw["channels"]["telegram"][key], creating
+// the nested objects when absent or not objects.
+func setTelegramSecret(raw map[string]interface{}, key, v string) {
+	ch, ok := raw["channels"].(map[string]interface{})
+	if !ok {
+		ch = map[string]interface{}{}
+	}
+	tg, ok := ch["telegram"].(map[string]interface{})
+	if !ok {
+		tg = map[string]interface{}{}
+	}
+	tg[key] = v
+	ch["telegram"] = tg
+	raw["channels"] = ch
+}
+
+// clearTelegramSecret removes key from raw["channels"]["telegram"].
+func clearTelegramSecret(raw map[string]interface{}, key string) {
+	if ch, ok := raw["channels"].(map[string]interface{}); ok {
+		if tg, ok := ch["telegram"].(map[string]interface{}); ok {
+			delete(tg, key)
+		}
+	}
 }
 
 // validateConfigUpdate checks enum-constrained fields before they hit disk.

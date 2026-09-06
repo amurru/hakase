@@ -78,25 +78,64 @@ func DefaultPath() string {
 	return filepath.Join(home, FileName)
 }
 
-// Store is a cross-process-safe accessor for the state file. Reads are served
-// from an in-memory cache refreshed on every Update; writes take an exclusive
-// flock and reload from disk first, so CLI processes (`hakase channels
-// pair-code`) and the web server can mutate the file without lost updates.
+// PairingCodeTTL bounds how long a generated pairing code stays valid. It
+// lives here (not in the channel package) so the CLI and web API can issue
+// codes without importing the channel runtime.
+const PairingCodeTTL = 15 * time.Minute
+
+// EnsurePairingCode returns the current usable pairing code, generating and
+// persisting a fresh one when the pending code is missing or expired. Safe to
+// call from any process (the web server, the CLI); writes go through the
+// store's cross-process flock.
+func EnsurePairingCode(store *Store, ttl time.Duration) (string, error) {
+	code, _, err := EnsurePairingCodeWithExpiry(store, ttl)
+	return code, err
+}
+
+// EnsurePairingCodeWithExpiry is EnsurePairingCode plus the expiry deadline
+// of the returned code.
+func EnsurePairingCodeWithExpiry(store *Store, ttl time.Duration) (string, time.Time, error) {
+	var code string
+	var expires time.Time
+	err := store.Update(func(st *State) error {
+		if st.PendingPairing != nil && time.Now().Before(st.PendingPairing.ExpiresAt) {
+			code = st.PendingPairing.Code
+			expires = st.PendingPairing.ExpiresAt
+			return nil
+		}
+		code = GenerateCode()
+		expires = time.Now().Add(ttl)
+		st.PendingPairing = &PendingPairing{
+			Code:      code,
+			ExpiresAt: expires,
+		}
+		return nil
+	})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return code, expires, nil
+}
+
+// Store is a cross-process-safe accessor for the state file. Get reloads from
+// disk whenever the file changed underneath (another process - the CLI, or a
+// second store instance in the same server - may have written), so every
+// reader sees current state without coordination.
 type Store struct {
 	mu    sync.Mutex
 	path  string
 	cache *State
+	mtime time.Time
+	size  int64
 }
 
 // Open loads the state file (or starts empty when missing) and returns a
 // store rooted at path.
 func Open(path string) (*Store, error) {
 	s := &Store{path: path}
-	st, err := loadFile(path)
-	if err != nil {
+	if err := s.reload(); err != nil {
 		return nil, err
 	}
-	s.cache = st
 	return s, nil
 }
 
@@ -108,11 +147,20 @@ func OpenDefault() (*Store, error) {
 // Path returns the backing file path.
 func (s *Store) Path() string { return s.path }
 
-// Get returns a deep copy of the cached state. It reflects the last Update
-// performed by this process or loaded at Open.
+// Get returns a deep copy of the current state, reloading from disk when the
+// file was modified by another process or store instance since the last read.
 func (s *Store) Get() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if fi, err := os.Stat(s.path); err != nil {
+		// File gone (deleted underneath us): fall back to the cache.
+		return cloneState(s.cache)
+	} else if fi.ModTime() != s.mtime || fi.Size() != s.size {
+		if st, err := loadFile(s.path); err == nil {
+			s.cache = st
+			s.mtime, s.size = fi.ModTime(), fi.Size()
+		}
+	}
 	return cloneState(s.cache)
 }
 
@@ -134,6 +182,22 @@ func (s *Store) Update(fn func(*State) error) error {
 		return err
 	}
 	s.cache = st
+	if fi, err := os.Stat(s.path); err == nil {
+		s.mtime, s.size = fi.ModTime(), fi.Size()
+	}
+	return nil
+}
+
+// reload unconditionally (re)loads the on-disk state into the cache.
+func (s *Store) reload() error {
+	st, err := loadFile(s.path)
+	if err != nil {
+		return err
+	}
+	s.cache = st
+	if fi, err := os.Stat(s.path); err == nil {
+		s.mtime, s.size = fi.ModTime(), fi.Size()
+	}
 	return nil
 }
 

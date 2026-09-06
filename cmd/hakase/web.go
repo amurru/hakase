@@ -19,6 +19,7 @@ import (
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/auth"
 	"amurru/hakase/internal/channel"
+	"amurru/hakase/internal/channel/state"
 	"amurru/hakase/internal/channel/telegram"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
@@ -309,10 +310,22 @@ func runServer(args []string, serveSPA bool) int {
 	// the same bridge events for push notifications.
 	cli.CronJobNotify = bridge.CronJobEvent
 
+	// Channel state store for the management API (status/pairing/revoke) -
+	// opened even when channels are disabled so the UI can still show and
+	// manage existing pairings. Cross-instance staleness is handled by the
+	// store's reload-on-read.
+	var chanStore *state.Store
+	if st, err := state.OpenDefault(); err == nil {
+		chanStore = st
+	} else {
+		log.Printf("web: channel state unavailable: %v", err)
+	}
+
 	// Communication channels (Telegram et al.): start inside this process so
 	// they share the runner, gates, bridge, sessions, and cron registry.
 	// Fail-soft: a bad token logs loudly but never kills the web server.
 	stopChannels := func() {}
+	var chanRunning func() bool
 	if cfg.Channels.Telegram.EnabledWithToken() {
 		chanSvc, err := channel.NewService(channel.Deps{
 			Bridge:   bridge,
@@ -336,10 +349,14 @@ func runServer(args []string, serveSPA bool) int {
 				chanSvc.Register(tg, tg)
 				chanSvc.Start()
 				log.Printf("web: telegram channel started")
+				chanRunning = chanSvc.IsRunning
 				stopChannels = func() { chanSvc.Stop(5 * time.Second) }
 			}
 		}
 	}
+
+	// Expose channel status/pairing/revoke to the management API.
+	srv.SetChannels(chanStore, chanRunning)
 
 	// Register routes.
 	if serveSPA {

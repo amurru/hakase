@@ -10,11 +10,11 @@ import (
 	"amurru/hakase/internal/channel/state"
 )
 
-// PairingCodeTTL bounds how long a generated pairing code stays valid. Short
-// by design: the code grants full agent control, and it is only ever printed
-// on the server console (or via `hakase channels pair-code`, which issues a
-// fresh one).
-const PairingCodeTTL = 15 * time.Minute
+// PairingCodeTTL bounds how long a generated pairing code stays valid; the
+// canonical definition (and the shared ensure helper) live in the state
+// package so the CLI and web API can issue codes without importing this
+// package.
+const PairingCodeTTL = state.PairingCodeTTL
 
 // denyReplyCooldown spaces the terse "unauthorized" reply so an unknown user
 // cannot provoke unlimited bot traffic (or leak that the bot exists) by
@@ -94,23 +94,7 @@ func (a *Authenticator) EnsurePairingCode() (string, error) {
 	if a.staticCode != "" {
 		return a.staticCode, nil
 	}
-	var code string
-	err := a.store.Update(func(st *state.State) error {
-		if st.PendingPairing != nil && time.Now().Before(st.PendingPairing.ExpiresAt) {
-			code = st.PendingPairing.Code
-			return nil
-		}
-		code = state.GenerateCode()
-		st.PendingPairing = &state.PendingPairing{
-			Code:      code,
-			ExpiresAt: time.Now().Add(PairingCodeTTL),
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return code, nil
+	return state.EnsurePairingCode(a.store, state.PairingCodeTTL)
 }
 
 // TryPair validates code and, on success, persists the paired user (clearing

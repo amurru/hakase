@@ -89,19 +89,7 @@ func runChannelsStatus(store *state.Store) int {
 }
 
 func runChannelsPairCode(store *state.Store) int {
-	var code string
-	var expires time.Time
-	err := store.Update(func(st *state.State) error {
-		if st.PendingPairing != nil && time.Now().Before(st.PendingPairing.ExpiresAt) {
-			code = st.PendingPairing.Code
-			expires = st.PendingPairing.ExpiresAt
-			return nil
-		}
-		code = state.GenerateCode()
-		expires = time.Now().Add(15 * time.Minute)
-		st.PendingPairing = &state.PendingPairing{Code: code, ExpiresAt: expires}
-		return nil
-	})
+	code, expires, err := state.EnsurePairingCodeWithExpiry(store, 15*time.Minute)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hakase: cannot write channel state: %v\n", err)
 		return 1
