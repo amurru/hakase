@@ -29,6 +29,9 @@ const (
 // answers and blocking prompts do. Parse errors on the HTML body fall back to
 // plain text so a broken converter can never silence the bot.
 func (b *Bot) sendText(ctx context.Context, c conv, text string, markup models.ReplyMarkup, silent bool) *models.Message {
+	if ctx.Err() != nil {
+		return nil // the run was cancelled while this send was queued
+	}
 	b.waitTurn(ctx, c)
 	msg, err := b.api.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:              c.chatID,
@@ -83,6 +86,9 @@ func (b *Bot) sendText(ctx context.Context, c conv, text string, markup models.R
 // never notify). The topic is implicit in the message being edited. Failures
 // are logged, never fatal.
 func (b *Bot) editText(ctx context.Context, c conv, messageID int, text string, markup models.ReplyMarkup) {
+	if ctx.Err() != nil {
+		return // the run was cancelled while this edit was queued
+	}
 	b.waitTurn(ctx, c)
 	_, err := b.api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
 		ChatID:             c.chatID,

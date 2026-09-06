@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +145,10 @@ func (b *Bot) cmdTopic(ctx context.Context, c conv, m *models.Message, args stri
 		setTopics(true)
 		b.sendText(ctx, c, "💬 Topics mode is on — every topic is its own conversation with its own session. Tap the ✚ / “All Messages” composer button to open a topic and prompt there. This root area is now a lobby (commands still work); <code>/topic off</code> returns to a single chat.", nil, false)
 	case strings.EqualFold(arg, "off"):
+		if b.chatHasActiveRuns(c.chatID) {
+			b.sendText(ctx, c, "⏳ A run is still active in one of this chat's topics — /stop it there before turning topics mode off.", nil, false)
+			return
+		}
 		setTopics(false)
 		b.sendText(ctx, c, "💬 Topics mode is off — the root area is your chat again. Topic bindings are kept for when you re-enable it.", nil, false)
 	default:
@@ -407,6 +412,18 @@ func (b *Bot) cmdNotify(ctx context.Context, c conv, m *models.Message, args str
 	} else {
 		b.sendText(ctx, c, "🔕 Notifications off. (Approvals and clarifications still arrive.)", nil, false)
 	}
+}
+
+// chatHasActiveRuns reports whether any conversation of the chat has a run
+// in flight (thread-scoped run keys share the "telegram:<chatID>:" prefix).
+func (b *Bot) chatHasActiveRuns(chatID int64) bool {
+	prefix := ChannelName + ":" + strconv.FormatInt(chatID, 10) + ":"
+	for _, key := range b.runs.ActiveChatKeys() {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func shortID(id string) string {

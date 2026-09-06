@@ -3,12 +3,14 @@ package telegram
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"amurru/hakase/internal/agentrun"
 	"amurru/hakase/internal/channel"
 
+	tgbot "github.com/go-telegram/bot"
 	"google.golang.org/genai"
 )
 
@@ -45,9 +47,9 @@ func waitRunDone(t *testing.T, b *Bot, c conv) {
 
 func fastTimers(t *testing.T) {
 	t.Helper()
-	oldStream, oldStatus := streamEditInterval, statusEditInterval
-	streamEditInterval, statusEditInterval = 20*time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { streamEditInterval, statusEditInterval = oldStream, oldStatus })
+	oldStream := streamEditInterval
+	streamEditInterval = 20 * time.Millisecond
+	t.Cleanup(func() { streamEditInterval = oldStream })
 }
 
 func newRunTestBot(t *testing.T) (*Bot, *fakeAPI) {
@@ -200,6 +202,67 @@ func TestStreamingOverflowContinuation(t *testing.T) {
 	}
 	if !strings.Contains(finalTextOf(last), "END-MARKER") {
 		t.Error("continuation message missing the answer tail")
+	}
+}
+
+// TestOverflowKeepsDeltasDuringRender guards the lost-update race in the
+// overflow path: a delta appended while the overflow's render call is in
+// flight must land in the continuation, never be clobbered by the commit.
+func TestOverflowKeepsDeltasDuringRender(t *testing.T) {
+	b, api := newRunTestBot(t)
+
+	var blockOnce sync.Once
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	// Block the first answer-message creation (not the status line) so the
+	// next delta demonstrably arrives while the overflow render is in flight.
+	api.sendHook = func(params *tgbot.SendMessageParams) {
+		if strings.HasPrefix(params.Text, "⚙") {
+			return
+		}
+		blockOnce.Do(func() {
+			close(blocked)
+			<-release
+		})
+	}
+
+	b.driver = &fakeDriver{turned: make(chan struct{}), script: func(sink agentrun.EventSink) {
+		sink.OnStream("s", strings.Repeat("chunk of long answer text\n", 200), "") // ~5400 runes
+		time.Sleep(60 * time.Millisecond)                                          // pump tick: overflow commit + blocked creation
+		sink.OnStream("s", "TAIL-MARKER", "")                                      // lands during the blocked render
+		close(release)
+		time.Sleep(60 * time.Millisecond)
+	}}
+
+	b.startRun(context.Background(), rootConv(100), 3, "long", nil, nil, nil)
+	waitRunDone(t, b, rootConv(100))
+	select {
+	case <-blocked:
+	default:
+		t.Fatal("answer creation was never observed (hook did not trigger)")
+	}
+
+	// Every delivered answer text, last render per message.
+	finals := map[int]string{}
+	for _, s := range api.sends() {
+		if !strings.HasPrefix(s.text, "⚙") {
+			finals[s.msgID] = s.text
+		}
+	}
+	for id := range finals {
+		if edits := api.editsFor(id); len(edits) > 0 {
+			finals[id] = edits[len(edits)-1]
+		}
+	}
+	joined := ""
+	for _, txt := range finals {
+		joined += txt + "\n"
+	}
+	if !strings.Contains(joined, "TAIL-MARKER") {
+		t.Fatalf("delta streamed during the overflow render was lost; finals: %v", finals)
+	}
+	if !strings.Contains(joined, "chunk of long answer text") {
+		t.Fatal("the overflowed head was lost")
 	}
 }
 

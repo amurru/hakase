@@ -14,13 +14,10 @@ import (
 	"google.golang.org/genai"
 )
 
-// streamEditInterval spaces live answer-message edits (at most one edit per
-// interval, only when content changed). A var so tests can shorten it.
+// streamEditInterval spaces render passes: at most one answer edit per
+// interval (only when content changed), and the pre-stream status line is
+// refreshed on the same cadence. A var so tests can shorten it.
 var streamEditInterval = 2 * time.Second
-
-// statusEditInterval spaces quiet status-line edits while nothing has
-// streamed yet. A var so tests can shorten it.
-var statusEditInterval = 2500 * time.Millisecond
 
 // streamFlushLen is the raw-answer length at which a streaming message is
 // finalized and a continuation message starts (the design's "~3,800 chars",
@@ -227,13 +224,11 @@ func (rv *runView) pump() {
 		rv.mu.Unlock()
 		return
 	}
-	if rv.dirty {
-		rv.dirty = false
-	}
 	streaming := rv.streamedAny
 	answerID := rv.answerID
 	statusID := rv.statusID
 	lastTool := rv.lastTool
+	dirty := rv.dirty
 	seg := make([]rune, len(rv.seg))
 	copy(seg, rv.seg)
 	rv.mu.Unlock()
@@ -252,47 +247,78 @@ func (rv *runView) pump() {
 		return
 	}
 
-	// Overflow: when the segment exceeds the flush length, the part before
-	// the cut finalizes the current message and the remainder continues in a
-	// fresh one.
-	rest, done, overflowed := splitOverflow(seg)
+	// Overflow: when the rendered segment exceeds the flush length, close the
+	// current message and continue in a fresh one. The split is computed from
+	// and committed to rv.seg in one locked step, so deltas appended while we
+	// were pacing the previous render are part of the split, never lost.
+	overflowCommitted := false
+	if len(seg) > streamFlushLen {
+		var rest, done []rune
+		rv.mu.Lock()
+		if r, d, ok := splitOverflow(rv.seg); ok {
+			rv.seg = append([]rune(nil), r...)
+			rv.answerID = 0
+			rv.answerContinued = true
+			rv.dirty = true
+			rest, done, overflowCommitted = r, d, true
+		}
+		rv.mu.Unlock()
+		if overflowCommitted {
+			if answerID != 0 {
+				html, commit := rv.renderSegment(done)
+				rv.b.editText(rv.ctx, rv.c, answerID, html, nil)
+				commit()
+			} else {
+				// No message owns the closed part yet: create it now. This is
+				// the first answer creation — the turn's one notification.
+				html, commit := rv.renderSegment(done)
+				if msg := rv.b.sendText(rv.ctx, rv.c, html, nil, false); msg != nil {
+					commit()
+					rv.mu.Lock()
+					rv.answerID = msg.ID
+					rv.mu.Unlock()
+				}
+			}
+			seg, answerID, dirty = rest, 0, true
+		}
+	}
 
 	if answerID == 0 {
-		// First content arrived: create the answer message (the turn's one
-		// notification; continuation messages are created silently).
-		body := seg
-		if overflowed {
-			body = done
+		if !dirty {
+			return // nothing new to render into a message yet
 		}
+		// First content arrived: create the answer message (the turn's one
+		// notification; continuation messages are created silently). Render
+		// the freshest segment; if more deltas land while the creation is in
+		// flight, dirty stays set and the next tick edits them in.
 		rv.mu.Lock()
 		silent := rv.answerContinued
+		cur := make([]rune, len(rv.seg))
+		copy(cur, rv.seg)
 		rv.mu.Unlock()
-		msg := rv.b.sendText(rv.ctx, rv.c, rv.renderSegment(body), nil, silent)
+		html, commit := rv.renderSegment(cur)
+		msg := rv.b.sendText(rv.ctx, rv.c, html, nil, silent)
 		if msg == nil {
 			return // creation failed; the next tick (or finalize) retries
 		}
+		commit() // only on success: a retry must start from the old fence state
 		rv.mu.Lock()
 		rv.answerID = msg.ID
-		if overflowed {
-			rv.seg = append([]rune(nil), rest...)
-			rv.answerID = 0 // the remainder continues in a new message
-			rv.answerContinued = true
+		if len(rv.seg) == len(cur) {
+			rv.dirty = false
 		}
 		rv.mu.Unlock()
 		return
 	}
-
-	if overflowed {
-		rv.b.editText(rv.ctx, rv.c, answerID, rv.renderSegment(done), nil)
+	if dirty && len(seg) > 0 {
+		html, commit := rv.renderSegment(seg)
+		rv.b.editText(rv.ctx, rv.c, answerID, html, nil)
+		commit()
 		rv.mu.Lock()
-		rv.seg = append([]rune(nil), rest...)
-		rv.answerID = 0
-		rv.answerContinued = true
+		if len(rv.seg) == len(seg) {
+			rv.dirty = false
+		}
 		rv.mu.Unlock()
-		return
-	}
-	if len(seg) > 0 {
-		rv.b.editText(rv.ctx, rv.c, answerID, rv.renderSegment(seg), nil)
 	}
 }
 
@@ -317,16 +343,19 @@ func splitOverflow(seg []rune) (rest, done []rune, ok bool) {
 
 // renderSegment converts the raw markdown segment to Telegram HTML, carrying
 // the code-fence state across edits and continuation messages (the same
-// mechanism ChunkReply uses, so split answers render balanced tags).
-func (rv *runView) renderSegment(seg []rune) string {
+// mechanism ChunkReply uses, so split answers render balanced tags). The
+// returned commit persists the advanced fence state — call it only once the
+// render has been delivered, so a failed creation retries from the old state.
+func (rv *runView) renderSegment(seg []rune) (html string, commit func()) {
 	rv.mu.Lock()
 	fence := rv.inFence
 	rv.mu.Unlock()
-	html := channel.MarkdownToTelegramHTMLState(string(seg), &fence)
-	rv.mu.Lock()
-	rv.inFence = fence
-	rv.mu.Unlock()
-	return html
+	html = channel.MarkdownToTelegramHTMLState(string(seg), &fence)
+	return html, func() {
+		rv.mu.Lock()
+		rv.inFence = fence
+		rv.mu.Unlock()
+	}
 }
 
 // finalize stops the pump and renders the terminal states: the answer's final
@@ -372,23 +401,29 @@ func (rv *runView) finalize() {
 				break
 			}
 			if answerID == 0 {
-				rv.b.sendText(ctx, rv.c, rv.renderSegment(done), nil, !loudNext)
+				html, commit := rv.renderSegment(done)
+				rv.b.sendText(ctx, rv.c, html, nil, !loudNext)
+				commit()
 				loudNext = false
 			} else {
-				rv.b.editText(ctx, rv.c, answerID, rv.renderSegment(done), nil)
+				html, commit := rv.renderSegment(done)
+				rv.b.editText(ctx, rv.c, answerID, html, nil)
+				commit()
 			}
 			answerID, seg = 0, rest
 		}
 		if len(seg) > 0 {
+			html, commit := rv.renderSegment(seg)
 			if answerID == 0 {
 				// Streaming edits never landed (API hiccup): one last-ditch
 				// creation, otherwise the answer would vanish.
-				rv.b.sendText(ctx, rv.c, rv.renderSegment(seg), nil, !loudNext)
+				rv.b.sendText(ctx, rv.c, html, nil, !loudNext)
 			} else {
-				rv.b.editText(ctx, rv.c, answerID, rv.renderSegment(seg), nil)
+				rv.b.editText(ctx, rv.c, answerID, html, nil)
 			}
+			commit()
 		}
-		rv.editStatus(ctx, statusID, statusDone(elapsed, tokens))
+		rv.editStatus(ctx, statusID, statusDone(elapsed, tokens, lastError, hasError))
 		rv.b.react(ctx, rv.c, rv.promptID, reactionDone)
 	}
 
@@ -414,11 +449,16 @@ func statusWorking(lastTool string, elapsed time.Duration) string {
 	return "⚙ " + lastTool + " · " + elapsed.String()
 }
 
-// statusDone is the compact completion line: ✓ 54s · 39.8k tok.
-func statusDone(elapsed time.Duration, tokens int) string {
+// statusDone is the compact completion line: ✓ 54s · 39.8k tok. An error
+// that arrived after text was already streaming is appended — the answer is
+// out, but the user should know the run did not end cleanly.
+func statusDone(elapsed time.Duration, tokens int, lastError string, hasError bool) string {
 	s := "✓ " + elapsed.String()
 	if tokens > 0 {
 		s += " · " + humanTokens(tokens) + " tok"
+	}
+	if hasError {
+		s += " · ⚠ " + truncateRunes(lastError, maxStatusErrLen)
 	}
 	return s
 }

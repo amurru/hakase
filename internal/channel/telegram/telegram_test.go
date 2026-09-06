@@ -35,6 +35,7 @@ type fakeAPI struct {
 	failDeletes    int // first N deleteWebhook calls fail (flaky API simulation)
 	webhookURL     string
 	nextMsgID      int
+	sendHook       func(params *tgbot.SendMessageParams) // optional, blocks inside SendMessage
 }
 
 type fakeSend struct {
@@ -79,7 +80,6 @@ func (f *fakeAPI) GetWebhookInfo(ctx context.Context) (*models.WebhookInfo, erro
 
 func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.nextMsgID++
 	f.sent = append(f.sent, fakeSend{
 		chatID:   params.ChatID.(int64),
@@ -89,6 +89,11 @@ func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessagePara
 		hasKb:    params.ReplyMarkup != nil,
 		silent:   params.DisableNotification,
 	})
+	hook := f.sendHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook(params) // called without f.mu: may block
+	}
 	return &models.Message{ID: f.nextMsgID}, nil
 }
 

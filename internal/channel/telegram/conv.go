@@ -63,13 +63,22 @@ func (b *Bot) boundSessionID(c conv) string {
 	return b.store.Get().Chats[chatKey(c.chatID)].SessionID
 }
 
-// bindThread persists a thread's session binding (topics mode).
+// bindThread persists a thread's session binding (topics mode). Bindings are
+// 1:1: any other thread still bound to the same session is unbound, so gate
+// prompt routing (session → conversation) stays deterministic after /topic
+// or /use rebinds a session to a different topic.
 func (b *Bot) bindThread(c conv, sessionID, title string) error {
 	return b.store.Update(func(s *state.State) error {
 		if s.Threads == nil {
 			s.Threads = map[string]state.Thread{}
 		}
-		s.Threads[threadKey(c)] = state.Thread{SessionID: sessionID, Title: title}
+		tk := threadKey(c)
+		for key, th := range s.Threads {
+			if key != tk && th.SessionID == sessionID {
+				delete(s.Threads, key)
+			}
+		}
+		s.Threads[tk] = state.Thread{SessionID: sessionID, Title: title}
 		return nil
 	})
 }
