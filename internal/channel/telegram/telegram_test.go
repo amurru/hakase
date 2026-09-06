@@ -53,18 +53,6 @@ func (f *fakeAPI) GetWebhookInfo(ctx context.Context) (*models.WebhookInfo, erro
 	return &models.WebhookInfo{URL: f.webhookURL}, nil
 }
 
-func (f *fakeAPI) DeleteWebhook(ctx context.Context, params *tgbot.DeleteWebhookParams) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.deleteCalls++
-	if f.deleteCalls <= f.failDeletes {
-		return false, fmt.Errorf("error decode response body for method deleteWebhook, , unexpected end of JSON input")
-	}
-	f.deletedWebhook++
-	f.webhookURL = ""
-	return true, nil
-}
-
 func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -171,6 +159,19 @@ func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service
 		pendingOther: map[int64]pendingClarify{},
 		clarifyCtx:   map[string]clarifyChoice{},
 		mediaGroup:   map[string]*mediaGroupBuf{},
+	}
+	// Simulate deleteWebhook through the same seam production uses, with the
+	// fakeAPI counters driving flakiness (failDeletes) and state (webhookURL).
+	b.deleteWebhookFn = func(ctx context.Context) error {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		api.deleteCalls++
+		if api.deleteCalls <= api.failDeletes {
+			return fmt.Errorf("HTTP 200, undecodable body %q", "")
+		}
+		api.deletedWebhook++
+		api.webhookURL = ""
+		return nil
 	}
 	return b, api, responders, service
 }

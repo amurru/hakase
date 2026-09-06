@@ -810,6 +810,8 @@ Pairing codes generated at runtime are 6 digits, valid 15 minutes, and surfaced 
 
 Behavior notes: inbound text and photo captions are supported (albums buffer ~1.5s into one prompt; voice/files are deferred); each chat runs one agent turn at a time with `/stop` to cancel; approval/clarify gate expiries are clamped to >=300s when a channel is enabled (mobile round-trip); env overrides are `HAKASE_TELEGRAM_ENABLED` and `HAKASE_TELEGRAM_BOT_TOKEN`. Config changes to this block need a server restart to take effect.
 
+**Token sharing / webhook conflicts (troubleshooting):** hakase is polling-only and never registers a webhook. But Telegram keeps one delivery mode per bot token: if any webhook-based integration (another framework, a hosted bot platform, an old project) set a webhook on the same token, every `getUpdates` is rejected with `409 Conflict: can't use getUpdates method while webhook is active` and the bot appears completely silent - pairing included. `Bot.Run` heals this at startup (getWebhookInfo -> deleteWebhook, verified, retried, and re-run with a cooldown when a conflict surfaces mid-poll; deleteWebhook goes through a plain-HTTP GET bypassing the library client, whose POST returned empty bodies in the field). If the webhook re-appears, another platform is actively holding the token - the durable fix is a dedicated token (`/newbot`, or `/revoke` to kill the other integration).
+
 ### Environment variables
 
 Environment variables override the matching `config.json` fields, with environment variables taking precedence over the file. If `config.json` is missing but at least one of these is set, the config is built entirely from the environment:

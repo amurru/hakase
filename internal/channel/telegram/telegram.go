@@ -9,7 +9,10 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +35,6 @@ const ChannelName = "telegram"
 type api interface {
 	Start(ctx context.Context)
 	GetWebhookInfo(ctx context.Context) (*models.WebhookInfo, error)
-	DeleteWebhook(ctx context.Context, params *tgbot.DeleteWebhookParams) (bool, error)
 	SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error)
 	EditMessageText(ctx context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error)
 	AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error)
@@ -62,6 +64,11 @@ type Bot struct {
 
 	healMu           sync.Mutex
 	lastConflictHeal time.Time // last conflict-triggered healing attempt
+	// deleteWebhookFn performs the actual deleteWebhook call; a seam so
+	// tests can simulate flaky deletions. Defaults to deleteWebhookDirect,
+	// plain HTTP GET - the library's deleteWebhook returned empty bodies
+	// deterministically in the field while every other method worked.
+	deleteWebhookFn func(ctx context.Context) error
 
 	clarifyMu  sync.Mutex
 	clarifyCtx map[string]clarifyChoice // gateID -> choices for callbacks
@@ -122,6 +129,7 @@ func New(d Deps) (*Bot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
+	b.deleteWebhookFn = b.deleteWebhookDirect
 	b.api = api
 	return b, nil
 }
@@ -170,7 +178,7 @@ func (b *Bot) clearStaleWebhook(ctx context.Context) {
 		if err == nil && info != nil {
 			b.log("stale webhook detected on this token (%s, %d pending updates) - deleting it so long polling can start", info.URL, info.PendingUpdateCount)
 		}
-		if _, err := b.api.DeleteWebhook(ctx, &tgbot.DeleteWebhookParams{DropPendingUpdates: false}); err != nil {
+		if err := b.deleteWebhookFn(ctx); err != nil {
 			b.log("deleteWebhook attempt %d failed: %v", attempt, err)
 		}
 
@@ -195,6 +203,36 @@ func (b *Bot) clearStaleWebhook(ctx context.Context) {
 	if info, err := b.api.GetWebhookInfo(ctx); err == nil && info != nil && info.URL != "" {
 		b.log("WARNING: webhook %s is still active after %d attempts. Manual fix: open https://api.telegram.org/bot<token>/deleteWebhook once. If it keeps coming back, another bot platform is still using this token - give hakase its own token via @BotFather (/revoke or /token).", info.URL, maxAttempts)
 	}
+}
+
+// deleteWebhookDirect calls deleteWebhook with plain HTTP GET, bypassing the
+// library client: in the field the library's POST returned empty bodies for
+// this one method (every other method worked) and the failure was opaque.
+// GET is the same request a browser makes for the manual fix. The token
+// stays in the URL and is never logged; errors carry status + a body snippet.
+func (b *Bot) deleteWebhookDirect(ctx context.Context) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook?drop_pending_updates=false", b.token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var apiResp struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return fmt.Errorf("HTTP %d, undecodable body %q", resp.StatusCode, truncateRunes(string(body), 200))
+	}
+	if !apiResp.OK {
+		return fmt.Errorf("HTTP %d, telegram said: %s", resp.StatusCode, apiResp.Description)
+	}
+	return nil
 }
 
 // handleBotError is the tgbot errors handler: poll/API errors are logged

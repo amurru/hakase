@@ -149,6 +149,8 @@ In-chat commands: `/new`, `/sessions`, `/use <id>`, `/status`, `/stop`, `/tasks`
 
 Manage everything from the web UI's **Channels** page (status, pairing code, revoke) or `hakase channels status|pair-code|revoke`. Env overrides: `HAKASE_TELEGRAM_ENABLED`, `HAKASE_TELEGRAM_BOT_TOKEN`. Pairing state lives in `~/.hakase/channels.json` (0600, sandbox-denied).
 
+> **Bot completely silent?** Check the server log for `409 Conflict: can't use getUpdates method while webhook is active`. That means this bot token has a webhook registered — usually because another bot platform or an old project is (or was) using the same token; Telegram delivers updates to the webhook and refuses polling. hakase deletes stale webhooks automatically at startup, but if the webhook keeps coming back the other platform is still holding the token: either stop it, or give hakase its own bot via [@BotFather](https://t.me/BotFather) (`/newbot`, or `/revoke` to kill the old integration). Manual one-shot fix: open `https://api.telegram.org/bot<token>/deleteWebhook`.
+
 ---
 
 ## CLI Reference
