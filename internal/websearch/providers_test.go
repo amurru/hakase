@@ -163,3 +163,90 @@ func TestStripHTMLFragment(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestFetchPageViaJina(t *testing.T) {
+	jina := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/https://example.com/page") {
+			t.Errorf("unexpected jina path: %s", r.URL.RequestURI())
+		}
+		io.WriteString(w, "Title: Example\nURL Source: https://example.com/page\n\nMarkdown Content:\n# Hello\n\nBody text.")
+	}))
+	defer jina.Close()
+	p := NewProviders()
+	p.JinaReaderURL = jina.URL + "/"
+	p.hostCheck = nil // tests must not resolve DNS
+	out, err := p.FetchPage(context.Background(), "https://example.com/page")
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	if !strings.Contains(out, "# Hello") {
+		t.Errorf("markdown lost: %q", out)
+	}
+}
+
+func TestFetchPageDirectFallbackStripsTags(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<html><head><style>x{}</style><script>evil()</script></head>
+		<body><h1>Title</h1><p>Para one &amp; two.</p><div><ul><li>item</li></ul></div></body></html>`)
+	}))
+	defer page.Close()
+	p := NewProviders()
+	rateLimited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer rateLimited.Close()
+	p.JinaReaderURL = rateLimited.URL + "/"
+	p.hostCheck = nil
+	out, err := p.FetchPage(context.Background(), page.URL+"/doc")
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	if strings.Contains(out, "<") || strings.Contains(out, "evil()") {
+		t.Errorf("tags/script survived: %q", out)
+	}
+	if !strings.Contains(out, "Title") || !strings.Contains(out, "Para one & two.") || !strings.Contains(out, "item") {
+		t.Errorf("content lost: %q", out)
+	}
+}
+
+func TestFetchPageBlocksPrivateHost(t *testing.T) {
+	p := NewProviders() // real CheckHostPublic
+	if _, err := p.FetchPage(context.Background(), "http://127.0.0.1:9/x"); err == nil || !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("expected SSRF block, got: %v", err)
+	}
+}
+
+func TestFetchPageInvalidURL(t *testing.T) {
+	p := NewProviders()
+	if _, err := p.FetchPage(context.Background(), "ftp://x"); err == nil {
+		t.Fatal("expected error for non-http scheme")
+	}
+}
+
+func TestFetchPageBothPathsFail(t *testing.T) {
+	p := NewProviders()
+	p.hostCheck = nil
+	p.JinaReaderURL = "http://127.0.0.1:1/"
+	_, err := p.FetchPage(context.Background(), "http://127.0.0.1:1/page")
+	if err == nil || !strings.Contains(err.Error(), "reader") || !strings.Contains(err.Error(), "direct") {
+		t.Fatalf("expected combined error, got: %v", err)
+	}
+}
+
+func TestFetchPageBodyCapped(t *testing.T) {
+	big := strings.Repeat("a", 300<<10)
+	jina := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, big)
+	}))
+	defer jina.Close()
+	p := NewProviders()
+	p.JinaReaderURL = jina.URL + "/"
+	p.hostCheck = nil
+	out, err := p.FetchPage(context.Background(), "https://example.com/big")
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	if len(out) > int(maxFetchBytes) {
+		t.Errorf("body not capped: %d", len(out))
+	}
+}

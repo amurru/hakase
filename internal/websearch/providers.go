@@ -197,7 +197,66 @@ func wikiArticleURL(apiURL, title string) string {
 var (
 	scriptRe = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
 	tagRe    = regexp.MustCompile(`<[^>]*>`)
+	blockRe  = regexp.MustCompile(`(?i)<(?:br|/p|/div|/h[1-6]|/li|/ul|/ol|/tr|/table|/blockquote)[^>]*>`)
+
+	multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 )
+
+// FetchPage returns the content of rawURL as markdown. Primary path is the
+// keyless Jina Reader; if it refuses (rate limit, block), the page is
+// fetched directly and tags are stripped. User-supplied URLs must pass the
+// public-host guard before any request.
+func (p *Providers) FetchPage(ctx context.Context, rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("invalid url %q", rawURL)
+	}
+	if p.hostCheck != nil {
+		if err := p.hostCheck(u.Host); err != nil {
+			return "", fmt.Errorf("blocked non-public host: %w", err)
+		}
+	}
+	md, jinaErr := p.fetchJina(ctx, rawURL)
+	if jinaErr == nil && strings.TrimSpace(md) != "" {
+		return md, nil
+	}
+	page, directErr := p.fetchDirect(ctx, rawURL)
+	if directErr != nil {
+		return "", fmt.Errorf("reader: %v; direct: %v", jinaErr, directErr)
+	}
+	return page, nil
+}
+
+func (p *Providers) fetchJina(ctx context.Context, rawURL string) (string, error) {
+	body, err := p.get(ctx, p.JinaReaderURL+rawURL, defaultUserAgent, maxFetchBytes)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func (p *Providers) fetchDirect(ctx context.Context, rawURL string) (string, error) {
+	body, err := p.get(ctx, rawURL, defaultUserAgent, maxRawFetchBytes)
+	if err != nil {
+		return "", err
+	}
+	return stripHTMLPage(string(body)), nil
+}
+
+// stripHTMLPage converts a full HTML document to readable text: script/style
+// dropped, block boundaries become newlines, other tags removed.
+func stripHTMLPage(s string) string {
+	s = scriptRe.ReplaceAllString(s, " ")
+	s = blockRe.ReplaceAllString(s, "\n")
+	s = tagRe.ReplaceAllString(s, "")
+	s = htmlescape.UnescapeString(s)
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.Join(strings.Fields(l), " ")
+	}
+	return strings.TrimSpace(multiNewlineRe.ReplaceAllString(strings.Join(lines, "\n"), "\n\n"))
+}
 
 // stripHTMLFragment converts a small HTML snippet to single-spaced text.
 func stripHTMLFragment(s string) string {
