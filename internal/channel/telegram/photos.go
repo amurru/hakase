@@ -43,7 +43,7 @@ type photoAttach struct {
 // prompt; single photos run immediately. A caption is required — it is the
 // prompt (albums use their first caption).
 func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
-	c := convFromMessage(m)
+	c := b.effectiveConv(m)
 	if strings.TrimSpace(m.Caption) == "" && m.MediaGroupID == "" {
 		b.sendText(ctx, c, "📸 Add a caption telling me what to do with the photo — the caption is the prompt.", nil, false)
 		return
@@ -66,7 +66,7 @@ func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
 func (b *Bot) bufferAlbumPhoto(ctx context.Context, m *models.Message) {
 	photo, err := b.downloadPhoto(ctx, m.Photo)
 	if err != nil {
-		b.sendText(ctx, convFromMessage(m), "⚠️ "+err.Error(), nil, false)
+		b.sendText(ctx, b.effectiveConv(m), "⚠️ "+err.Error(), nil, false)
 		return
 	}
 
@@ -74,7 +74,7 @@ func (b *Bot) bufferAlbumPhoto(ctx context.Context, m *models.Message) {
 	defer b.mediaMu.Unlock()
 	group, ok := b.mediaGroup[m.MediaGroupID]
 	if !ok {
-		group = &mediaGroupBuf{c: convFromMessage(m)}
+		group = &mediaGroupBuf{c: b.effectiveConv(m)}
 		b.mediaGroup[m.MediaGroupID] = group
 		group.timer = time.AfterFunc(mediaGroupFlushAt, func() {
 			b.flushMediaGroup(m.MediaGroupID)
@@ -97,6 +97,10 @@ func (b *Bot) flushMediaGroup(groupID string) {
 	delete(b.mediaGroup, groupID)
 	b.mediaMu.Unlock()
 	if !ok || len(group.photos) == 0 || group.c.chatID == 0 {
+		return
+	}
+	if b.inLobby(group.c) {
+		b.sendText(context.Background(), group.c, lobbyHint, nil, false)
 		return
 	}
 	parts, refs, manifest := photoContent(group.photos)

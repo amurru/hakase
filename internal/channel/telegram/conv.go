@@ -33,6 +33,47 @@ func convFromMessage(m *models.Message) conv {
 	return conv{chatID: m.Chat.ID, threadID: normalizeThread(m.MessageThreadID)}
 }
 
+// effectiveConv is convFromMessage with the topics-mode gate: chats without
+// topics mode have no per-thread state, so every message — threaded or not —
+// belongs to the root area and the legacy chat binding keeps driving it.
+func (b *Bot) effectiveConv(m *models.Message) conv {
+	c := convFromMessage(m)
+	if c.threadID != 0 && !b.topicsMode(c.chatID) {
+		c.threadID = 0
+	}
+	return c
+}
+
+// topicsMode reports whether the chat runs one-topic-per-session conversations.
+func (b *Bot) topicsMode(chatID int64) bool {
+	return b.store.Get().Chats[chatKey(chatID)].TopicsMode
+}
+
+// inLobby reports whether a conversation is a topics-mode root area.
+func (b *Bot) inLobby(c conv) bool {
+	return c.threadID == 0 && b.topicsMode(c.chatID)
+}
+
+// boundSessionID returns the session id this conversation talks to: the
+// thread binding in topics mode, the chat binding otherwise.
+func (b *Bot) boundSessionID(c conv) string {
+	if c.threadID != 0 {
+		return b.store.Get().Threads[threadKey(c)].SessionID
+	}
+	return b.store.Get().Chats[chatKey(c.chatID)].SessionID
+}
+
+// bindThread persists a thread's session binding (topics mode).
+func (b *Bot) bindThread(c conv, sessionID, title string) error {
+	return b.store.Update(func(s *state.State) error {
+		if s.Threads == nil {
+			s.Threads = map[string]state.Thread{}
+		}
+		s.Threads[threadKey(c)] = state.Thread{SessionID: sessionID, Title: title}
+		return nil
+	})
+}
+
 // normalizeThread maps absent/root/General topic ids to the root area (0).
 func normalizeThread(id int) int {
 	if id <= 1 {

@@ -47,7 +47,7 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 		return
 	}
 
-	sessionID, err := b.resolveSession(chatKey(c.chatID), prompt)
+	sessionID, err := b.resolveSession(c, prompt)
 	if err != nil {
 		b.sendText(ctx, c, "⚠️ Could not resolve a session: "+err.Error(), nil, false)
 		return
@@ -96,16 +96,25 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 	}()
 }
 
-// resolveSession returns the chat's bound session, validating it still
-// exists; otherwise it creates (and binds) a fresh one titled from the prompt.
-func (b *Bot) resolveSession(chatKeyStr, prompt string) (string, error) {
+// resolveSession returns the conversation's bound session, validating it
+// still exists; otherwise it creates (and binds) a fresh one titled from the
+// prompt. Topics-mode threads bind through state.Threads and rename the
+// Telegram topic to the session title; the root area keeps the legacy chat
+// binding (exactly today's behavior).
+func (b *Bot) resolveSession(c conv, prompt string) (string, error) {
 	st := b.store.Get()
-	if chat, ok := st.Chats[chatKeyStr]; ok && chat.SessionID != "" {
-		if _, err := b.sessions.Store().Load(chat.SessionID); err == nil {
-			return chat.SessionID, nil
+	if c.threadID == 0 {
+		if chat, ok := st.Chats[chatKey(c.chatID)]; ok && chat.SessionID != "" {
+			if _, err := b.sessions.Store().Load(chat.SessionID); err == nil {
+				return chat.SessionID, nil
+			}
+			// Bound session vanished (deleted/archived elsewhere): fall
+			// through and create a replacement.
 		}
-		// Bound session vanished (deleted/archived elsewhere): fall through
-		// and create a replacement.
+	} else if th, ok := st.Threads[threadKey(c)]; ok && th.SessionID != "" {
+		if _, err := b.sessions.Store().Load(th.SessionID); err == nil {
+			return th.SessionID, nil
+		}
 	}
 	title := "Telegram · " + firstRunes(prompt, 40)
 	if strings.TrimSpace(prompt) == "" {
@@ -115,14 +124,23 @@ func (b *Bot) resolveSession(chatKeyStr, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := b.store.Update(func(s *state.State) error {
-		if s.Chats == nil {
-			s.Chats = map[string]state.Chat{}
+	if c.threadID == 0 {
+		if err := b.store.Update(func(s *state.State) error {
+			if s.Chats == nil {
+				s.Chats = map[string]state.Chat{}
+			}
+			s.Chats[chatKey(c.chatID)] = state.Chat{SessionID: sess.ID}
+			return nil
+		}); err != nil {
+			b.log("cannot persist chat binding: %v", err)
 		}
-		s.Chats[chatKeyStr] = state.Chat{SessionID: sess.ID}
-		return nil
-	}); err != nil {
-		b.log("cannot persist chat binding: %v", err)
+	} else {
+		// Binding first, rename second: a failed rename (bots may lack the
+		// rights in edge cases) must not lose the session.
+		if err := b.bindThread(c, sess.ID, sess.Title); err != nil {
+			b.log("cannot persist thread binding: %v", err)
+		}
+		b.renameTopic(context.Background(), c, sess.Title)
 	}
 	return sess.ID, nil
 }

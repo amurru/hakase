@@ -287,8 +287,10 @@ func (b *Bot) healWebhookConflict() {
 func (b *Bot) registerCommands(ctx context.Context) error {
 	_, err := b.api.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{
 		Commands: []models.BotCommand{
-			{Command: "new", Description: "Start a new session"},
+			{Command: "new", Description: "Start a new session (in a topic: resets it)"},
 			{Command: "sessions", Description: "List recent sessions"},
+			{Command: "use", Description: "Bind this chat/topic to a session by id"},
+			{Command: "topic", Description: "Topics mode: /topic, /topic off, /topic <id>"},
 			{Command: "status", Description: "Show current session and run state"},
 			{Command: "tasks", Description: "Show the task board"},
 			{Command: "cron", Description: "List cron jobs (/cron run <name> to trigger)"},
@@ -328,11 +330,11 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 	userID := m.From.ID
-	c := convFromMessage(m)
+	c := b.effectiveConv(m)
 	b.log("message from user %d (%s), %d chars, thread %d", userID, m.From.Username, len(m.Text), c.threadID)
 
 	if strings.HasPrefix(m.Text, "/") {
-		b.handleCommand(ctx, m)
+		b.handleCommand(ctx, c, m)
 		return
 	}
 
@@ -359,6 +361,12 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 
+	// Topics-mode lobby: the root area takes commands but not prompts.
+	if b.inLobby(c) {
+		b.sendText(ctx, c, lobbyHint, nil, false)
+		return
+	}
+
 	if len(m.Photo) > 0 {
 		b.handlePhoto(ctx, m)
 		return
@@ -371,6 +379,9 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 
 	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil)
 }
+
+// lobbyHint points at the ✚ composer button; commands keep working in the root.
+const lobbyHint = "💬 Topics mode is on — this root area is a lobby. Tap the ✚ / “All Messages” composer button to open a topic and prompt there. Commands (like /status and /new) still work here; /topic off returns to a single chat."
 
 // takePendingOther pops the pending free-text clarify for a conversation, if
 // any and recent.

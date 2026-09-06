@@ -38,7 +38,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 		answer("Message is gone.")
 		return
 	}
-	c := convFromMessage(msg)
+	c := b.effectiveConv(msg)
 	data := cq.Data
 
 	switch {
