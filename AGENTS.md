@@ -38,9 +38,16 @@ make dev-backend    # go run -tags dev ./cmd/hakase/ web
 ## Layout
 
 - `cmd/hakase/` - the only entry point. Root has no .go files; do not add Go files to the repo root.
-- `internal/` - all packages: `agent` (ADK orchestration, delegation, gates, providers), `auth` (argon2id credentials + JWT), `cli` (subcommand dispatcher), `config`, `context` (compaction/summarization), `env`, `herdr`, `interfaces` (shared gate/notifier contracts), `knowledge`, `mcp`, `sandbox`, `session`, `skill`, `tui`, `util`, `vision`, `web` (chi HTTP server, handlers, SSE bridge, SPA embed).
+- `internal/` - all packages: `agent` (ADK orchestration, delegation, gates, providers), `agentrun` (transport-neutral single-turn driver shared by web chat and channels), `auth` (argon2id credentials + JWT), `channel` (communication-channel subsystem: pairing/auth, per-chat run state, bridge event router, formatting; `channel/state` is the `~/.hakase/channels.json` leaf store, `channel/telegram` the Telegram transport), `cli` (subcommand dispatcher), `config`, `context` (compaction/summarization), `env`, `herdr`, `interfaces` (shared gate/notifier contracts), `knowledge`, `mcp`, `sandbox`, `session`, `skill`, `tui`, `util`, `vision`, `web` (chi HTTP server, handlers, SSE bridge, SPA embed).
 - `webui/` - Vue 3 + TypeScript + Vite + Tailwind 4 SPA. Uses **pnpm** (workspace file present), not npm/yarn.
 - `.agents/skills/` - markdown skills shipped with the repo (committed).
+
+## Channels (Telegram)
+
+- The Telegram bot runs INSIDE the `web`/`serve` process (started in `cmd/hakase/web.go` when `channels.telegram.enabled` + `bot_token` are set, or `HAKASE_TELEGRAM_*` env). It reuses the process's runner, web gates, SSE bridge, and session service - approvals/clarifications can be answered from the web UI or the phone, first responder wins.
+- Transport-neutral logic lives in `internal/channel`; transports implement `channel.Channel` + `channel.PushHandler` and register with `channel.Service`. Pairing state persists in `~/.hakase/channels.json` (0600, flock, sandbox-denied).
+- `internal/channel` may import `internal/cli` (cron wrappers) and `internal/web/sse` (event bus), but `internal/cli` must never import `internal/channel` - only the leaf `internal/channel/state` (see the `channels` subcommand in `internal/cli/channels.go`).
+- Inbound prompts go through `agentrun.Driver` (extracted from the web chat handler): same sandbox, project binding, tool-call repair, and persistence as browser runs. One run per chat; `/stop` cancels it.
 
 ## Wiring gotchas
 
@@ -52,4 +59,4 @@ make dev-backend    # go run -tags dev ./cmd/hakase/ web
 
 - Go tests live next to sources (`*_test.go`), are self-contained (temp dirs, `isolateHome` redirects `$HOME`/`XDG_CONFIG_HOME`), and need no network, config.json, or MCP servers.
 - Tests write `logs/exec-audit.jsonl` under `cmd/hakase/` and `internal/agent/`; these `logs/` dirs are runtime artifacts, gitignored via `logs/` - do not commit them.
-- Runtime/generated (all gitignored): `config.json`, `tasks.json`, `sessions/`, `outputs/`, `downloads/`, `.venv/`, `.hakase-tmp/`, `webui/dist/`, `internal/web/dist/`, root `hakase` binary.
+- Runtime/generated (all gitignored): `config.json`, `tasks.json`, `sessions/`, `outputs/`, `downloads/`, `.venv/`, `.hakase-tmp/`, `webui/dist/`, `internal/web/dist/`, root `hakase` binary, `~/.hakase/channels.json` (+ `.lock`).

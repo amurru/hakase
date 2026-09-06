@@ -12,6 +12,7 @@ require (
 	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/doug/termtex v0.0.0-20260626010055-e3e21f41b38e
 	github.com/go-chi/chi/v5 v5.3.1
+	github.com/go-telegram/bot v1.25.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510

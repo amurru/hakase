@@ -201,6 +201,7 @@ func sensitiveFilePaths() []string {
 			filepath.Join(home, "credentials.json"),
 			filepath.Join(home, "jwt-secret"),
 			filepath.Join(home, "cronjobs.json"),
+			filepath.Join(home, "channels.json"),
 		)
 	}
 	return paths

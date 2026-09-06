@@ -151,6 +151,11 @@ func init() {
 		Handler:     RunProjectCLI,
 	})
 	registerCommand(Command{
+		Name:        "channels",
+		Description: "manage communication channels (status, pair-code, revoke)",
+		Handler:     RunChannelsCLI,
+	})
+	registerCommand(Command{
 		Name:        "web",
 		Description: "serve the web UI",
 		Handler:     notMigrated("web"),

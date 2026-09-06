@@ -16,20 +16,30 @@ import (
 	"sync/atomic"
 )
 
+// Event is a typed bridge event, delivered to non-SSE consumers (e.g. the
+// communication-channel router). Name is the SSE event name ("stream", "log",
+// "approval", ...) and Data is the raw JSON payload exactly as published.
+type Event struct {
+	Name string
+	Data json.RawMessage
+}
+
 // EventBridge bridges the agent's event bus to SSE format.
 // It implements interfaces.EventNotifier and provides methods that the
 // chat handler calls to stream agent content, logs, and prompts to
 // connected SSE clients.
 type EventBridge struct {
-	mu   sync.RWMutex
-	subs map[string]map[int64]chan []byte // sessionID -> subscriptionID -> channel
-	next int64                            // atomic counter for subscription IDs
+	mu        sync.RWMutex
+	subs      map[string]map[int64]chan []byte // sessionID -> subscriptionID -> channel
+	typedSubs map[string]map[int64]chan Event  // sessionID -> subscriptionID -> typed channel
+	next      int64                            // atomic counter for subscription IDs
 }
 
 // NewEventBridge creates a new EventBridge.
 func NewEventBridge() *EventBridge {
 	return &EventBridge{
-		subs: make(map[string]map[int64]chan []byte),
+		subs:      make(map[string]map[int64]chan []byte),
+		typedSubs: make(map[string]map[int64]chan Event),
 	}
 }
 
@@ -65,31 +75,66 @@ func (b *EventBridge) Unsubscribe(sessionID string, subID int64) {
 	}
 }
 
-// publishBytes fans out a pre-formatted SSE byte slice to all subscribers
-// for the session. Non-blocking: slow clients are dropped.
-func (b *EventBridge) publishBytes(sessionID string, data []byte) {
-	b.mu.RLock()
-	sess, ok := b.subs[sessionID]
-	b.mu.RUnlock()
-	if !ok || len(sess) == 0 {
-		return
-	}
+// SubscribeEvents registers a typed-event consumer for the given session.
+// Unlike Subscribe (raw SSE frames), events arrive as Event structs with the
+// event name and raw JSON payload already separated. Returns the subscription
+// ID and a receive-only channel.
+func (b *EventBridge) SubscribeEvents(sessionID string) (int64, <-chan Event) {
+	id := atomic.AddInt64(&b.next, 1)
+	ch := make(chan Event, 256)
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	// Re-check under lock to avoid TOCTOU
-	sess, ok = b.subs[sessionID]
-	if !ok {
-		return
+	b.mu.Lock()
+	if b.typedSubs[sessionID] == nil {
+		b.typedSubs[sessionID] = make(map[int64]chan Event)
 	}
-	for _, ch := range sess {
+	b.typedSubs[sessionID][id] = ch
+	b.mu.Unlock()
+
+	return id, ch
+}
+
+// UnsubscribeEvents removes a typed-event subscription. Safe to call multiple
+// times.
+func (b *EventBridge) UnsubscribeEvents(sessionID string, subID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if sess, ok := b.typedSubs[sessionID]; ok {
+		if ch, ok := sess[subID]; ok {
+			delete(sess, subID)
+			close(ch)
+		}
+		if len(sess) == 0 {
+			delete(b.typedSubs, sessionID)
+		}
+	}
+}
+
+// publish fans out an event to all raw-frame subscribers (as a formatted SSE
+// frame) and all typed-event subscribers (as an Event struct) for the session.
+// Non-blocking: slow consumers are dropped.
+func (b *EventBridge) publish(sessionID string, event string, data []byte) {
+	frame := formatSSE(event, data)
+	payloadCopy := append(json.RawMessage(nil), data...)
+
+	b.mu.Lock()
+	rawSess := b.subs[sessionID]
+	typedSess := b.typedSubs[sessionID]
+	for _, ch := range rawSess {
 		select {
-		case ch <- data:
+		case ch <- frame:
 		default:
 			// Drop: client is too slow
 		}
 	}
+	for _, ch := range typedSess {
+		select {
+		case ch <- Event{Name: event, Data: payloadCopy}:
+		default:
+			// Drop: consumer is too slow
+		}
+	}
+	b.mu.Unlock()
 }
 
 // SendStreamContent sends a streaming content chunk.
@@ -98,7 +143,7 @@ func (b *EventBridge) SendStreamContent(sessionID, content, thinking string) {
 		"content":  content,
 		"thinking": thinking,
 	})
-	b.publishBytes(sessionID, formatSSE("stream", payload))
+	b.publish(sessionID, "stream", payload)
 }
 
 // SendMessage sends a complete agent message.
@@ -107,18 +152,18 @@ func (b *EventBridge) SendMessage(sessionID, content, thinking string) {
 		"content":  content,
 		"thinking": thinking,
 	})
-	b.publishBytes(sessionID, formatSSE("message", payload))
+	b.publish(sessionID, "message", payload)
 }
 
 // SendLog sends an agent log line.
 func (b *EventBridge) SendLog(sessionID, line string) {
 	payload, _ := json.Marshal(map[string]string{"line": line})
-	b.publishBytes(sessionID, formatSSE("log", payload))
+	b.publish(sessionID, "log", payload)
 }
 
 // SendDone signals the agent run has completed.
 func (b *EventBridge) SendDone(sessionID string) {
-	b.publishBytes(sessionID, formatSSE("done", []byte("{}")))
+	b.publish(sessionID, "done", []byte("{}"))
 }
 
 // SendApprovalPrompt sends an approval request to SSE clients.
@@ -131,7 +176,7 @@ func (b *EventBridge) SendApprovalPrompt(sessionID, approvalID, tool, risk, reas
 		"reason":  reason,
 		"command": command,
 	})
-	b.publishBytes(sessionID, formatSSE("approval", payload))
+	b.publish(sessionID, "approval", payload)
 }
 
 // SendClarifyPrompt sends a clarify request to SSE clients.
@@ -143,19 +188,19 @@ func (b *EventBridge) SendClarifyPrompt(sessionID, id, question string, choices 
 		"choices":      choices,
 		"multi_select": multiSelect,
 	})
-	b.publishBytes(sessionID, formatSSE("clarify", payload))
+	b.publish(sessionID, "clarify", payload)
 }
 
 // SendApprovalTimeout sends an approval timeout event to SSE clients (task 22).
 func (b *EventBridge) SendApprovalTimeout(sessionID, approvalID string) {
 	payload, _ := json.Marshal(map[string]string{"id": approvalID})
-	b.publishBytes(sessionID, formatSSE("approval_timeout", payload))
+	b.publish(sessionID, "approval_timeout", payload)
 }
 
 // SendClarifyTimeout sends a clarify timeout event to SSE clients (task 22).
 func (b *EventBridge) SendClarifyTimeout(sessionID, id string) {
 	payload, _ := json.Marshal(map[string]string{"id": id})
-	b.publishBytes(sessionID, formatSSE("clarify_timeout", payload))
+	b.publish(sessionID, "clarify_timeout", payload)
 }
 
 // SendDelegation sends a delegation progress event.
@@ -166,7 +211,7 @@ func (b *EventBridge) SendDelegation(sessionID, taskID, agent, status, message s
 		"status":  status,
 		"message": message,
 	})
-	b.publishBytes(sessionID, formatSSE("delegation", payload))
+	b.publish(sessionID, "delegation", payload)
 }
 
 // SendCron sends a cron job event.
@@ -178,7 +223,7 @@ func (b *EventBridge) SendCron(sessionID, jobID, name, status, summary, outputPa
 		"summary":     summary,
 		"output_path": outputPath,
 	})
-	b.publishBytes(sessionID, formatSSE("cron", payload))
+	b.publish(sessionID, "cron", payload)
 }
 
 // SendTask sends a task board update.
@@ -187,7 +232,7 @@ func (b *EventBridge) SendTask(sessionID string, task map[string]any, action str
 		"task":   task,
 		"action": action,
 	})
-	b.publishBytes(sessionID, formatSSE("task", payload))
+	b.publish(sessionID, "task", payload)
 }
 
 // SendUsage sends a token usage update.
@@ -196,7 +241,7 @@ func (b *EventBridge) SendUsage(sessionID string, tokens int, percent int) {
 		"tokens":  tokens,
 		"percent": percent,
 	})
-	b.publishBytes(sessionID, formatSSE("usage", payload))
+	b.publish(sessionID, "usage", payload)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +290,7 @@ func (b *EventBridge) SendSidekick(sessionID, severity, text string) {
 		"severity": severity,
 		"text":     text,
 	})
-	b.publishBytes(sessionID, formatSSE("sidekick", payload))
+	b.publish(sessionID, "sidekick", payload)
 }
 
 // ---------------------------------------------------------------------------

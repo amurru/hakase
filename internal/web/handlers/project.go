@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"amurru/hakase/internal/agentrun"
 	"amurru/hakase/internal/registry"
 	"encoding/json"
 	"errors"
@@ -174,7 +175,7 @@ func projectSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := projectID(r)
-	if activeProjectRuns.countOn(id) > 0 {
+	if agentrun.ActiveProjectRuns.CountOn(id) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "an agent run is active on this project; wait for it to finish before syncing"})
 		return
 	}
@@ -248,7 +249,7 @@ func projectDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := projectID(r)
-	if activeProjectRuns.countOn(id) > 0 {
+	if agentrun.ActiveProjectRuns.CountOn(id) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "an agent run is active on this project; wait for it to finish before deleting"})
 		return
 	}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"amurru/hakase/internal/agentrun"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/registry"
 	"amurru/hakase/internal/sandbox"
@@ -136,7 +137,7 @@ func TestWithBoundSandbox(t *testing.T) {
 
 	// Host sandbox off: no override is installed.
 	sandbox.CurrentSandbox = nil
-	plain := withBoundSandbox(context.Background(), checkout)
+	plain := agentrun.WithBoundSandbox(context.Background(), checkout)
 	if sb := sandbox.ConfigFrom(plain); sb != nil {
 		t.Errorf("sandbox-off run got an override: %+v", sb)
 	}
@@ -148,7 +149,7 @@ func TestWithBoundSandbox(t *testing.T) {
 		WorkspaceRoots: []string{procRoot},
 		ReadRoots:      []string{procRoot},
 	}
-	bound := withBoundSandbox(context.Background(), checkout)
+	bound := agentrun.WithBoundSandbox(context.Background(), checkout)
 	sb := sandbox.ConfigFrom(bound)
 	if sb == nil {
 		t.Fatal("project-bound run did not install a sandbox override")
@@ -375,8 +376,8 @@ func TestProjectStatusEndpointAndSyncGuards(t *testing.T) {
 
 	// Active agent run on the project refuses sync before any git work.
 	id := projectListID(t, router)
-	activeProjectRuns.begin(id)
-	t.Cleanup(func() { activeProjectRuns.end(id) })
+	agentrun.ActiveProjectRuns.Begin(id)
+	t.Cleanup(func() { agentrun.ActiveProjectRuns.End(id) })
 	rec, _ = doJSON(t, router, http.MethodPost, "/projects/"+id+"/sync", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("active-run sync code %d, want 409: %s", rec.Code, rec.Body.String())

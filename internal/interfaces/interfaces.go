@@ -237,6 +237,22 @@ type ClarifyGate interface {
 	ClarifyExpiry() time.Duration
 }
 
+// ApprovalResponder resolves a pending approval request by ID. Implemented by
+// the web approval gate so external surfaces (e.g. the Telegram channel) can
+// answer the same prompts the web UI sees. Returns false when the ID is
+// unknown or the request already timed out or was answered elsewhere - first
+// responder wins, whoever that is.
+type ApprovalResponder interface {
+	RespondApproval(approvalID string, approved bool) bool
+}
+
+// ClarifyResponder resolves a pending clarification by ID with a free-text or
+// single-choice answer. Implemented by the web clarify gate; see
+// ApprovalResponder for the first-responder-wins contract.
+type ClarifyResponder interface {
+	RespondClarify(clarifyID string, response ClarifyResponse) bool
+}
+
 // EventNotifier replaces three function globals: taskBoardNotify (agent.go:529),
 // delegationProgressNotify (delegate.go:90), and cronJobNotify (cronjob.go:408).
 // It pushes structured events from tool handlers and the background scheduler

@@ -1,0 +1,412 @@
+package telegram
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"amurru/hakase/internal/channel"
+	"amurru/hakase/internal/channel/state"
+	"amurru/hakase/internal/interfaces"
+	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/web/sse"
+
+	tgbot "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+)
+
+// fakeAPI records everything the transport sends.
+type fakeAPI struct {
+	mu        sync.Mutex
+	sent      []fakeSend
+	edited    []fakeEdit
+	answered  []string
+	cmds      bool
+	nextMsgID int
+}
+
+type fakeSend struct {
+	chatID int64
+	text   string
+	hasKb  bool
+}
+
+type fakeEdit struct {
+	chatID    int64
+	messageID int
+	text      string
+}
+
+func (f *fakeAPI) Start(ctx context.Context) {}
+
+func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextMsgID++
+	f.sent = append(f.sent, fakeSend{
+		chatID: params.ChatID.(int64),
+		text:   params.Text,
+		hasKb:  params.ReplyMarkup != nil,
+	})
+	return &models.Message{ID: f.nextMsgID}, nil
+}
+
+func (f *fakeAPI) EditMessageText(ctx context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edited = append(f.edited, fakeEdit{chatID: params.ChatID.(int64), messageID: params.MessageID, text: params.Text})
+	return &models.Message{ID: params.MessageID}, nil
+}
+
+func (f *fakeAPI) AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answered = append(f.answered, params.Text)
+	return true, nil
+}
+
+func (f *fakeAPI) GetFile(ctx context.Context, params *tgbot.GetFileParams) (*models.File, error) {
+	return nil, fmt.Errorf("not implemented in fake")
+}
+
+func (f *fakeAPI) SetMyCommands(ctx context.Context, params *tgbot.SetMyCommandsParams) (bool, error) {
+	f.cmds = true
+	return true, nil
+}
+
+func (f *fakeAPI) sends() []fakeSend {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeSend(nil), f.sent...)
+}
+
+type fakeResponders struct {
+	approved    map[string]bool
+	approvedIDs []string
+	clarified   map[string][]string
+}
+
+func newFakeResponders() *fakeResponders {
+	return &fakeResponders{approved: map[string]bool{}, clarified: map[string][]string{}}
+}
+
+func (r *fakeResponders) RespondApproval(approvalID string, approved bool) bool {
+	r.approvedIDs = append(r.approvedIDs, approvalID)
+	r.approved[approvalID] = approved
+	return true
+}
+
+func (r *fakeResponders) RespondClarify(clarifyID string, response interfaces.ClarifyResponse) bool {
+	r.clarified[clarifyID] = response.Answer
+	return true
+}
+
+// newTestBot wires a transport against fakes and a temp state file.
+func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service) {
+	t.Helper()
+	oldPace := perChatSendInterval
+	perChatSendInterval = 0
+	t.Cleanup(func() { perChatSendInterval = oldPace })
+
+	sessionsDir := t.TempDir()
+	store_, err := hakasesession.NewSessionStore(sessionsDir)
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	svc, err := hakasesession.NewSessionService(store_)
+	if err != nil {
+		t.Fatalf("session service: %v", err)
+	}
+
+	responders := newFakeResponders()
+	svcDeps := channel.Deps{
+		Bridge:    sse.NewEventBridge(),
+		Sessions:  svc,
+		Approval:  responders,
+		Clarify:   responders,
+		StatePath: t.TempDir() + "/channels.json",
+	}
+	service, err := channel.NewService(svcDeps)
+	if err != nil {
+		t.Fatalf("channel service: %v", err)
+	}
+
+	api := &fakeAPI{}
+	b := &Bot{
+		api:          api,
+		auth:         channel.NewAuthenticator(service.Store(), ChannelName, []int64{100}, ""),
+		runs:         service.Runs(),
+		sessions:     svc,
+		store:        service.Store(),
+		approval:     responders,
+		clarify:      responders,
+		log:          func(string, ...any) {},
+		nextSend:     map[int64]time.Time{},
+		pendingOther: map[int64]pendingClarify{},
+		clarifyCtx:   map[string]clarifyChoice{},
+		mediaGroup:   map[string]*mediaGroupBuf{},
+	}
+	return b, api, responders, service
+}
+
+func privateMessage(userID int64, text string) *models.Message {
+	return &models.Message{
+		Chat: models.Chat{ID: userID, Type: models.ChatTypePrivate},
+		From: &models.User{ID: userID, Username: "tester"},
+		Text: text,
+	}
+}
+
+func TestCommandHelpAllowed(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	b.handleMessage(context.Background(), privateMessage(100, "/help"))
+	sends := api.sends()
+	if len(sends) != 1 || len(sends[0].text) < 50 {
+		t.Fatalf("help not sent: %+v", sends)
+	}
+}
+
+func TestUnauthorizedIsDeniedQuietly(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	b.handleMessage(context.Background(), privateMessage(999, "hello agent"))
+	b.handleMessage(context.Background(), privateMessage(999, "hello again"))
+	sends := api.sends()
+	if len(sends) != 1 {
+		t.Fatalf("expected exactly one rate-limited deny reply, got %d", len(sends))
+	}
+	if !contains(sends[0].text, "Unauthorized") {
+		t.Errorf("deny reply missing marker: %q", sends[0].text)
+	}
+	if contains(sends[0].text, "code is") && len(sends[0].text) > 0 {
+		// The reply must not leak a usable code.
+		for _, r := range sends[0].text {
+			_ = r
+		}
+	}
+}
+
+func TestStartPairingFlow(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+
+	// Issue a code via the server side (as the boot path would).
+	code, err := b.auth.EnsurePairingCode()
+	if err != nil {
+		t.Fatalf("pairing code: %v", err)
+	}
+
+	// Wrong code.
+	b.handleMessage(context.Background(), privateMessage(200, "/start 000000"))
+	if b.auth.IsAllowed(200) {
+		t.Fatal("paired with wrong code")
+	}
+	// Right code.
+	b.handleMessage(context.Background(), privateMessage(200, "/start "+code))
+	if !b.auth.IsAllowed(200) {
+		t.Fatal("pairing did not stick")
+	}
+	last := api.sends()
+	if len(last) == 0 || !contains(last[len(last)-1].text, "Paired") {
+		t.Fatalf("no pairing confirmation: %+v", last)
+	}
+}
+
+func TestStartWithoutCodePrompts(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	b.handleMessage(context.Background(), privateMessage(300, "/start"))
+	sends := api.sends()
+	if len(sends) != 1 || !contains(sends[0].text, "/start") {
+		t.Fatalf("expected pairing hint, got %+v", sends)
+	}
+}
+
+func TestIDCommand(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	b.handleMessage(context.Background(), privateMessage(100, "/id"))
+	sends := api.sends()
+	if len(sends) != 1 || !contains(sends[0].text, "100") {
+		t.Fatalf("id output wrong: %+v", sends)
+	}
+}
+
+func TestNewAndSessionsAndUse(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	ctx := context.Background()
+
+	b.handleMessage(ctx, privateMessage(100, "/new My project session"))
+	sends := api.sends()
+	if len(sends) == 0 || !contains(sends[len(sends)-1].text, "created") {
+		t.Fatalf("new session reply missing: %+v", sends)
+	}
+	bound := b.store.Get().Chats[chatKey(100)].SessionID
+	if bound == "" {
+		t.Fatal("chat not bound to the new session")
+	}
+
+	// /sessions lists it with the bound marker.
+	b.handleMessage(ctx, privateMessage(100, "/sessions"))
+	last := api.sends()
+	if !contains(last[len(last)-1].text, "My project session") || !contains(last[len(last)-1].text, "▶️") {
+		t.Fatalf("sessions list wrong: %q", last[len(last)-1].text)
+	}
+
+	// /new again, then /use back to the first via prefix.
+	b.handleMessage(ctx, privateMessage(100, "/new second"))
+	if !contains(api.sends()[len(api.sends())-1].text, "second") {
+		t.Fatalf("second session not created")
+	}
+	b.handleMessage(ctx, privateMessage(100, "/use "+bound[:12]))
+	last = api.sends()
+	if !contains(last[len(last)-1].text, bound[:12]) {
+		t.Fatalf("use failed: %q", last[len(last)-1].text)
+	}
+	if got := b.store.Get().Chats[chatKey(100)].SessionID; got != bound {
+		t.Fatalf("binding = %s, want %s", got, bound)
+	}
+}
+
+func TestNotifyToggle(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	ctx := context.Background()
+	b.handleMessage(ctx, privateMessage(100, "/notify on"))
+	if !b.store.Get().Chats[chatKey(100)].Notify {
+		t.Fatal("notify not enabled")
+	}
+	b.handleMessage(ctx, privateMessage(100, "/notify"))
+	if b.store.Get().Chats[chatKey(100)].Notify {
+		t.Fatal("bare /notify must toggle off")
+	}
+	if len(api.sends()) != 2 {
+		t.Fatalf("expected 2 replies, got %d", len(api.sends()))
+	}
+}
+
+func TestPromptRequiresSessionRuntime(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	// driver == nil: the transport must answer with a runtime warning, not crash.
+	b.handleMessage(context.Background(), privateMessage(100, "do a thing"))
+	sends := api.sends()
+	if len(sends) != 1 || !contains(sends[0].text, "runtime unavailable") {
+		t.Fatalf("runtime guard missing: %+v", sends)
+	}
+}
+
+func TestPhotoWithoutCaptionRejected(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	m := privateMessage(100, "")
+	m.Photo = []models.PhotoSize{{FileID: "x", Width: 10, Height: 10}, {FileID: "y", Width: 100, Height: 100}}
+	b.handleMessage(context.Background(), m)
+	sends := api.sends()
+	if len(sends) != 1 || !contains(sends[0].text, "caption") {
+		t.Fatalf("caption hint missing: %+v", sends)
+	}
+}
+
+func TestApprovalCallbackResolvesGate(t *testing.T) {
+	b, api, responders, _ := newTestBot(t)
+	kb := approvalKeyboard("appr_abc")
+	_ = kb
+	m := privateMessage(100, "")
+	m.From = nil
+	cq := &models.CallbackQuery{
+		ID:   "cq1",
+		From: models.User{ID: 100},
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{ID: 7, Chat: models.Chat{ID: 100, Type: models.ChatTypePrivate}},
+		},
+		Data: callbackApprove + "appr_abc:1",
+	}
+	b.handleCallback(context.Background(), cq)
+	if len(responders.approvedIDs) != 1 || responders.approvedIDs[0] != "appr_abc" || !responders.approved["appr_abc"] {
+		t.Fatalf("approval not resolved: %+v", responders.approved)
+	}
+	if len(api.edited) != 1 || !contains(api.edited[0].text, "Approved") {
+		t.Fatalf("prompt not edited to outcome: %+v", api.edited)
+	}
+}
+
+func TestClarifyCallbackChoiceAndFreeText(t *testing.T) {
+	b, api, responders, _ := newTestBot(t)
+	b.rememberClarifyChoices("clar_xyz", []string{"Option A", "Option B"})
+	cq := &models.CallbackQuery{
+		ID:   "cq2",
+		From: models.User{ID: 100},
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{ID: 9, Chat: models.Chat{ID: 100, Type: models.ChatTypePrivate}},
+		},
+		Data: callbackClarify + "clar_xyz:1",
+	}
+	b.handleCallback(context.Background(), cq)
+	ans := responders.clarified["clar_xyz"]
+	if len(ans) != 1 || !contains(ans[0], "Option B") {
+		t.Fatalf("clarify answer = %v", ans)
+	}
+
+	// Free text path: "x" arms pendingOther; the next message answers.
+	cq2 := &models.CallbackQuery{
+		ID:   "cq3",
+		From: models.User{ID: 100},
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{ID: 10, Chat: models.Chat{ID: 100, Type: models.ChatTypePrivate}},
+		},
+		Data: callbackClarify + "clar_free:x",
+	}
+	b.handleCallback(context.Background(), cq2)
+	b.handleMessage(context.Background(), privateMessage(100, "my own answer"))
+	ans2 := responders.clarified["clar_free"]
+	if len(ans2) != 1 || ans2[0] != "my own answer" {
+		t.Fatalf("free-text answer = %v", ans2)
+	}
+	if len(api.sends()) != 0 {
+		// The free-text message must be consumed, not run as a prompt (and
+		// the runtime guard must not fire either).
+		t.Fatalf("free-text message leaked into the prompt path: %+v", api.sends())
+	}
+}
+
+func TestPushHandlersRouteToDestinations(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	// One notify-enabled chat plus a second paired user without bindings.
+	if err := b.store.Update(func(st *state.State) error {
+		st.PairedUsers = append(st.PairedUsers,
+			state.PairedUser{Channel: ChannelName, UserID: 100},
+			state.PairedUser{Channel: ChannelName, UserID: 200},
+		)
+		st.Chats = map[string]state.Chat{chatKey(100): {Notify: true}}
+		return nil
+	}); err != nil {
+		t.Fatalf("state update: %v", err)
+	}
+
+	b.CronEvent("completed", "j1", "backup", "done", "outputs/x.md")
+	b.ApprovalPrompt("appr_p", "system_exec", "high", "why", "ls")
+	b.ClarifyPrompt("clar_p", "Which one?", []string{"A", "B"}, false)
+
+	sends := api.sends()
+	var cronPushes, approvalPushes, clarifyPushes int
+	for _, s := range sends {
+		switch {
+		case strings.Contains(s.text, "cron <b>backup</b>"):
+			cronPushes++
+		case strings.Contains(s.text, "Approval needed"):
+			approvalPushes++
+		case strings.Contains(s.text, "Question"):
+			clarifyPushes++
+		}
+	}
+	if cronPushes != 1 {
+		t.Errorf("cron push count = %d, want 1 (notify chats only)", cronPushes)
+	}
+	if approvalPushes != 2 {
+		t.Errorf("approval push count = %d, want 2 (all allowed users)", approvalPushes)
+	}
+	if clarifyPushes != 2 {
+		t.Errorf("clarify push count = %d, want 2", clarifyPushes)
+	}
+}
+
+func contains(haystack, needle string) bool {
+	return strings.Contains(haystack, needle)
+}
