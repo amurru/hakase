@@ -18,7 +18,7 @@ func TestWaitTurnEventuallyReturns(t *testing.T) {
 	perChatSendInterval = 100 * time.Millisecond
 	t.Cleanup(func() { perChatSendInterval = old })
 
-	b := &Bot{nextSend: map[int64]time.Time{}}
+	b := &Bot{nextSend: map[conv]time.Time{}}
 
 	// One caller takes the slot instantly; the others arrive while it is in
 	// the future — the shape that used to trigger the livelock.
@@ -26,7 +26,7 @@ func TestWaitTurnEventuallyReturns(t *testing.T) {
 	done := make(chan struct{}, callers)
 	for i := 0; i < callers; i++ {
 		go func() {
-			b.waitTurn(context.Background(), 1)
+			b.waitTurn(context.Background(), rootConv(1))
 			done <- struct{}{}
 		}()
 	}

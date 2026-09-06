@@ -28,7 +28,7 @@ const (
 type mediaGroupBuf struct {
 	photos  []photoAttach
 	caption string
-	chatID  int64
+	c       conv
 	timer   *time.Timer
 }
 
@@ -42,8 +42,9 @@ type photoAttach struct {
 // prompt; single photos run immediately. A caption is required — it is the
 // prompt (albums use their first caption).
 func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
+	c := convFromMessage(m)
 	if strings.TrimSpace(m.Caption) == "" && m.MediaGroupID == "" {
-		b.sendText(ctx, m.Chat.ID, "📸 Add a caption telling me what to do with the photo — the caption is the prompt.", nil)
+		b.sendText(ctx, c, "📸 Add a caption telling me what to do with the photo — the caption is the prompt.", nil, false)
 		return
 	}
 	if m.MediaGroupID != "" {
@@ -52,11 +53,11 @@ func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
 	}
 	photo, err := b.downloadPhoto(ctx, m.Photo)
 	if err != nil {
-		b.sendText(ctx, m.Chat.ID, "⚠️ "+err.Error(), nil)
+		b.sendText(ctx, c, "⚠️ "+err.Error(), nil, false)
 		return
 	}
 	parts, refs, manifest := photoContent([]photoAttach{photo})
-	b.startRun(ctx, m.Chat.ID, strings.TrimSpace(m.Caption), parts, refs, manifest)
+	b.startRun(ctx, c, strings.TrimSpace(m.Caption), parts, refs, manifest)
 }
 
 // bufferAlbumPhoto accumulates an album's photos, flushing the whole group as
@@ -64,7 +65,7 @@ func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
 func (b *Bot) bufferAlbumPhoto(ctx context.Context, m *models.Message) {
 	photo, err := b.downloadPhoto(ctx, m.Photo)
 	if err != nil {
-		b.sendText(ctx, m.Chat.ID, "⚠️ "+err.Error(), nil)
+		b.sendText(ctx, convFromMessage(m), "⚠️ "+err.Error(), nil, false)
 		return
 	}
 
@@ -72,7 +73,7 @@ func (b *Bot) bufferAlbumPhoto(ctx context.Context, m *models.Message) {
 	defer b.mediaMu.Unlock()
 	group, ok := b.mediaGroup[m.MediaGroupID]
 	if !ok {
-		group = &mediaGroupBuf{chatID: m.Chat.ID}
+		group = &mediaGroupBuf{c: convFromMessage(m)}
 		b.mediaGroup[m.MediaGroupID] = group
 		group.timer = time.AfterFunc(mediaGroupFlushAt, func() {
 			b.flushMediaGroup(m.MediaGroupID)
@@ -91,11 +92,11 @@ func (b *Bot) flushMediaGroup(groupID string) {
 	group, ok := b.mediaGroup[groupID]
 	delete(b.mediaGroup, groupID)
 	b.mediaMu.Unlock()
-	if !ok || len(group.photos) == 0 || group.chatID == 0 {
+	if !ok || len(group.photos) == 0 || group.c.chatID == 0 {
 		return
 	}
 	parts, refs, manifest := photoContent(group.photos)
-	b.startRun(context.Background(), group.chatID, group.caption, parts, refs, manifest)
+	b.startRun(context.Background(), group.c, group.caption, parts, refs, manifest)
 }
 
 // photoContent converts downloaded photos into genai parts, session

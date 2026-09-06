@@ -18,52 +18,59 @@ func esc(s string) string { return html.EscapeString(s) }
 //   - cron/task completions go only to chats with /notify on;
 //   - delegation outcomes go only to chats currently watching a run.
 
-// promptDestinations lists chat IDs that should receive blocking prompts:
-// paired users plus statically allowlisted IDs (DM chat id == user id).
-func (b *Bot) promptDestinations() []int64 {
+// promptDestinations lists the root-area conversations that should receive
+// blocking prompts: paired users plus statically allowlisted IDs (DM chat id
+// == user id). Gate routing may override this with the run's bound topic.
+func (b *Bot) promptDestinations() []conv {
 	seen := map[int64]bool{}
-	var out []int64
+	var out []conv
 	for _, u := range b.store.Get().PairedUsers {
 		if u.Channel == ChannelName && !seen[u.UserID] {
 			seen[u.UserID] = true
-			out = append(out, u.UserID)
+			out = append(out, rootConv(u.UserID))
 		}
 	}
 	for _, id := range b.auth.AllowedIDs() {
 		if !seen[id] {
 			seen[id] = true
-			out = append(out, id)
+			out = append(out, rootConv(id))
 		}
 	}
 	return out
 }
 
-// notifyDestinations lists chat IDs with /notify on.
-func (b *Bot) notifyDestinations() []int64 {
-	var out []int64
+// notifyDestinations lists root-area conversations with /notify on.
+func (b *Bot) notifyDestinations() []conv {
+	var out []conv
 	prefix := ChannelName + ":"
 	for key, chat := range b.store.Get().Chats {
 		if !chat.Notify || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		if id, err := strconv.ParseInt(strings.TrimPrefix(key, prefix), 10, 64); err == nil {
-			out = append(out, id)
+			out = append(out, rootConv(id))
 		}
 	}
 	return out
 }
 
-// runningDestinations lists chat IDs with an in-flight run.
-func (b *Bot) runningDestinations() []int64 {
+// runningDestinations lists root-area conversations with an in-flight run in
+// that chat. Run keys are thread-scoped ("telegram:<chatID>:<threadID>",
+// formerly "telegram:<chatID>"), and several topics of one chat may run in
+// parallel — dedupe so delegation pushes arrive once per chat.
+func (b *Bot) runningDestinations() []conv {
+	seen := map[int64]bool{}
+	var out []conv
 	prefix := ChannelName + ":"
-	var out []int64
 	for _, key := range b.runs.ActiveChatKeys() {
-		if !strings.HasPrefix(key, prefix) {
+		rest := strings.TrimPrefix(key, prefix)
+		chatPart, _, _ := strings.Cut(rest, ":")
+		id, err := strconv.ParseInt(chatPart, 10, 64)
+		if err != nil || seen[id] {
 			continue
 		}
-		if id, err := strconv.ParseInt(strings.TrimPrefix(key, prefix), 10, 64); err == nil {
-			out = append(out, id)
-		}
+		seen[id] = true
+		out = append(out, rootConv(id))
 	}
 	return out
 }
@@ -85,8 +92,8 @@ func (b *Bot) ApprovalPrompt(id, tool, risk, reason, command string) {
 		txt.WriteString(esc(truncateRunes(reason, 512)) + "\n")
 	}
 	body := strings.TrimRight(txt.String(), "\n")
-	for _, chatID := range b.promptDestinations() {
-		b.sendText(context.Background(), chatID, body, kb)
+	for _, c := range b.promptDestinations() {
+		b.sendText(context.Background(), c, body, kb, false)
 	}
 }
 
@@ -99,8 +106,8 @@ func (b *Bot) ClarifyPrompt(id, question string, choices []string, multiSelect b
 	txt.WriteString("❓ <b>Question</b>\n")
 	txt.WriteString(esc(truncateRunes(question, 1500)))
 	kb := clarifyKeyboard(id, choices)
-	for _, chatID := range b.promptDestinations() {
-		b.sendText(context.Background(), chatID, strings.TrimRight(txt.String(), "\n"), kb)
+	for _, c := range b.promptDestinations() {
+		b.sendText(context.Background(), c, strings.TrimRight(txt.String(), "\n"), kb, false)
 	}
 }
 
@@ -121,8 +128,8 @@ func (b *Bot) CronEvent(status, jobID, name, summary, outputPath string) {
 	if outputPath != "" {
 		body += "\n<code>" + outputPath + "</code>"
 	}
-	for _, chatID := range b.notifyDestinations() {
-		b.sendText(context.Background(), chatID, body, nil)
+	for _, c := range b.notifyDestinations() {
+		b.sendText(context.Background(), c, body, nil, false)
 	}
 }
 
@@ -136,8 +143,8 @@ func (b *Bot) TaskEvent(action string, id, title, status string) {
 		icon = "❌"
 	}
 	body := fmt.Sprintf("%s task <b>%s</b> is now %s\n<code>%s</code>", icon, esc(title), status, id)
-	for _, chatID := range b.notifyDestinations() {
-		b.sendText(context.Background(), chatID, body, nil)
+	for _, c := range b.notifyDestinations() {
+		b.sendText(context.Background(), c, body, nil, false)
 	}
 }
 
@@ -159,7 +166,7 @@ func (b *Bot) DelegationEvent(status, taskID, agent, message string) {
 	if message != "" {
 		body += "\n" + esc(truncateRunes(message, 400))
 	}
-	for _, chatID := range chats {
-		b.sendText(context.Background(), chatID, body, nil)
+	for _, c := range chats {
+		b.sendText(context.Background(), c, body, nil, false)
 	}
 }

@@ -38,7 +38,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 		answer("Message is gone.")
 		return
 	}
-	chatID, msgID := msg.Chat.ID, msg.ID
+	c := convFromMessage(msg)
 	data := cq.Data
 
 	switch {
@@ -53,10 +53,10 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 		delivered := b.approval != nil && b.approval.RespondApproval(gateID, approved)
 		if delivered {
 			answer("Done.")
-			b.editText(ctx, chatID, msgID, approvalOutcome(msg.Text, approved), nil)
+			b.editText(ctx, c, msg.ID, approvalOutcome(msg.Text, approved), nil)
 		} else {
 			answer("Already resolved or expired.")
-			b.editText(ctx, chatID, msgID, msg.Text+"\n\n<i>(already resolved elsewhere)</i>", nil)
+			b.editText(ctx, c, msg.ID, msg.Text+"\n\n<i>(already resolved elsewhere)</i>", nil)
 		}
 
 	case strings.HasPrefix(data, callbackClarify):
@@ -67,10 +67,10 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 			return
 		}
 		if sel == "x" {
-			// Free-text answer: the next message in this chat is consumed.
-			b.setPendingOther(chatID, gateID)
+			// Free-text answer: the next message in this conversation is consumed.
+			b.setPendingOther(c, gateID)
 			answer("Send your answer as the next message.")
-			b.editText(ctx, chatID, msgID, msg.Text+"\n\n<i>(✍️ reply with your answer…)</i>", nil)
+			b.editText(ctx, c, msg.ID, msg.Text+"\n\n<i>(✍️ reply with your answer…)</i>", nil)
 			return
 		}
 		idx, err := strconv.Atoi(sel)
@@ -83,7 +83,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 			answer("This question has expired — answer as text in the chat.")
 			return
 		}
-		b.respondClarify(ctx, chatID, gateID, []string{choice}, msg)
+		b.respondClarify(ctx, c, gateID, []string{choice}, msg)
 
 	default:
 		answer("Unknown action.")
@@ -91,14 +91,14 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 }
 
 // respondClarify delivers a clarify answer and marks the prompt resolved.
-func (b *Bot) respondClarify(ctx context.Context, chatID int64, gateID string, answer []string, promptMsg *models.Message) {
+func (b *Bot) respondClarify(ctx context.Context, c conv, gateID string, answer []string, promptMsg *models.Message) {
 	delivered := b.clarify != nil && b.clarify.RespondClarify(gateID, interfaces.ClarifyResponse{Answer: answer})
 	if !delivered {
-		b.sendText(ctx, chatID, "That question was already resolved or expired.", nil)
+		b.sendText(ctx, c, "That question was already resolved or expired.", nil, false)
 		return
 	}
 	if promptMsg != nil {
-		b.editText(ctx, chatID, promptMsg.ID, promptMsg.Text+"\n\n<i>✔ "+truncateRunes(strings.Join(answer, ", "), 200)+"</i>", nil)
+		b.editText(ctx, c, promptMsg.ID, promptMsg.Text+"\n\n<i>✔ "+truncateRunes(strings.Join(answer, ", "), 200)+"</i>", nil)
 	}
 }
 

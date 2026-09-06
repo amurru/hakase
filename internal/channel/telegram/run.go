@@ -21,24 +21,24 @@ const statusEditInterval = 2500 * time.Millisecond
 // statusToolLines is how many recent tool lines the status message shows.
 const statusToolLines = 8
 
-// startRun is the inbound-prompt entry point: it resolves the chat's session,
-// persists the user turn, and launches the shared driver with a Telegram
-// status sink. parts/refs/manifest carry photos (genai inline data, session
-// attachment refs, and the manifest lines appended to the prompt).
-func (b *Bot) startRun(ctx context.Context, chatID int64, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string) {
-	ck := chatKey(chatID)
-	if _, running := b.runs.Running(ck); running {
-		b.sendText(ctx, chatID, "⏳ A run is already active here — send /stop to cancel it first.", nil)
+// startRun is the inbound-prompt entry point: it resolves the conversation's
+// session, persists the user turn, and launches the shared driver with a
+// Telegram status sink. parts/refs/manifest carry photos (genai inline data,
+// session attachment refs, and the manifest lines appended to the prompt).
+func (b *Bot) startRun(ctx context.Context, c conv, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string) {
+	rk := threadKey(c)
+	if _, running := b.runs.Running(rk); running {
+		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
 		return
 	}
 	if b.driver == nil || b.sessions == nil {
-		b.sendText(ctx, chatID, "⚠️ Agent runtime unavailable (channel not wired to a runner).", nil)
+		b.sendText(ctx, c, "⚠️ Agent runtime unavailable (channel not wired to a runner).", nil, false)
 		return
 	}
 
-	sessionID, err := b.resolveSession(ck, prompt)
+	sessionID, err := b.resolveSession(chatKey(c.chatID), prompt)
 	if err != nil {
-		b.sendText(ctx, chatID, "⚠️ Could not resolve a session: "+err.Error(), nil)
+		b.sendText(ctx, c, "⚠️ Could not resolve a session: "+err.Error(), nil, false)
 		return
 	}
 
@@ -49,7 +49,7 @@ func (b *Bot) startRun(ctx context.Context, chatID int64, prompt string, photoPa
 		fullPrompt = strings.TrimSpace(fullPrompt + "\n[attachments]\n" + strings.Join(manifest, "\n"))
 	}
 	if err := b.sessions.SetActiveSession(sessionID); err != nil {
-		b.sendText(ctx, chatID, "⚠️ Session unavailable: "+err.Error(), nil)
+		b.sendText(ctx, c, "⚠️ Session unavailable: "+err.Error(), nil, false)
 		return
 	}
 	if err := b.sessions.RecordUsageWithAttachments("user", fullPrompt, "", 0, refs); err != nil {
@@ -67,15 +67,15 @@ func (b *Bot) startRun(ctx context.Context, chatID int64, prompt string, photoPa
 	content := genai.NewContentFromParts(parts, genai.RoleUser)
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	if !b.runs.TryStart(ck, sessionID, cancel) {
+	if !b.runs.TryStart(rk, sessionID, cancel) {
 		cancel()
-		b.sendText(ctx, chatID, "⏳ A run is already active here — send /stop to cancel it first.", nil)
+		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
 		return
 	}
 
-	rs := newRunStatus(b, chatID, runCtx)
+	rs := newRunStatus(b, c, runCtx)
 	go func() {
-		defer b.runs.Finish(ck)
+		defer b.runs.Finish(rk)
 		stopEdits := make(chan struct{})
 		go rs.beginEditing(stopEdits)
 		b.driver.RunTurn(runCtx, sessionID, content, rs)
@@ -128,7 +128,7 @@ func firstRunes(s string, n int) string {
 // doubles as the agentrun.EventSink for the turn.
 type runStatus struct {
 	b       *Bot
-	chatID  int64
+	c       conv
 	msgID   int
 	started time.Time
 	ctx     context.Context
@@ -140,14 +140,15 @@ type runStatus struct {
 	done      bool
 }
 
-func newRunStatus(b *Bot, chatID int64, ctx context.Context) *runStatus {
-	return &runStatus{b: b, chatID: chatID, started: time.Now(), ctx: ctx}
+func newRunStatus(b *Bot, c conv, ctx context.Context) *runStatus {
+	return &runStatus{b: b, c: c, started: time.Now(), ctx: ctx}
 }
 
 // beginEditing posts the initial status message and keeps it refreshed until
 // stop is closed (or the run ctx is cancelled). Runs in its own goroutine.
 func (rs *runStatus) beginEditing(stop <-chan struct{}) {
-	msg := rs.b.sendText(rs.ctx, rs.chatID, rs.render(), nil)
+	// The status line is progress traffic: always silent.
+	msg := rs.b.sendText(rs.ctx, rs.c, rs.render(), nil, true)
 	if msg != nil {
 		rs.setMsgID(msg.ID)
 	}
@@ -161,7 +162,7 @@ func (rs *runStatus) beginEditing(stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			if id := rs.getMsgID(); id != 0 {
-				rs.b.editText(rs.ctx, rs.chatID, id, rs.render(), nil)
+				rs.b.editText(rs.ctx, rs.c, id, rs.render(), nil)
 			}
 		}
 	}
@@ -192,12 +193,12 @@ func (rs *runStatus) finalize() {
 	switch {
 	case rs.ctx.Err() != nil:
 		if msgID != 0 {
-			rs.b.editText(context.Background(), rs.chatID, msgID, "⏹ Stopped ("+elapsed.String()+")", nil)
+			rs.b.editText(context.Background(), rs.c, msgID, "⏹ Stopped ("+elapsed.String()+")", nil)
 		}
-		rs.b.sendText(context.Background(), rs.chatID, "⏹ Run stopped.", nil)
+		rs.b.sendText(context.Background(), rs.c, "⏹ Run stopped.", nil, false)
 	case strings.TrimSpace(reply) == "":
 		if msgID != 0 {
-			rs.b.editText(context.Background(), rs.chatID, msgID, "⚠️ Finished ("+elapsed.String()+") without any text output — check the server logs.", nil)
+			rs.b.editText(context.Background(), rs.c, msgID, "⚠️ Finished ("+elapsed.String()+") without any text output — check the server logs.", nil)
 		}
 	default:
 		summary := fmt.Sprintf("✅ Done · %s", elapsed.String())
@@ -205,10 +206,10 @@ func (rs *runStatus) finalize() {
 			summary += fmt.Sprintf(" · %s tok", humanTokens(tokens))
 		}
 		if msgID != 0 {
-			rs.b.editText(context.Background(), rs.chatID, msgID, summary, nil)
+			rs.b.editText(context.Background(), rs.c, msgID, summary, nil)
 		}
 		for _, chunk := range channel.ChunkReply(reply) {
-			rs.b.sendText(context.Background(), rs.chatID, chunk, nil)
+			rs.b.sendText(context.Background(), rs.c, chunk, nil, false)
 		}
 	}
 }

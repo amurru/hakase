@@ -40,6 +40,11 @@ type api interface {
 	AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error)
 	GetFile(ctx context.Context, params *tgbot.GetFileParams) (*models.File, error)
 	SetMyCommands(ctx context.Context, params *tgbot.SetMyCommandsParams) (bool, error)
+	SetMessageReaction(ctx context.Context, params *tgbot.SetMessageReactionParams) (bool, error)
+	PinChatMessage(ctx context.Context, params *tgbot.PinChatMessageParams) (bool, error)
+	UnpinChatMessage(ctx context.Context, params *tgbot.UnpinChatMessageParams) (bool, error)
+	DeleteMessage(ctx context.Context, params *tgbot.DeleteMessageParams) (bool, error)
+	EditForumTopic(ctx context.Context, params *tgbot.EditForumTopicParams) (bool, error)
 }
 
 // Bot is the Telegram transport. It satisfies channel.Channel (lifecycle) and
@@ -57,10 +62,14 @@ type Bot struct {
 	log      channel.LogFunc
 
 	limiterMu sync.Mutex
-	nextSend  map[int64]time.Time // per-chat outbound pacing
+	nextSend  map[conv]time.Time // per-conversation outbound pacing
 
 	pendingMu    sync.Mutex
-	pendingOther map[int64]pendingClarify // chatID -> clarify awaiting free text
+	pendingOther map[conv]pendingClarify // conv -> clarify awaiting free text
+
+	// pins enables the Hermes-style prompt pin for the duration of a run
+	// (channels.telegram.pins).
+	pins bool
 
 	healMu           sync.Mutex
 	lastConflictHeal time.Time // last conflict-triggered healing attempt
@@ -114,8 +123,9 @@ func New(d Deps) (*Bot, error) {
 		approval:     svc.ApprovalResponder(),
 		clarify:      svc.ClarifyResponder(),
 		log:          logFn,
-		nextSend:     map[int64]time.Time{},
-		pendingOther: map[int64]pendingClarify{},
+		pins:         d.Config.Pins,
+		nextSend:     map[conv]time.Time{},
+		pendingOther: map[conv]pendingClarify{},
 		clarifyCtx:   map[string]clarifyChoice{},
 		mediaGroup:   map[string]*mediaGroupBuf{},
 	}
@@ -304,12 +314,14 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 	if m == nil || m.From == nil {
 		return
 	}
-	// v1: private chats only. Group handling (mentions, topics) is deferred.
+	// v1: private chats only. Group handling (mentions) is deferred; forum
+	// topics inside the DM are the topics-mode conversations.
 	if m.Chat.Type != models.ChatTypePrivate {
 		return
 	}
 	userID := m.From.ID
-	b.log("message from user %d (%s), %d chars", userID, m.From.Username, len(m.Text))
+	c := convFromMessage(m)
+	b.log("message from user %d (%s), %d chars, thread %d", userID, m.From.Username, len(m.Text), c.threadID)
 
 	if strings.HasPrefix(m.Text, "/") {
 		b.handleCommand(ctx, m)
@@ -321,20 +333,20 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		// not be able to summon it. The code lives on the server console and
 		// `hakase channels pair-code`.
 		if b.auth.DenyReplyAllowed(userID) {
-			b.sendText(ctx, m.Chat.ID, "🔒 Unauthorized. Pair with <code>/start &lt;code&gt;</code> — the code is printed on the server console (or <code>hakase channels pair-code</code>).", nil)
+			b.sendText(ctx, c, "🔒 Unauthorized. Pair with <code>/start &lt;code&gt;</code> — the code is printed on the server console (or <code>hakase channels pair-code</code>).", nil, false)
 		}
 		b.log("denied message from unpaired user %d", userID)
 		return
 	}
 
 	// A pending clarify "Other" answer consumes the next text message.
-	if p := b.takePendingOther(m.Chat.ID); p != nil {
+	if p := b.takePendingOther(c); p != nil {
 		answer := strings.TrimSpace(m.Text)
 		if answer == "" && m.Caption != "" {
 			answer = strings.TrimSpace(m.Caption)
 		}
 		if answer != "" {
-			b.respondClarify(ctx, m.Chat.ID, p.id, []string{answer}, nil)
+			b.respondClarify(ctx, c, p.id, []string{answer}, nil)
 		}
 		return
 	}
@@ -345,26 +357,23 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 	}
 
 	if m.Text == "" {
-		b.sendText(ctx, m.Chat.ID, "🤷 I can handle text messages and photo captions here (voice/files are not supported yet).", nil)
+		b.sendText(ctx, c, "🤷 I can handle text messages and photo captions here (voice/files are not supported yet).", nil, false)
 		return
 	}
 
-	b.startRun(ctx, m.Chat.ID, m.Text, nil, nil, nil)
+	b.startRun(ctx, c, m.Text, nil, nil, nil)
 }
 
-// chatKey returns the state key for a chat.
-func chatKey(chatID int64) string { return state.ChatKey(ChannelName, chatID) }
-
-// takePendingOther pops the pending free-text clarify for a chat, if any and
-// recent.
-func (b *Bot) takePendingOther(chatID int64) *pendingClarify {
+// takePendingOther pops the pending free-text clarify for a conversation, if
+// any and recent.
+func (b *Bot) takePendingOther(c conv) *pendingClarify {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
-	p, ok := b.pendingOther[chatID]
+	p, ok := b.pendingOther[c]
 	if !ok {
 		return nil
 	}
-	delete(b.pendingOther, chatID)
+	delete(b.pendingOther, c)
 	if time.Since(p.createdAt) > 10*time.Minute {
 		return nil
 	}
@@ -372,8 +381,8 @@ func (b *Bot) takePendingOther(chatID int64) *pendingClarify {
 }
 
 // setPendingOther records a clarify awaiting free text.
-func (b *Bot) setPendingOther(chatID int64, id string) {
+func (b *Bot) setPendingOther(c conv, id string) {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
-	b.pendingOther[chatID] = pendingClarify{id: id, createdAt: time.Now()}
+	b.pendingOther[c] = pendingClarify{id: id, createdAt: time.Now()}
 }

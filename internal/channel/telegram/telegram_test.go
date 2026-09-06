@@ -25,6 +25,10 @@ type fakeAPI struct {
 	sent           []fakeSend
 	edited         []fakeEdit
 	answered       []string
+	reactions      []fakeReaction
+	pins           []fakePin
+	unpins         []fakePin
+	topicRenames   []fakeTopicRename
 	cmds           bool
 	deletedWebhook int
 	deleteCalls    int
@@ -34,15 +38,34 @@ type fakeAPI struct {
 }
 
 type fakeSend struct {
-	chatID int64
-	text   string
-	hasKb  bool
+	chatID   int64
+	threadID int
+	text     string
+	hasKb    bool
+	silent   bool
 }
 
 type fakeEdit struct {
 	chatID    int64
 	messageID int
 	text      string
+}
+
+type fakeReaction struct {
+	chatID    int64
+	messageID int
+	emoji     string
+}
+
+type fakePin struct {
+	chatID    int64
+	messageID int
+}
+
+type fakeTopicRename struct {
+	chatID   int64
+	threadID int
+	name     string
 }
 
 func (f *fakeAPI) Start(ctx context.Context) {}
@@ -58,9 +81,11 @@ func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessagePara
 	defer f.mu.Unlock()
 	f.nextMsgID++
 	f.sent = append(f.sent, fakeSend{
-		chatID: params.ChatID.(int64),
-		text:   params.Text,
-		hasKb:  params.ReplyMarkup != nil,
+		chatID:   params.ChatID.(int64),
+		threadID: params.MessageThreadID,
+		text:     params.Text,
+		hasKb:    params.ReplyMarkup != nil,
+		silent:   params.DisableNotification,
 	})
 	return &models.Message{ID: f.nextMsgID}, nil
 }
@@ -88,10 +113,58 @@ func (f *fakeAPI) SetMyCommands(ctx context.Context, params *tgbot.SetMyCommands
 	return true, nil
 }
 
+func (f *fakeAPI) SetMessageReaction(ctx context.Context, params *tgbot.SetMessageReactionParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	emoji := ""
+	if len(params.Reaction) > 0 && params.Reaction[0].ReactionTypeEmoji != nil {
+		emoji = params.Reaction[0].ReactionTypeEmoji.Emoji
+	}
+	f.reactions = append(f.reactions, fakeReaction{chatID: params.ChatID.(int64), messageID: params.MessageID, emoji: emoji})
+	return true, nil
+}
+
+func (f *fakeAPI) PinChatMessage(ctx context.Context, params *tgbot.PinChatMessageParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pins = append(f.pins, fakePin{chatID: params.ChatID.(int64), messageID: params.MessageID})
+	return true, nil
+}
+
+func (f *fakeAPI) UnpinChatMessage(ctx context.Context, params *tgbot.UnpinChatMessageParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unpins = append(f.unpins, fakePin{chatID: params.ChatID.(int64), messageID: params.MessageID})
+	return true, nil
+}
+
+func (f *fakeAPI) DeleteMessage(ctx context.Context, params *tgbot.DeleteMessageParams) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeAPI) EditForumTopic(ctx context.Context, params *tgbot.EditForumTopicParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topicRenames = append(f.topicRenames, fakeTopicRename{chatID: params.ChatID.(int64), threadID: params.MessageThreadID, name: params.Name})
+	return true, nil
+}
+
 func (f *fakeAPI) sends() []fakeSend {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakeSend(nil), f.sent...)
+}
+
+func (f *fakeAPI) reactionsFor(messageID int) []fakeReaction {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []fakeReaction
+	for _, r := range f.reactions {
+		if r.messageID == messageID {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 type fakeResponders struct {
@@ -155,8 +228,8 @@ func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service
 		approval:     responders,
 		clarify:      responders,
 		log:          func(string, ...any) {},
-		nextSend:     map[int64]time.Time{},
-		pendingOther: map[int64]pendingClarify{},
+		nextSend:     map[conv]time.Time{},
+		pendingOther: map[conv]pendingClarify{},
 		clarifyCtx:   map[string]clarifyChoice{},
 		mediaGroup:   map[string]*mediaGroupBuf{},
 	}
@@ -255,6 +328,52 @@ func privateMessage(userID int64, text string) *models.Message {
 		Chat: models.Chat{ID: userID, Type: models.ChatTypePrivate},
 		From: &models.User{ID: userID, Username: "tester"},
 		Text: text,
+	}
+}
+
+func TestNormalizeThread(t *testing.T) {
+	for in, want := range map[int]int{
+		0:   0, // absent/root
+		1:   0, // the General topic is always thread 1
+		2:   2,
+		555: 555,
+	} {
+		if got := normalizeThread(in); got != want {
+			t.Errorf("normalizeThread(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// TestThreadedMessageBehavesAsLegacyWithoutTopics guards backward
+// compatibility: without topics mode there is no per-thread state, so a
+// client that still sends message_thread_id must flow through the exact
+// legacy behavior (same commands, same runtime guard, same chat binding).
+func TestThreadedMessageBehavesAsLegacyWithoutTopics(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	ctx := context.Background()
+
+	m := privateMessage(100, "/help")
+	m.MessageThreadID = 1234
+	b.handleMessage(ctx, m)
+	sends := api.sends()
+	if len(sends) != 1 || len(sends[0].text) < 50 {
+		t.Fatalf("threaded /help not answered like legacy: %+v", sends)
+	}
+
+	// A prompt in a thread hits the same runtime guard and run key family as
+	// an unthreaded one (driver == nil) — no per-thread divergence.
+	b.handleMessage(ctx, privateMessage(100, "do a thing"))
+	threaded := privateMessage(100, "do another thing")
+	threaded.MessageThreadID = 1234
+	b.handleMessage(ctx, threaded)
+	guards := 0
+	for _, s := range api.sends() {
+		if contains(s.text, "runtime unavailable") {
+			guards++
+		}
+	}
+	if guards != 2 {
+		t.Fatalf("expected 2 runtime guards (threaded + unthreaded), got %d", guards)
 	}
 }
 

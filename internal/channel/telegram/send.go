@@ -24,60 +24,68 @@ const (
 )
 
 // sendText sends a text message through the pacing limiter and returns the
-// sent message (nil on failure). markup may be nil. Parse errors on the HTML
-// body fall back to plain text so a broken converter can never silence the
-// bot.
-func (b *Bot) sendText(ctx context.Context, chatID int64, text string, markup models.ReplyMarkup) *models.Message {
-	b.waitTurn(ctx, chatID)
+// sent message (nil on failure). markup may be nil. silent maps to
+// DisableNotification — progress/status traffic never buzzes the phone, only
+// answers and blocking prompts do. Parse errors on the HTML body fall back to
+// plain text so a broken converter can never silence the bot.
+func (b *Bot) sendText(ctx context.Context, c conv, text string, markup models.ReplyMarkup, silent bool) *models.Message {
+	b.waitTurn(ctx, c)
 	msg, err := b.api.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID:             chatID,
-		Text:               text,
-		ParseMode:          models.ParseModeHTML,
-		ReplyMarkup:        markup,
-		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
+		ChatID:              c.chatID,
+		MessageThreadID:     c.threadID,
+		Text:                text,
+		ParseMode:           models.ParseModeHTML,
+		ReplyMarkup:         markup,
+		DisableNotification: silent,
+		LinkPreviewOptions:  &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
 	})
 	if err == nil {
 		return msg
 	}
 	// HTML parse failure: retry once as plain text.
 	if isParseError(err) {
-		b.waitTurn(ctx, chatID)
+		b.waitTurn(ctx, c)
 		msg, err = b.api.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID:             chatID,
-			Text:               stripHTML(text),
-			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
+			ChatID:              c.chatID,
+			MessageThreadID:     c.threadID,
+			Text:                stripHTML(text),
+			DisableNotification: silent,
+			LinkPreviewOptions:  &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
 		})
 		if err == nil {
 			return msg
 		}
-		b.log("send to %d failed: %v", chatID, err)
+		b.log("send to %d/%d failed: %v", c.chatID, c.threadID, err)
 		return nil
 	}
-	// Rate-limited: push every chat's slot out and retry once.
+	// Rate-limited: push every conversation's slot out and retry once.
 	if ra := retryAfter(err); ra > 0 {
 		b.paceForRetryAfter(ra)
-		b.waitTurn(ctx, chatID)
+		b.waitTurn(ctx, c)
 		msg, err = b.api.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID:             chatID,
-			Text:               text,
-			ParseMode:          models.ParseModeHTML,
-			ReplyMarkup:        markup,
-			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
+			ChatID:              c.chatID,
+			MessageThreadID:     c.threadID,
+			Text:                text,
+			ParseMode:           models.ParseModeHTML,
+			ReplyMarkup:         markup,
+			DisableNotification: silent,
+			LinkPreviewOptions:  &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
 		})
 		if err == nil {
 			return msg
 		}
 	}
-	b.log("send to %d failed: %v", chatID, err)
+	b.log("send to %d/%d failed: %v", c.chatID, c.threadID, err)
 	return nil
 }
 
-// editText edits the status/prompt message in place (the Telegram streaming
-// pattern). Failures are logged, never fatal.
-func (b *Bot) editText(ctx context.Context, chatID int64, messageID int, text string, markup models.ReplyMarkup) {
-	b.waitTurn(ctx, chatID)
+// editText edits a message in place (the Telegram streaming pattern; edits
+// never notify). The topic is implicit in the message being edited. Failures
+// are logged, never fatal.
+func (b *Bot) editText(ctx context.Context, c conv, messageID int, text string, markup models.ReplyMarkup) {
+	b.waitTurn(ctx, c)
 	_, err := b.api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
-		ChatID:             chatID,
+		ChatID:             c.chatID,
 		MessageID:          messageID,
 		Text:               text,
 		ParseMode:          models.ParseModeHTML,
@@ -85,28 +93,98 @@ func (b *Bot) editText(ctx context.Context, chatID int64, messageID int, text st
 		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: boolPtr(true)},
 	})
 	if err != nil && isParseError(err) {
-		b.waitTurn(ctx, chatID)
+		b.waitTurn(ctx, c)
 		_, err = b.api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
-			ChatID:    chatID,
+			ChatID:    c.chatID,
 			MessageID: messageID,
 			Text:      stripHTML(text),
 		})
 	}
 	if err != nil {
-		b.log("edit %d/%d failed: %v", chatID, messageID, err)
+		b.log("edit %d/%d failed: %v", c.chatID, messageID, err)
 	}
 }
 
-// waitTurn blocks until the chat's next send slot, sleeping out any 429
-// RetryAfter observed on the way. context cancellation aborts the wait.
-func (b *Bot) waitTurn(ctx context.Context, chatID int64) {
+// Reaction emoji receipts set on the user's prompt message (any emoji is
+// allowed in private chats).
+const (
+	reactionLooking = "👀" // run started
+	reactionDone    = "✅" // answer delivered
+	reactionFailed  = "❌" // run failed
+)
+
+// react sets the receipt reaction on a prompt message, replacing any previous
+// one atomically. Best-effort: failures are logged and never surface.
+func (b *Bot) react(ctx context.Context, c conv, messageID int, emoji string) {
+	if messageID == 0 {
+		return
+	}
+	_, err := b.api.SetMessageReaction(ctx, &tgbot.SetMessageReactionParams{
+		ChatID:    c.chatID,
+		MessageID: messageID,
+		Reaction: []models.ReactionType{{
+			Type:              models.ReactionTypeTypeEmoji,
+			ReactionTypeEmoji: &models.ReactionTypeEmoji{Emoji: emoji},
+		}},
+	})
+	if err != nil {
+		b.log("react %d/%d with %s failed: %v", c.chatID, messageID, emoji, err)
+	}
+}
+
+// pinMessage silently pins messageID (turn marker when pins is enabled).
+func (b *Bot) pinMessage(ctx context.Context, c conv, messageID int) {
+	if messageID == 0 {
+		return
+	}
+	if _, err := b.api.PinChatMessage(ctx, &tgbot.PinChatMessageParams{
+		ChatID:              c.chatID,
+		MessageID:           messageID,
+		DisableNotification: true,
+	}); err != nil {
+		b.log("pin %d/%d failed: %v", c.chatID, messageID, err)
+	}
+}
+
+// unpinMessage silently unpins messageID. Best-effort.
+func (b *Bot) unpinMessage(ctx context.Context, c conv, messageID int) {
+	if messageID == 0 {
+		return
+	}
+	if _, err := b.api.UnpinChatMessage(ctx, &tgbot.UnpinChatMessageParams{
+		ChatID:    c.chatID,
+		MessageID: messageID,
+	}); err != nil {
+		b.log("unpin %d/%d failed: %v", c.chatID, messageID, err)
+	}
+}
+
+// renameTopic renames a forum topic (used when a thread binds to a session
+// whose title becomes the topic name). Best-effort: bots may lack the rights
+// in edge cases; the binding is already persisted, so failures only log.
+func (b *Bot) renameTopic(ctx context.Context, c conv, name string) {
+	if c.threadID == 0 {
+		return
+	}
+	if _, err := b.api.EditForumTopic(ctx, &tgbot.EditForumTopicParams{
+		ChatID:          c.chatID,
+		MessageThreadID: c.threadID,
+		Name:            name,
+	}); err != nil {
+		b.log("rename topic %d/%d failed: %v", c.chatID, c.threadID, err)
+	}
+}
+
+// waitTurn blocks until the conversation's next send slot, sleeping out any
+// 429 RetryAfter observed on the way. context cancellation aborts the wait.
+func (b *Bot) waitTurn(ctx context.Context, c conv) {
 	b.limiterMu.Lock()
-	next := b.nextSend[chatID]
+	next := b.nextSend[c]
 	now := time.Now()
 	if next.IsZero() || now.After(next) {
 		next = now
 	}
-	b.nextSend[chatID] = next.Add(perChatSendInterval)
+	b.nextSend[c] = next.Add(perChatSendInterval)
 	b.limiterMu.Unlock()
 
 	// Sleep exactly to the slot reserved above. Re-deriving the wait on every
@@ -121,12 +199,12 @@ func (b *Bot) waitTurn(ctx context.Context, chatID int64) {
 	}
 }
 
-// paceForRetryAfter pushes every chat's next slot out by the 429 window.
+// paceForRetryAfter pushes every conversation's next slot out by the 429 window.
 func (b *Bot) paceForRetryAfter(retryAfter time.Duration) {
 	b.limiterMu.Lock()
 	defer b.limiterMu.Unlock()
-	for id := range b.nextSend {
-		b.nextSend[id] = time.Now().Add(retryAfter)
+	for c := range b.nextSend {
+		b.nextSend[c] = time.Now().Add(retryAfter)
 	}
 }
 
