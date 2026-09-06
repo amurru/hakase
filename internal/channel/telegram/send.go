@@ -50,7 +50,7 @@ func (b *Bot) sendText(ctx context.Context, chatID int64, text string, markup mo
 		if err == nil {
 			return msg
 		}
-		b.log("telegram: send to %d failed: %v", chatID, err)
+		b.log("send to %d failed: %v", chatID, err)
 		return nil
 	}
 	// Rate-limited: push every chat's slot out and retry once.
@@ -68,7 +68,7 @@ func (b *Bot) sendText(ctx context.Context, chatID int64, text string, markup mo
 			return msg
 		}
 	}
-	b.log("telegram: send to %d failed: %v", chatID, err)
+	b.log("send to %d failed: %v", chatID, err)
 	return nil
 }
 
@@ -93,7 +93,7 @@ func (b *Bot) editText(ctx context.Context, chatID int64, messageID int, text st
 		})
 	}
 	if err != nil {
-		b.log("telegram: edit %d/%d failed: %v", chatID, messageID, err)
+		b.log("edit %d/%d failed: %v", chatID, messageID, err)
 	}
 }
 

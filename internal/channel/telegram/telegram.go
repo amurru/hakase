@@ -60,6 +60,9 @@ type Bot struct {
 	pendingMu    sync.Mutex
 	pendingOther map[int64]pendingClarify // chatID -> clarify awaiting free text
 
+	healMu           sync.Mutex
+	lastConflictHeal time.Time // last conflict-triggered healing attempt
+
 	clarifyMu  sync.Mutex
 	clarifyCtx map[string]clarifyChoice // gateID -> choices for callbacks
 
@@ -110,7 +113,12 @@ func New(d Deps) (*Bot, error) {
 		mediaGroup:   map[string]*mediaGroupBuf{},
 	}
 
-	api, err := tgbot.New(b.token, tgbot.WithDefaultHandler(b.handleUpdate))
+	api, err := tgbot.New(b.token,
+		tgbot.WithDefaultHandler(b.handleUpdate),
+		// Route poller/API errors through our logger and let a 409
+		// webhook conflict trigger the healing path (see handleBotError).
+		tgbot.WithErrorsHandler(b.handleBotError),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
@@ -126,35 +134,97 @@ func (b *Bot) Name() string { return ChannelName }
 // surfaces as an error the Service logs loudly.
 func (b *Bot) Run(ctx context.Context) error {
 	if err := b.registerCommands(context.WithoutCancel(ctx)); err != nil {
-		b.log("telegram: command menu registration failed: %v", err)
+		b.log("command menu registration failed: %v", err)
 	}
 	b.clearStaleWebhook(context.WithoutCancel(ctx))
 	if !b.auth.HasAnyUser() {
 		code, err := b.auth.EnsurePairingCode()
 		if err != nil {
-			b.log("telegram: cannot persist pairing code: %v", err)
+			b.log("cannot persist pairing code: %v", err)
 		} else {
-			b.log("telegram: no users paired yet. In Telegram, send /start %s to your bot to pair (code valid %d minutes; `hakase channels pair-code` issues a fresh one).", code, int(channel.PairingCodeTTL.Minutes()))
+			b.log("no users paired yet. In Telegram, send /start %s to your bot to pair (code valid %d minutes; `hakase channels pair-code` issues a fresh one).", code, int(channel.PairingCodeTTL.Minutes()))
 		}
 	}
-	b.log("telegram: long polling started")
+	b.log("long polling started")
 	b.api.Start(ctx)
 	// Start blocks until ctx is cancelled and reports poll errors itself.
 	return ctx.Err()
 }
 
+// conflictHealCooldown spaces conflict-triggered healing attempts; Telegram
+// repeats the 409 on every poll (~5s) and each heal does two API round-trips.
+const conflictHealCooldown = 30 * time.Second
+
 // clearStaleWebhook deletes any webhook left on the bot token by a previous
-// integration. hakase polls long-polling only: while a webhook is active,
-// Telegram rejects every getUpdates with 409 Conflict and the bot appears
-// completely silent, so this healing step runs before polling starts. It is
-// a no-op when no webhook is set, and pending updates are kept.
+// integration, verifying the result and retrying up to three times. hakase
+// is polling-only: while a webhook is active, Telegram rejects every
+// getUpdates with 409 Conflict and the bot appears completely silent.
+// Pending updates are kept.
 func (b *Bot) clearStaleWebhook(ctx context.Context) {
+	const maxAttempts = 3
+	for attempt := 1; ; attempt++ {
+		info, err := b.api.GetWebhookInfo(ctx)
+		if err == nil && (info == nil || info.URL == "") {
+			return // clean token: nothing to do
+		}
+		if err == nil && info != nil {
+			b.log("stale webhook detected on this token (%s, %d pending updates) - deleting it so long polling can start", info.URL, info.PendingUpdateCount)
+		}
+		if _, err := b.api.DeleteWebhook(ctx, &tgbot.DeleteWebhookParams{DropPendingUpdates: false}); err != nil {
+			b.log("deleteWebhook attempt %d failed: %v", attempt, err)
+		}
+
+		// Verify before retrying: a successful delete needs no backoff sleep.
+		if info, err := b.api.GetWebhookInfo(ctx); err == nil && (info == nil || info.URL == "") {
+			return
+		}
+
+		if attempt >= maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(attempt) * time.Second):
+		}
+	}
+
+	// Still active after retries: either the API is flaky from here or
+	// something else is actively managing this token (it would re-register
+	// its webhook no matter how often we delete).
 	if info, err := b.api.GetWebhookInfo(ctx); err == nil && info != nil && info.URL != "" {
-		b.log("telegram: stale webhook detected on this token (%s, %d pending updates) - deleting it so long polling can start", info.URL, info.PendingUpdateCount)
+		b.log("WARNING: webhook %s is still active after %d attempts. Manual fix: open https://api.telegram.org/bot<token>/deleteWebhook once. If it keeps coming back, another bot platform is still using this token - give hakase its own token via @BotFather (/revoke or /token).", info.URL, maxAttempts)
 	}
-	if _, err := b.api.DeleteWebhook(ctx, &tgbot.DeleteWebhookParams{DropPendingUpdates: false}); err != nil {
-		b.log("telegram: deleteWebhook failed (%v) - if polling then fails with 409 Conflict, delete the webhook manually via https://api.telegram.org/bot<token>/deleteWebhook", err)
+}
+
+// handleBotError is the tgbot errors handler: poll/API errors are logged
+// through our logger (replacing the library's [TGBOT] output), and a 409
+// webhook conflict re-runs the healing path with a cooldown.
+func (b *Bot) handleBotError(err error) {
+	if err == nil {
+		return
 	}
+	if strings.Contains(err.Error(), "webhook is active") {
+		b.healWebhookConflict()
+		return
+	}
+	b.log("api error: %v", err)
+}
+
+// healWebhookConflict runs clearStaleWebhook at most once per cooldown.
+func (b *Bot) healWebhookConflict() {
+	b.healMu.Lock()
+	if time.Since(b.lastConflictHeal) < conflictHealCooldown {
+		b.healMu.Unlock()
+		return
+	}
+	b.lastConflictHeal = time.Now()
+	b.healMu.Unlock()
+
+	b.log("getUpdates rejected: a webhook is active on this token - retrying cleanup")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	b.clearStaleWebhook(ctx)
 }
 
 // registerCommands sets the bot's command menu.
@@ -179,7 +249,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 func (b *Bot) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Update) {
 	defer func() {
 		if r := recover(); r != nil {
-			b.log("telegram: panic handling update: %v", r)
+			b.log("panic handling update: %v", r)
 		}
 	}()
 	switch {

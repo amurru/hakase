@@ -53,7 +53,7 @@ func (b *Bot) startRun(ctx context.Context, chatID int64, prompt string, photoPa
 		return
 	}
 	if err := b.sessions.RecordUsageWithAttachments("user", fullPrompt, "", 0, refs); err != nil {
-		b.log("telegram: failed to save user message: %v", err)
+		b.log("failed to save user message: %v", err)
 	}
 
 	parts := make([]*genai.Part, 0, len(photoParts)+1)
@@ -110,7 +110,7 @@ func (b *Bot) resolveSession(chatKeyStr, prompt string) (string, error) {
 		s.Chats[chatKeyStr] = state.Chat{SessionID: sess.ID}
 		return nil
 	}); err != nil {
-		b.log("telegram: cannot persist chat binding: %v", err)
+		b.log("cannot persist chat binding: %v", err)
 	}
 	return sess.ID, nil
 }

@@ -124,7 +124,7 @@ func (b *Bot) cmdNew(ctx context.Context, m *models.Message, args string) {
 		s.Chats[ck] = state.Chat{SessionID: sess.ID}
 		return nil
 	}); err != nil {
-		b.log("telegram: cannot persist chat binding: %v", err)
+		b.log("cannot persist chat binding: %v", err)
 	}
 	b.sendText(ctx, m.Chat.ID, fmt.Sprintf("🆕 Session <b>%s</b> created and bound here.\n<code>%s</code>", sess.Title, sess.ID), nil)
 }

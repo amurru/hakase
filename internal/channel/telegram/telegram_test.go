@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,7 +27,9 @@ type fakeAPI struct {
 	answered       []string
 	cmds           bool
 	deletedWebhook int
-	webhookURL     string // non-empty simulates a stale webhook on the token
+	deleteCalls    int
+	failDeletes    int // first N deleteWebhook calls fail (flaky API simulation)
+	webhookURL     string
 	nextMsgID      int
 }
 
@@ -53,6 +56,10 @@ func (f *fakeAPI) GetWebhookInfo(ctx context.Context) (*models.WebhookInfo, erro
 func (f *fakeAPI) DeleteWebhook(ctx context.Context, params *tgbot.DeleteWebhookParams) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.deleteCalls++
+	if f.deleteCalls <= f.failDeletes {
+		return false, fmt.Errorf("error decode response body for method deleteWebhook, , unexpected end of JSON input")
+	}
 	f.deletedWebhook++
 	f.webhookURL = ""
 	return true, nil
@@ -193,6 +200,52 @@ func TestRunDeletesStaleWebhook(t *testing.T) {
 	}
 	if api.webhookURL != "" {
 		t.Fatal("stale webhook was not cleared")
+	}
+}
+
+// TestClearStaleWebhookRetriesUntilVerified covers the flaky-delete case
+// observed in the field: deleteWebhook can fail with an empty/undecodable
+// response body, so the healing loop must verify via GetWebhookInfo and
+// retry until the webhook is actually gone.
+func TestClearStaleWebhookRetriesUntilVerified(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	api.webhookURL = "https://stale.example.com/hook"
+	api.failDeletes = 1
+
+	b.clearStaleWebhook(context.Background())
+
+	if api.webhookURL != "" {
+		t.Fatalf("webhook still set after retries: %q", api.webhookURL)
+	}
+	if api.deleteCalls != 2 {
+		t.Fatalf("DeleteWebhook attempts = %d, want 2 (1 failed + 1 success)", api.deleteCalls)
+	}
+}
+
+// TestHandleBotErrorHealsConflict ensures a 409 surfacing mid-poll triggers
+// the healing path (throttled by the cooldown) instead of only logging.
+func TestHandleBotErrorHealsConflict(t *testing.T) {
+	b, api, _, _ := newTestBot(t)
+	conflict := errors.New("error get updates, conflict, Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first")
+
+	api.webhookURL = "https://stale.example.com/hook"
+	b.handleBotError(conflict)
+	if api.webhookURL != "" {
+		t.Fatal("conflict did not trigger webhook healing")
+	}
+
+	// Inside the cooldown a second conflict must not re-heal immediately.
+	api.webhookURL = "https://stale.example.com/hook2"
+	b.handleBotError(conflict)
+	if api.webhookURL != "https://stale.example.com/hook2" {
+		t.Fatal("cooldown was not honored")
+	}
+
+	// Non-conflict errors must not touch the webhook at all.
+	before := api.deleteCalls
+	b.handleBotError(errors.New("some other api error"))
+	if api.deleteCalls != before {
+		t.Fatal("non-conflict error triggered healing")
 	}
 }
 

@@ -22,7 +22,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 			CallbackQueryID: cq.ID,
 			Text:            text,
 		}); err != nil {
-			b.log("telegram: answer callback failed: %v", err)
+			b.log("answer callback failed: %v", err)
 		}
 	}
 
