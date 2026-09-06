@@ -112,11 +112,42 @@ Open <http://localhost:5173> -- Vite proxies `/api` to the Go server on :8080. N
 | `--host <addr>` | `127.0.0.1` | Host address to bind to |
 | `--insecure-cookie` | off | Allow session cookie without `Secure` on plain HTTP (local dev only) |
 
-The SPA is Vue 3 + TypeScript + Vite + Tailwind 4 (Pinia, Vue Router, reka-ui, markdown-it + KaTeX + Mermaid + highlight.js). Key views: **Chat** (SSE-streamed, markdown + LaTeX + Mermaid, `@` attachments, image lightbox), **Sessions**, **Tasks**, **Knowledge**, **Skills**, **MCP**, **Cron**, **Files**, **Settings**. Approval and clarify gates work in the browser too.
+The SPA is Vue 3 + TypeScript + Vite + Tailwind 4 (Pinia, Vue Router, reka-ui, markdown-it + KaTeX + Mermaid + highlight.js). Key views: **Chat** (SSE-streamed, markdown + LaTeX + Mermaid, `@` attachments, image lightbox), **Sessions**, **Tasks**, **Knowledge**, **Skills**, **MCP**, **Cron**, **Channels**, **Files**, **Settings**. Approval and clarify gates work in the browser too.
 
 > Before `web`/`serve` will start, create the admin login: `hakase auth set-password` (argon2id, stored at `~/.hakase/credentials.json` mode `0600`). The JWT secret lives at `~/.hakase/jwt-secret`. See [Authentication](#authentication) and [Reverse Proxy](#reverse-proxy-caddy).
 
 For the full API surface and SPA details, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#web-ui-development-flow) and [internal/web](../internal/web).
+
+---
+
+## Channels (Telegram)
+
+Talk to hakase from your phone: a Telegram bot that prompts the agent, streams live progress, answers approval/clarify prompts, and manages tasks and cron jobs remotely. Channels run **inside** the `web`/`serve` process (sharing its runner, gates, and sandbox - no privilege bypass) and are extensible to other chat transports.
+
+Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and enable the channel:
+
+```json
+{
+  "channels": {
+    "enable_cron_scheduler": true,
+    "telegram": {
+      "enabled": true,
+      "bot_token": "123456789:ABCdef..."
+    }
+  }
+}
+```
+
+2. Restart `hakase web`. A 6-digit pairing code prints to the server console (or run `hakase channels pair-code` / click **Generate pairing code** on the web UI's Channels page).
+3. In Telegram, send `/start <code>` to your bot - that's it.
+
+Access is **deny-by-default**: statically allowlist IDs via `allowed_user_ids`, or pair at runtime with the one-time code (valid 15 minutes). Unpaired users get a terse, rate-limited reply. Supported inbound: text and photo captions (albums buffer into one prompt; voice/files are not supported yet).
+
+In-chat commands: `/new`, `/sessions`, `/use <id>`, `/status`, `/stop`, `/tasks`, `/cron [run|pause|resume <name>]`, `/notify on|off`, `/id`, `/help`. Agent runs appear as one live status message (elapsed time, tokens, recent tool calls) followed by the reply; approvals arrive as ✅/❌ buttons and clarifications as choice buttons — answerable from the phone or the web UI, first responder wins. `/notify on` pushes cron/task completions to the chat; `enable_cron_scheduler` starts the background scheduler so those jobs actually fire while headless.
+
+Manage everything from the web UI's **Channels** page (status, pairing code, revoke) or `hakase channels status|pair-code|revoke`. Env overrides: `HAKASE_TELEGRAM_ENABLED`, `HAKASE_TELEGRAM_BOT_TOKEN`. Pairing state lives in `~/.hakase/channels.json` (0600, sandbox-denied).
 
 ---
 
@@ -133,6 +164,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `rules` | List/show active project context files (`AGENTS.md`) |
 | `env` | Print the detected runtime-environment block |
 | `cron` | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
+| `channels` | Manage communication channels (`status`, `pair-code`, `revoke`) |
 | `auth` | Manage web authentication (`set-password`) |
 | `version` | Print build version (version, commit, build date, Go runtime) |
 
@@ -172,7 +204,7 @@ cp config.json.example config.json
 | `openai` | OpenAI API | `gpt-5.6-terra` |
 | `openai-compatible` | Ollama, vLLM, any OpenAI-compatible endpoint | none -- `model_name` required |
 
-Environment variables override `config.json` and can build the config entirely from the environment when the file is missing: `HAKASE_API_KEY`, `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_BASE_URL` (plus `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_*`, `HAKASE_HOME`, etc.).
+Environment variables override `config.json` and can build the config entirely from the environment when the file is missing: `HAKASE_API_KEY`, `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_BASE_URL` (plus `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_*`, `HAKASE_TELEGRAM_*`, `HAKASE_HOME`, etc.).
 
 <details>
 <summary><b>Full configuration reference</b></summary>
@@ -190,9 +222,10 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `summary_model` -- cheaper model for context compaction
 - `search_expansion` -- HyDE-lite query expansion for `search_knowledge` (off by default)
 - `sidekick` -- second model (on-demand/watch). See [Sidekick](docs/DEVELOPMENT.md#sidekick-second-model) and [docs/sidekick-agent/](docs/sidekick-agent/).
+- `channels` -- communication channels (Telegram bot today): remote prompting, live progress, in-chat approvals, task/cron control. See [Channels (Telegram)](#channels-telegram).
 - `media` -- image/video generation (`openai`, `fal`, `pil` fallback). See [Media Generation](docs/DEVELOPMENT.md#media-generation) and [docs/media-generation/support.md](docs/media-generation/support.md).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
-- `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `skills/`, `knowledge/`
+- `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 
 **Example -- OpenAI-compatible (Ollama):**
 
@@ -223,7 +256,8 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 | Feature | What it does |
 | ------- | ------------ |
 | **Terminal TUI** | Split-pane Bubble Tea UI: chat, logs, multi-line input, mid-run queuing, help overlay (`Ctrl+/`) |
-| **Web UI** | Vue 3 SPA with the same agent, sessions, tasks, knowledge, skills, MCP, cron, files, settings |
+| **Web UI** | Vue 3 SPA with the same agent, sessions, tasks, knowledge, skills, MCP, cron, channels, files, settings |
+| **Telegram Channel** | Chat with hakase from your phone: prompts, live progress, in-chat approvals, task/cron control - deny-by-default pairing |
 | **Multi-Agent Orchestration** | ADK root orchestrator delegates to `web_researcher`, `code_interpreter`, `general_purpose` |
 | **Python Interpreter** | Isolated `.venv`, auto pip install on `ModuleNotFoundError`, sandbox-aware |
 | **Skill Library** | Persisted Python skills + markdown skills, with a darwinian evolver loop |

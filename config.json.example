@@ -54,6 +54,15 @@
     "max_note_chars": 1200,
     "transcript_window_chars": 6000
   },
+  "channels": {
+    "enable_cron_scheduler": false,
+    "telegram": {
+      "enabled": false,
+      "bot_token": "",
+      "allowed_user_ids": [],
+      "pairing_code": ""
+    }
+  },
   "vision_model": "",
   "vision_base_url": "",
   "vision_api_key": "",
