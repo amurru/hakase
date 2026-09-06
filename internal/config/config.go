@@ -211,6 +211,12 @@ type Config struct {
 	// (see SidekickConfig). Disabling requires only enabled:false or an empty
 	// model_name.
 	Sidekick SidekickConfig `json:"sidekick,omitempty"`
+	// WebSearch controls the built-in keyless web search fallback
+	// (internal/websearch) that activates when no research-capable MCP
+	// server is connected. enabled=false switches the feature (and its
+	// outbound calls) off; force=true keeps the fallback tools visible even
+	// when research MCP tools are connected.
+	WebSearch WebSearchConfig `json:"web_search,omitempty"`
 	// Channels configures communication channels (Telegram bot, extensible to
 	// other chat transports) that let a remote client prompt the agent, watch
 	// progress, answer approvals, and manage tasks/cron jobs. Channels run
@@ -454,6 +460,28 @@ func (c *SidekickConfig) Validate() error {
 // SidekickEnabled reports whether the sidekick feature is enabled at all.
 func SidekickEnabled(cfg *Config) bool {
 	return cfg != nil && cfg.Sidekick.EnabledWithModel()
+}
+
+// WebSearchConfig tunes the built-in keyless web search fallback
+// (internal/websearch) exposed when no research-capable MCP server is
+// connected.
+type WebSearchConfig struct {
+	// Enabled tri-state: nil (default) = auto, where detection in
+	// internal/agent decides visibility from the connected MCP tools;
+	// false = never expose the fallback or make outbound search calls.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Force keeps the fallback tools visible even when research-capable MCP
+	// tools are connected (testing, or preferring the lightweight path).
+	Force bool `json:"force,omitempty"`
+}
+
+// WebSearchEnabled reports whether the fallback feature may run at all: only
+// an explicit enabled=false disables it.
+func WebSearchEnabled(c *Config) bool {
+	if c == nil || c.WebSearch.Enabled == nil {
+		return true
+	}
+	return *c.WebSearch.Enabled
 }
 
 // ApplyDefaults fills zero values with defaults. Call after loading config.

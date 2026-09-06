@@ -490,3 +490,31 @@ func TestEffectiveModelName(t *testing.T) {
 		})
 	}
 }
+
+func TestWebSearchEnabled(t *testing.T) {
+	if !WebSearchEnabled(nil) {
+		t.Error("nil config should default to enabled")
+	}
+	if !WebSearchEnabled(&Config{}) {
+		t.Error("empty config should default to enabled (auto mode)")
+	}
+	off := false
+	if WebSearchEnabled(&Config{WebSearch: WebSearchConfig{Enabled: &off}}) {
+		t.Error("enabled=false must disable")
+	}
+	on := true
+	if !WebSearchEnabled(&Config{WebSearch: WebSearchConfig{Enabled: &on}}) {
+		t.Error("enabled=true must stay enabled")
+	}
+	// JSON round-trip of the config keys.
+	c, err := LoadConfig(writeTempConfig(t, `{"web_search": {"enabled": false, "force": true}}`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if WebSearchEnabled(c) {
+		t.Error("loaded enabled=false must disable")
+	}
+	if !c.WebSearch.Force {
+		t.Error("loaded force=true not honored")
+	}
+}
