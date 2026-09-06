@@ -76,6 +76,14 @@ func MarkdownToTelegramHTML(md string) string {
 	return markdownToTelegramHTMLState(md, new(bool))
 }
 
+// MarkdownToTelegramHTMLState is MarkdownToTelegramHTML with the caller
+// owning the code-fence state: pass the same *bool across calls to render a
+// stream split across messages with balanced <pre> tags, exactly like
+// ChunkReply does across chunks.
+func MarkdownToTelegramHTMLState(md string, inFence *bool) string {
+	return markdownToTelegramHTMLState(md, inFence)
+}
+
 // markdownToTelegramHTMLState converts one chunk, carrying code-fence state
 // across chunks of the same logical message.
 func markdownToTelegramHTMLState(md string, inFence *bool) string {

@@ -24,6 +24,8 @@ import (
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
 
+	"google.golang.org/genai"
+
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
@@ -54,7 +56,7 @@ type Bot struct {
 	token    string
 	auth     *channel.Authenticator
 	runs     *channel.RunManager
-	driver   *agentrun.Driver
+	driver   runTurner
 	sessions *hakasesession.SessionService
 	store    *state.Store
 	approval interfaces.ApprovalResponder
@@ -104,6 +106,12 @@ type Deps struct {
 	Service *channel.Service
 	Config  config.TelegramChannelConfig
 	Log     channel.LogFunc
+}
+
+// runTurner drives one agent turn; *agentrun.Driver satisfies it. A seam so
+// tests can script turns instead of booting the ADK runner.
+type runTurner interface {
+	RunTurn(ctx context.Context, sessionID string, content *genai.Content, sink agentrun.EventSink)
 }
 
 // New constructs the Telegram transport and registers its command menu.
@@ -361,7 +369,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 
-	b.startRun(ctx, c, m.Text, nil, nil, nil)
+	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil)
 }
 
 // takePendingOther pops the pending free-text clarify for a conversation, if

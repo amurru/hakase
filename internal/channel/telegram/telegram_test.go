@@ -40,6 +40,7 @@ type fakeAPI struct {
 type fakeSend struct {
 	chatID   int64
 	threadID int
+	msgID    int
 	text     string
 	hasKb    bool
 	silent   bool
@@ -83,6 +84,7 @@ func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessagePara
 	f.sent = append(f.sent, fakeSend{
 		chatID:   params.ChatID.(int64),
 		threadID: params.MessageThreadID,
+		msgID:    f.nextMsgID,
 		text:     params.Text,
 		hasKb:    params.ReplyMarkup != nil,
 		silent:   params.DisableNotification,
@@ -162,6 +164,19 @@ func (f *fakeAPI) reactionsFor(messageID int) []fakeReaction {
 	for _, r := range f.reactions {
 		if r.messageID == messageID {
 			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// editsFor lists the texts edited into a message, in order.
+func (f *fakeAPI) editsFor(messageID int) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.edited {
+		if e.messageID == messageID {
+			out = append(out, e.text)
 		}
 	}
 	return out

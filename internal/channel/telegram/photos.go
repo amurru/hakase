@@ -26,10 +26,11 @@ const (
 
 // mediaGroup buffers an album until the flush timer fires.
 type mediaGroupBuf struct {
-	photos  []photoAttach
-	caption string
-	c       conv
-	timer   *time.Timer
+	photos   []photoAttach
+	caption  string
+	c        conv
+	promptID int // first album message: receipts + pin anchor
+	timer    *time.Timer
 }
 
 // photoAttach is one downloaded photo.
@@ -57,7 +58,7 @@ func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
 		return
 	}
 	parts, refs, manifest := photoContent([]photoAttach{photo})
-	b.startRun(ctx, c, strings.TrimSpace(m.Caption), parts, refs, manifest)
+	b.startRun(ctx, c, m.ID, strings.TrimSpace(m.Caption), parts, refs, manifest)
 }
 
 // bufferAlbumPhoto accumulates an album's photos, flushing the whole group as
@@ -80,6 +81,9 @@ func (b *Bot) bufferAlbumPhoto(ctx context.Context, m *models.Message) {
 		})
 	}
 	group.photos = append(group.photos, photo)
+	if group.promptID == 0 {
+		group.promptID = m.ID
+	}
 	if strings.TrimSpace(m.Caption) != "" {
 		group.caption = strings.TrimSpace(m.Caption)
 	}
@@ -96,7 +100,7 @@ func (b *Bot) flushMediaGroup(groupID string) {
 		return
 	}
 	parts, refs, manifest := photoContent(group.photos)
-	b.startRun(context.Background(), group.c, group.caption, parts, refs, manifest)
+	b.startRun(context.Background(), group.c, group.promptID, group.caption, parts, refs, manifest)
 }
 
 // photoContent converts downloaded photos into genai parts, session
