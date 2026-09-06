@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -56,7 +57,9 @@ func TestSearchDDGQueryAndResults(t *testing.T) {
 
 	p := NewProviders()
 	p.DDGSearchURL = ddg.URL + "/"
-	res, err := p.Search(context.Background(), "golang concurrency", 5)
+	// maxResults == result count so the Wikipedia supplement (whose default
+	// endpoint would hit the network) does not fire.
+	res, err := p.Search(context.Background(), "golang concurrency", 2)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -71,5 +74,92 @@ func TestSearchDDGQueryAndResults(t *testing.T) {
 func TestSearchRejectsEmptyQuery(t *testing.T) {
 	if _, err := NewProviders().Search(context.Background(), "  ", 8); err == nil {
 		t.Fatal("expected error for empty query")
+	}
+}
+
+const wikiFixtureJSON = `{"batchcomplete":"","query":{"search":[
+ {"ns":0,"title":"Go (programming language)","pageid":25039021,"snippet":"<b>Go</b> is a compiled language"},
+ {"ns":0,"title":"Concurrency (computer science)","pageid":1234,"snippet":"Structuring programs with &amp; channels"}]}}`
+
+func testWikiProviders(t *testing.T) *Providers {
+	t.Helper()
+	wiki := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list") != "search" || r.URL.Query().Get("srsearch") == "" {
+			t.Errorf("unexpected wiki query: %s", r.URL.RawQuery)
+		}
+		io.WriteString(w, wikiFixtureJSON)
+	}))
+	t.Cleanup(wiki.Close)
+	p := NewProviders()
+	p.WikiAPIURL = wiki.URL + "/w/api.php"
+	return p
+}
+
+func TestSearchWikipedia(t *testing.T) {
+	p := testWikiProviders(t)
+	res, err := p.searchWikipedia(context.Background(), "golang", 3)
+	if err != nil {
+		t.Fatalf("searchWikipedia: %v", err)
+	}
+	if len(res) != 2 || res[0].Source != "wikipedia" {
+		t.Fatalf("unexpected: %+v", res)
+	}
+	// Base is derived from the configured (httptest) API URL; parens arrive
+	// percent-encoded, which Wikipedia decodes server-side.
+	if !strings.HasSuffix(res[0].URL, "/wiki/Go_%28programming_language%29") {
+		t.Errorf("article url: %q", res[0].URL)
+	}
+	if res[1].Snippet != "Structuring programs with & channels" {
+		t.Errorf("snippet not stripped/unescaped: %q", res[1].Snippet)
+	}
+}
+
+func TestSearchFallsBackToWikipediaWhenDDGBlocked(t *testing.T) {
+	p := testWikiProviders(t)
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer blocked.Close()
+	p.DDGSearchURL = blocked.URL + "/"
+	res, err := p.Search(context.Background(), "golang", 8)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res) != 2 || res[0].Source != "wikipedia" {
+		t.Fatalf("expected wikipedia fallback, got: %+v", res)
+	}
+}
+
+func TestSearchWikipediaSupplementsDDG(t *testing.T) {
+	p := testWikiProviders(t)
+	ddg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, ddgFixtureHTML)
+	}))
+	defer ddg.Close()
+	p.DDGSearchURL = ddg.URL + "/"
+	res, err := p.Search(context.Background(), "golang", 8)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// 2 DDG + 2 Wikipedia supplements.
+	if len(res) != 4 || res[0].Source != "duckduckgo" || res[2].Source != "wikipedia" {
+		t.Fatalf("unexpected merge: %+v", res)
+	}
+}
+
+func TestSearchReportsBothProviderErrors(t *testing.T) {
+	p := NewProviders()
+	p.DDGSearchURL = "http://127.0.0.1:1/"
+	p.WikiAPIURL = "http://127.0.0.1:1/"
+	_, err := p.Search(context.Background(), "golang", 8)
+	if err == nil || !strings.Contains(err.Error(), "duckduckgo") || !strings.Contains(err.Error(), "wikipedia") {
+		t.Fatalf("expected combined error, got: %v", err)
+	}
+}
+
+func TestStripHTMLFragment(t *testing.T) {
+	got := stripHTMLFragment("<b>Hello</b> &amp; <i>world</i>\n  next")
+	if got != "Hello & world next" {
+		t.Errorf("got %q", got)
 	}
 }

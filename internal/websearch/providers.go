@@ -7,11 +7,15 @@ package websearch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	htmlescape "html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,10 +143,68 @@ func (p *Providers) searchDDG(ctx context.Context, query string, maxResults int)
 	return parseDDGHTML(string(body), maxResults)
 }
 
-// searchWikipedia queries the MediaWiki search API. Stub until the provider
-// task lands; Search tolerates its error (DDG-only results).
+type wikiSearchResponse struct {
+	Query struct {
+		Search []struct {
+			Title   string `json:"title"`
+			Snippet string `json:"snippet"` // HTML fragment
+		} `json:"search"`
+	} `json:"query"`
+}
+
 func (p *Providers) searchWikipedia(ctx context.Context, query string, maxResults int) ([]Result, error) {
-	return nil, errors.New("not implemented")
+	if maxResults <= 0 {
+		maxResults = 3
+	}
+	q := url.Values{}
+	q.Set("action", "query")
+	q.Set("list", "search")
+	q.Set("srsearch", query)
+	q.Set("srlimit", strconv.Itoa(maxResults))
+	q.Set("format", "json")
+	q.Set("utf8", "1")
+	body, err := p.get(ctx, p.WikiAPIURL+"?"+q.Encode(), wikiUserAgent, maxRawFetchBytes)
+	if err != nil {
+		return nil, err
+	}
+	var parsed wikiSearchResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("parse wikipedia response: %w", err)
+	}
+	results := make([]Result, 0, len(parsed.Query.Search))
+	for _, hit := range parsed.Query.Search {
+		results = append(results, Result{
+			Title:   hit.Title,
+			URL:     wikiArticleURL(p.WikiAPIURL, hit.Title),
+			Snippet: stripHTMLFragment(hit.Snippet),
+			Source:  "wikipedia",
+		})
+	}
+	return results, nil
+}
+
+// wikiArticleURL builds the article URL from a title, deriving the wiki base
+// from the configured API URL so httptest servers round-trip.
+func wikiArticleURL(apiURL, title string) string {
+	base := apiURL
+	if i := strings.Index(base, "/w/"); i >= 0 {
+		base = base[:i]
+	}
+	u := url.URL{Path: "/wiki/" + strings.ReplaceAll(title, " ", "_")}
+	return base + u.EscapedPath()
+}
+
+var (
+	scriptRe = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
+	tagRe    = regexp.MustCompile(`<[^>]*>`)
+)
+
+// stripHTMLFragment converts a small HTML snippet to single-spaced text.
+func stripHTMLFragment(s string) string {
+	s = scriptRe.ReplaceAllString(s, " ")
+	s = tagRe.ReplaceAllString(s, "")
+	s = htmlescape.UnescapeString(s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // parseDDGHTML extracts results from the html.duckduckgo.com layout:
