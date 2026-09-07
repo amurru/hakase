@@ -49,6 +49,7 @@ export function useSSE(sessionId: () => string | null) {
   let onTask: ((data: Record<string, unknown>) => void) | null = null
   let onDelegation: ((data: Record<string, unknown>) => void) | null = null
   let onCron: ((data: Record<string, unknown>) => void) | null = null
+  let onGraph: ((data: Record<string, unknown>) => void) | null = null
 
   let eventSource: EventSource | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -228,6 +229,17 @@ export function useSSE(sessionId: () => string | null) {
       }
     })
 
+    // graph event: one structured execution-canvas frame (agent lifecycle,
+    // tool call with args/result, sub-agent reasoning delta, transfer)
+    eventSource.addEventListener('graph', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        onGraph?.(data)
+      } catch {
+        // ignore
+      }
+    })
+
     // cron event: cron job status
     eventSource.addEventListener('cron', (e) => {
       try {
@@ -391,6 +403,10 @@ export function useSSE(sessionId: () => string | null) {
     onDelegation = handler
   }
 
+  function onGraphEvent(handler: (data: Record<string, unknown>) => void) {
+    onGraph = handler
+  }
+
   function onCronEvent(handler: (data: Record<string, unknown>) => void) {
     onCron = handler
   }
@@ -424,6 +440,7 @@ export function useSSE(sessionId: () => string | null) {
     onLogEvent,
     onTaskEvent,
     onDelegationEvent,
+    onGraphEvent,
     onCronEvent,
   }
 }

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useSessionStore } from '@/stores/session'
 import { useApprovalStore } from '@/stores/approval'
 import { useClarifyStore } from '@/stores/clarify'
+import { useCanvasStore } from '@/stores/canvas'
 import { useSSE } from '@/composables/useSSE'
 import { sidekickSeverityClass, type SidekickNote } from '@/lib/sidekick'
 import { parseSlashCommand, SLASH_COMMANDS } from '@/lib/slash'
@@ -14,10 +15,14 @@ import { useProjectsStore, type ProjectStatus } from '@/stores/projects'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+
+// The canvas pulls in vue-flow (~large); keep it out of the main chunk like
+// the mermaid renderer.
+const ExecutionCanvas = defineAsyncComponent(() => import('@/components/canvas/ExecutionCanvas.vue'))
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +31,7 @@ const sessionStore = useSessionStore()
 const approvalStore = useApprovalStore()
 const clarifyStore = useClarifyStore()
 const projectsStore = useProjectsStore()
+const canvasStore = useCanvasStore()
 
 // Live branch + dirty indicator for the bound-project chip (project-ui.md).
 // Read without a fetch: the header must not force network I/O on every open.
@@ -53,6 +59,7 @@ const {
   onDelegationEvent,
   onCronEvent,
   onLogEvent,
+  onGraphEvent,
   askSidekick,
   pushSidekickNote,
   clearMessages,
@@ -68,6 +75,15 @@ onClarifyTimeoutEvent((data) => clarifyStore.handleClarifyTimeout(data))
 const { handleDelegation, handleCron } = useNotifications()
 onDelegationEvent(handleDelegation)
 onCronEvent(handleCron)
+
+// Execution canvas: structured graph events feed the Pinia canvas store; a
+// session switch rebuilds the graph from the server's retained ring first.
+onGraphEvent((data) => canvasStore.handleGraphEvent(data))
+watch(
+  sessionId,
+  (sid) => canvasStore.reset(sid),
+  { immediate: true },
+)
 
 // Surface agent-run errors: runAgentTask emits failures as SSE log events
 // prefixed "Error:" (loop-guard aborts, provider errors). Without this
@@ -504,85 +520,110 @@ onMounted(() => {
         </span>
       </div>
 
-      <!-- Context warning badge -->
-      <Badge
-        v-if="contextWarning"
-        variant="destructive"
-        class="gap-1 text-xs"
-      >
-        <AlertTriangle class="h-3 w-3" />
-        Context {{ contextPct }}%
-      </Badge>
+      <div class="flex items-center gap-2">
+        <!-- Context warning badge -->
+        <Badge
+          v-if="contextWarning"
+          variant="destructive"
+          class="gap-1 text-xs"
+        >
+          <AlertTriangle class="h-3 w-3" />
+          Context {{ contextPct }}%
+        </Badge>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          :class="canvasStore.panelOpen ? 'text-primary' : 'text-muted-foreground'"
+          title="Toggle execution canvas"
+          aria-label="Toggle execution canvas"
+          @click="canvasStore.panelOpen = !canvasStore.panelOpen"
+        >
+          <Workflow class="h-4 w-4" />
+        </Button>
+      </div>
     </div>
 
-    <!-- Messages area -->
-    <div
-      ref="scrollContainer"
-      class="flex-1 overflow-y-auto"
-      @scroll="handleScroll"
-    >
-      <!-- Empty state -->
-      <div
-        v-if="messages.length === 0 && !isLoadingHistory"
-        class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground"
-      >
-        <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/50">
-          <svg
-            class="h-8 w-8 text-muted-foreground/50"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            stroke-width="1.5"
+    <!-- Body: chat column + optional execution canvas -->
+    <div class="flex min-h-0 flex-1">
+      <div class="flex min-w-0 flex-1 flex-col">
+        <!-- Messages area -->
+        <div
+          ref="scrollContainer"
+          class="flex-1 overflow-y-auto"
+          @scroll="handleScroll"
+        >
+          <!-- Empty state -->
+          <div
+            v-if="messages.length === 0 && !isLoadingHistory"
+            class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground"
           >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z"
+            <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/50">
+              <svg
+                class="h-8 w-8 text-muted-foreground/50"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="1.5"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z"
+                />
+              </svg>
+            </div>
+            <p class="text-sm">Start a conversation</p>
+            <p class="text-xs text-muted-foreground/60">
+              Type a message below to begin
+            </p>
+          </div>
+
+          <!-- Loading indicator -->
+          <div
+            v-if="isLoadingHistory"
+            class="flex h-full items-center justify-center"
+          >
+            <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+
+          <!-- Message list -->
+          <div class="py-4">
+            <MessageBubble
+              v-for="msg in messages"
+              :key="msg.id"
+              :message="msg"
+              :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
             />
-          </svg>
+          </div>
+
+          <!-- Sidekick advisory notes: quiet inline chips, never notifications -->
+          <div v-if="sidekickNotes.length" class="px-4 pb-3">
+            <div
+              v-for="note in sidekickNotes"
+              :key="note.id"
+              class="mb-1 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"
+              :class="sidekickSeverityClass(note.severity)"
+            >
+              <component :is="sidekickIcon(note.severity)" class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span class="leading-relaxed">{{ note.text }}</span>
+            </div>
+          </div>
         </div>
-        <p class="text-sm">Start a conversation</p>
-        <p class="text-xs text-muted-foreground/60">
-          Type a message below to begin
-        </p>
-      </div>
 
-      <!-- Loading indicator -->
-      <div
-        v-if="isLoadingHistory"
-        class="flex h-full items-center justify-center"
-      >
-        <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-
-      <!-- Message list -->
-      <div class="py-4">
-        <MessageBubble
-          v-for="msg in messages"
-          :key="msg.id"
-          :message="msg"
-          :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
+        <!-- Input area -->
+        <ChatInput
+          :disabled="false"
+          @send="handleSend"
         />
       </div>
 
-      <!-- Sidekick advisory notes: quiet inline chips, never notifications -->
-      <div v-if="sidekickNotes.length" class="px-4 pb-3">
-        <div
-          v-for="note in sidekickNotes"
-          :key="note.id"
-          class="mb-1 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"
-          :class="sidekickSeverityClass(note.severity)"
-        >
-          <component :is="sidekickIcon(note.severity)" class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span class="leading-relaxed">{{ note.text }}</span>
-        </div>
+      <!-- Execution canvas panel -->
+      <div
+        v-if="canvasStore.panelOpen"
+        class="w-1/2 min-w-[380px] max-w-[60%] shrink-0 border-l border-border"
+      >
+        <ExecutionCanvas />
       </div>
     </div>
-
-    <!-- Input area -->
-    <ChatInput
-      :disabled="false"
-      @send="handleSend"
-    />
   </div>
 </template>
