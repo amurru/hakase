@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useSessionStore } from '@/stores/session'
@@ -10,11 +10,14 @@ import { sidekickSeverityClass, type SidekickNote } from '@/lib/sidekick'
 import { parseSlashCommand, SLASH_COMMANDS } from '@/lib/slash'
 import { useNotifications } from '@/composables/useNotifications'
 import { apiFetch } from '@/lib/api'
+import { useProjectsStore, type ProjectStatus } from '@/stores/projects'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +25,13 @@ const appStore = useAppStore()
 const sessionStore = useSessionStore()
 const approvalStore = useApprovalStore()
 const clarifyStore = useClarifyStore()
+const projectsStore = useProjectsStore()
+
+// Live branch + dirty indicator for the bound-project chip (project-ui.md).
+// Read without a fetch: the header must not force network I/O on every open.
+const projectBranch = ref('')
+const projectDirty = ref(false)
+const projectDirtyDetail = ref('')
 
 const sessionId = ref<string | null>(null)
 const isLoadingHistory = ref(false)
@@ -82,6 +92,33 @@ function sidekickIcon(severity: string) {
   return (severityIcons[severity] ?? Info) as unknown
 }
 
+// dirtyDescription renders the per-category counts behind the chip's dirty dot.
+function dirtyDescription(st: ProjectStatus): string {
+  const parts: string[] = []
+  if (st.staged > 0) parts.push(`${st.staged} staged`)
+  if (st.modified > 0) parts.push(`${st.modified} modified`)
+  if (st.untracked > 0) parts.push(`${st.untracked} untracked`)
+  if (st.conflicts > 0) parts.push(`${st.conflicts} conflicts`)
+  return parts.join(', ')
+}
+
+// refreshProjectState extends the bound-project chip with the checkout's live
+// branch and a dirty dot (project-ui.md). No server fetch runs: the status
+// read is local-only. Unknown/not-ready projects leave the name-only chip.
+async function refreshProjectState(id: string | null | undefined) {
+  projectBranch.value = ''
+  projectDirty.value = false
+  projectDirtyDetail.value = ''
+  if (!id) return
+  const st = await projectsStore.loadStatus(id, { fetch: false })
+  if (!st || st.project_status !== 'ready') return
+  projectBranch.value = st.branch ?? ''
+  projectDirty.value = st.dirty
+  if (st.dirty) {
+    projectDirtyDetail.value = dirtyDescription(st)
+  }
+}
+
 // Context usage warning (>= 80%)
 const contextWarning = computed(() => {
   if (appStore.contextMax === 0) return false
@@ -92,6 +129,61 @@ const contextWarning = computed(() => {
 const contextPct = computed(() => {
   if (appStore.contextMax === 0) return 0
   return Math.round((appStore.contextUsage / appStore.contextMax) * 100)
+})
+
+// --- Inline session-title rename (double-click the header title) ---
+const isRenamingTitle = ref(false)
+const renameTitleValue = ref('')
+const titleInput = ref<{ $el: HTMLInputElement } | null>(null)
+const titleEditWrap = ref<HTMLElement | null>(null)
+
+function startTitleRename() {
+  // Nothing to rename before a session exists (lazy-created on first message).
+  if (!sessionId.value || isRenamingTitle.value) return
+  renameTitleValue.value = appStore.activeSessionTitle || 'New Session'
+  isRenamingTitle.value = true
+  nextTick(() => {
+    const el = titleInput.value?.$el
+    el?.focus()
+    el?.select()
+  })
+}
+
+function cancelTitleRename() {
+  isRenamingTitle.value = false
+}
+
+async function commitTitleRename() {
+  const sid = sessionId.value
+  const title = renameTitleValue.value.trim()
+  isRenamingTitle.value = false
+  if (!sid || !title || title === appStore.activeSessionTitle) return
+  const ok = await sessionStore.renameSession(sid, title)
+  if (ok) {
+    appStore.setActiveSessionTitle(title)
+  } else {
+    note('warning', 'rename failed')
+  }
+}
+
+// Clicking anywhere outside the input+confirm region cancels the rename
+// (mousedown so it fires before whatever was clicked processes the click).
+function onTitleEditMouseDown(e: MouseEvent) {
+  if (titleEditWrap.value && !titleEditWrap.value.contains(e.target as Node)) {
+    cancelTitleRename()
+  }
+}
+
+watch(isRenamingTitle, (editing) => {
+  if (editing) {
+    document.addEventListener('mousedown', onTitleEditMouseDown)
+  } else {
+    document.removeEventListener('mousedown', onTitleEditMouseDown)
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onTitleEditMouseDown)
 })
 
 // Auto-scroll logic
@@ -135,9 +227,21 @@ watch(
 async function loadSessionHistory(sid: string) {
   isLoadingHistory.value = true
   try {
-    const data = await apiFetch<{ messages?: Array<{ role: string; content: string; thinking?: string; kind?: string }> }>(
+    const data = await apiFetch<{
+      title?: string
+      project_id?: string
+      project_name?: string
+      messages?: Array<{ role: string; content: string; thinking?: string; kind?: string }>
+    }>(
       `/sessions/${sid}`,
     )
+    if (data.title) {
+      appStore.setActiveSessionTitle(data.title)
+    }
+    // Project-bound sessions show their registered project as a header chip.
+    appStore.setActiveProjectName(data.project_name ?? '')
+    // Extend the chip with the checkout's live branch + dirty dot.
+    refreshProjectState(data.project_id)
     if (data.messages) {
       for (const msg of data.messages) {
         // Persisted sidekick answers carry role "sidekick" + kind "sidekick";
@@ -209,6 +313,8 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
     }
     sessionId.value = created.id
     appStore.setActiveSessionTitle(created.title || title)
+    appStore.setActiveProjectName(created.project_name ?? '')
+    refreshProjectState(created.project_id)
     // Keep the URL in sync so a refresh resumes this session. We are already
     // on /chat, so this is a query-only navigation - no remount, no reload.
     router.replace({ path: '/chat', query: { session: created.id } })
@@ -282,6 +388,8 @@ async function startNewSession() {
   clearMessages()
   sessionId.value = created.id
   appStore.setActiveSessionTitle(created.title || 'New Session')
+  appStore.setActiveProjectName(created.project_name ?? '')
+  refreshProjectState(created.project_id)
   router.replace({ path: '/chat', query: { session: created.id } })
 }
 
@@ -318,6 +426,7 @@ onMounted(() => {
   } else {
     // Create a new session on first message (lazy - no session ID yet)
     appStore.setActiveSessionTitle('New Session')
+    refreshProjectState(null)
   }
 })
 </script>
@@ -327,9 +436,59 @@ onMounted(() => {
     <!-- Header with session info + context warning -->
     <div class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
       <div class="flex items-center gap-3">
-        <span class="text-sm font-medium text-foreground">
+        <!-- Title: double-click to rename inline. Enter or the check button
+             accepts; clicking outside the edit region cancels. -->
+        <div
+          v-if="isRenamingTitle"
+          ref="titleEditWrap"
+          class="flex items-center gap-1"
+          @dblclick.stop
+        >
+          <Input
+            ref="titleInput"
+            v-model="renameTitleValue"
+            class="h-7 w-56 text-sm"
+            @keydown.enter.prevent="commitTitleRename"
+            @keydown.escape.prevent="cancelTitleRename"
+          />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            class="text-emerald-500 hover:text-emerald-400"
+            title="Accept new name"
+            aria-label="Accept new name"
+            @click="commitTitleRename"
+          >
+            <Check class="h-4 w-4" />
+          </Button>
+        </div>
+        <span
+          v-else
+          class="cursor-text text-sm font-medium text-foreground"
+          title="Double-click to rename"
+          @dblclick="startTitleRename"
+        >
           {{ appStore.activeSessionTitle || 'New Session' }}
         </span>
+        <Badge
+          v-if="appStore.activeProjectName"
+          variant="secondary"
+          class="gap-1 text-xs"
+          :title="projectDirtyDetail
+            ? `Session bound to ${appStore.activeProjectName} - working tree has changes: ${projectDirtyDetail}`
+            : `Session bound to registered project ${appStore.activeProjectName}`"
+        >
+          <GitBranch class="h-3 w-3" />
+          {{ appStore.activeProjectName }}
+          <span v-if="projectBranch" class="font-mono text-[10px] text-muted-foreground/80">
+            {{ projectBranch }}
+          </span>
+          <span
+            v-if="projectDirty"
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+            aria-label="Working tree has changes"
+          />
+        </Badge>
         <span
           v-if="isStreaming"
           class="flex items-center gap-1.5 text-xs text-primary"

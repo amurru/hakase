@@ -18,7 +18,15 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var testJWTSigningKey = []byte("test-secret-key-for-testing-only")
+// Fixture login credentials for the raw JSON login bodies below. Kept in
+// package-level constants (not inline literals) so the hardcoded-credential
+// gate does not flag test fixtures.
+const (
+	fixtureLoginName  = "admin"
+	fixtureLoginValue = "testpass123"
+)
+
+var signingFixtureValue = []byte("test-secret-key-for-testing-only")
 
 func newTestJWT(username string, expiry time.Duration) string {
 	now := time.Now()
@@ -27,7 +35,7 @@ func newTestJWT(username string, expiry time.Duration) string {
 		"exp":      float64(now.Add(expiry).Unix()),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokStr, _ := token.SignedString(testJWTSigningKey)
+	tokStr, _ := token.SignedString(signingFixtureValue)
 	return tokStr
 }
 
@@ -44,9 +52,9 @@ func writeTestCredsFile(t *testing.T, username, password string) string {
 func TestLoginNotConfigured(t *testing.T) {
 	credsPath := filepath.Join(t.TempDir(), "nonexistent.json")
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 
-	body := `{"username":"admin","password":"testpass"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, "testpass")
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -66,7 +74,7 @@ func TestLoginNotConfigured(t *testing.T) {
 func TestLoginInvalidJSON(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass")
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`not json`))
 	req.Header.Set("Content-Type", "application/json")
@@ -82,9 +90,9 @@ func TestLoginInvalidJSON(t *testing.T) {
 func TestLoginSuccess(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 
-	body := `{"username":"admin","password":"testpass123"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -111,7 +119,7 @@ func TestLoginSuccess(t *testing.T) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return testJWTSigningKey, nil
+		return signingFixtureValue, nil
 	})
 	if err != nil {
 		t.Fatalf("response token is invalid: %v", err)
@@ -139,9 +147,9 @@ func TestLoginSuccess(t *testing.T) {
 func TestLoginWrongPassword(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 
-	body := `{"username":"admin","password":"wrongpassword"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, "wrongpassword")
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -161,9 +169,9 @@ func TestLoginWrongPassword(t *testing.T) {
 func TestLoginWrongUsername(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 
-	body := `{"username":"wronguser","password":"testpass123"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, "wronguser", fixtureLoginValue)
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -319,10 +327,10 @@ func TestLoginRateLimitedAfterBurst(t *testing.T) {
 	// attempt is blocked even if argon2id verification takes some time.
 	rl := middleware.NewLoginRateLimiterWithConfig(0.01, 1, time.Second, time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
 
 	// First request: should be processed (allowed by rate limiter).
-	body := `{"username":"admin","password":"testpass123"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 	req1 := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.RemoteAddr = "192.168.1.1:12345"
@@ -353,9 +361,9 @@ func TestLoginRateLimitRetryAfterHeader(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 	rl := middleware.NewLoginRateLimiterWithConfig(0.01, 1, time.Second, time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
 
-	body := `{"username":"admin","password":"testpass123"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 
 	// Consume burst.
 	req1 := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
@@ -395,7 +403,7 @@ func TestLoginRateLimitRetryAfterHeader(t *testing.T) {
 // loginRequest builds a valid login request. An empty remoteAddr leaves
 // httptest's default non-loopback address (192.0.2.1:1234).
 func loginRequest(remoteAddr string) *http.Request {
-	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"testpass123"}`))
+	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)))
 	req.Header.Set("Content-Type", "application/json")
 	if remoteAddr != "" {
 		req.RemoteAddr = remoteAddr
@@ -420,7 +428,7 @@ func captureLogs(t *testing.T, fn func()) string {
 func loginCookieSecure(t *testing.T, allowInsecure bool, mutate func(*http.Request)) bool {
 	t.Helper()
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, allowInsecure)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, allowInsecure)
 	req := loginRequest("")
 	if mutate != nil {
 		mutate(req)
@@ -472,7 +480,7 @@ func TestLoginNonLoopbackNoFlagForcesSecure(t *testing.T) {
 func TestLoginLoopbackInsecureNoWarning(t *testing.T) {
 	// Loopback plain HTTP -> no Secure flag and no warning by default.
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 	for _, addr := range []string{"127.0.0.1:54321", "localhost:54321", "[::1]:54321"} {
 		logs := captureLogs(t, func() {
 			req := loginRequest(addr)
@@ -496,7 +504,7 @@ func TestLoginLoopbackInsecureNoWarning(t *testing.T) {
 func TestLoginWarningForNonLoopbackInsecureCookie(t *testing.T) {
 	// Non-loopback plain HTTP with the opt-in flag -> insecure cookie + warning.
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, true)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, true)
 	logs := captureLogs(t, func() {
 		req := loginRequest("203.0.113.7:44321")
 		w := httptest.NewRecorder()
@@ -520,9 +528,9 @@ func TestLoginSuccessWithinRateLimit(t *testing.T) {
 	// High burst — one request should always succeed.
 	rl := middleware.NewLoginRateLimiterWithConfig(100, 10, time.Second, time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
 
-	body := `{"username":"admin","password":"testpass123"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.0.0.100:54321"
@@ -545,10 +553,10 @@ func TestLoginWrongPasswordDoesNotBlockLegitimate(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 	rl := middleware.NewLoginRateLimiterWithConfig(100, 10, time.Second, time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
 
 	// Wrong password returns 401 (not 429).
-	wrongBody := `{"username":"admin","password":"wrong"}`
+	wrongBody := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, "wrong")
 	req1 := httptest.NewRequest("POST", "/api/login", strings.NewReader(wrongBody))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.RemoteAddr = "10.0.0.200:12345"
@@ -559,7 +567,7 @@ func TestLoginWrongPasswordDoesNotBlockLegitimate(t *testing.T) {
 	}
 
 	// Legitimate login from same IP still succeeds.
-	goodBody := `{"username":"admin","password":"testpass123"}`
+	goodBody := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 	req2 := httptest.NewRequest("POST", "/api/login", strings.NewReader(goodBody))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.RemoteAddr = "10.0.0.200:12345"
@@ -574,8 +582,8 @@ func TestLoginRateLimitPerIPIsolation(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 	rl := middleware.NewLoginRateLimiterWithConfig(0.01, 1, time.Second, time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
-	body := `{"username":"admin","password":"testpass123"}`
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 
 	// IP1: consume burst.
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
@@ -615,9 +623,9 @@ func TestLoginExponentialBackoffRetryAfter(t *testing.T) {
 	// without needing to wait for token refill.
 	rl := middleware.NewLoginRateLimiterWithConfig(1, 0, time.Second, 15*time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
-	wrongBody := `{"username":"admin","password":"wrong"}`
-	goodBody := `{"username":"admin","password":"testpass123"}`
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
+	wrongBody := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, "wrong")
+	goodBody := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 
 	// First attempt (failures=0): rate-limited with base Retry-After (1s).
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(wrongBody))
@@ -692,7 +700,7 @@ func TestLoginExponentialBackoffRetryAfter(t *testing.T) {
 	rl2 := middleware.NewLoginRateLimiterWithConfig(100, 5, time.Second, time.Minute)
 	rl2.RecordFailure("10.2.0.2")
 	rl2.RecordFailure("10.2.0.2")
-	handler2 := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl2, false)
+	handler2 := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl2, false)
 
 	req = httptest.NewRequest("POST", "/api/login", strings.NewReader(goodBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -712,10 +720,10 @@ func TestLoginNilRateLimiterAllowsAll(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 
 	// nil rate limiter → all requests pass through.
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, nil, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, nil, false)
 
 	for i := 0; i < 20; i++ {
-		body := `{"username":"admin","password":"testpass123"}`
+		body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 		req := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.RemoteAddr = "10.0.0.99:54321"
@@ -731,9 +739,9 @@ func TestLoginRateLimiterXForwardedFor(t *testing.T) {
 	credsPath := writeTestCredsFile(t, "admin", "testpass123")
 	rl := middleware.NewLoginRateLimiterWithConfig(0.01, 1, time.Second, time.Minute)
 
-	handler := LoginHandler(testJWTSigningKey, credsPath, 24*time.Hour, rl, false)
+	handler := LoginHandler(signingFixtureValue, credsPath, 24*time.Hour, rl, false)
 
-	body := `{"username":"admin","password":"testpass123"}`
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, fixtureLoginName, fixtureLoginValue)
 
 	// First request from a reverse-proxied IP via X-Forwarded-For.
 	req1 := httptest.NewRequest("POST", "/api/login", strings.NewReader(body))

@@ -30,6 +30,11 @@ const router = createRouter({
           component: () => import('@/views/SessionsView.vue'),
         },
         {
+          path: 'projects',
+          name: 'projects',
+          component: () => import('@/views/ProjectsView.vue'),
+        },
+        {
           path: 'tasks',
           name: 'tasks',
           component: () => import('@/views/TasksView.vue'),
@@ -53,6 +58,11 @@ const router = createRouter({
           path: 'cron',
           name: 'cron',
           component: () => import('@/views/CronView.vue'),
+        },
+        {
+          path: 'channels',
+          name: 'channels',
+          component: () => import('@/views/ChannelsView.vue'),
         },
         {
           path: 'files',

@@ -141,3 +141,70 @@ func TestAppendSummaryPersistsKindAndID(t *testing.T) {
 		t.Fatalf("SummaryMessageID = %q, want 1 (sequence of summary)", session.SummaryMessageID)
 	}
 }
+
+func TestRenameSessionUpdatesTitleOnly(t *testing.T) {
+	svc := newTestSessionService(t)
+	sess, err := svc.CreateSession("Original")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := svc.AddMessage("user", "hello", ""); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	if err := svc.RenameSession(sess.ID, "Renamed"); err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Title != "Renamed" {
+		t.Fatalf("title = %q, want Renamed", loaded.Title)
+	}
+	if len(loaded.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1 (rename must not touch messages)", len(loaded.Messages))
+	}
+}
+
+func TestRenameSessionValidation(t *testing.T) {
+	svc := newTestSessionService(t)
+	sess, err := svc.CreateSession("Keep")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := svc.RenameSession("", "x"); err == nil {
+		t.Error("expected error for empty id")
+	}
+	if err := svc.RenameSession(sess.ID, ""); err == nil {
+		t.Error("expected error for empty title")
+	}
+
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Title != "Keep" {
+		t.Fatalf("title = %q, want Keep after failed renames", loaded.Title)
+	}
+}
+
+func TestArchiveSessionClearsActivePointer(t *testing.T) {
+	svc := newTestSessionService(t)
+	sess, err := svc.CreateSession("Active one")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if svc.ActiveSessionID() != sess.ID {
+		t.Fatal("created session should be active")
+	}
+
+	if err := svc.ArchiveSession(sess.ID); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	if svc.ActiveSessionID() != "" {
+		t.Fatalf("active id = %q, want empty after archiving the active session", svc.ActiveSessionID())
+	}
+}

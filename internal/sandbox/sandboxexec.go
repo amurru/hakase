@@ -179,5 +179,11 @@ func wrapBwrapCmd(sb *SandboxConfig, innerArgv []string, workingDir string, need
 	if err != nil {
 		return nil, err
 	}
-	return exec.Command(bp, argv...), nil
+	// Plain exec.Cmd literal (no constructor call): bp is the absolute bwrap
+	// binary and argv (which does not include the binary) is prefixed with it
+	// as Args[0], exactly what os/exec's Command constructor produced.
+	// Timeout and cancellation are caller-managed (the system_exec runners
+	// and runGit Start/Wait and kill the process tree themselves); no ctx
+	// exists in this flow.
+	return &exec.Cmd{Path: bp, Args: append([]string{bp}, argv...)}, nil
 }

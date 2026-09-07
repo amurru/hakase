@@ -854,8 +854,8 @@ func rasterizeSVG(data []byte) ([]byte, string, error) {
 	if rsvg, err := exec.LookPath("rsvg-convert"); err == nil {
 		ctx, cancel := 	gocontext.WithTimeout(	gocontext.Background(), 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, rsvg, "-o", outPath, svgFile.Name())
-		if out, err := cmd.CombinedOutput(); err != nil {
+		cmd := &exec.Cmd{Path: rsvg, Args: []string{rsvg, "-o", outPath, svgFile.Name()}}
+		if out, err := util.CombinedOutputContext(ctx, cmd); err != nil {
 			return nil, "", fmt.Errorf("rsvg-convert failed: %w (output: %s)", err, string(out))
 		}
 		return readRasterizedPNG(outPath)
@@ -865,12 +865,12 @@ func rasterizeSVG(data []byte) ([]byte, string, error) {
 	if inkscape, err := exec.LookPath("inkscape"); err == nil {
 		ctx, cancel := 	gocontext.WithTimeout(	gocontext.Background(), 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, inkscape,
+		cmd := &exec.Cmd{Path: inkscape, Args: []string{inkscape,
 			svgFile.Name(),
 			"--export-type=png",
-			"--export-filename="+outPath,
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
+			"--export-filename=" + outPath,
+		}}
+		if out, err := util.CombinedOutputContext(ctx, cmd); err != nil {
 			return nil, "", fmt.Errorf("inkscape failed: %w (output: %s)", err, string(out))
 		}
 		return readRasterizedPNG(outPath)

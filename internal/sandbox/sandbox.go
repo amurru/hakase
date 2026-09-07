@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,10 +28,10 @@ const (
 // throughout the runtime. Roots are absolute, cleaned, and symlink-evaluated.
 // A nil *SandboxConfig means confinement is disabled.
 type SandboxConfig struct {
-	Mode            SandboxMode
-	WorkspaceRoots  []string
-	ReadRoots       []string
-	DenyRoots       []string
+	Mode           SandboxMode
+	WorkspaceRoots []string
+	ReadRoots      []string
+	DenyRoots      []string
 	// DenyBasenames rejects any file with one of these base names inside a
 	// scoped root regardless of location (e.g. nested dotenv files such as
 	// services/api/.env). Populated implicitly by LoadSandboxConfig.
@@ -63,6 +64,46 @@ type SandboxJSON struct {
 // buildExecCommand and file-ops tools. It is nil when sandboxing is disabled.
 // Set at startup by the main package.
 var CurrentSandbox *SandboxConfig
+
+// Context-scoped sandbox override (project-registry DP-7): a project-bound
+// agent run pins the run's workspace/read roots to the project checkout
+// without touching the process-wide CurrentSandbox. The exec/file/git
+// resolvers prefer the context value over CurrentSandbox.
+type sandboxCtxKey struct{}
+
+// WithConfig returns ctx carrying sb as the effective sandbox for that scope.
+func WithConfig(ctx context.Context, sb *SandboxConfig) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, sandboxCtxKey{}, sb)
+}
+
+// ConfigFrom returns the sandbox that applies to ctx: the context-scoped
+// override when present, otherwise CurrentSandbox.
+func ConfigFrom(ctx context.Context) *SandboxConfig {
+	if ctx != nil {
+		if sb, ok := ctx.Value(sandboxCtxKey{}).(*SandboxConfig); ok {
+			return sb
+		}
+	}
+	return CurrentSandbox
+}
+
+// PinnedTo returns a copy of base whose workspace and read roots are pinned to
+// root alone (typically a project checkout). Mode, deny roots/basenames,
+// permissions, allowlist, deny patterns, risk threshold, and fallback are
+// preserved. Returns nil when base is nil - confinement disabled stays
+// disabled, and a pinned copy is only ever built on top of an active sandbox.
+func PinnedTo(base *SandboxConfig, root string) *SandboxConfig {
+	if base == nil {
+		return nil
+	}
+	cp := *base
+	cp.WorkspaceRoots = normalizeRoots([]string{root})
+	cp.ReadRoots = append([]string(nil), cp.WorkspaceRoots...)
+	return &cp
+}
 
 // LoadSandboxConfig converts a *SandboxJSON into a normalized *SandboxConfig,
 // applying defaults and resolving roots.
@@ -160,6 +201,7 @@ func sensitiveFilePaths() []string {
 			filepath.Join(home, "credentials.json"),
 			filepath.Join(home, "jwt-secret"),
 			filepath.Join(home, "cronjobs.json"),
+			filepath.Join(home, "channels.json"),
 		)
 	}
 	return paths
@@ -409,7 +451,7 @@ type CommandAuditEntry struct {
 	Risk        string    `json:"risk"`
 	Reason      string    `json:"reason"`
 	DurationMs  int64     `json:"duration_ms"`
-	ExitCode    int        `json:"exit_code"`
+	ExitCode    int       `json:"exit_code"`
 }
 
 // GateDecision is the outcome of evaluating one command.

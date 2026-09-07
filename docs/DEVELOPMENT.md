@@ -43,9 +43,16 @@ hakase/
 │   │                           #   (Gemini / OpenAI / OpenAI-compatible + fallback), delegation,
 │   │                           #   approval & clarify gates, loop guard, task registry,
 │   │                           #   malformed tool-call repair, audit logging
+│   ├── agentrun/               # Transport-neutral single-turn driver (run loop, project
+│   │                           #   binding, tool-call repair, persistence) shared by web
+│   │                           #   chat and channels
 │   ├── auth/                   # Argon2id credential hashing + JWT issue/verify
+│   ├── channel/                # Communication-channel subsystem: pairing/auth, per-chat run
+│   │                           #   state, bridge event router, formatting; channel/state is
+│   │                           #   the ~/.hakase/channels.json leaf store, channel/telegram
+│   │                           #   the Telegram transport
 │   ├── cli/                    # CLI dispatcher and subcommands (skill, task, knowledge, session,
-│   │                           #   rules, env, cron, auth) + the cronjob tool & scheduler
+│   │                           #   rules, env, cron, channels, auth) + the cronjob tool & scheduler
 │   ├── config/                 # Config loader (reads config.json) + MCP server config & persistence
 │   ├── context/                # Context management: instruction rendering, compaction cascade /
 │   │                           #   summarization, token budgeting
@@ -65,13 +72,14 @@ hakase/
 │   ├── util/                   # Structured JSON debug logging, queues, token utils
 │   ├── vision/                 # Vision tool (image loading, vision-model routing)
 │   └── web/                    # HTTP server (chi): API handlers (auth, chat SSE, sessions, tasks,
-│                               #   files, knowledge, skills, MCP, cron, config, approval, clarify),
-│                               #   middleware (security headers, login rate limiter), SSE bridge,
-│                               #   SPA embed (prod tag) / live disk serving (dev tag)
+│                               #   files, knowledge, skills, MCP, cron, channels, config,
+│                               #   approval, clarify), middleware (security headers, login rate
+│                               #   limiter), SSE bridge, SPA embed (prod tag) / live disk
+│                               #   serving (dev tag)
 ├── webui/                      # Web UI - Vue 3 + TypeScript + Vite + Tailwind 4 SPA (pnpm)
 │   └── src/
-│       ├── views/              # Chat, Sessions, Tasks, Knowledge, Skills, MCP, Cron, Files,
-│       │                       #   Settings, Login
+│       ├── views/              # Chat, Sessions, Tasks, Knowledge, Skills, MCP, Cron, Channels,
+│       │                       #   Files, Settings, Login
 │       ├── components/         # Chat (message bubbles, markdown renderer, attachments, thinking
 │       │                       #   blocks, image lightbox), approval & clarify modals, UI kit
 │       ├── stores/             # Pinia stores (app, auth, session, task, approval, clarify, theme)
@@ -177,7 +185,7 @@ A passing verification proves the binary was built by the release workflow from 
 
 ## Web UI Development Flow
 
-Run two processes; Vite proxies `/api` to the Go server on :8080, so open http://localhost:5173 in the browser:
+Run two processes; Vite proxies `/api` to the Go server on :8080, so open <http://localhost:5173> in the browser:
 
 ```
 make dev-frontend   # terminal 1 - Vite dev server, HMR, port 5173
@@ -342,6 +350,14 @@ The `hakase cron` command manages scheduled tasks:
 - `hakase cron list|status|pause <id>|resume <id>|run <id>|tick` - list all jobs, show the registry path and state counts, pause/resume a job by ID or name, trigger a job immediately, or run all due jobs once
 
 The in-process scheduler runs while the TUI is open (a 30-second tick fires due jobs headless); `hakase cron tick` runs all due jobs once from the CLI. `run` and `tick` bootstrap the model for headless execution; the other subcommands are pure file operations.
+
+#### The `hakase channels` CLI
+
+The `hakase channels` command manages communication channels (see [Channels configuration](#channels-configuration)); it touches only the state file, so it works while the web server is running:
+
+- `hakase channels status` - paired users, chat bindings, pending pairing code state
+- `hakase channels pair-code` - print (generating if needed) a pairing code
+- `hakase channels revoke <user-id>` - unpair a Telegram user
 
 ---
 
@@ -780,6 +796,23 @@ The `sidekick` block in `config.json` configures the second model. All fields ar
 
 Provider resolution mirrors the vision resolver: explicit `provider` wins, else a `base_url` forces `openai-compatible`, else the primary provider is reused. See `config.json.example` for a full template.
 
+### Channels configuration
+
+The `channels` block configures communication channels - chat transports that prompt the agent, watch progress, answer approval/clarify prompts, and manage tasks/cron remotely (Telegram today; the `internal/channel` core is transport-neutral). Channels run inside the `web`/`serve` process, sharing its runner, gates, SSE bridge, and session service, so approvals can be answered from the web UI or the phone - first responder wins. Everything is off unless explicitly enabled.
+
+- `channels.enable_cron_scheduler` - start the background cron scheduler in web/serve mode (normally TUI-only, so scheduled jobs fire only while the terminal is open). Set `true` for headless deployments so cron results can be delivered to a channel.
+- `channels.telegram.enabled` - `*bool`; the channel starts only when explicitly `true` **and** a `bot_token` is present.
+- `channels.telegram.bot_token` - the [@BotFather](https://t.me/BotFather) bot token. Write-only through the web config API (set via the `telegram_bot_token` control key, cleared via `clear_telegram_bot_token`; never returned by `GET /api/config`).
+- `channels.telegram.allowed_user_ids` - static allowlist of Telegram numeric user IDs (deny-by-default). Empty = runtime pairing via `/start <code>`.
+- `channels.telegram.pairing_code` - optional static pairing code for scripted setups instead of the generated rotating code. Also write-only through the web config API.
+- `channels.telegram.pins` - pin the user's prompt message for the duration of each run and unpin at completion (Hermes-style turn marker). Default off.
+
+Pairing codes generated at runtime are 6 digits, valid 15 minutes, and surfaced three ways: the server console at boot, `hakase channels pair-code`, or `POST /api/channels/pairing-code` (the Channels page in the web UI). The pending code is never returned by `GET /api/channels` - only its expiry. Pairings, per-chat bindings (session, notify flag, topics mode), and per-topic bindings (`telegram:<chatID>:<threadID>` -> session + title) persist in `~/.hakase/channels.json` (0600, flock-protected, sandbox-denied); revoke via the web UI, `hakase channels revoke <user-id>`, or by deleting the entry from the file while the server is stopped.
+
+Behavior notes: inbound text and photo captions are supported (albums buffer ~1.5s into one prompt; voice/files are deferred); each conversation (chat root, or any thread — client-created threads count even without `/topic`) runs one agent turn at a time with `/stop` to cancel, and parallel topics run concurrently; answers stream into one progressively edited message (the creation is the turn's single notification) with a silent status line and 👀/👍/👎 reaction receipts (the bot reaction allowlist excludes ✅/❌); `/topic` makes the root area a lobby and `/topic off` undoes that — thread conversations work either way (topic auto-renames to the session title); approval/clarify prompts are routed to the conversation bound to the run's session when known (thread or root binding), falling back to the paired-users fan-out; channel runs mirror their stream/log/done events onto the SSE bridge so sessions are watchable live from the web UI; gate expiries are clamped to >=300s when a channel is enabled (mobile round-trip); env overrides are `HAKASE_TELEGRAM_ENABLED` and `HAKASE_TELEGRAM_BOT_TOKEN`. Config changes to this block need a server restart to take effect.
+
+**Token sharing / webhook conflicts (troubleshooting):** hakase is polling-only and never registers a webhook. But Telegram keeps one delivery mode per bot token: if any webhook-based integration (another framework, a hosted bot platform, an old project) set a webhook on the same token, every `getUpdates` is rejected with `409 Conflict: can't use getUpdates method while webhook is active` and the bot appears completely silent - pairing included. `Bot.Run` heals this at startup (getWebhookInfo -> deleteWebhook, verified, retried, and re-run with a cooldown when a conflict surfaces mid-poll; deleteWebhook goes through a plain-HTTP GET bypassing the library client, whose POST returned empty bodies in the field). If the webhook re-appears, another platform is actively holding the token - the durable fix is a dedicated token (`/newbot`, or `/revoke` to kill the other integration).
+
 ### Environment variables
 
 Environment variables override the matching `config.json` fields, with environment variables taking precedence over the file. If `config.json` is missing but at least one of these is set, the config is built entirely from the environment:
@@ -798,6 +831,8 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_MODEL_VISION` | `model_vision` |
 | `HAKASE_DEBUG` | `debug` |
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
+| `HAKASE_TELEGRAM_ENABLED` | `channels.telegram.enabled` |
+| `HAKASE_TELEGRAM_BOT_TOKEN` | `channels.telegram.bot_token` |
 | `HAKASE_HOME` | user home directory (default `~/.hakase`) |
 
 Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.
@@ -809,6 +844,8 @@ User-level agent state lives under `~/.hakase/` (Claude-style; override with `$H
 - `~/.hakase/config.json` - user-level config fallback, used when no project `config.json` exists
 - `~/.hakase/skills/` - user-level markdown skills, discovered automatically
 - `~/.hakase/knowledge/` - optional user-global knowledge base (set `knowledge_dir: "~/.hakase/knowledge"`)
+- `~/.hakase/cronjobs.json` - cron job registry (flock-protected)
+- `~/.hakase/channels.json` - channel state: paired users, per-chat bindings, pending pairing code (flock-protected, sandbox-denied)
 
 ### Migration note
 
@@ -857,3 +894,4 @@ The creative skills port (see `.omo/plans/creative-skills-port.md`) deliberately
 - `touchdesigner-mcp` - requires a TouchDesigner MCP server; can now be added via the generic `mcp` config once a server endpoint is available.
 - `comfyui` - ported as doctrine + gated on user infra (ComfyUI/comfy-cli, GPU or cloud); native image/video generation is now provided by the media layer, ComfyUI integration is deferred to v2 (GPU + local models).
 - `songwriting-and-ai-music` - doctrine ported; generation is external (Suno); native TTS/audio deferred to v2 (generate_audio stub).
+- `git push` / `git pull` / `git clone` and destructive git ops (`checkout`/`reset`/`clean`) - structured git tools ship read-only + stage/commit in v1 (see [docs/git-tools/](docs/git-tools/)); push/pull/clone (network policy interplay) and destructive ops (force-flag mapping) are deferred to v2.

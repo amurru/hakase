@@ -4,21 +4,34 @@ import (
 	"amurru/hakase/internal/config"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
 // mcpTestCtx is a minimal agent.ReadonlyContext fake: the manager and the
 // underlying ADK mcptoolset only pass the context along (connect/list/call),
-// so a bare context.Background-backed stub suffices for unit tests.
+// so a bare context.Background-backed stub suffices for unit tests. The
+// context.Context methods are overridden so the zero value is safe even when
+// a tool listing issues a real HTTP request (the net/http client calls
+// Deadline/Done on it).
 type mcpTestCtx struct {
 	context.Context
 }
+
+func (mcpTestCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (mcpTestCtx) Done() <-chan struct{}       { return nil }
+func (mcpTestCtx) Err() error                  { return nil }
+func (mcpTestCtx) Value(any) any               { return nil }
 
 func (mcpTestCtx) UserContent() *genai.Content          { return nil }
 func (mcpTestCtx) InvocationID() string                 { return "test" }
@@ -409,5 +422,139 @@ func TestAllowsMCPTool(t *testing.T) {
 	// Include is exact-match only; a wildcard entry allows nothing else.
 	if allowsMCPTool(both, "mcp_github_delete_repo") != false {
 		t.Error("exclude must win over include")
+	}
+}
+
+// cooldownTestManager builds a manager pointed at one HTTP server whose
+// handler counts requests and fails until healthy is set, then serves a real
+// zero-tool MCP endpoint.
+func cooldownTestManager(t *testing.T) (*MCPServerManager, *atomic.Int32, *atomic.Bool, *[]string) {
+	t.Helper()
+	var hits atomic.Int32
+	var healthy atomic.Bool
+	realSrv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	realHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return realSrv }, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if !healthy.Load() {
+			// 404 (not 5xx): the go-sdk client retries 5xx with backoff,
+			// which would slow the test without adding coverage.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		realHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	var logs []string
+	cfg := &config.Config{MCPServers: config.MCPConfig{Servers: map[string]*config.MCPServerConfig{
+		// TimeoutMs bounds the client's standing SSE stream so the test
+		// server closes promptly at cleanup.
+		"flaky": {Type: "http", URL: srv.URL, TimeoutMs: 250},
+	}}}
+	m, err := NewMCPServerManager(cfg, func(s string) { logs = append(logs, s) })
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+	MCPManager = m
+	return m, &hits, &healthy, &logs
+}
+
+func TestMCPServerManagerFailureCooldown(t *testing.T) {
+	mcpTestIsolate(t)
+	m, hits, healthy, logs := cooldownTestManager(t)
+
+	// First Tools() call: dialing happens (the transport may issue more than
+	// one request per attempt) and exactly one failure log is emitted.
+	if _, err := m.Tools(mcpTestCtx{}); err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	first := hits.Load()
+	if first < 1 {
+		t.Fatalf("no dial attempts on first call: %d", first)
+	}
+	if len(*logs) != 1 {
+		t.Fatalf("log lines after first call: %v", *logs)
+	}
+
+	// An immediate second call (what the web search fallback probe does per
+	// model turn) must skip the dead server without dialing or logging.
+	if _, err := m.Tools(mcpTestCtx{}); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != first {
+		t.Fatalf("cooldown not honored: %d attempts, want %d", hits.Load(), first)
+	}
+	if len(*logs) != 1 {
+		t.Fatalf("cooldown re-logged: %v", *logs)
+	}
+	if st, ok := m.ServerStatus("flaky"); !ok || st.Status != "failed" {
+		t.Fatalf("status during cooldown: %+v ok=%v", st, ok)
+	}
+
+	// After the window expires the server is retried; a healthy endpoint
+	// clears the failure state and resets the backoff.
+	healthy.Store(true)
+	m.mu.Lock()
+	m.servers["flaky"].failedUntil = time.Now().Add(-time.Second)
+	m.mu.Unlock()
+	if _, err := m.Tools(mcpTestCtx{}); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() <= 1 {
+		t.Fatalf("server not retried after cooldown: %d attempts", hits.Load())
+	}
+	st, _ := m.ServerStatus("flaky")
+	if st.Status != "connected" {
+		t.Fatalf("recovered status: %+v", st)
+	}
+	m.mu.Lock()
+	cf, cd := m.servers["flaky"].consecFails, m.servers["flaky"].failedUntil
+	m.mu.Unlock()
+	if cf != 0 || !cd.IsZero() {
+		t.Fatalf("backoff not reset on success: consec=%d until=%v", cf, cd)
+	}
+}
+
+func TestManagedServerBackoffGrowth(t *testing.T) {
+	ms := &managedServer{name: "x"}
+	now := time.Now()
+	wants := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	for i, want := range wants {
+		ms.startCooldown(now)
+		if got := ms.failedUntil.Sub(now); got != want {
+			t.Fatalf("failure %d: cooldown %v, want %v", i+1, got, want)
+		}
+	}
+	ms.clearCooldown()
+	if !ms.failedUntil.IsZero() || ms.consecFails != 0 {
+		t.Fatalf("clearCooldown did not reset: until=%v consec=%d", ms.failedUntil, ms.consecFails)
+	}
+}
+
+func TestMCPServerHTTPTimeoutFastFail(t *testing.T) {
+	mcpTestIsolate(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+	}))
+	defer srv.Close()
+	cfg := &config.Config{MCPServers: config.MCPConfig{Servers: map[string]*config.MCPServerConfig{
+		"slow": {Type: "http", URL: srv.URL, TimeoutMs: 50},
+	}}}
+	m, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+	MCPManager = m
+
+	start := time.Now()
+	if _, err := m.Tools(mcpTestCtx{}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed >= 1500*time.Millisecond {
+		t.Fatalf("hanging server not cut off by timeout_ms: %v", elapsed)
+	}
+	if st, _ := m.ServerStatus("slow"); st.Status != "failed" {
+		t.Fatalf("status after timeout: %+v", st)
 	}
 }

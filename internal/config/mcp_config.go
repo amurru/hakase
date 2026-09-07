@@ -16,7 +16,7 @@ type MCPServerConfig struct {
 	URL       string                `json:"url,omitempty"`        // streamable HTTP endpoint
 	Headers   map[string]string     `json:"headers,omitempty"`    // HTTP headers
 	Disabled  bool                  `json:"disabled,omitempty"`   // explicit opt-out; default = enabled
-	TimeoutMs int                   `json:"timeout_ms,omitempty"` // reserved (phase 3): connect/tool timeout
+	TimeoutMs int                   `json:"timeout_ms,omitempty"` // http servers: per-request timeout (connect+initialize+tools/list); default 10s
 	Tools     *MCPServerToolsConfig `json:"tools,omitempty"`      // per-server tool filtering
 	OAuth     map[string]string     `json:"oauth,omitempty"`      // reserved (phase 3): remote auth
 }

@@ -25,6 +25,11 @@ type ApprovalRequest struct {
 	Reason    string    // why approval is required
 	Source    string    // "direct" | "delegated"
 	ExpiresAt time.Time // deadline for user response
+	// SessionID is the hakase session the asking run serves, when known.
+	// Gate senders put it in the prompt payload so transports can route the
+	// prompt to the conversation bound to that session; empty in
+	// session-less surfaces (TUI, CLI utilities).
+	SessionID string
 }
 
 // ApprovalConfig tunes the interactive approval gate.
@@ -40,6 +45,9 @@ type ClarifyRequest struct {
 	Question    string   // question text
 	Choices     []string // optional answer choices (max 4)
 	MultiSelect bool     // allow multiple choices (only with Choices)
+	// SessionID is the hakase session the asking run serves, when known
+	// (see ApprovalRequest.SessionID).
+	SessionID string
 }
 
 // ClarifyResponse is the user's answer, plus cancel/timeout signals.
@@ -235,6 +243,22 @@ type ClarifyGate interface {
 	// ClarifyExpiry returns the configured expiry as a time.Duration.
 	// Default 120s when ExpirySeconds <= 0.
 	ClarifyExpiry() time.Duration
+}
+
+// ApprovalResponder resolves a pending approval request by ID. Implemented by
+// the web approval gate so external surfaces (e.g. the Telegram channel) can
+// answer the same prompts the web UI sees. Returns false when the ID is
+// unknown or the request already timed out or was answered elsewhere - first
+// responder wins, whoever that is.
+type ApprovalResponder interface {
+	RespondApproval(approvalID string, approved bool) bool
+}
+
+// ClarifyResponder resolves a pending clarification by ID with a free-text or
+// single-choice answer. Implemented by the web clarify gate; see
+// ApprovalResponder for the first-responder-wins contract.
+type ClarifyResponder interface {
+	RespondClarify(clarifyID string, response ClarifyResponse) bool
 }
 
 // EventNotifier replaces three function globals: taskBoardNotify (agent.go:529),

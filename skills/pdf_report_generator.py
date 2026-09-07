@@ -185,6 +185,14 @@ def compile_report(title, sections, output_md='./outputs/report.md', output_pdf=
             output_pdf='./outputs/report.pdf'
         )
     """
+    # Canonicalize the output location and keep it inside the current
+    # directory tree: absolute paths must pass the same containment check as
+    # relative ones (including traversal segments), so a caller-supplied path
+    # can never write elsewhere.
+    cwd = os.path.realpath(os.getcwd())
+    output_md = os.path.realpath(os.path.join(cwd, output_md))
+    if os.path.commonpath([cwd, output_md]) != cwd:
+        raise ValueError("output_md must stay inside the current directory")
     os.makedirs(os.path.dirname(output_md) or '.', exist_ok=True)
     
     md_parts = [f"# {title}\n\n"]
@@ -223,6 +231,25 @@ def compile_report(title, sections, output_md='./outputs/report.md', output_pdf=
 
 
 if __name__ == "__main__":
+    # Path-confinement self-test: an absolute output path outside the current
+    # directory must be rejected before any file is created. The test only
+    # ever touches its own freshly created temporary directory (never a fixed
+    # name), and cleans that directory up in finally - so it cannot delete a
+    # pre-existing file even when compile_report rejects the path.
+    import shutil
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="hakase_pdf_selftest_")
+    try:
+        outside_md = os.path.join(tmpdir, "outside.md")
+        try:
+            compile_report("x", [{'heading': 'h', 'content': 'c'}], output_md=outside_md)
+        except ValueError:
+            print("✅ Path confinement: absolute path outside cwd rejected")
+        else:
+            raise SystemExit("path confinement failed: absolute output outside cwd was accepted")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
     # Sample mock data for testing
     print("Testing PDF Report Generator\n")
     

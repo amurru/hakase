@@ -18,12 +18,16 @@ import (
 
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/auth"
-	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/channel"
+	"amurru/hakase/internal/channel/state"
+	"amurru/hakase/internal/channel/telegram"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
+	"amurru/hakase/internal/registry"
+	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/vision"
@@ -33,6 +37,11 @@ import (
 
 	"google.golang.org/adk/v2/tool"
 )
+
+// minChannelGateExpirySeconds is the floor the bootstrap applies to the
+// approval/clarify gate expiries when a channel is enabled: chat round-trips
+// are slower than a desktop modal (Hermes defaults to 600s).
+const minChannelGateExpirySeconds = 300
 
 // insecureCookieFlag implements flag.Value for --insecure-cookie. Unlike a
 // plain fs.Bool it records whether the flag was explicitly set, so the CLI can
@@ -152,6 +161,20 @@ func runServer(args []string, serveSPA bool) int {
 	// Init sandbox before any file or exec operations.
 	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
 
+	// Channels enabled? Approvals/clarifications may then be answered from a
+	// phone, where sub-minute expiry is unanswerable (Hermes uses 600s).
+	// Clamp to >=300s so the gates stay answerable over a chat round-trip.
+	if cfg.Channels.Telegram.EnabledWithToken() {
+		if cfg.Approval.ExpirySeconds > 0 && cfg.Approval.ExpirySeconds < minChannelGateExpirySeconds {
+			log.Printf("web: channels enabled - approval expiry raised %ds -> %ds", cfg.Approval.ExpirySeconds, minChannelGateExpirySeconds)
+			cfg.Approval.ExpirySeconds = minChannelGateExpirySeconds
+		}
+		if cfg.Clarify.ExpirySeconds > 0 && cfg.Clarify.ExpirySeconds < minChannelGateExpirySeconds {
+			log.Printf("web: channels enabled - clarify expiry raised %ds -> %ds", cfg.Clarify.ExpirySeconds, minChannelGateExpirySeconds)
+			cfg.Clarify.ExpirySeconds = minChannelGateExpirySeconds
+		}
+	}
+
 	// Vision hooks: the BeforeModel callback rewrites user-attached image
 	// parts into text (vision-model description) before the OpenAI-compatible
 	// adapter sees them; without the config hook the rewrite is skipped and
@@ -171,6 +194,16 @@ func runServer(args []string, serveSPA bool) int {
 		if svc, err := hakasesession.NewSessionService(store); err == nil {
 			sessionSvc = svc
 		}
+	}
+
+	// Project registry (registered remote projects, project-registry DP-6+).
+	// Checkouts live under the hakase home; a corrupt registry file disables
+	// project features (registry.Current stays nil) without blocking the web
+	// UI - the /api/projects endpoints then report 503.
+	if st, err := registry.NewStore(registry.DefaultPath()); err == nil {
+		registry.Current = registry.NewService(st, interfaces.LogFunc(logToFile))
+	} else {
+		log.Printf("web: project registry unavailable: %v", err)
 	}
 
 	// Build agent Deps (same wiring as main.go's runTUI).
@@ -206,7 +239,11 @@ func runServer(args []string, serveSPA bool) int {
 			return cli.CreateCronjobTool(logFn)
 		},
 		StartCronSchedulerFn: func(logFn interfaces.LogFunc) {
-			// No background scheduler in web mode.
+			// The background scheduler is TUI-only by default; channels
+			// deployments opt in so scheduled jobs fire while headless.
+			if cfg.Channels.EnableCronScheduler {
+				cli.StartCronScheduler(logFn)
+			}
 		},
 
 		BuildQueryExpansionPromptFn: knowledge.BuildQueryExpansionPrompt,
@@ -268,6 +305,59 @@ func runServer(args []string, serveSPA bool) int {
 	srv.SetHistoryBuilder(deps.HistoryBuilder)
 	srv.SetGates(approvalGate, clarifyGate)
 
+	// Cron lifecycle events reach the SSE bridge in web mode too (the TUI
+	// wires its own listener in main.go); the channel router subscribes to
+	// the same bridge events for push notifications.
+	cli.CronJobNotify = bridge.CronJobEvent
+
+	// Channel state store for the management API (status/pairing/revoke) -
+	// opened even when channels are disabled so the UI can still show and
+	// manage existing pairings. Cross-instance staleness is handled by the
+	// store's reload-on-read.
+	var chanStore *state.Store
+	if st, err := state.OpenDefault(); err == nil {
+		chanStore = st
+	} else {
+		log.Printf("web: channel state unavailable: %v", err)
+	}
+
+	// Communication channels (Telegram et al.): start inside this process so
+	// they share the runner, gates, bridge, sessions, and cron registry.
+	// Fail-soft: a bad token logs loudly but never kills the web server.
+	stopChannels := func() {}
+	var chanRunning func() bool
+	if cfg.Channels.Telegram.EnabledWithToken() {
+		chanSvc, err := channel.NewService(channel.Deps{
+			Bridge:   bridge,
+			Runner:   runner,
+			Sessions: sessionSvc,
+			Approval: approvalGate,
+			Clarify:  clarifyGate,
+			Log:      func(format string, args ...any) { log.Printf("web: "+format, args...) },
+		})
+		if err != nil {
+			log.Printf("web: channel service unavailable: %v", err)
+		} else {
+			tg, err := telegram.New(telegram.Deps{
+				Service: chanSvc,
+				Config:  cfg.Channels.Telegram,
+				Log:     func(format string, args ...any) { log.Printf("telegram: "+format, args...) },
+			})
+			if err != nil {
+				log.Printf("web: telegram channel disabled: %v", err)
+			} else {
+				chanSvc.Register(tg, tg)
+				chanSvc.Start()
+				log.Printf("web: telegram channel started")
+				chanRunning = chanSvc.IsRunning
+				stopChannels = func() { chanSvc.Stop(5 * time.Second) }
+			}
+		}
+	}
+
+	// Expose channel status/pairing/revoke to the management API.
+	srv.SetChannels(chanStore, chanRunning)
+
 	// Register routes.
 	if serveSPA {
 		srv.RegisterDefaults(web.FrontendAssets())
@@ -294,6 +384,7 @@ func runServer(args []string, serveSPA bool) int {
 
 	select {
 	case err := <-done:
+		stopChannels()
 		if err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "hakase: server error: %v\n", err)
 			return 1
@@ -305,8 +396,10 @@ func runServer(args []string, serveSPA bool) int {
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "hakase: shutdown error: %v\n", err)
+			stopChannels()
 			return 1
 		}
+		stopChannels()
 		return 0
 	}
 }

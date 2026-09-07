@@ -12,6 +12,7 @@ require (
 	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/doug/termtex v0.0.0-20260626010055-e3e21f41b38e
 	github.com/go-chi/chi/v5 v5.3.1
+	github.com/go-telegram/bot v1.25.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
@@ -21,6 +22,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.44.0
+	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	golang.org/x/time v0.15.0
@@ -78,7 +80,6 @@ require (
 	go.opentelemetry.io/otel/log v0.19.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect

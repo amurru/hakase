@@ -5,6 +5,7 @@ import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/skill"
@@ -380,7 +381,19 @@ func getVenvPython(log LogFunc) (string, error) {
 		}
 		var lastErr error
 		for _, spec := range venvCreatorCommands(venvDir) {
-			cmd := exec.Command(spec[0], spec[1:]...)
+			cmd := &exec.Cmd{Path: spec[0], Args: append([]string(nil), spec...)}
+			// Mirror the stdlib os/exec PATH resolution of a bare name; a
+			// lookup failure is stored on cmd.Err and surfaces from cmd.Run.
+			if filepath.Base(spec[0]) == spec[0] {
+				if lp, lerr := exec.LookPath(spec[0]); lp != "" {
+					cmd.Path = lp
+					if lerr != nil {
+						cmd.Err = lerr
+					}
+				} else if lerr != nil {
+					cmd.Err = lerr
+				}
+			}
 			sandbox.ConfigureProcess(cmd)
 			lastErr = cmd.Run()
 			if lastErr == nil {
@@ -404,7 +417,11 @@ func getVenvPython(log LogFunc) (string, error) {
 //
 // The gate runs BEFORE getVenvPython (which has side effects - creates .venv) so
 // denied code never triggers venv creation.
-func checkPythonGate(sb *sandbox.SandboxConfig, code string) error {
+//
+// sessionID is the hakase session of the asking run (possibly empty); it is
+// attached to the approval prompt so transports can route it (gate prompt
+// routing).
+func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) error {
 	sandboxMode := "off"
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
@@ -436,6 +453,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string) error {
 		Reason:    "arbitrary Python code execution",
 		Source:    "direct",
 		ExpiresAt: time.Now().Add(ApprovalExpiry()),
+		SessionID: sessionID,
 	})
 	if aerr != nil || !approved {
 		AuditCommandExec(CommandAuditEntry{
@@ -472,7 +490,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		// Harmful-command protection gate: runs BEFORE getVenvPython so
 		// denied code never triggers venv creation side effects.
-		if err := checkPythonGate(deps.SandboxConfig, input.Code); err != nil {
+		if err := checkPythonGate(deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
 			return PythonExecOutput{}, err
 		}
 
@@ -514,7 +532,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 		}
 
 		runScript := func() (string, string) {
-			cmd := exec.CommandContext(ctx, pyBin, scriptPath)
+			cmd := &exec.Cmd{Path: pyBin, Args: []string{pyBin, scriptPath}}
 			cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
 			// If a parent environment was captured at delegation time,
 			// merge it on top so the sub-agent inherits the parent's
@@ -621,7 +639,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 						),
 					)
 				}
-				installCmd := exec.CommandContext(ctx, pipBin, "install", missingPkg)
+				installCmd := &exec.Cmd{Path: pipBin, Args: []string{pipBin, "install", missingPkg}}
 				// Merge parent env into the pip install command too
 				if len(parentEnv) > 0 && parentEnv[0] != nil {
 					installCmd.Env = append(parentEnv[0], installCmd.Env...)
@@ -1677,7 +1695,7 @@ When the user asks you to create a new markdown skill, prefer writing it to the 
 ### MEDIA GENERATION:
 You have media generation tools: 'generate_image' (always available via pil fallback; cloud providers openai and fal used when keys present - prefer for photorealistic images, infographics, posters), 'generate_video' (requires a cloud provider: the OpenAI-compatible router such as OpenRouter via openai_video_key or openai_image_key, or fal via fal_key), 'generate_audio' (stub in v1). For generate_image, pil is the offline fallback that renders structured graphics (diagrams, posters, cards) deterministically from prompt+seed - not photorealistic but always works. Cloud providers are tried first when configured (order: openai, fal, pil). All generated media is saved under outputs/media/<ulid>.<ext> and rendered inline via /api/files/inline and mediaLinks - just include the returned markdown snippet in your final answer. Never write outside outputs/media; the store handles paths. Use provider:"auto" by default; explicit provider overrides auto ordering.
 
-	` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildSidekickInstruction(cfg) + "\n\n" + buildTimeReminder()
+	` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildSidekickInstruction(cfg) + "\n\n" + buildWebSearchFallback(cfg) + "\n\n" + buildTimeReminder()
 }
 
 // buildSidekickInstruction returns the orchestrator instruction section that
@@ -1771,8 +1789,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Load the workspace root and project context files (AGENTS.md, with a
 	// project-scoped CLAUDE.md fallback) once at startup so every agent
 	// shares the same rendered block. Discovery walks from cwd up to the git
-	// root; user-global CLAUDE.md is never loaded. The rendered block size
-	// feeds the compaction reserve in context.go via contextBlockTokens.
+	// root; user-global CLAUDE.md is never loaded. The rendered block's token
+	// estimate is recorded on this run's HistoryBuilder (below) and feeds the
+	// compaction reserve in context.go.
 	cwd, _ := os.Getwd()
 	instructionFiles := hctx.DiscoveredInstructionFiles(cwd, cfg, log)
 	ctxBlock := hctx.RenderInstructionBlock(
@@ -1780,7 +1799,6 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		cfg.Instruction,
 		cfg.ContextFiles.MaxChars,
 	)
-	hctx.ContextBlockTokens = util.EstimateTokens(ctxBlock)
 	// Record session-scoped state for progressive subdirectory context hints
 	// (fileops.go) and live reconcile (context.go BeforeModelCallback).
 	hctx.InitContextState(cwd, cfg, instructionFiles)
@@ -1800,6 +1818,41 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			log(fmt.Sprintf("🧭 Environment: %s", sysInfo.Summary()))
 		}
 	}
+
+	// Session project identity: the repository (or fallback cwd) this session
+	// is anchored to. Git tools default repo_dir to it, and context-file and
+	// skill discovery already walk to the same git root. Computed once per
+	// session so every agent and delegated tool call shares one identity.
+	proot := project.FindRoot(cwd)
+	project.SetCurrentRoot(proot)
+
+	// Render a compact repo-state snapshot (branch, status counts, recent
+	// commits) for the agents that own the structured git tools. It is a
+	// session-start snapshot with an explicit re-check note, never a live
+	// view, so the prompt stays cacheable. Best effort: a non-repo cwd or a
+	// git failure yields no block and must never block booting.
+	var gitBlock string
+	if proot != "" {
+		gbCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		gb, gerr := sandbox.BuildGitWorkspaceBlock(gbCtx, proot, interfaces.LogFunc(log))
+		cancel()
+		switch {
+		case gerr != nil:
+			if log != nil {
+				log(fmt.Sprintf("⚠ Git workspace snapshot skipped: %v", gerr))
+			}
+		case gb != "":
+			gitBlock = gb
+			if log != nil {
+				log(fmt.Sprintf("🌿 Git workspace: %s", proot))
+			}
+		}
+	}
+	// The snapshot's token estimate is recorded on this run's HistoryBuilder
+	// (below) and feeds the compaction reserve in context.go.
+	// gitBlockAgents lists the agents that receive the snapshot: exactly the
+	// ones whose tool list includes the structured git tools.
+	gitBlockAgents := []string{"orchestrator", "general_purpose"}
 
 	// Render the preferred-measurement-units system-reminder block once per
 	// session (metric/ISO by default, imperial when selected) and inject it
@@ -1914,6 +1967,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			return nil, fmt.Errorf("mcp: manager does not implement tool.Toolset")
 		}
 	}
+	// Built-in keyless web search fallback (internal/websearch): shared by
+	// the orchestrator, web_researcher, and delegated sub-agents. nil when
+	// disabled by config or construction failed.
+	webSearchFallback = newFallbackSearchToolset(cfg, mcpManager, log)
 	// Researcher agent
 	downloadTool, err := createDownloadTool()
 	if err != nil {
@@ -1934,6 +1991,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if mcpManager != nil {
 		researcherToolsets = []tool.Toolset{mcpManager}
 	}
+	if webSearchFallback != nil {
+		researcherToolsets = append(researcherToolsets, webSearchFallback)
+	}
 
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
@@ -1942,7 +2002,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"web_researcher",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
-		) + "\n\n" + buildTimeReminder() + ContextBlockFor(
+		) + "\n\n" + buildTimeReminder() + "\n\n" + buildWebSearchFallback(cfg) + ContextBlockFor(
 			"web_researcher",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
@@ -2044,9 +2104,18 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		return nil, err
 	}
 
+	// Structured git tools (status/diff/log/branch read-only; stage/commit
+	// mutation). These run git through the same harmful-command policy,
+	// approval gate, and audit path as system_exec. Created before the
+	// general-purpose agent so it can share them.
+	gitTools, err := sandbox.CreateGitOpsTools(interfaces.LogFunc(log))
+	if err != nil {
+		return nil, err
+	}
+
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:        "general_purpose",
-		Description: "General-purpose agent for workspace tasks: file operations, content management, and general-purpose execution.",
+		Description: "General-purpose agent for workspace tasks: file operations, git operations, content management, and general-purpose execution.",
 		Instruction: GeneralPurposeSystemInstruction + ContextBlockFor(
 			"general_purpose",
 			ctxBlock,
@@ -2055,9 +2124,13 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"general_purpose",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
+		) + ContextBlockFor(
+			"general_purpose",
+			gitBlock,
+			gitBlockAgents,
 		) + "\n\n" + unitsBlock,
 		Model:                 model,
-		Tools:                 append(fileOpsTools, visionTool),
+		Tools:                 append(append(fileOpsTools, gitTools...), visionTool),
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			vision.VisionInjectionCallback,
@@ -2131,7 +2204,14 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 
 	// Context management: build history for the root orchestrator only.
 	// Sub-agents keep isolated context by design (delegate.go untouched).
+	// The rendered context/git block estimates are stored on this builder so
+	// fitToBudget reserves exactly this run's system-prompt overhead (they are
+	// per-run state, not process-global).
 	historyBuilder := hctx.NewHistoryBuilder(sessionSvc)
+	historyBuilder.SetBlockTokenEstimates(
+		util.EstimateTokens(ctxBlock),
+		util.EstimateTokens(gitBlock),
+	)
 	historyBuilder.SetLogFunc(func(format string, args ...any) {
 		log(fmt.Sprintf(format, args...))
 	})
@@ -2163,6 +2243,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	orchestratorTools = append(orchestratorTools, mediaTools...)
 	orchestratorTools = append(orchestratorTools, delegateTaskT)
 	orchestratorTools = append(orchestratorTools, fileOpsTools...)
+	orchestratorTools = append(orchestratorTools, gitTools...)
 	orchestratorTools = append(orchestratorTools, systemExecTools...)
 
 	// Expose the sidekick as a side-process tool when enabled, so the
@@ -2174,6 +2255,16 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		} else if log != nil {
 			log(fmt.Sprintf("sidekick tool disabled: %v", err))
 		}
+	}
+
+	// Orchestrator toolsets: MCP manager plus the web search fallback when
+	// enabled. A nil manager element is omitted (ADK would panic).
+	orchestratorToolsets := make([]tool.Toolset, 0, 2)
+	if mcpManager != nil {
+		orchestratorToolsets = append(orchestratorToolsets, mcpManager)
+	}
+	if webSearchFallback != nil {
+		orchestratorToolsets = append(orchestratorToolsets, webSearchFallback)
 	}
 
 	rootAgent, err := llmagent.New(llmagent.Config{
@@ -2190,6 +2281,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"orchestrator",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
+		) + ContextBlockFor(
+			"orchestrator",
+			gitBlock,
+			gitBlockAgents,
 		) + "\n\n" + unitsBlock,
 		Model:                 model,
 		GenerateContentConfig: genCfg,
@@ -2199,8 +2294,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			ToolResultGuard,
 		},
 		AfterModelCallbacks: makeSidekickWatcher(sk, cfg),
-		Tools:    orchestratorTools,
-		Toolsets: []tool.Toolset{mcpManager},
+		Tools:               orchestratorTools,
+		Toolsets:            orchestratorToolsets,
 		SubAgents: []agent.Agent{
 			researcherAgent,
 			codeInterpreterAgent,

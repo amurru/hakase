@@ -23,7 +23,11 @@ func TestKillProcessTreeWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("cmd", "/D", "/C", bat)
+	cmdExe, err := exec.LookPath("cmd")
+	if err != nil {
+		t.Fatalf("LookPath cmd: %v", err)
+	}
+	cmd := &exec.Cmd{Path: cmdExe, Args: []string{"cmd", "/D", "/C", bat}}
 	configureProcess(cmd)
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
