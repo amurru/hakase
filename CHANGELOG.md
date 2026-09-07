@@ -8,7 +8,7 @@ During the alpha phase (0.x), breaking changes may land in any minor release;
 the web UI and `config.json` formats aim for backward compatibility but are not
 guaranteed stable until 1.0.
 
-## [Unreleased]
+## [0.1.0-alpha.5] - 2026-09-07
 
 ### Added
 
@@ -149,7 +149,8 @@ First testing release. Linux-only; developed and tested on Arch Linux.
   version stamping from `git describe` (`make VERSION=vX.Y.Z` to override),
   and this changelog.
 
-[Unreleased]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.4...HEAD
+[Unreleased]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.5...HEAD
+[0.1.0-alpha.5]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.4...v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/amurru/hakase/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/amurru/hakase/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/amurru/hakase/releases/tag/v0.1.0-alpha.2
