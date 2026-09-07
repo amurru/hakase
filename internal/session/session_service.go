@@ -235,8 +235,30 @@ func (s *SessionService) DeleteSession(id string) error {
 	return s.store.Delete(id)
 }
 
+// RenameSession updates the title of a session without touching its messages.
+func (s *SessionService) RenameSession(id, title string) error {
+	if id == "" {
+		return fmt.Errorf("no session id")
+	}
+	if title == "" {
+		return fmt.Errorf("title must not be empty")
+	}
+	sess, err := s.store.Load(id)
+	if err != nil {
+		return err
+	}
+	sess.Title = title
+	sess.UpdatedAt = time.Now().UTC()
+	return s.store.Save(sess)
+}
+
 // ArchiveSession sets the archived flag on a session.
+// If the archived session was active, the active session is cleared so the
+// next message does not resume an archived conversation.
 func (s *SessionService) ArchiveSession(id string) error {
+	if id == s.activeSessionID {
+		s.activeSessionID = ""
+	}
 	return s.store.Archive(id)
 }
 

@@ -37,10 +37,13 @@ func newTestSessionAPI(t *testing.T) (*SessionAPI, *session.SessionService, chi.
 		r.Get("/sessions", api.ListSessions)
 		r.Post("/sessions", api.CreateSession)
 		r.Get("/sessions/active", api.GetActiveSession)
+		r.Get("/sessions/archived", api.ListArchivedSessions)
 		r.Get("/sessions/{id}", api.GetSession)
 		r.Delete("/sessions/{id}", api.DeleteSession)
 		r.Post("/sessions/{id}/archive", api.ArchiveSession)
+		r.Post("/sessions/{id}/unarchive", api.UnarchiveSession)
 		r.Post("/sessions/{id}/activate", api.ActivateSession)
+		r.Post("/sessions/{id}/rename", api.RenameSession)
 	})
 	return api, svc, r
 }
@@ -290,6 +293,195 @@ func TestArchiveSessionNotFound(t *testing.T) {
 	}
 }
 
+func TestRenameSession(t *testing.T) {
+	_, svc, r := newTestSessionAPI(t)
+	sess := createTestSession(t, svc, "Old title")
+
+	body := `{"title":"New title"}`
+	req := httptest.NewRequest("POST", "/api/sessions/"+sess.ID+"/rename", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var dto SessionDetailDTO
+	if err := json.NewDecoder(w.Body).Decode(&dto); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if dto.Title != "New title" {
+		t.Fatalf("expected renamed title 'New title', got %q", dto.Title)
+	}
+
+	// Verify the rename persisted
+	req2 := httptest.NewRequest("GET", "/api/sessions/"+sess.ID, nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("get after rename failed: %d", w2.Code)
+	}
+	var reloaded SessionDetailDTO
+	json.NewDecoder(w2.Body).Decode(&reloaded)
+	if reloaded.Title != "New title" {
+		t.Fatalf("expected persisted title 'New title', got %q", reloaded.Title)
+	}
+	if len(reloaded.Messages) != 0 {
+		t.Fatalf("rename should not touch messages, got %d", len(reloaded.Messages))
+	}
+}
+
+func TestRenameSessionTrimsWhitespace(t *testing.T) {
+	_, svc, r := newTestSessionAPI(t)
+	sess := createTestSession(t, svc, "Old title")
+
+	body := `{"title": "  Padded title  "}`
+	req := httptest.NewRequest("POST", "/api/sessions/"+sess.ID+"/rename", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var dto SessionDetailDTO
+	json.NewDecoder(w.Body).Decode(&dto)
+	if dto.Title != "Padded title" {
+		t.Fatalf("expected trimmed title 'Padded title', got %q", dto.Title)
+	}
+}
+
+func TestRenameSessionEmptyTitle(t *testing.T) {
+	_, svc, r := newTestSessionAPI(t)
+	sess := createTestSession(t, svc, "Unchanged")
+
+	for _, body := range []string{`{"title":""}`, `{"title":"   "}`, `{}`} {
+		req := httptest.NewRequest("POST", "/api/sessions/"+sess.ID+"/rename", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body %s: expected 400, got %d: %s", body, w.Code, w.Body.String())
+		}
+	}
+
+	// The title must be untouched after failed renames
+	reloaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatalf("failed to reload session: %v", err)
+	}
+	if reloaded.Title != "Unchanged" {
+		t.Fatalf("expected title to remain 'Unchanged', got %q", reloaded.Title)
+	}
+}
+
+func TestRenameSessionNotFound(t *testing.T) {
+	_, _, r := newTestSessionAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/sessions/sess_nonexistent/rename", strings.NewReader(`{"title":"X"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListArchivedSessions(t *testing.T) {
+	_, svc, r := newTestSessionAPI(t)
+	kept := createTestSession(t, svc, "Active session")
+	archived := createTestSession(t, svc, "Archived session")
+	if err := svc.ArchiveSession(archived.ID); err != nil {
+		t.Fatalf("failed to archive: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/sessions/archived", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var sessions []SessionSummaryDTO
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 archived session, got %d", len(sessions))
+	}
+	if sessions[0].ID != archived.ID {
+		t.Fatalf("expected archived session %q, got %q", archived.ID, sessions[0].ID)
+	}
+
+	// The active list must not contain the archived session
+	req2 := httptest.NewRequest("GET", "/api/sessions/"+kept.ID, nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("active session get failed: %d", w2.Code)
+	}
+}
+
+func TestUnarchiveSession(t *testing.T) {
+	_, svc, r := newTestSessionAPI(t)
+	sess := createTestSession(t, svc, "To archive and restore")
+	if err := svc.ArchiveSession(sess.ID); err != nil {
+		t.Fatalf("failed to archive: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/sessions/"+sess.ID+"/unarchive", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The session must be back in the main list
+	req2 := httptest.NewRequest("GET", "/api/sessions", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	var sessions []SessionSummaryDTO
+	json.NewDecoder(w2.Body).Decode(&sessions)
+	found := false
+	for _, s := range sessions {
+		if s.ID == sess.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("unarchived session should appear in the main session list")
+	}
+
+	// And gone from the archived list
+	req3 := httptest.NewRequest("GET", "/api/sessions/archived", nil)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+	var archived []SessionSummaryDTO
+	json.NewDecoder(w3.Body).Decode(&archived)
+	for _, s := range archived {
+		if s.ID == sess.ID {
+			t.Fatal("unarchived session should not appear in the archived list")
+		}
+	}
+}
+
+func TestUnarchiveSessionNotFound(t *testing.T) {
+	_, _, r := newTestSessionAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/sessions/sess_nonexistent/unarchive", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestActivateSession(t *testing.T) {
 	_, svc, r := newTestSessionAPI(t)
 	sess := createTestSession(t, svc, "Session one")
@@ -495,10 +687,13 @@ func TestSessionRoutesRequireAuth(t *testing.T) {
 		{"GET", "/api/sessions"},
 		{"POST", "/api/sessions"},
 		{"GET", "/api/sessions/active"},
+		{"GET", "/api/sessions/archived"},
 		{"GET", "/api/sessions/sess_test"},
 		{"DELETE", "/api/sessions/sess_test"},
 		{"POST", "/api/sessions/sess_test/archive"},
+		{"POST", "/api/sessions/sess_test/unarchive"},
 		{"POST", "/api/sessions/sess_test/activate"},
+		{"POST", "/api/sessions/sess_test/rename"},
 	}
 
 	for _, ep := range endpoints {

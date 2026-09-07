@@ -68,10 +68,13 @@ func RegisterSessionRoutes(r SessionsRouter, svc *session.SessionService) {
 	r.Get("/sessions", api.ListSessions)
 	r.Post("/sessions", api.CreateSession)
 	r.Get("/sessions/active", api.GetActiveSession)
+	r.Get("/sessions/archived", api.ListArchivedSessions)
 	r.Get("/sessions/{id}", api.GetSession)
 	r.Delete("/sessions/{id}", api.DeleteSession)
 	r.Post("/sessions/{id}/archive", api.ArchiveSession)
+	r.Post("/sessions/{id}/unarchive", api.UnarchiveSession)
 	r.Post("/sessions/{id}/activate", api.ActivateSession)
+	r.Post("/sessions/{id}/rename", api.RenameSession)
 }
 
 // sessionID extracts the {id} URL parameter from the request.
@@ -235,6 +238,95 @@ func (api *SessionAPI) ArchiveSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// UnarchiveSession handles POST /sessions/{id}/unarchive - restores an
+// archived session back to the active list.
+func (api *SessionAPI) UnarchiveSession(w http.ResponseWriter, r *http.Request) {
+	id := sessionID(r)
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+
+	if err := api.svc.UnarchiveSession(id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ListArchivedSessions handles GET /sessions/archived - returns all archived
+// sessions sorted by updated_at desc.
+func (api *SessionAPI) ListArchivedSessions(w http.ResponseWriter, r *http.Request) {
+	api.mu.RLock()
+	defer api.mu.RUnlock()
+
+	summaries, err := api.svc.ListArchivedSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	dtos := make([]SessionSummaryDTO, 0, len(summaries))
+	for _, s := range summaries {
+		dtos = append(dtos, SessionSummaryDTO{
+			ID:           s.ID,
+			Title:        s.Title,
+			ProjectID:    s.ProjectID,
+			ProjectName:  s.ProjectName,
+			UpdatedAt:    s.UpdatedAt,
+			MessageCount: s.MessageCount,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, dtos)
+}
+
+// RenameSession handles POST /sessions/{id}/rename - changes a session's
+// title. Accepts JSON body: {"title": "New title"}.
+func (api *SessionAPI) RenameSession(w http.ResponseWriter, r *http.Request) {
+	id := sessionID(r)
+
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title must not be empty"})
+		return
+	}
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+
+	if err := api.svc.RenameSession(id, title); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Return the updated session so the client can refresh its state without
+	// a second GET.
+	store := api.svc.Store()
+	sess, err := store.Load(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionDetailDTO(sess))
 }
 
 // ActivateSession handles POST /sessions/{id}/activate - sets a session as active.
