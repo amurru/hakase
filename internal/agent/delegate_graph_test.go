@@ -119,6 +119,49 @@ func TestDelegationReporterRepeatedToolPairing(t *testing.T) {
 	}
 }
 
+func TestDelegationReporterFallbackMatchesToolName(t *testing.T) {
+	n := withGraphNotifier(t)
+
+	r := newDelegationReporter("task_sub", "general_purpose", "sess-1", "task_root")
+	// Two different tools in flight (parallel calls); responses arrive in
+	// reverse opening order.
+	r.toolCall("", "search", nil)   // c1
+	r.toolCall("", "download", nil) // c2
+	r.toolResult("", "download", nil)
+	r.toolResult("", "search", nil)
+
+	ends := []interfaces.GraphEvent{}
+	for _, ev := range n.graphEvents {
+		if ev.Type == interfaces.GraphToolEnd {
+			ends = append(ends, ev)
+		}
+	}
+	if len(ends) != 2 {
+		t.Fatalf("expected 2 tool_end events, got %d", len(ends))
+	}
+	if ends[0].Tool != "download" || ends[1].Tool != "search" {
+		t.Errorf("expected name-aware matching, got %s then %s", ends[0].Tool, ends[1].Tool)
+	}
+}
+
+func TestDelegationReporterToolErrorSurfaces(t *testing.T) {
+	n := withGraphNotifier(t)
+
+	r := newDelegationReporter("task_sub", "code_interpreter", "sess-1", "task_root")
+	r.toolCall("prov-1", "python_interpreter", nil)
+	r.toolResult("prov-1", "python_interpreter", map[string]interface{}{"error": "exit code 1"})
+
+	var end interfaces.GraphEvent
+	for _, ev := range n.graphEvents {
+		if ev.Type == interfaces.GraphToolEnd {
+			end = ev
+		}
+	}
+	if end.OK || end.Error != "exit code 1" {
+		t.Errorf("expected failed tool_end with error detail, got %+v", end)
+	}
+}
+
 func TestDelegationReporterFinishFailureCarriesError(t *testing.T) {
 	n := withGraphNotifier(t)
 

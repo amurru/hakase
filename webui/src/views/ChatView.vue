@@ -543,8 +543,10 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Body: chat column + optional execution canvas -->
-    <div class="flex min-h-0 flex-1">
+    <!-- Body: chat column + optional execution canvas.
+         Below md the canvas is a full-size overlay (a 380px+ split column
+         would crush the chat to zero width); above md it is a split panel. -->
+    <div class="relative flex min-h-0 flex-1">
       <div class="flex min-w-0 flex-1 flex-col">
         <!-- Messages area -->
         <div
@@ -617,10 +619,10 @@ onMounted(() => {
         />
       </div>
 
-      <!-- Execution canvas panel -->
+      <!-- Execution canvas panel: overlay below md, split column above -->
       <div
         v-if="canvasStore.panelOpen"
-        class="w-1/2 min-w-[380px] max-w-[60%] shrink-0 border-l border-border"
+        class="absolute inset-0 z-20 bg-background md:relative md:inset-auto md:z-auto md:w-1/2 md:min-w-[380px] md:max-w-[60%] md:shrink-0 md:border-l md:border-border"
       >
         <ExecutionCanvas />
       </div>

@@ -112,6 +112,13 @@ func notifyGraph(sessionID string, ev interfaces.GraphEvent) {
 	}
 }
 
+// delegationOpenCall tracks one in-flight sub-agent tool call for canvas
+// duration pairing (mirrors agentrun.openToolCall).
+type delegationOpenCall struct {
+	name  string
+	start time.Time
+}
+
 // delegationReporter buffers and streams sub-agent output: the legacy
 // stringly-typed DelegationProgress channel (TUI log pane, Telegram push) and,
 // when the parent run's session is known, structured canvas GraphEvents (web
@@ -125,8 +132,8 @@ type delegationReporter struct {
 	parentTaskID  string
 	startedAt     time.Time
 	textBuf       strings.Builder
-	toolStart     map[string]time.Time // call id -> start
-	openOrder     []string             // open call ids in opening order (name fallback matching)
+	toolStart     map[string]delegationOpenCall // call id -> open call
+	openOrder     []string                      // open call ids in opening order (name fallback matching)
 	callSeq       int
 }
 
@@ -137,7 +144,7 @@ func newDelegationReporter(taskID, agent, parentSession, parentTaskID string) *d
 		parentSession: parentSession,
 		parentTaskID:  parentTaskID,
 		startedAt:     time.Now(),
-		toolStart:     make(map[string]time.Time),
+		toolStart:     make(map[string]delegationOpenCall),
 	}
 }
 
@@ -217,7 +224,7 @@ func (r *delegationReporter) toolCall(callID, name string, args map[string]inter
 		r.callSeq++
 		callID = fmt.Sprintf("c%d", r.callSeq)
 	}
-	r.toolStart[callID] = time.Now()
+	r.toolStart[callID] = delegationOpenCall{name: name, start: time.Now()}
 	r.openOrder = append(r.openOrder, callID)
 	notifyDelegation("tool_call", r.taskID, r.agent, fmt.Sprintf("%s(%v)", name, args))
 	r.graph(interfaces.GraphEvent{
@@ -236,7 +243,7 @@ func (r *delegationReporter) toolCall(callID, name string, args map[string]inter
 func (r *delegationReporter) toolResult(callID, name string, response map[string]interface{}) {
 	if callID == "" {
 		for i := len(r.openOrder) - 1; i >= 0; i-- {
-			if _, ok := r.toolStart[r.openOrder[i]]; ok {
+			if oc, ok := r.toolStart[r.openOrder[i]]; ok && oc.name == name {
 				callID = r.openOrder[i]
 				break
 			}
@@ -245,7 +252,7 @@ func (r *delegationReporter) toolResult(callID, name string, response map[string
 	var durationMs int64
 	start, ok := r.toolStart[callID]
 	if ok {
-		durationMs = time.Since(start).Milliseconds()
+		durationMs = time.Since(start.start).Milliseconds()
 		delete(r.toolStart, callID)
 		for i, cid := range r.openOrder {
 			if cid == callID {
@@ -261,6 +268,7 @@ func (r *delegationReporter) toolResult(callID, name string, response map[string
 	}
 	notifyDelegation("tool_result", r.taskID, r.agent, msg)
 
+	errMsg, failed := interfaces.ToolError(response)
 	resultJSON := ""
 	if response != nil {
 		if b, err := json.Marshal(response); err == nil {
@@ -275,7 +283,8 @@ func (r *delegationReporter) toolResult(callID, name string, response map[string
 		CallID:     callID,
 		Tool:       name,
 		Result:     interfaces.TruncateUTF8(resultJSON, interfaces.GraphResultCap),
-		OK:         true,
+		OK:         !failed,
+		Error:      interfaces.TruncateUTF8(errMsg, interfaces.GraphLabelCap),
 		DurationMs: durationMs,
 	})
 }

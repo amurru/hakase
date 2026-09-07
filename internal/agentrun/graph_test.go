@@ -126,6 +126,26 @@ func TestGraphTrackerSynthesizedCallIDsAndNameFallback(t *testing.T) {
 	}
 }
 
+func TestGraphTrackerFallbackMatchesToolName(t *testing.T) {
+	sink := &recordingSink{}
+	g := newTestTracker(t, sink)
+
+	// Two different tools in flight (parallel calls); responses arrive in
+	// reverse opening order.
+	g.toolStart("", "search", nil)   // c1
+	g.toolStart("", "download", nil) // c2
+	g.toolEnd("", "download", nil)   // must close c2, not c1
+	g.toolEnd("", "search", nil)     // must close c1
+
+	// events: agent_start, tool_start c1, tool_start c2, tool_end, tool_end.
+	if sink.events[3].Tool != "download" || sink.events[4].Tool != "search" {
+		t.Errorf("expected name-aware matching, got %s then %s", sink.events[3].Tool, sink.events[4].Tool)
+	}
+	if sink.events[3].CallID != "c2" || sink.events[4].CallID != "c1" {
+		t.Errorf("expected calls c2 then c1, got %s then %s", sink.events[3].CallID, sink.events[4].CallID)
+	}
+}
+
 func TestGraphTrackerToolErrorDetection(t *testing.T) {
 	sink := &recordingSink{}
 	g := newTestTracker(t, sink)
@@ -150,26 +170,33 @@ func TestGraphTrackerTransfer(t *testing.T) {
 	if transfer.Type != interfaces.GraphTransfer || transfer.Target != "web_researcher" {
 		t.Errorf("unexpected transfer: %+v", transfer)
 	}
-	if sub.Type != interfaces.GraphAgentStart || sub.NodeID != "transfer:web_researcher" || sub.ParentID != "task_root" {
+	if sub.Type != interfaces.GraphAgentStart || sub.NodeID != "transfer:web_researcher:1" || sub.ParentID != "task_root" {
 		t.Errorf("unexpected transferred agent_start: %+v", sub)
 	}
 
 	// Tool activity after the transfer attributes to the transferred node.
 	g.toolStart("t1", "download", nil)
-	if got := sink.events[len(sink.events)-1].NodeID; got != "transfer:web_researcher" {
+	if got := sink.events[len(sink.events)-1].NodeID; got != "transfer:web_researcher:1" {
 		t.Errorf("expected attribution to transferred node, got %q", got)
 	}
 
 	// Transfer back to the root author closes the transferred node.
 	g.observeEvent(&session.Event{Author: "orchestrator"})
 	closeEv := sink.events[len(sink.events)-1]
-	if closeEv.Type != interfaces.GraphAgentEnd || closeEv.NodeID != "transfer:web_researcher" {
+	if closeEv.Type != interfaces.GraphAgentEnd || closeEv.NodeID != "transfer:web_researcher:1" {
 		t.Errorf("expected transfer node agent_end on transfer-back, got %+v", closeEv)
 	}
 
 	g.toolStart("t2", "read_file", nil)
 	if got := sink.events[len(sink.events)-1].NodeID; got != "task_root" {
 		t.Errorf("expected attribution back on root, got %q", got)
+	}
+
+	// A second transfer to the same target gets a fresh node id.
+	g.observeEvent(&session.Event{Author: "orchestrator", Actions: session.EventActions{TransferToAgent: "web_researcher"}})
+	sub2 := sink.events[len(sink.events)-1]
+	if sub2.NodeID != "transfer:web_researcher:2" || sub2.ParentID != "task_root" {
+		t.Errorf("expected unique second transfer node, got %+v", sub2)
 	}
 }
 

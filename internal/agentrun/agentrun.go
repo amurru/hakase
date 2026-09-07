@@ -357,6 +357,8 @@ type graphTracker struct {
 	activeNode string
 	rootAuthor string // first non-empty event author; transfer-back detection
 
+	transferSeq int // unique node ids for repeated transfers to the same target
+
 	open      map[string]openToolCall // callID -> open call
 	openOrder []string                // open call ids in opening order
 	callSeq   int                     // synthesized call ids for providers that omit them
@@ -412,7 +414,10 @@ func (g *graphTracker) observeEvent(ev *session.Event) {
 		}
 	}
 	if target := ev.Actions.TransferToAgent; target != "" {
-		nodeID := "transfer:" + target
+		// Unique per transfer instance: two hand-offs to the same target are
+		// distinct nodes, not a reuse of the first one.
+		g.transferSeq++
+		nodeID := fmt.Sprintf("transfer:%s:%d", target, g.transferSeq)
 		g.emit(interfaces.GraphEvent{Type: interfaces.GraphTransfer, NodeID: g.activeNode, Target: target})
 		g.emit(interfaces.GraphEvent{
 			Type:     interfaces.GraphAgentStart,
@@ -470,18 +475,9 @@ func (g *graphTracker) toolEnd(id, name string, resp map[string]any) {
 	}
 	ok := true
 	errMsg := ""
-	if e, exists := resp["error"]; exists && e != nil {
-		// Convention of hakase's own tools: "error" is a message string.
-		// Empty strings and nils mean success; other types are formatted.
-		if s, isStr := e.(string); isStr {
-			if s != "" {
-				ok = false
-				errMsg = s
-			}
-		} else {
-			ok = false
-			errMsg = fmt.Sprintf("%v", e)
-		}
+	if msg, failed := interfaces.ToolError(resp); failed {
+		ok = false
+		errMsg = msg
 	}
 	g.emit(interfaces.GraphEvent{
 		Type:       interfaces.GraphToolEnd,

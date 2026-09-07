@@ -90,6 +90,24 @@ func TruncateUTF8(s string, max int) string {
 	return cut + "…"
 }
 
+// ToolError applies hakase's tool-response convention for canvas payloads: a
+// non-nil "error" entry marks a failed call, where an empty string means
+// success and any other non-nil value is formatted. It returns the error
+// message and whether the call failed.
+func ToolError(resp map[string]any) (msg string, failed bool) {
+	e, exists := resp["error"]
+	if !exists || e == nil {
+		return "", false
+	}
+	if s, isStr := e.(string); isStr {
+		if s == "" {
+			return "", false
+		}
+		return s, true
+	}
+	return fmt.Sprintf("%v", e), true
+}
+
 // GraphArgs serializes tool-call arguments for a GraphEvent, capping the
 // payload at GraphArgsCap. Oversized argument maps degrade to
 // {"_truncated": "<capped json>"} so the wire stays valid JSON and the client

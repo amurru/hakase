@@ -41,21 +41,24 @@ type graphLog struct {
 	events [][]byte // pre-marshaled frames, seq order
 }
 
-// append assigns the next seq/timestamp, retains the frame, and returns the
-// payload for live publication.
-func (g *graphLog) append(ev interfaces.GraphEvent) []byte {
+// record assigns the next seq/timestamp, retains the frame, and publishes it
+// while still holding the log's mutex, so per-session publication order
+// matches seq order even with concurrent senders (several runs share one
+// session topic). Lock ordering is graphLog.mu -> EventBridge.mu only
+// (publish); no path nests them the other way around.
+func (g *graphLog) record(b *EventBridge, sessionID string, ev interfaces.GraphEvent) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.seq++
 	payload, err := json.Marshal(graphFrame{Seq: g.seq, Ts: time.Now().UnixMilli(), GraphEvent: ev})
 	if err != nil {
-		return nil
+		return
 	}
 	g.events = append(g.events, payload)
 	if drop := len(g.events) - graphEventCap; drop > 0 {
 		g.events = g.events[drop:]
 	}
-	return payload
+	b.publish(sessionID, "graph", payload)
 }
 
 // snapshot returns the retained frames in seq order.
@@ -90,11 +93,7 @@ func (b *EventBridge) SendGraph(sessionID string, ev interfaces.GraphEvent) {
 	}
 	b.mu.Unlock()
 
-	payload := gl.append(ev)
-	if payload == nil {
-		return
-	}
-	b.publish(sessionID, "graph", payload)
+	gl.record(b, sessionID, ev)
 }
 
 // evictOldestGraphLogLocked drops the oldest session log. Caller holds b.mu.

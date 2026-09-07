@@ -188,8 +188,25 @@ export function applyEvent(state: CanvasGraphState, frame: GraphEventFrame): voi
       return
     }
     case 'agent_end': {
-      const node = state.nodes.get(frame.node_id)
-      if (!node) return
+      let node = state.nodes.get(frame.node_id)
+      if (!node) {
+        // The retained ring may evict the start but keep the end; synthesize
+        // so the terminal state (and its summary) still shows.
+        node = {
+          id: frame.node_id,
+          parentId: frame.parent_id || null,
+          visualParentId: null,
+          kind: 'agent',
+          label: frame.agent || frame.node_id,
+          agent: frame.agent,
+          status: 'running',
+          startedTs: frame.ts,
+          text: '',
+          thought: '',
+        }
+        state.nodes.set(frame.node_id, node)
+        resolveVisualParent(state, node)
+      }
       node.status = isNodeStatus(frame.status) ? frame.status : 'completed'
       node.summary = frame.summary ?? node.summary
       node.error = frame.error
@@ -258,22 +275,9 @@ export function applyEvent(state: CanvasGraphState, frame: GraphEventFrame): voi
       return
     }
     case 'transfer': {
-      const id = `transfer:${frame.target ?? 'unknown'}`
-      if (state.nodes.has(id)) return
-      const node: CanvasNode = {
-        id,
-        parentId: frame.node_id,
-        visualParentId: null,
-        kind: 'agent',
-        label: frame.target || id,
-        agent: frame.target,
-        status: 'running',
-        startedTs: frame.ts,
-        text: '',
-        thought: '',
-      }
-      state.nodes.set(id, node)
-      resolveVisualParent(state, node)
+      // Informational only: the backend announces each transfer with an
+      // agent_start for a uniquely-id'd node right after this frame, and
+      // synthesizing a node here would duplicate it.
       return
     }
   }

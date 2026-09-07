@@ -124,11 +124,30 @@ describe('applyEvent', () => {
     expect(state.nodes.get('sub')?.visualParentId).toBe('root')
   })
 
-  it('creates transfer nodes parented to the transferring node', () => {
+  it('transfer frames alone create no nodes; the follow-up agent_start does', () => {
     const state = createGraphState()
-    applyEvent(state, frame({ type: 'transfer', node_id: 'root', target: 'web_researcher' }))
-    const node = state.nodes.get('transfer:web_researcher')
+    applyEvent(state, frame({ type: 'agent_start', node_id: 'root' }))
+    applyEvent(state, frame({ seq: 2, type: 'transfer', node_id: 'root', target: 'web_researcher' }))
+    expect(state.nodes.size).toBe(1)
+
+    // Backend agent_start carries the unique per-transfer id.
+    applyEvent(state, frame({ seq: 3, type: 'agent_start', node_id: 'transfer:web_researcher:1', parent_id: 'root', agent: 'web_researcher' }))
+    const node = state.nodes.get('transfer:web_researcher:1')
     expect(node?.kind).toBe('agent')
+    expect(node?.parentId).toBe('root')
+    expect(state.nodes.size).toBe(2)
+  })
+
+  it('synthesizes an agent node when agent_end arrives without its start', () => {
+    const state = createGraphState()
+    applyEvent(state, frame({ type: 'agent_start', node_id: 'root' }))
+    applyEvent(state, frame({ seq: 2, type: 'agent_end', node_id: 'evicted', parent_id: 'root', agent: 'web_researcher', status: 'completed', summary: 'done' }))
+
+    const node = state.nodes.get('evicted')
+    expect(node?.kind).toBe('agent')
+    expect(node?.label).toBe('web_researcher')
+    expect(node?.status).toBe('completed')
+    expect(node?.summary).toBe('done')
     expect(node?.parentId).toBe('root')
   })
 

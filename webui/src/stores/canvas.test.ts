@@ -83,6 +83,66 @@ describe('useCanvasStore', () => {
     expect(store.sortedNodes[0]?.status).toBe('completed')
   })
 
+  it('buffers live frames until the backfill lands, then merges in seq order', async () => {
+    let resolveFetch: (value: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => new Promise<Response>((res) => (resolveFetch = res))),
+    )
+    const store = useCanvasStore()
+    store.reset('sess-1')
+
+    // Live frame arrives while the backfill fetch is still pending.
+    store.handleGraphEvent(graphEvent({ seq: 5, type: 'agent_start', node_id: 'live-run' }))
+    expect(store.sortedNodes).toHaveLength(0) // buffered, never applied early
+
+    resolveFetch(
+      new Response(
+        JSON.stringify({
+          events: [
+            graphEvent({ seq: 1, type: 'agent_start', node_id: 'run-1' }),
+            graphEvent({ seq: 2, type: 'agent_end', node_id: 'run-1', status: 'completed' }),
+          ],
+        }),
+      ),
+    )
+    await vi.waitFor(() => expect(store.backfillLoaded).toBe(true))
+
+    const ids = store.sortedNodes.map((n) => n.id)
+    expect(ids).toContain('run-1')
+    expect(ids).toContain('live-run')
+    expect(store.sortedNodes.find((n) => n.id === 'run-1')?.status).toBe('completed')
+  })
+
+  it('discards a backfill response after the session switched', async () => {
+    let resolveSessionA: (value: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<Response>((res) => (resolveSessionA = res)))
+        .mockImplementationOnce(
+          async () =>
+            new Response(
+              JSON.stringify({ events: [graphEvent({ seq: 1, type: 'agent_start', node_id: 'b-run' })] }),
+            ),
+        ),
+    )
+    const store = useCanvasStore()
+    store.reset('session-a')
+    store.reset('session-b') // supersedes the in-flight session-a fetch
+
+    await vi.waitFor(() => expect(store.backfillLoaded).toBe(true))
+    expect(store.sortedNodes.map((n) => n.id)).toEqual(['b-run'])
+
+    // The stale response must not touch the current graph.
+    resolveSessionA(
+      new Response(JSON.stringify({ events: [graphEvent({ seq: 1, type: 'agent_start', node_id: 'a-run' })] })),
+    )
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.sortedNodes.map((n) => n.id)).toEqual(['b-run'])
+  })
+
   it('select exposes the selected node', () => {
     const store = useCanvasStore()
     store.handleGraphEvent(graphEvent({ type: 'agent_start', node_id: 'run-1' }))
