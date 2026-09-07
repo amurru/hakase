@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	"amurru/hakase/internal/agentrun"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
@@ -22,7 +23,6 @@ import (
 	"amurru/hakase/internal/web/sse"
 
 	"github.com/go-chi/chi/v5"
-	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/genai"
 )
@@ -200,6 +200,7 @@ type ChatAPI struct {
 	runner     *runner.Runner
 	runtime    *hakaseagent.Runtime
 	history    *hctx.HistoryBuilder
+	driver     *agentrun.Driver
 
 	semMu         sync.Mutex
 	runSemaphores map[string]*sessionSem
@@ -220,6 +221,7 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 		runner:        runner,
 		runtime:       runtime,
 		history:       history,
+		driver:        agentrun.New(runner, sessionSvc),
 		runSemaphores: make(map[string]*sessionSem),
 	}
 
@@ -449,10 +451,11 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Save the user message to the session (prompt + manifest + attachment
 	// refs, same contract as the TUI; content is rebuilt from refs on resume).
+	// Written to THIS session directly: the global active-session pointer is
+	// a UI notion and races when several sessions run at once (web + channel
+	// threads).
 	if api.sessionSvc != nil {
-		// Ensure this session is active so AddMessage targets it.
-		_ = api.sessionSvc.SetActiveSession(sessionID)
-		if err := api.sessionSvc.RecordUsageWithAttachments("user", promptText, "", 0, refs); err != nil {
+		if err := api.sessionSvc.RecordUsageInSession(sessionID, "user", promptText, "", 0, refs); err != nil {
 			log.Printf("chat: warning: failed to save user message: %v", err)
 		}
 	}
@@ -485,129 +488,41 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// runAgentTask runs the agent in a goroutine, streaming all events through
-// the SSE bridge. This mirrors internal/tui/ui.go:runAgentTask but writes
-// to SSE channels instead of tea.Msg. The agent's final answer is also
-// persisted to the session store (unlike the ADK in-memory session, which
-// is created fresh per Run call), so the web UI shows agent replies after
-// a reload and the HistoryBuilder can feed them back into context on the
-// next message.
-func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content *genai.Content) {
-	var contentBuf, thinkBuf strings.Builder
-	var lastUsage *genai.GenerateContentResponseUsageMetadata
+// bridgeSink adapts the SSE bridge to the agentrun.EventSink interface so the
+// shared turn driver streams through the same events the web UI consumes.
+type bridgeSink struct{ b *sse.EventBridge }
 
+func (s bridgeSink) OnStream(sessionID, content, thinking string) {
+	s.b.SendStreamContent(sessionID, content, thinking)
+}
+
+func (s bridgeSink) OnLog(sessionID, line string) { s.b.SendLog(sessionID, line) }
+
+func (s bridgeSink) OnUsage(sessionID string, tokens, percent int) {
+	s.b.SendUsage(sessionID, tokens, percent)
+}
+
+func (s bridgeSink) OnDone(sessionID string) { s.b.SendDone(sessionID) }
+
+// runAgentTask runs the agent in a goroutine via the shared agentrun.Driver,
+// which streams all events through the SSE bridge and persists the agent's
+// final answer. This mirrors internal/tui/ui.go:runAgentTask; the run loop
+// itself lives in internal/agentrun so the Telegram channel and future
+// transports drive the identical path. The per-session concurrency slot
+// acquired by PostMessage is released here, when the run ends (normally, on
+// error, or on panic - the driver recovers panics internally).
+func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content *genai.Content) {
 	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("chat: panic in agent run for session %s: %v", sessionID, r)
-			api.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
-			api.bridge.SendDone(sessionID)
-		}
-		// Release the per-session concurrency slot.
 		api.semMu.Lock()
 		if sem, ok := api.runSemaphores[sessionID]; ok {
 			sem.release()
 		}
 		api.semMu.Unlock()
 	}()
-
-	runCtx := ctx
-	msg := content
-
-	// Generate task ID once before the retry loop so all repair attempts
-	// preserve the same session context
-	taskID := hakasesession.GenerateTaskID()
-
-outer:
-	for attempt := 0; ; attempt++ {
-		var parseErr error
-		for ev, err := range api.runner.Run(runCtx, "user-1", taskID, msg, adkagent.RunConfig{}) {
-			if err != nil {
-				// Malformed tool-call JSON: re-enter the runner with a
-				// corrective user message instead of aborting the run. This
-				// mirrors internal/tui/ui.go:runAgentTask and
-				// internal/agent/delegate.go so the web path survives the
-				// same provider hiccup.
-				if hakaseagent.IsToolCallJSONErr(err) && attempt < hakaseagent.MaxToolCallRepairAttempts {
-					parseErr = err
-					break
-				}
-				log.Printf("chat: agent error for session %s: %v", sessionID, err)
-				api.bridge.SendLog(sessionID, fmt.Sprintf("Error: %v", err))
-				break outer
-			}
-			if ev == nil {
-				continue
-			}
-			// Send usage update.
-			if ev.UsageMetadata != nil {
-				lastUsage = ev.UsageMetadata
-				tokens := int(ev.UsageMetadata.TotalTokenCount)
-				if tokens <= 0 {
-					tokens = int(ev.UsageMetadata.PromptTokenCount + ev.UsageMetadata.CandidatesTokenCount)
-				}
-				api.bridge.SendUsage(sessionID, tokens, 0)
-			}
-			if ev.Content != nil {
-				for _, part := range ev.Content.Parts {
-					if part.Text != "" {
-						if part.Thought {
-							thinkBuf.WriteString(part.Text)
-							api.bridge.SendStreamContent(sessionID, "", part.Text)
-						} else {
-							contentBuf.WriteString(part.Text)
-							api.bridge.SendStreamContent(sessionID, part.Text, "")
-						}
-					}
-					if part.FunctionCall != nil {
-						api.bridge.SendLog(sessionID,
-							fmt.Sprintf("Call: %s(%v)", part.FunctionCall.Name, part.FunctionCall.Args),
-						)
-					}
-					if part.FunctionResponse != nil {
-						api.bridge.SendLog(sessionID,
-							fmt.Sprintf("Response: %s", part.FunctionResponse.Name),
-						)
-					}
-				}
-			}
-		}
-		if parseErr != nil {
-			log.Printf("chat: tool call repair for session %s (attempt %d): %v", sessionID, attempt+1, parseErr)
-			msg = hakaseagent.ToolCallRepairMessage(parseErr, attempt)
-			continue
-		}
-		break
-	}
-	api.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
-	api.bridge.SendDone(sessionID)
-}
-
-// persistAgentResponse saves the agent's answer to the session store so the
-// web UI can render it after a reload. The message is appended to the session
-// identified by sessionID directly (not the active session) so concurrent
-// runs in different sessions cannot misroute replies. A run that produced no
-// text (e.g. it only made tool calls and then errored) writes nothing.
-func (api *ChatAPI) persistAgentResponse(sessionID, content, thinking string, usage *genai.GenerateContentResponseUsageMetadata) {
-	if api.sessionSvc == nil || strings.TrimSpace(content) == "" && strings.TrimSpace(thinking) == "" {
+	if api.driver == nil {
 		return
 	}
-	tokens := 0
-	if usage != nil {
-		tokens = int(usage.TotalTokenCount)
-		if tokens <= 0 {
-			tokens = int(usage.PromptTokenCount + usage.CandidatesTokenCount)
-		}
-	}
-	store := api.sessionSvc.Store()
-	sess, err := store.Load(sessionID)
-	if err != nil {
-		log.Printf("chat: warning: failed to load session %s for persistence: %v", sessionID, err)
-		return
-	}
-	sess.AddMessageWithMetaAndAttachments("agent", content, thinking, tokens, hakasesession.MessageKindText, nil)
-	if err := store.Save(sess); err != nil {
-		log.Printf("chat: warning: failed to persist agent reply for session %s: %v", sessionID, err)
-	}
+	api.driver.RunTurn(ctx, sessionID, content, bridgeSink{b: api.bridge})
 }
 
 // StreamSSE handles GET /api/sessions/{id}/stream.

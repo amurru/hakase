@@ -27,6 +27,9 @@ export const useAppStore = defineStore('app', () => {
   const contextUsage = ref(0)
   const contextMax = ref(128000)
   const activeSessionTitle = ref('')
+  // activeProjectName is the registered-project binding of the active session
+  // (empty for plain local sessions); the chat header renders it as a chip.
+  const activeProjectName = ref('')
   const totalTokens = ref(0)
   const thinkingEnabled = ref(false)
 
@@ -65,6 +68,10 @@ export const useAppStore = defineStore('app', () => {
     activeSessionTitle.value = title
   }
 
+  function setActiveProjectName(name: string) {
+    activeProjectName.value = name
+  }
+
   function setTotalTokens(tokens: number) {
     totalTokens.value = tokens
   }
@@ -79,6 +86,7 @@ export const useAppStore = defineStore('app', () => {
     contextUsage,
     contextMax,
     activeSessionTitle,
+    activeProjectName,
     totalTokens,
     thinkingEnabled,
     setModelName,
@@ -86,6 +94,7 @@ export const useAppStore = defineStore('app', () => {
     setConnectionStatus,
     setContextUsage,
     setActiveSessionTitle,
+    setActiveProjectName,
     setTotalTokens,
     toggleThinking,
   }

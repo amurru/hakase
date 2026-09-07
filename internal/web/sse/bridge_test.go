@@ -72,7 +72,7 @@ func TestEventBridgeApprovalPrompt(t *testing.T) {
 	_, ch := b.Subscribe("sess-1")
 	defer b.Unsubscribe("sess-1", 1)
 
-	b.SendApprovalPrompt("sess-1", "apr-1", "system_exec", "high", "needs confirmation", "rm -rf /")
+	b.SendApprovalPrompt("sess-1", "sess-1", "apr-1", "system_exec", "high", "needs confirmation", "rm -rf /")
 
 	select {
 	case data := <-ch:
@@ -97,7 +97,7 @@ func TestEventBridgeClarifyPrompt(t *testing.T) {
 	_, ch := b.Subscribe("sess-1")
 	defer b.Unsubscribe("sess-1", 1)
 
-	b.SendClarifyPrompt("sess-1", "clr-1", "What platform?", []string{"linux", "macos"}, false)
+	b.SendClarifyPrompt("sess-1", "sess-1", "clr-1", "What platform?", []string{"linux", "macos"}, false)
 
 	select {
 	case data := <-ch:

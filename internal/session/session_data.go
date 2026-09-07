@@ -8,7 +8,7 @@ import (
 
 const (
 	// Dir is the directory where session JSON files are stored.
-	Dir     = "./sessions"
+	Dir = "./sessions"
 	// FileExt is the file extension for session files.
 	FileExt = ".json"
 )
@@ -31,9 +31,14 @@ const (
 // container that holds messages and optional task references.
 // Sessions are stored as individual JSON files in ./sessions/.
 type Session struct {
-	ID               string    `json:"id"`
-	Title            string    `json:"title"`
-	Description      string    `json:"description,omitempty"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	// ProjectID/ProjectName bind the session to a registered remote project
+	// (docs/git-tools/project-registry.md DP-7): when set, agent runs anchor
+	// to that project's managed checkout. Empty for plain local sessions.
+	ProjectID        string    `json:"project_id,omitempty"`
+	ProjectName      string    `json:"project_name,omitempty"`
 	TaskRefs         []TaskRef `json:"task_refs,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
@@ -89,6 +94,8 @@ type SessionSummary struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
 	Description  string    `json:"description,omitempty"`
+	ProjectID    string    `json:"project_id,omitempty"`
+	ProjectName  string    `json:"project_name,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	MessageCount int       `json:"message_count"`
 	Archived     bool      `json:"archived"`
@@ -157,6 +164,8 @@ func (s *Session) Summary() SessionSummary {
 		ID:           s.ID,
 		Title:        s.Title,
 		Description:  s.Description,
+		ProjectID:    s.ProjectID,
+		ProjectName:  s.ProjectName,
 		UpdatedAt:    s.UpdatedAt,
 		MessageCount: len(s.Messages),
 		Archived:     s.Archived,

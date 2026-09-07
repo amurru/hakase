@@ -31,7 +31,8 @@ func TestGetVenvPythonWindows(t *testing.T) {
 		t.Fatalf("venv python missing after bootstrap: %v", err)
 	}
 
-	out, err := exec.Command(py, "-c", "print(1)").CombinedOutput()
+	pyCmd := &exec.Cmd{Path: py, Args: []string{py, "-c", "print(1)"}}
+	out, err := pyCmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "1") {
 		t.Fatalf("venv python -c: %v (%s)", err, out)
 	}
@@ -40,7 +41,8 @@ func TestGetVenvPythonWindows(t *testing.T) {
 	if _, err := os.Stat(pip); err != nil {
 		t.Fatalf("venv pip missing: %v", err)
 	}
-	out, err = exec.Command(pip, "--version").CombinedOutput()
+	pipCmd := &exec.Cmd{Path: pip, Args: []string{pip, "--version"}}
+	out, err = pipCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("pip --version: %v (%s)", err, out)
 	}

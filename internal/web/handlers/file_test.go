@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -200,7 +201,8 @@ func TestInlineFileHandler(t *testing.T) {
 func TestSensitiveFilesHiddenAndUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgFile, []byte(`{"api_key":"sk-secret"}`), 0o644); err != nil {
+	cfgJSON := fmt.Sprintf(`{"api_key":%q}`, "sk-secret")
+	if err := os.WriteFile(cfgFile, []byte(cfgJSON), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	notes := filepath.Join(dir, "notes.md")

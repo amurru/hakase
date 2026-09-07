@@ -96,7 +96,7 @@ make dev-frontend   # terminal 1 - Vite dev server, HMR, port 5173
 make dev-backend    # terminal 2 - Go server with the dev tag, port 8080
 ```
 
-Open http://localhost:5173 -- Vite proxies `/api` to the Go server on :8080. No Go rebuild needed for frontend changes. Frontend tests: `cd webui && pnpm test`.
+Open <http://localhost:5173> -- Vite proxies `/api` to the Go server on :8080. No Go rebuild needed for frontend changes. Frontend tests: `cd webui && pnpm test`.
 
 </details>
 
@@ -112,11 +112,46 @@ Open http://localhost:5173 -- Vite proxies `/api` to the Go server on :8080. No 
 | `--host <addr>` | `127.0.0.1` | Host address to bind to |
 | `--insecure-cookie` | off | Allow session cookie without `Secure` on plain HTTP (local dev only) |
 
-The SPA is Vue 3 + TypeScript + Vite + Tailwind 4 (Pinia, Vue Router, reka-ui, markdown-it + KaTeX + Mermaid + highlight.js). Key views: **Chat** (SSE-streamed, markdown + LaTeX + Mermaid, `@` attachments, image lightbox), **Sessions**, **Tasks**, **Knowledge**, **Skills**, **MCP**, **Cron**, **Files**, **Settings**. Approval and clarify gates work in the browser too.
+The SPA is Vue 3 + TypeScript + Vite + Tailwind 4 (Pinia, Vue Router, reka-ui, markdown-it + KaTeX + Mermaid + highlight.js). Key views: **Chat** (SSE-streamed, markdown + LaTeX + Mermaid, `@` attachments, image lightbox), **Sessions**, **Tasks**, **Knowledge**, **Skills**, **MCP**, **Cron**, **Channels**, **Files**, **Settings**. Approval and clarify gates work in the browser too.
 
 > Before `web`/`serve` will start, create the admin login: `hakase auth set-password` (argon2id, stored at `~/.hakase/credentials.json` mode `0600`). The JWT secret lives at `~/.hakase/jwt-secret`. See [Authentication](#authentication) and [Reverse Proxy](#reverse-proxy-caddy).
 
 For the full API surface and SPA details, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#web-ui-development-flow) and [internal/web](../internal/web).
+
+---
+
+## Channels (Telegram)
+
+Talk to hakase from your phone: a Telegram bot that prompts the agent, streams live progress, answers approval/clarify prompts, and manages tasks and cron jobs remotely. Channels run **inside** the `web`/`serve` process (sharing its runner, gates, and sandbox - no privilege bypass) and are extensible to other chat transports.
+
+Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and enable the channel:
+
+```json
+{
+  "channels": {
+    "enable_cron_scheduler": true,
+    "telegram": {
+      "enabled": true,
+      "bot_token": "123456789:ABCdef..."
+    }
+  }
+}
+```
+
+2. Restart `hakase web`. A 6-digit pairing code prints to the server console (or run `hakase channels pair-code` / click **Generate pairing code** on the web UI's Channels page).
+3. In Telegram, send `/start <code>` to your bot - that's it.
+
+Access is **deny-by-default**: statically allowlist IDs via `allowed_user_ids`, or pair at runtime with the one-time code (valid 15 minutes). Unpaired users get a terse, rate-limited reply. Supported inbound: text and photo captions (albums buffer into one prompt; voice/files are not supported yet).
+
+In-chat commands: `/new`, `/sessions`, `/use <id>`, `/topic`, `/status`, `/stop`, `/tasks`, `/cron [run|pause|resume <name>]`, `/notify on|off`, `/id`, `/help`. Agent runs stream the answer into one progressively edited message (created the moment the answer starts — that's the one notification per turn) with a quiet status line alongside, a 👀/👍/👎 reaction receipt on your prompt, and approvals arriving as ✅/❌ buttons and clarifications as choice buttons — answerable from the phone or the web UI, first responder wins. Channel runs stream into the web UI too, so any session can be watched live from either surface. `/notify on` pushes cron/task completions to the chat; `enable_cron_scheduler` starts the background scheduler so those jobs actually fire while headless.
+
+**Topics (one topic = one session):** every thread in the DM is its own conversation with its own session — create topics with the ✚ / "All Messages" composer button and prompt there; the topic auto-renames to the session title, parallel topics run concurrently, and replies always land in the thread you typed in. `/topic <session-id-prefix>` binds the current topic to an existing session, `/new` inside a topic resets it, and `/topic` (optionally `/topic off` to undo) turns the root area into a lobby where commands work and plain prompts get a hint. Approvals and questions are delivered straight into the topic that started the run. Set `"pins": true` under `channels.telegram` to pin your prompt for the duration of each run.
+
+Manage everything from the web UI's **Channels** page (status, pairing code, revoke) or `hakase channels status|pair-code|revoke`. Env overrides: `HAKASE_TELEGRAM_ENABLED`, `HAKASE_TELEGRAM_BOT_TOKEN`. Pairing state lives in `~/.hakase/channels.json` (0600, sandbox-denied).
+
+> **Bot completely silent?** Check the server log for `409 Conflict: can't use getUpdates method while webhook is active`. That means this bot token has a webhook registered — usually because another bot platform or an old project is (or was) using the same token; Telegram delivers updates to the webhook and refuses polling. hakase deletes stale webhooks automatically at startup, but if the webhook keeps coming back the other platform is still holding the token: either stop it, or give hakase its own bot via [@BotFather](https://t.me/BotFather) (`/newbot`, or `/revoke` to kill the old integration). Manual one-shot fix: open `https://api.telegram.org/bot<token>/deleteWebhook`.
 
 ---
 
@@ -133,6 +168,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `rules` | List/show active project context files (`AGENTS.md`) |
 | `env` | Print the detected runtime-environment block |
 | `cron` | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
+| `channels` | Manage communication channels (`status`, `pair-code`, `revoke`) |
 | `auth` | Manage web authentication (`set-password`) |
 | `version` | Print build version (version, commit, build date, Go runtime) |
 
@@ -172,7 +208,7 @@ cp config.json.example config.json
 | `openai` | OpenAI API | `gpt-5.6-terra` |
 | `openai-compatible` | Ollama, vLLM, any OpenAI-compatible endpoint | none -- `model_name` required |
 
-Environment variables override `config.json` and can build the config entirely from the environment when the file is missing: `HAKASE_API_KEY`, `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_BASE_URL` (plus `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_*`, `HAKASE_HOME`, etc.).
+Environment variables override `config.json` and can build the config entirely from the environment when the file is missing: `HAKASE_API_KEY`, `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_BASE_URL` (plus `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_*`, `HAKASE_TELEGRAM_*`, `HAKASE_HOME`, etc.).
 
 <details>
 <summary><b>Full configuration reference</b></summary>
@@ -190,9 +226,10 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `summary_model` -- cheaper model for context compaction
 - `search_expansion` -- HyDE-lite query expansion for `search_knowledge` (off by default)
 - `sidekick` -- second model (on-demand/watch). See [Sidekick](docs/DEVELOPMENT.md#sidekick-second-model) and [docs/sidekick-agent/](docs/sidekick-agent/).
+- `channels` -- communication channels (Telegram bot today): remote prompting, live progress, in-chat approvals, task/cron control. See [Channels (Telegram)](#channels-telegram).
 - `media` -- image/video generation (`openai`, `fal`, `pil` fallback). See [Media Generation](docs/DEVELOPMENT.md#media-generation) and [docs/media-generation/support.md](docs/media-generation/support.md).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
-- `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `skills/`, `knowledge/`
+- `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 
 **Example -- OpenAI-compatible (Ollama):**
 
@@ -223,11 +260,13 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 | Feature | What it does |
 | ------- | ------------ |
 | **Terminal TUI** | Split-pane Bubble Tea UI: chat, logs, multi-line input, mid-run queuing, help overlay (`Ctrl+/`) |
-| **Web UI** | Vue 3 SPA with the same agent, sessions, tasks, knowledge, skills, MCP, cron, files, settings |
+| **Web UI** | Vue 3 SPA with the same agent, sessions, tasks, knowledge, skills, MCP, cron, channels, files, settings |
+| **Telegram Channel** | Chat with hakase from your phone: prompts, live progress, in-chat approvals, task/cron control - deny-by-default pairing |
 | **Multi-Agent Orchestration** | ADK root orchestrator delegates to `web_researcher`, `code_interpreter`, `general_purpose` |
 | **Python Interpreter** | Isolated `.venv`, auto pip install on `ModuleNotFoundError`, sandbox-aware |
 | **Skill Library** | Persisted Python skills + markdown skills, with a darwinian evolver loop |
 | **Knowledge Base** | Wiki-style notes with `[[wikilinks]]`, 8 knowledge tools, `hakase knowledge` CLI |
+| **Git Operations** | Structured `git_status`/`git_diff`/`git_log`/`git_branch` (read-only) and `git_stage`/`git_commit` (mutating, approval-gated) through the same policy as `system_exec` |
 | **Sandboxing** | `paths` by default (bubblewrap optional), secret-file deny list, symlink-safe |
 | **MCP Client** | Any number of stdio/HTTP MCP servers as `mcp_<server>_<tool>` tools, `/mcp` panel |
 | **Media Generation** | `generate_image`/`generate_video` (OpenAI/fal/pil fallback), sandboxed to `outputs/media/` |
@@ -392,6 +431,35 @@ See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [
 - Keep the default `--host 127.0.0.1` and let the reverse proxy forward to it; never expose the Go server directly.
 - Rotate `~/.hakase/jwt-secret` periodically to invalidate outstanding tokens.
 - TLS is the proxy's job -- never run `--host 0.0.0.0` without a reverse proxy.
+
+### Remote web deployments (registered projects)
+
+When hakase web runs on a host that does *not* already have the client's code,
+there is nothing for `git_status`/`git_commit`/the workspace snapshot to anchor
+to. Registered projects fix that: an explicit `{name, clone source}` entry that
+the host materializes into a managed checkout. See
+[docs/git-tools/project-registry.md](docs/git-tools/project-registry.md).
+
+- **Register a project** on the host with
+  `hakase projects register <name> <url> [--ref <branch>]` (list/sync/delete
+  too), or from the web API via `POST /api/projects`. Checkouts live under
+  `~/.hakase/projects/<id>`; entries and statuses persist in
+  `~/.hakase/projects.json`.
+- **Sessions bind to a project** by picking it in the web UI's New Session
+  dialog (or `POST /api/sessions` with `project_id`). Bound sessions anchor
+  every git tool to the project checkout and start each run with a fresh
+  `GIT WORKSPACE` snapshot of that checkout.
+- **Credentials are never stored** (DP-8): clone/push/pull authenticate
+  through the host's own mechanisms -- git credential helpers, `gh auth`, or
+  an SSH agent -- exactly what running git yourself would use. Nothing secret
+  is written into `projects.json` (clone URLs only).
+- **Sandbox confinement is per-session**: when the host sandbox is active, a
+  project-bound session's git, file, and exec operations are confined to the
+  project checkout (the run derives a per-session sandbox pinned to the
+  checkout). Sessions not bound to a project keep the process-wide
+  configuration.
+- **Deleting a project** removes the registry entry and the local checkout; it
+  never touches the remote. Re-registering re-clones.
 
 ---
 

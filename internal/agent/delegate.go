@@ -2,11 +2,11 @@ package agent
 
 import (
 	hctx "amurru/hakase/internal/context"
-	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/sandbox"
+	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
-	hakasesession "amurru/hakase/internal/session"
 	"context"
 	"fmt"
 	"os"
@@ -220,6 +220,13 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	taskID := input.TaskID
 	if taskID == "" {
 		taskID = hakasesession.GenerateTaskID()
+	}
+	// Gate prompts raised inside the sub-agent (approvals, clarifies) route
+	// to the parent run's session: map the sub-task id onto it for the
+	// duration of the delegation.
+	if parentSession := interfaces.SessionIDFromCtx(ctx); parentSession != "" {
+		interfaces.RegisterTaskSession(taskID, parentSession)
+		defer interfaces.UnregisterTask(taskID)
 	}
 
 	agentLabel := input.AgentName
@@ -494,7 +501,11 @@ func BuildSubAgentTools(agentName string, parentEnv []string, log LogFunc) ([]to
 		return []tool.Tool{pyTool, visionTool}, nil
 	case "web_researcher":
 		dlTool, _ := createDownloadTool()
-		return []tool.Tool{dlTool, visionTool}, mcpToolsets
+		toolsets := mcpToolsets
+		if webSearchFallback != nil {
+			toolsets = append(toolsets, webSearchFallback)
+		}
+		return []tool.Tool{dlTool, visionTool}, toolsets
 	case "general_purpose":
 		fileTools, _ := sandbox.CreateFileOpsTools(interfaces.LogFunc(log), nil, "")
 		return append(fileTools, visionTool), nil

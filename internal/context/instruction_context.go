@@ -96,11 +96,6 @@ type InstructionFile struct {
 	Content string // full content (truncated and injection-scanned at render time)
 }
 
-// ContextBlockTokens is the token estimate of the rendered project-context
-// block, set once in setupRunner. It is folded into the compaction reserve in
-// context.go so large AGENTS.md files do not silently blow the token budget.
-var ContextBlockTokens int
-
 // FindProjectRootFunc resolves the project root from a starting directory.
 // Set by root's skill_discovery.go in sandbox_hooks_init.go.
 var FindProjectRootFunc func(cwd string) string

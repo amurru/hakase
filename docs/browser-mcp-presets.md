@@ -10,6 +10,32 @@ keep `web_search`/`web_fetch` visible to `web_researcher` via
 The legacy single-server `mcp_server_url` field still works and auto-migrates
 to a server literally named `lightpanda`, so existing configs keep working.
 
+## Built-in fallback (no MCP needed)
+
+When no connected MCP server exposes research-capable tools (browser
+automation or web search/fetch), hakase automatically exposes built-in
+keyless tools to the orchestrator and `web_researcher`: `web_search`
+(DuckDuckGo HTML results supplemented with Wikipedia matches, each labeled
+by source) and `web_fetch` (page content as markdown via the keyless Jina
+Reader, with a direct-fetch fallback; no JavaScript rendering or logins).
+Connecting any browser/search MCP hides the fallback again - per run - so
+the presets above always take precedence when present.
+
+Config (project `config.json`):
+
+```json
+{
+  "web_search": {
+    "enabled": true,
+    "force": false
+  }
+}
+```
+
+`enabled: false` disables the fallback and all of its outbound calls;
+`force: true` keeps the fallback visible even when research MCP tools are
+connected.
+
 ## Lightpanda (default when available - headless, fast, cheap)
 
 Labeled **default-when-available**: lightest resource footprint, fully

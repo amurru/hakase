@@ -10,8 +10,9 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
-	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/channel/state"
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
 	"amurru/hakase/internal/web/middleware"
@@ -23,7 +24,7 @@ import (
 // Unauthenticated endpoints (/api/health, /api/login) are registered first,
 // then the auth middleware group wraps the remaining API routes.
 // The SPA catch-all is mounted last.
-func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, allowInsecureCookie bool) {
+func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, channelsStore *state.Store, channelsRunning func() bool, allowInsecureCookie bool) {
 	// Middleware applied globally
 	r.Use(CORSMiddleware())
 	r.Use(RequestLogger())
@@ -42,6 +43,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		if sessionSvc != nil {
 			handlers.RegisterSessionRoutes(r, sessionSvc)
 		}
+		// Registered remote projects (project-registry DP-6..DP-10).
+		handlers.RegisterProjectRoutes(r)
 		// Chat (SSE streaming + message endpoint - task 21)
 		if bridge != nil && runner != nil && runtime != nil && sessionSvc != nil {
 			handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)
@@ -55,6 +58,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		}
 		// Task API routes (task 27)
 		handlers.RegisterTaskRoutes(r)
+		// Channel management (status, pairing code, revoke) - nil-tolerant.
+		handlers.RegisterChannelsRoutes(r, channelsStore, channelsRunning)
 		// File browsing routes (task 30)
 		handlers.RegisterFileRoutes(r)
 		// Knowledge management routes (task 31)

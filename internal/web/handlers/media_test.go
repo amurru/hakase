@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -27,7 +28,8 @@ func TestMediaStatusRedaction(t *testing.T) {
 	// Setup config with keys
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	cfgJSON := `{"provider":"gemini","api_key":"sk-global","media":{"fal_key":"fal-secret","openai_image_key":"openai-secret"}}`
+	cfgJSON := fmt.Sprintf(`{"provider":"gemini","api_key":%q,"media":{"fal_key":%q,"openai_image_key":%q}}`,
+		"sk-global", "fal-secret", "openai-secret")
 	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

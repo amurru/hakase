@@ -146,7 +146,7 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		Name:        "read_file",
 		Description: "Reads the contents of a file, optionally restricted to a line range (offset/limit) for large files.",
 	}, func(ctx agent.Context, input ReadFileInput) (ReadFileOutput, error) {
-		return readFileContent(input, sandboxRoot, log)
+		return readFileContent(ctx, input, sandboxRoot, log)
 	})
 	if err != nil {
 		return nil, err
@@ -157,7 +157,7 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		Name:        "write_file",
 		Description: "Creates a new file with the given content (creating parent directories as needed), or overwrites an existing file when overwrite=true.",
 	}, func(ctx agent.Context, input WriteFileInput) (WriteFileOutput, error) {
-		path, err := taskResolve(input.Path, true, sandboxRoot)
+		path, err := taskResolve(ctx, input.Path, true, sandboxRoot)
 		if err != nil {
 			return WriteFileOutput{}, err
 		}
@@ -207,7 +207,7 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		if input.OldString == "" {
 			return PatchOutput{}, fmt.Errorf("old_string must not be empty")
 		}
-		path, err := taskResolve(input.Path, true, sandboxRoot)
+		path, err := taskResolve(ctx, input.Path, true, sandboxRoot)
 		if err != nil {
 			return PatchOutput{}, err
 		}
@@ -259,7 +259,7 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		if root == "" {
 			root = "."
 		}
-		rootAbs, err := taskResolve(root, false, sandboxRoot)
+		rootAbs, err := taskResolve(ctx, root, false, sandboxRoot)
 		if err != nil {
 			return SearchFilesOutput{}, err
 		}
@@ -357,14 +357,15 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 }
 
 // taskResolve is the path-resolution entry point for all file-ops tools.
-// When the package-level CurrentSandbox is active (non-nil and not off),
+// When the sandbox that applies to ctx (a context-scoped override for
+// project-bound runs, else CurrentSandbox) is active (non-nil and not off),
 // it delegates to (*SandboxConfig).resolveScopedPath for workspace
 // confinement. Otherwise it falls back to the legacy resolveTaskPath
 // behavior (sandbox-root join or plain resolvePath). The write flag
 // selects write vs read containment in sandbox mode.
-func taskResolve(path string, write bool, sandboxRoot string) (string, error) {
-	if CurrentSandbox != nil && CurrentSandbox.Mode != SandboxModeOff {
-		return CurrentSandbox.ResolveScopedPath(path, write)
+func taskResolve(ctx context.Context, path string, write bool, sandboxRoot string) (string, error) {
+	if sb := ConfigFrom(ctx); sb != nil && sb.Mode != SandboxModeOff {
+		return sb.ResolveScopedPath(path, write)
 	}
 	return resolveTaskPath(path, sandboxRoot)
 }
@@ -474,8 +475,8 @@ func searchFile(path string, re *regexp.Regexp, mode string) []SearchMatch {
 // readFileContent reads a file and returns ReadFileOutput with the content
 // wrapped via wrapUntrustedData. It is a package-level function so tests can
 // invoke the read logic directly without going through the ADK tool interface.
-func readFileContent(input ReadFileInput, sandboxRoot string, log interfaces.LogFunc) (ReadFileOutput, error) {
-	path, err := taskResolve(input.Path, false, sandboxRoot)
+func readFileContent(ctx context.Context, input ReadFileInput, sandboxRoot string, log interfaces.LogFunc) (ReadFileOutput, error) {
+	path, err := taskResolve(ctx, input.Path, false, sandboxRoot)
 	if err != nil {
 		return ReadFileOutput{}, err
 	}

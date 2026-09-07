@@ -42,6 +42,20 @@ func (s *SessionService) CreateSession(title string) (*Session, error) {
 	return session, nil
 }
 
+// BindProject attaches a registered remote project (id + display name) to the
+// session (docs/git-tools/project-registry.md DP-7). The registry entry itself
+// is validated by the caller; this only persists the binding.
+func (s *SessionService) BindProject(sessionID, projectID, projectName string) error {
+	sess, err := s.store.Load(sessionID)
+	if err != nil {
+		return fmt.Errorf("cannot bind project: %w", err)
+	}
+	sess.ProjectID = projectID
+	sess.ProjectName = projectName
+	sess.UpdatedAt = time.Now().UTC()
+	return s.store.Save(sess)
+}
+
 // GetActiveSession returns the currently active session, or nil if none.
 // Loading seeds the subdirectory-hint dedup set from the session so hints
 // attached in a previous run are not re-attached on resume.
@@ -133,6 +147,27 @@ func (s *SessionService) RecordUsageWithAttachments(role, content, thinking stri
 	return s.store.Save(session)
 }
 
+// RecordUsageInSession is RecordUsageWithAttachments targeting an explicit
+// session id instead of the global active-session pointer. The agent-run
+// path (web chat, channels) uses it because parallel runs in different
+// sessions must not fight over that pointer: the last SetActiveSession
+// would otherwise receive the other run's user turns (and, before
+// HistoryBuilder resolved sessions per run, its whole history).
+func (s *SessionService) RecordUsageInSession(id, role, content, thinking string, tokens int, atts []AttachmentRef) error {
+	if id == "" {
+		return fmt.Errorf("no session id")
+	}
+	session, err := s.store.Load(id)
+	if err != nil {
+		return err
+	}
+	session.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, MessageKindText, atts)
+	if BuildHintedPathsHook != nil {
+		session.HintedContextFiles = BuildHintedPathsHook()
+	}
+	return s.store.Save(session)
+}
+
 // SetSummary persists the SummaryMessageID on the session. The ID is the
 // sequence of the summary message that the summarizer appended.
 func (s *SessionService) SetSummary(id, summaryMessageID string) error {
@@ -200,8 +235,30 @@ func (s *SessionService) DeleteSession(id string) error {
 	return s.store.Delete(id)
 }
 
+// RenameSession updates the title of a session without touching its messages.
+func (s *SessionService) RenameSession(id, title string) error {
+	if id == "" {
+		return fmt.Errorf("no session id")
+	}
+	if title == "" {
+		return fmt.Errorf("title must not be empty")
+	}
+	sess, err := s.store.Load(id)
+	if err != nil {
+		return err
+	}
+	sess.Title = title
+	sess.UpdatedAt = time.Now().UTC()
+	return s.store.Save(sess)
+}
+
 // ArchiveSession sets the archived flag on a session.
+// If the archived session was active, the active session is cleared so the
+// next message does not resume an archived conversation.
 func (s *SessionService) ArchiveSession(id string) error {
+	if id == s.activeSessionID {
+		s.activeSessionID = ""
+	}
 	return s.store.Archive(id)
 }
 

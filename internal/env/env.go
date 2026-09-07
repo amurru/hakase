@@ -36,6 +36,7 @@ import (
 
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/util"
 )
 
 // DefaultSystemEnvMaxChars caps the rendered environment block. Mirrors
@@ -229,8 +230,8 @@ func toolVersion(name, path string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	for _, flag := range []string{"--version", "-version", "version"} {
-		cmd := exec.CommandContext(ctx, path, flag)
-		out, err := cmd.CombinedOutput()
+		cmd := &exec.Cmd{Path: path, Args: []string{path, flag}}
+		out, err := util.CombinedOutputContext(ctx, cmd)
 		if err != nil {
 			continue
 		}

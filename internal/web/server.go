@@ -7,6 +7,7 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	"amurru/hakase/internal/channel/state"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
@@ -31,6 +32,12 @@ type Server struct {
 	// Gate dependencies (optional - set before RegisterDefaults to enable approval/clarify routes).
 	approvalGate *handlers.WebApprovalGate
 	clarifyGate  *handlers.WebClarifyGate
+
+	// Channel management (optional): the state store for status/pairing/
+	// revoke endpoints and a liveness probe for the in-process channel
+	// service (nil when channels never started).
+	channelsStore   *state.Store
+	channelsRunning func() bool
 
 	// allowInsecureCookie permits the session cookie without the Secure flag
 	// on non-loopback plain-HTTP connections (opt-in for local development).
@@ -74,6 +81,15 @@ func (s *Server) SetGates(approvalGate *handlers.WebApprovalGate, clarifyGate *h
 	s.clarifyGate = clarifyGate
 }
 
+// SetChannels configures the channel-management endpoints: store backs the
+// status/pairing-code/revoke handlers, and running reports whether the
+// in-process channel service is live (nil when channels never started).
+// Must be called before RegisterDefaults.
+func (s *Server) SetChannels(store *state.Store, running func() bool) {
+	s.channelsStore = store
+	s.channelsRunning = running
+}
+
 // SetAllowInsecureCookie configures whether the login handler may set the
 // session cookie without the Secure flag on non-loopback plain-HTTP
 // connections. Must be called before RegisterDefaults.
@@ -90,7 +106,7 @@ func (s *Server) Router() chi.Router {
 // and SPA handler. assets is the filesystem providing the frontend assets.
 // Pass nil for API-only mode (hakase serve) - the SPA catch-all is skipped.
 func (s *Server) RegisterDefaults(assets http.FileSystem) {
-	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.history, s.approvalGate, s.clarifyGate, s.allowInsecureCookie)
+	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.history, s.approvalGate, s.clarifyGate, s.channelsStore, s.channelsRunning, s.allowInsecureCookie)
 }
 
 // Run starts the HTTP server on the given address and blocks until

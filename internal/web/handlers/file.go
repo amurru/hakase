@@ -88,9 +88,12 @@ type fileContentResponse struct {
 // resolveFilePath resolves a path through the sandbox read roots.
 // Returns the absolute resolved path or an error if outside the sandbox.
 // Fails closed: when sandbox is not initialized or explicitly disabled,
-// all file access is rejected.
+// all file access is rejected. ResolveScopedPath (root-anchored, symlink-
+// safe) is the containment boundary; the checks below fail fast on request
+// shapes that could never resolve inside it.
 func resolveFilePath(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
 	if sandbox.CurrentSandbox == nil {
@@ -99,7 +102,14 @@ func resolveFilePath(path string) (string, error) {
 	if sandbox.CurrentSandbox.Mode == sandbox.SandboxModeOff {
 		return "", fmt.Errorf("sandbox is disabled; file access is not permitted")
 	}
-	return sandbox.CurrentSandbox.ResolveScopedPath(path, false)
+	if strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("path contains a NUL byte")
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes the workspace")
+	}
+	return sandbox.CurrentSandbox.ResolveScopedPath(clean, false)
 }
 
 // isBinaryFile checks if data contains a null byte (simple binary detection).

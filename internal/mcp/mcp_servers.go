@@ -19,9 +19,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/agent"
@@ -67,10 +69,62 @@ type managedServer struct {
 	cfg     *config.MCPServerConfig
 	toolset tool.Toolset // nil when disabled or the toolset failed to build
 
-	mu        sync.Mutex
+	mu        sync.Mutex // guards the status and cooldown fields below
 	status    string
 	err       string
 	toolCount int
+
+	// Failure cooldown: after a failed connect/list the server is skipped
+	// without dialing until failedUntil, so a dead server costs one attempt
+	// per backoff window instead of one per model call. consecFails drives
+	// the exponential backoff and is reset on a successful connect.
+	failedUntil time.Time
+	consecFails int
+}
+
+const (
+	failureCooldownBase = 30 * time.Second
+	failureCooldownMax  = 5 * time.Minute
+)
+
+// startCooldown arms the skip window after a failed attempt: the next
+// cooldown window doubles per consecutive failure, capped at
+// failureCooldownMax, so a dead server is re-probed roughly once per window
+// (recovery is detected on the first probe after expiry) instead of on every
+// model call.
+func (ms *managedServer) startCooldown(now time.Time) {
+	shift := ms.consecFails
+	if shift > 4 {
+		shift = 4
+	}
+	cool := failureCooldownBase << shift
+	if cool > failureCooldownMax {
+		cool = failureCooldownMax
+	}
+	ms.mu.Lock()
+	ms.consecFails++
+	ms.failedUntil = now.Add(cool)
+	ms.mu.Unlock()
+}
+
+// clearCooldown removes any armed cooldown (successful connect or manual
+// reconnect) so the next Tools() call dials again.
+func (ms *managedServer) clearCooldown() {
+	ms.mu.Lock()
+	ms.consecFails = 0
+	ms.failedUntil = time.Time{}
+	ms.mu.Unlock()
+}
+
+// cooldownRemaining reports how much longer the server must be skipped
+// without dialing; 0 means a dial is allowed.
+func (ms *managedServer) cooldownRemaining(now time.Time) time.Duration {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if now.Before(ms.failedUntil) {
+		return ms.failedUntil.Sub(now)
+	}
+	return 0
 }
 
 // NewMCPServerManager builds a manager from the effective MCP registry
@@ -137,6 +191,7 @@ func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 	// Deterministic order so the tool list is stable across runs.
 	sort.Slice(servers, func(i, j int) bool { return servers[i].name < servers[j].name })
 
+	now := time.Now()
 	var out []tool.Tool
 	for _, ms := range servers {
 		if ms.cfg.Disabled {
@@ -146,10 +201,20 @@ func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 		if ms.toolset == nil {
 			continue // failed to build; status already recorded
 		}
+		// Deterministic health gate: a server that failed recently is
+		// skipped without dialing until its cooldown expires. The failure
+		// was already logged when it happened, so this stays silent and
+		// keeps the per-call cost of a dead server at zero (the web search
+		// fallback probes the manager a second time per model call; the
+		// gate makes that probe free too).
+		if ms.cooldownRemaining(now) > 0 {
+			continue
+		}
 		// The slow connect/list happens OUTSIDE both locks so the TUI can
 		// keep rendering while a server is unreachable.
 		tsTools, err := ms.toolset.Tools(ctx)
 		if err != nil {
+			ms.startCooldown(now)
 			ms.setStatus("failed", err.Error())
 			ms.setToolCount(0)
 			if m.log != nil {
@@ -157,6 +222,7 @@ func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 			}
 			continue
 		}
+		ms.clearCooldown()
 		ms.setStatus("connected", "")
 		ms.setToolCount(len(tsTools))
 		for _, t := range tsTools {
@@ -233,6 +299,9 @@ func (m *MCPServerManager) Reconnect(name string) error {
 	if ms.cfg.Disabled {
 		return fmt.Errorf("mcp server %q is disabled; enable it first", name)
 	}
+	// Manual reconnect is explicit user intent: dial on the next Tools()
+	// call regardless of any armed failure cooldown.
+	ms.clearCooldown()
 	ms.setStatus("idle", "")
 	return nil
 }
@@ -304,6 +373,17 @@ func (m *MCPServerManager) RemoveServer(name string) error {
 	return m.reload()
 }
 
+// mcpHTTPTimeout resolves the per-request timeout for streamable HTTP
+// transports: explicit timeout_ms when positive, else 10s. It bounds
+// connect + initialize + tools/list so a hanging endpoint fails fast into
+// the failure cooldown instead of stalling a model call.
+func mcpHTTPTimeout(timeoutMs int) time.Duration {
+	if timeoutMs > 0 {
+		return time.Duration(timeoutMs) * time.Millisecond
+	}
+	return 10 * time.Second
+}
+
 // buildMCPServerToolset constructs the ADK toolset for one server. stdio
 // servers run the configured command with HAKASE_*-scrubbed env plus the
 // server's env block; http servers use a streamable HTTP transport with
@@ -311,7 +391,7 @@ func (m *MCPServerManager) RemoveServer(name string) error {
 func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Toolset, error) {
 	switch {
 	case cfg.Type == "http" || (cfg.Type == "" && cfg.URL != "" && len(cfg.Command) == 0):
-		client := &http.Client{}
+		client := &http.Client{Timeout: mcpHTTPTimeout(cfg.TimeoutMs)}
 		if len(cfg.Headers) > 0 {
 			client.Transport = &headerTransport{headers: config.ExpandEnvMap(cfg.Headers)}
 		}
@@ -326,7 +406,20 @@ func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Tools
 		if len(argv) == 0 || argv[0] == "" {
 			return nil, fmt.Errorf("mcp server %q has an empty stdio command", name)
 		}
-		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd := &exec.Cmd{Path: argv[0], Args: append([]string(nil), argv...)}
+		// Mirror the stdlib os/exec PATH resolution of a bare name: the
+		// CommandTransport starts this process itself via cmd.Start, which
+		// returns cmd.Err when the lookup failed.
+		if filepath.Base(argv[0]) == argv[0] {
+			if lp, lerr := exec.LookPath(argv[0]); lp != "" {
+				cmd.Path = lp
+				if lerr != nil {
+					cmd.Err = lerr
+				}
+			} else if lerr != nil {
+				cmd.Err = lerr
+			}
+		}
 		cmd.Env = buildMCPChildEnv(cfg.Env)
 		return mcptoolset.New(mcptoolset.Config{
 			Transport: &mcp.CommandTransport{Command: cmd},

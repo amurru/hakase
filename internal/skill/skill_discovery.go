@@ -5,6 +5,7 @@ package skill
 import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,25 +21,12 @@ var standardSkillDirs = []string{
 	".gemini/skills",
 }
 
-// FindProjectRoot walks from cwd upward and returns the first directory
-// containing a ".git" entry (file or directory, checked via os.Stat). If no
-// ".git" is found before reaching the filesystem root, cwd is returned
-// (documented fallback; no silent guess).
+// FindProjectRoot resolves the project root from a starting directory: walks
+// up for the first directory containing a ".git" entry (file or directory)
+// and falls back to cwd. Canonical implementation lives in internal/project;
+// this wrapper keeps the public skill API unchanged.
 func FindProjectRoot(cwd string) string {
-	dir, err := filepath.Abs(cwd)
-	if err != nil {
-		return cwd
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return cwd
-		}
-		dir = parent
-	}
+	return project.FindRoot(cwd)
 }
 
 // DiscoverMarkdownSkills scans project and user-level skill directories for

@@ -211,6 +211,86 @@ type Config struct {
 	// (see SidekickConfig). Disabling requires only enabled:false or an empty
 	// model_name.
 	Sidekick SidekickConfig `json:"sidekick,omitempty"`
+	// WebSearch controls the built-in keyless web search fallback
+	// (internal/websearch) that activates when no research-capable MCP
+	// server is connected. enabled=false switches the feature (and its
+	// outbound calls) off; force=true keeps the fallback tools visible even
+	// when research MCP tools are connected.
+	WebSearch WebSearchConfig `json:"web_search,omitempty"`
+	// Channels configures communication channels (Telegram bot, extensible to
+	// other chat transports) that let a remote client prompt the agent, watch
+	// progress, answer approvals, and manage tasks/cron jobs. Channels run
+	// inside the web/serve process and are off unless explicitly enabled.
+	Channels ChannelsConfig `json:"channels,omitempty"`
+}
+
+// ChannelsConfig tunes the communication-channel subsystem. Absent values are
+// the secure defaults: everything off, deny-by-default pairing.
+type ChannelsConfig struct {
+	// EnableCronScheduler starts the background cron scheduler in web/serve
+	// mode (normally TUI-only, so scheduled jobs only fire while the terminal
+	// is open). Set true when running headless with channels so scheduled jobs
+	// actually fire - e.g. to deliver cron results to Telegram.
+	EnableCronScheduler bool `json:"enable_cron_scheduler,omitempty"`
+	// Telegram configures the Telegram bot channel. See TelegramChannelConfig.
+	Telegram TelegramChannelConfig `json:"telegram,omitempty"`
+}
+
+// TelegramChannelConfig configures the Telegram bot transport. Follows the
+// SidekickConfig idiom: Enabled is a *bool so "absent" stays distinguishable
+// from "false", and the feature is off unless explicitly enabled with a token.
+type TelegramChannelConfig struct {
+	// Enabled toggles the Telegram channel. nil/absent = disabled.
+	Enabled *bool `json:"enabled,omitempty"`
+	// BotToken is the bot token from @BotFather. May also come from the
+	// HAKASE_TELEGRAM_BOT_TOKEN environment variable (env wins).
+	BotToken string `json:"bot_token,omitempty"`
+	// AllowedUserIDs statically allowlists Telegram numeric user IDs
+	// (deny-by-default; use e.g. @userinfobot to find yours). When empty,
+	// users pair at runtime via `/start <code>` with the pairing code printed
+	// on the server console (or `hakase channels pair-code`).
+	AllowedUserIDs []int64 `json:"allowed_user_ids,omitempty"`
+	// PairingCode optionally fixes a static pairing code for scripted setups
+	// instead of the generated rotating code. Stored plaintext, like api_key.
+	PairingCode string `json:"pairing_code,omitempty"`
+	// Pins pins the user's prompt message for the duration of each Telegram
+	// run and unpins it at completion (Hermes-style turn marker). Default off.
+	Pins bool `json:"pins,omitempty"`
+}
+
+// ApplyDefaults fills zero values with channel defaults. Call after load.
+func (c *ChannelsConfig) ApplyDefaults() {
+	c.Telegram.ApplyDefaults()
+}
+
+// Validate checks ChannelsConfig. Like SidekickConfig, it only errors when a
+// channel is explicitly enabled but unusable, so a misconfigured block fails
+// fast instead of silently staying off.
+func (c *ChannelsConfig) Validate() error {
+	return c.Telegram.Validate()
+}
+
+// ApplyDefaults normalizes the Telegram channel config (currently a no-op
+// hook kept for symmetry with the other config sections).
+func (c *TelegramChannelConfig) ApplyDefaults() {}
+
+// Validate errors when the Telegram channel is explicitly enabled without a
+// bot token. Disabled/absent configs are always valid.
+func (c *TelegramChannelConfig) Validate() error {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.BotToken) == "" {
+		return fmt.Errorf("channels.telegram: enabled but bot_token is empty (set bot_token or HAKASE_TELEGRAM_BOT_TOKEN, or disable with enabled:false)")
+	}
+	return nil
+}
+
+// EnabledWithToken reports whether the Telegram channel should actually start:
+// explicitly enabled AND carrying a non-empty token. This is the single
+// source of truth consumed by the web bootstrap and tests.
+func (c *TelegramChannelConfig) EnabledWithToken() bool {
+	return c != nil && c.Enabled != nil && *c.Enabled && strings.TrimSpace(c.BotToken) != ""
 }
 
 // MediaConfig configures pluggable media generation providers.
@@ -382,6 +462,28 @@ func SidekickEnabled(cfg *Config) bool {
 	return cfg != nil && cfg.Sidekick.EnabledWithModel()
 }
 
+// WebSearchConfig tunes the built-in keyless web search fallback
+// (internal/websearch) exposed when no research-capable MCP server is
+// connected.
+type WebSearchConfig struct {
+	// Enabled tri-state: nil (default) = auto, where detection in
+	// internal/agent decides visibility from the connected MCP tools;
+	// false = never expose the fallback or make outbound search calls.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Force keeps the fallback tools visible even when research-capable MCP
+	// tools are connected (testing, or preferring the lightweight path).
+	Force bool `json:"force,omitempty"`
+}
+
+// WebSearchEnabled reports whether the fallback feature may run at all: only
+// an explicit enabled=false disables it.
+func WebSearchEnabled(c *Config) bool {
+	if c == nil || c.WebSearch.Enabled == nil {
+		return true
+	}
+	return *c.WebSearch.Enabled
+}
+
 // ApplyDefaults fills zero values with defaults. Call after loading config.
 func (c *MediaConfig) ApplyDefaults() {
 	if c.ImageProvider == "" {
@@ -467,7 +569,9 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_SIDEKICK_PROVIDER") != "" ||
 		os.Getenv("HAKASE_SIDEKICK_MODEL") != "" ||
 		os.Getenv("HAKASE_SIDEKICK_BASE_URL") != "" ||
-		os.Getenv("HAKASE_SIDEKICK_API_KEY") != ""
+		os.Getenv("HAKASE_SIDEKICK_API_KEY") != "" ||
+		os.Getenv("HAKASE_TELEGRAM_ENABLED") != "" ||
+		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -600,6 +704,19 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Sidekick.ApplyDefaults()
 	if err := cfg.Sidekick.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Telegram channel env overrides (mirrors the sidekick pattern).
+	if v := os.Getenv("HAKASE_TELEGRAM_ENABLED"); v != "" {
+		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		cfg.Channels.Telegram.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN"); v != "" {
+		cfg.Channels.Telegram.BotToken = v
+	}
+	cfg.Channels.ApplyDefaults()
+	if err := cfg.Channels.Validate(); err != nil {
 		return nil, err
 	}
 

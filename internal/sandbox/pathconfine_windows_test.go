@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,7 +78,7 @@ func withTestSandbox(t *testing.T, sb *SandboxConfig) {
 func TestResolveScopedPathAliasRegression(t *testing.T) {
 	ws := t.TempDir()
 	deniedFile := filepath.Join(ws, "config.json")
-	if err := writeFileForTest(deniedFile, []byte(`{"api_key":"x"}`)); err != nil {
+	if err := writeFileForTest(deniedFile, []byte(fmt.Sprintf(`{"api_key":%q}`, "x"))); err != nil {
 		t.Fatal(err)
 	}
 	sb := &SandboxConfig{
