@@ -46,6 +46,7 @@ export interface ActiveSession {
 
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref<SessionSummary[]>([])
+  const archivedSessions = ref<SessionSummary[]>([])
   const activeSession = ref<ActiveSession | null>(null)
   const loading = ref(false)
 
@@ -55,6 +56,14 @@ export const useSessionStore = defineStore('session', () => {
       sessions.value = await apiFetch<SessionSummary[]>('/sessions')
     } finally {
       loading.value = false
+    }
+  }
+
+  async function fetchArchivedSessions() {
+    try {
+      archivedSessions.value = await apiFetch<SessionSummary[]>('/sessions/archived')
+    } catch {
+      archivedSessions.value = []
     }
   }
 
@@ -86,7 +95,31 @@ export const useSessionStore = defineStore('session', () => {
   async function archiveSession(id: string): Promise<boolean> {
     try {
       await apiFetch(`/sessions/${id}/archive`, { method: 'POST' })
+      await Promise.all([fetchSessions(), fetchArchivedSessions(), fetchActiveSession()])
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function unarchiveSession(id: string): Promise<boolean> {
+    try {
+      await apiFetch(`/sessions/${id}/unarchive`, { method: 'POST' })
+      await Promise.all([fetchSessions(), fetchArchivedSessions()])
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function renameSession(id: string, title: string): Promise<boolean> {
+    try {
+      await apiFetch(`/sessions/${id}/rename`, {
+        method: 'POST',
+        body: { title },
+      })
       await fetchSessions()
+      await fetchArchivedSessions()
       return true
     } catch {
       return false
@@ -96,7 +129,7 @@ export const useSessionStore = defineStore('session', () => {
   async function deleteSession(id: string): Promise<boolean> {
     try {
       await apiFetch(`/sessions/${id}`, { method: 'DELETE' })
-      await fetchSessions()
+      await Promise.all([fetchSessions(), fetchArchivedSessions(), fetchActiveSession()])
       return true
     } catch {
       return false
@@ -123,12 +156,16 @@ export const useSessionStore = defineStore('session', () => {
 
   return {
     sessions,
+    archivedSessions,
     activeSession,
     loading,
     fetchSessions,
+    fetchArchivedSessions,
     createSession,
     switchSession,
     archiveSession,
+    unarchiveSession,
+    renameSession,
     deleteSession,
     fetchActiveSession,
     fetchProjects,

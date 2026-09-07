@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useSessionStore } from '@/stores/session'
@@ -14,8 +14,10 @@ import { useProjectsStore, type ProjectStatus } from '@/stores/projects'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 const route = useRoute()
 const router = useRouter()
@@ -127,6 +129,61 @@ const contextWarning = computed(() => {
 const contextPct = computed(() => {
   if (appStore.contextMax === 0) return 0
   return Math.round((appStore.contextUsage / appStore.contextMax) * 100)
+})
+
+// --- Inline session-title rename (double-click the header title) ---
+const isRenamingTitle = ref(false)
+const renameTitleValue = ref('')
+const titleInput = ref<{ $el: HTMLInputElement } | null>(null)
+const titleEditWrap = ref<HTMLElement | null>(null)
+
+function startTitleRename() {
+  // Nothing to rename before a session exists (lazy-created on first message).
+  if (!sessionId.value || isRenamingTitle.value) return
+  renameTitleValue.value = appStore.activeSessionTitle || 'New Session'
+  isRenamingTitle.value = true
+  nextTick(() => {
+    const el = titleInput.value?.$el
+    el?.focus()
+    el?.select()
+  })
+}
+
+function cancelTitleRename() {
+  isRenamingTitle.value = false
+}
+
+async function commitTitleRename() {
+  const sid = sessionId.value
+  const title = renameTitleValue.value.trim()
+  isRenamingTitle.value = false
+  if (!sid || !title || title === appStore.activeSessionTitle) return
+  const ok = await sessionStore.renameSession(sid, title)
+  if (ok) {
+    appStore.setActiveSessionTitle(title)
+  } else {
+    note('warning', 'rename failed')
+  }
+}
+
+// Clicking anywhere outside the input+confirm region cancels the rename
+// (mousedown so it fires before whatever was clicked processes the click).
+function onTitleEditMouseDown(e: MouseEvent) {
+  if (titleEditWrap.value && !titleEditWrap.value.contains(e.target as Node)) {
+    cancelTitleRename()
+  }
+}
+
+watch(isRenamingTitle, (editing) => {
+  if (editing) {
+    document.addEventListener('mousedown', onTitleEditMouseDown)
+  } else {
+    document.removeEventListener('mousedown', onTitleEditMouseDown)
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onTitleEditMouseDown)
 })
 
 // Auto-scroll logic
@@ -379,7 +436,38 @@ onMounted(() => {
     <!-- Header with session info + context warning -->
     <div class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
       <div class="flex items-center gap-3">
-        <span class="text-sm font-medium text-foreground">
+        <!-- Title: double-click to rename inline. Enter or the check button
+             accepts; clicking outside the edit region cancels. -->
+        <div
+          v-if="isRenamingTitle"
+          ref="titleEditWrap"
+          class="flex items-center gap-1"
+          @dblclick.stop
+        >
+          <Input
+            ref="titleInput"
+            v-model="renameTitleValue"
+            class="h-7 w-56 text-sm"
+            @keydown.enter.prevent="commitTitleRename"
+            @keydown.escape.prevent="cancelTitleRename"
+          />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            class="text-emerald-500 hover:text-emerald-400"
+            title="Accept new name"
+            aria-label="Accept new name"
+            @click="commitTitleRename"
+          >
+            <Check class="h-4 w-4" />
+          </Button>
+        </div>
+        <span
+          v-else
+          class="cursor-text text-sm font-medium text-foreground"
+          title="Double-click to rename"
+          @dblclick="startTitleRename"
+        >
           {{ appStore.activeSessionTitle || 'New Session' }}
         </span>
         <Badge

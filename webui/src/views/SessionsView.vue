@@ -24,7 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Plus, Search, MoreVertical, Archive, Trash2, MessageSquare, Loader2, FolderOpen, GitBranch } from '@lucide/vue'
+import { Plus, Search, MoreVertical, Archive, ArchiveRestore, Trash2, MessageSquare, Loader2, FolderOpen, GitBranch, Pencil, ChevronDown, ChevronRight } from '@lucide/vue'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -40,6 +40,12 @@ const deleteDialogOpen = ref(false)
 const creating = ref(false)
 const deleting = ref(false)
 const archivingId = ref<string | null>(null)
+const restoringId = ref<string | null>(null)
+const renameTarget = ref<SessionSummary | null>(null)
+const renameDialogOpen = ref(false)
+const renameTitle = ref('')
+const renaming = ref(false)
+const showArchived = ref(false)
 
 // Registered projects that are ready to be bound to a new session (DP-7).
 const readyProjects = computed(() => projects.value.filter((p) => p.status === 'ready'))
@@ -111,6 +117,35 @@ async function handleArchive(session: SessionSummary) {
   archivingId.value = null
 }
 
+function openRename(session: SessionSummary) {
+  renameTarget.value = session
+  renameTitle.value = session.title
+  renameDialogOpen.value = true
+}
+
+async function handleRename() {
+  const target = renameTarget.value
+  const title = renameTitle.value.trim()
+  if (!target || !title) return
+  renaming.value = true
+  const ok = await sessionStore.renameSession(target.id, title)
+  renaming.value = false
+  if (ok) {
+    // Keep the status-bar title in sync when the active session is renamed.
+    if (isActiveSession(target)) {
+      appStore.setActiveSessionTitle(title)
+    }
+    renameTarget.value = null
+    renameDialogOpen.value = false
+  }
+}
+
+async function handleRestore(session: SessionSummary) {
+  restoringId.value = session.id
+  await sessionStore.unarchiveSession(session.id)
+  restoringId.value = null
+}
+
 function confirmDelete(session: SessionSummary) {
   deleteTarget.value = session
   deleteDialogOpen.value = true
@@ -127,6 +162,7 @@ async function handleDelete() {
 
 onMounted(() => {
   sessionStore.fetchSessions()
+  sessionStore.fetchArchivedSessions()
   sessionStore.fetchActiveSession()
 })
 </script>
@@ -230,105 +266,186 @@ onMounted(() => {
         <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
 
-      <!-- Empty state -->
-      <div
-        v-else-if="filteredSessions.length === 0 && !searchQuery"
-        class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
-      >
-        <FolderOpen class="h-10 w-10" />
-        <p class="text-sm">No sessions yet</p>
-        <Button variant="outline" size="sm" @click="createDialogOpen = true">
-          <Plus class="mr-2 h-4 w-4" />
-          Create your first session
-        </Button>
-      </div>
-
-      <!-- No search results -->
-      <div
-        v-else-if="filteredSessions.length === 0"
-        class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
-      >
-        <Search class="h-8 w-8" />
-        <p class="text-sm">No sessions match "{{ searchQuery }}"</p>
-      </div>
-
-      <!-- Session items -->
-      <div v-else class="divide-y divide-border">
+      <template v-else>
+        <!-- Empty state -->
         <div
-          v-for="session in filteredSessions"
-          :key="session.id"
-          class="group flex items-center gap-4 px-6 py-3 transition-colors hover:bg-accent/50 cursor-pointer"
-          @click="handleSwitch(session)"
+          v-if="filteredSessions.length === 0 && !searchQuery"
+          class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
         >
-          <!-- Active indicator -->
-          <div class="relative h-2 w-2 shrink-0">
-            <span
-              v-if="isActiveSession(session)"
-              class="absolute inline-flex h-full w-full rounded-full bg-emerald-500"
-            />
-          </div>
-
-          <!-- Content -->
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
-              <p class="truncate text-sm font-medium">{{ session.title }}</p>
-              <Badge
-                v-if="isActiveSession(session)"
-                variant="default"
-                class="shrink-0 bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-              >
-                Active
-              </Badge>
-            </div>
-            <div class="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-              <span
-                v-if="session.project_name"
-                class="flex items-center gap-1"
-                :title="`Bound to registered project ${session.project_name}`"
-              >
-                <GitBranch class="h-3 w-3" />
-                {{ session.project_name }}
-              </span>
-              <span>{{ relativeTime(session.updated_at) }}</span>
-              <span class="flex items-center gap-1">
-                <MessageSquare class="h-3 w-3" />
-                {{ session.message_count }}
-              </span>
-            </div>
-          </div>
-
-          <!-- Dropdown menu -->
-          <DropdownMenu @click.stop>
-            <DropdownMenuTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                class="opacity-0 group-hover:opacity-100 transition-opacity"
-                @click.stop
-              >
-                <MoreVertical class="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                :disabled="archivingId === session.id"
-                @click="handleArchive(session)"
-              >
-                <Archive class="mr-2 h-4 w-4" />
-                Archive
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                class="text-destructive focus:text-destructive"
-                @click="confirmDelete(session)"
-              >
-                <Trash2 class="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <FolderOpen class="h-10 w-10" />
+          <p class="text-sm">No sessions yet</p>
+          <Button variant="outline" size="sm" @click="createDialogOpen = true">
+            <Plus class="mr-2 h-4 w-4" />
+            Create your first session
+          </Button>
         </div>
-      </div>
+
+        <!-- No search results -->
+        <div
+          v-else-if="filteredSessions.length === 0"
+          class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
+        >
+          <Search class="h-8 w-8" />
+          <p class="text-sm">No sessions match "{{ searchQuery }}"</p>
+        </div>
+
+        <!-- Session items -->
+        <div v-else class="divide-y divide-border">
+          <div
+            v-for="session in filteredSessions"
+            :key="session.id"
+            class="group flex items-center gap-4 px-6 py-3 transition-colors hover:bg-accent/50 cursor-pointer"
+            @click="handleSwitch(session)"
+          >
+            <!-- Active indicator -->
+            <div class="relative h-2 w-2 shrink-0">
+              <span
+                v-if="isActiveSession(session)"
+                class="absolute inline-flex h-full w-full rounded-full bg-emerald-500"
+              />
+            </div>
+
+            <!-- Content -->
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <p class="truncate text-sm font-medium">{{ session.title }}</p>
+                <Badge
+                  v-if="isActiveSession(session)"
+                  variant="default"
+                  class="shrink-0 bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                >
+                  Active
+                </Badge>
+              </div>
+              <div class="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                <span
+                  v-if="session.project_name"
+                  class="flex items-center gap-1"
+                  :title="`Bound to registered project ${session.project_name}`"
+                >
+                  <GitBranch class="h-3 w-3" />
+                  {{ session.project_name }}
+                </span>
+                <span>{{ relativeTime(session.updated_at) }}</span>
+                <span class="flex items-center gap-1">
+                  <MessageSquare class="h-3 w-3" />
+                  {{ session.message_count }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Dropdown menu -->
+            <DropdownMenu @click.stop>
+              <DropdownMenuTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  class="opacity-0 group-hover:opacity-100 transition-opacity"
+                  @click.stop
+                >
+                  <MoreVertical class="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem @click="openRename(session)">
+                  <Pencil class="mr-2 h-4 w-4" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  :disabled="archivingId === session.id"
+                  @click="handleArchive(session)"
+                >
+                  <Archive class="mr-2 h-4 w-4" />
+                  Archive
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  class="text-destructive focus:text-destructive"
+                  @click="confirmDelete(session)"
+                >
+                  <Trash2 class="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
+        <!-- Archived sessions (collapsible, below the active list) -->
+        <div v-if="sessionStore.archivedSessions.length > 0" class="border-t border-border">
+          <button
+            class="flex w-full items-center gap-2 px-6 py-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            @click="showArchived = !showArchived"
+          >
+            <ChevronDown v-if="showArchived" class="h-3.5 w-3.5" />
+            <ChevronRight v-else class="h-3.5 w-3.5" />
+            Archived
+            <Badge variant="secondary" class="ml-auto tabular-nums">
+              {{ sessionStore.archivedSessions.length }}
+            </Badge>
+          </button>
+          <div v-if="showArchived" class="divide-y divide-border">
+            <div
+              v-for="session in sessionStore.archivedSessions"
+              :key="session.id"
+              class="group flex items-center gap-4 px-6 py-3 opacity-70 transition-colors hover:bg-accent/50 hover:opacity-100"
+            >
+              <Archive class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+
+              <!-- Content -->
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-sm">{{ session.title }}</p>
+                <div class="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                  <span
+                    v-if="session.project_name"
+                    class="flex items-center gap-1"
+                    :title="`Bound to registered project ${session.project_name}`"
+                  >
+                    <GitBranch class="h-3 w-3" />
+                    {{ session.project_name }}
+                  </span>
+                  <span>{{ relativeTime(session.updated_at) }}</span>
+                  <span class="flex items-center gap-1">
+                    <MessageSquare class="h-3 w-3" />
+                    {{ session.message_count }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Dropdown menu -->
+              <DropdownMenu @click.stop>
+                <DropdownMenuTrigger as-child>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    class="opacity-0 group-hover:opacity-100 transition-opacity"
+                    @click.stop
+                  >
+                    <MoreVertical class="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    :disabled="restoringId === session.id"
+                    @click="handleRestore(session)"
+                  >
+                    <ArchiveRestore class="mr-2 h-4 w-4" />
+                    Restore
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    class="text-destructive focus:text-destructive"
+                    @click="confirmDelete(session)"
+                  >
+                    <Trash2 class="mr-2 h-4 w-4" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </div>
+      </template>
     </ScrollArea>
 
     <!-- Delete confirmation dialog -->
@@ -353,6 +470,39 @@ onMounted(() => {
           >
             <Loader2 v-if="deleting" class="mr-2 h-4 w-4 animate-spin" />
             Delete
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Rename dialog -->
+    <Dialog v-model:open="renameDialogOpen">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rename Session</DialogTitle>
+          <DialogDescription>
+            Choose a new name for
+            <span class="font-medium text-foreground">"{{ renameTarget?.title }}"</span>.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="py-4">
+          <Input
+            v-model="renameTitle"
+            placeholder="Session title"
+            autofocus
+            @keydown.enter="handleRename"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="renameDialogOpen = false">
+            Cancel
+          </Button>
+          <Button
+            :disabled="renaming || !renameTitle.trim()"
+            @click="handleRename"
+          >
+            <Loader2 v-if="renaming" class="mr-2 h-4 w-4 animate-spin" />
+            Rename
           </Button>
         </DialogFooter>
       </DialogContent>
