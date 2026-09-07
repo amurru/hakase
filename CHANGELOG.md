@@ -8,6 +8,12 @@ During the alpha phase (0.x), breaking changes may land in any minor release;
 the web UI and `config.json` formats aim for backward compatibility but are not
 guaranteed stable until 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **Visual Execution Canvas (ADK node graph)** - the web UI can now watch agent reasoning instead of a black box: a toggleable split panel in the chat view renders a live node graph (root orchestrator → delegation sub-agents → tool calls) driven by a new structured `graph` SSE event. The backend gained a typed `interfaces.GraphEvent` contract (`agent_start`/`agent_end`/`tool_start`/`tool_end`/`agent_text`/`agent_thought`/`transfer` with call ids, arguments, truncated results, durations, and error detail) emitted from two places: the shared `agentrun` driver loop (which now also surfaces ADK `transfer_to_agent` switches and attributes tool calls to the active agent node) and the delegation reporter (whose events finally reach the browser - they previously published to a global topic no web client subscribed to). Tool-call pairing is keyed by call id, synthesized for providers that omit them, which also fixes wrong durations when a sub-agent calls the same tool repeatedly. Payloads are capped at the source (args 8KB, results 64KB, text deltas 4KB). The SSE bridge retains the most recent 500 canvas events per session (in-memory ring, pruned on session delete) and a new `GET /api/sessions/{id}/graph` backfill endpoint rebuilds the canvas after a reload or mid-run reconnect; server restarts clear it. The `agentrun.EventSink` interface gained `OnGraphEvent`: the web bridge publishes under the session topic, Telegram mirrors it so phone-started runs render on the web canvas, and the TUI (which has its own delegation view) drops them. The canvas (Vue Flow, lazy-loaded into its own chunk) shows agent/tool nodes with live status and durations, groups delegation children under their open `delegate_task` call, and a click-through inspector with tabs for goal/arguments/tool output (copyable), the sub-agent's streamed thinking and output rendered as markdown, and the raw event JSON.
+
 ## [0.1.0-alpha.5] - 2026-09-07
 
 ### Added
