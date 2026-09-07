@@ -9,6 +9,7 @@ import (
 
 	"amurru/hakase/internal/channel"
 	"amurru/hakase/internal/channel/state"
+	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/sse"
 
@@ -535,6 +536,13 @@ func (rv *runView) OnUsage(sessionID string, tokens, percent int) {
 // finalize, which runs after the driver returns.
 func (rv *runView) OnDone(sessionID string) {
 	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendDone(sessionID) })
+}
+
+// OnGraphEvent implements agentrun.EventSink: canvas events carry no Telegram
+// rendering, but they mirror to the web bridge so a phone-started run shows
+// on the web UI's execution canvas exactly like a browser-started one.
+func (rv *runView) OnGraphEvent(sessionID string, ev interfaces.GraphEvent) {
+	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendGraph(sessionID, ev) })
 }
 
 func humanTokens(n int) string {

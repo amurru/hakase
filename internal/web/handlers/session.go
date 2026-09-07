@@ -3,6 +3,7 @@ package handlers
 import (
 	"amurru/hakase/internal/registry"
 	"amurru/hakase/internal/session"
+	"amurru/hakase/internal/web/sse"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -50,7 +51,10 @@ type MessageDTO struct {
 // for the web API layer.
 type SessionAPI struct {
 	svc *session.SessionService
-	mu  sync.RWMutex
+	// bridge retains per-session execution-canvas event logs; nil in tests.
+	// Session deletion prunes the matching log.
+	bridge *sse.EventBridge
+	mu     sync.RWMutex
 }
 
 // SessionsRouter is the minimum interface needed by RegisterSessionRoutes.
@@ -62,8 +66,10 @@ type SessionsRouter interface {
 
 // RegisterSessionRoutes registers all session API routes on the given router.
 // Routes are relative to /api (the caller places them inside the /api group).
-func RegisterSessionRoutes(r SessionsRouter, svc *session.SessionService) {
-	api := &SessionAPI{svc: svc}
+// bridge may be nil; when set, deleting a session also drops its retained
+// execution-canvas event log.
+func RegisterSessionRoutes(r SessionsRouter, svc *session.SessionService, bridge *sse.EventBridge) {
+	api := &SessionAPI{svc: svc, bridge: bridge}
 
 	r.Get("/sessions", api.ListSessions)
 	r.Post("/sessions", api.CreateSession)
@@ -216,6 +222,9 @@ func (api *SessionAPI) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	if api.bridge != nil {
+		api.bridge.DropGraphLog(id)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

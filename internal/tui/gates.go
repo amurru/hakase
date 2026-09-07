@@ -168,6 +168,11 @@ func (m *AppModel) DelegationProgress(status, taskID, agentName, message string)
 	}
 }
 
+// EmitGraphEvent implements interfaces.EventNotifier. The TUI has no
+// execution canvas; delegation progress already reaches it through
+// DelegationProgress, so structured graph events are dropped here.
+func (m *AppModel) EmitGraphEvent(sessionID string, ev interfaces.GraphEvent) {}
+
 // CronJobEvent pushes a cron job lifecycle event to the TUI.
 func (m *AppModel) CronJobEvent(status, jobID, name, summary, outputPath string) {
 	if m.program != nil {

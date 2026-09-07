@@ -227,6 +227,7 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 
 	r.Post("/sessions/{id}/messages", api.PostMessage)
 	r.Get("/sessions/{id}/stream", api.StreamSSE)
+	r.Get("/sessions/{id}/graph", api.GetGraph)
 	r.Post("/sessions/{id}/sidekick", api.PostSidekick)
 	r.Post("/sessions/{id}/compact", api.PostCompact)
 }
@@ -503,6 +504,28 @@ func (s bridgeSink) OnUsage(sessionID string, tokens, percent int) {
 }
 
 func (s bridgeSink) OnDone(sessionID string) { s.b.SendDone(sessionID) }
+
+func (s bridgeSink) OnGraphEvent(sessionID string, ev interfaces.GraphEvent) {
+	s.b.SendGraph(sessionID, ev)
+}
+
+// GetGraph handles GET /api/sessions/{id}/graph: it returns the session's
+// retained execution-canvas events (the same "graph" SSE payloads, in seq
+// order) so a (re)connecting client rebuilds the canvas without waiting for
+// the next run. Retention is in-memory and best-effort - an empty events list
+// means no canvas history (fresh session, server restart, or pruned log).
+func (api *ChatAPI) GetGraph(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	events := api.bridge.GraphBackfill(sessionID)
+	if events == nil {
+		events = []json.RawMessage{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
 
 // runAgentTask runs the agent in a goroutine via the shared agentrun.Driver,
 // which streams all events through the SSE bridge and persists the agent's

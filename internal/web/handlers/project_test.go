@@ -428,7 +428,7 @@ func TestCreateSessionBindsProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := chi.NewRouter()
-	RegisterSessionRoutes(router, svc)
+	RegisterSessionRoutes(router, svc, nil)
 
 	// Unknown project is a 400.
 	rec := httptest.NewRecorder()

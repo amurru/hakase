@@ -41,7 +41,7 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		r.Post("/logout", handlers.LogoutHandler())
 		// Session API routes (task 20)
 		if sessionSvc != nil {
-			handlers.RegisterSessionRoutes(r, sessionSvc)
+			handlers.RegisterSessionRoutes(r, sessionSvc, bridge)
 		}
 		// Registered remote projects (project-registry DP-6..DP-10).
 		handlers.RegisterProjectRoutes(r)

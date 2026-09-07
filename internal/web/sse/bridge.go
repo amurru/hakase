@@ -33,13 +33,20 @@ type EventBridge struct {
 	subs      map[string]map[int64]chan []byte // sessionID -> subscriptionID -> channel
 	typedSubs map[string]map[int64]chan Event  // sessionID -> subscriptionID -> typed channel
 	next      int64                            // atomic counter for subscription IDs
+
+	// graphLogs retains recent execution-canvas events per session for the
+	// REST backfill endpoint (see graph.go). Guarded by mu.
+	graphLogs     map[string]*graphLog
+	graphLogOrder []string // FIFO of session ids for capacity eviction
 }
 
 // NewEventBridge creates a new EventBridge.
 func NewEventBridge() *EventBridge {
 	return &EventBridge{
-		subs:      make(map[string]map[int64]chan []byte),
-		typedSubs: make(map[string]map[int64]chan Event),
+		subs:          make(map[string]map[int64]chan []byte),
+		typedSubs:     make(map[string]map[int64]chan Event),
+		graphLogs:     make(map[string]*graphLog),
+		graphLogOrder: []string{},
 	}
 }
 

@@ -672,7 +672,7 @@ func newTestAuthRouter(t *testing.T) (*SessionAPI, *session.SessionService, chi.
 				next.ServeHTTP(w, r)
 			})
 		})
-		RegisterSessionRoutes(r, svc)
+		RegisterSessionRoutes(r, svc, nil)
 	})
 	return api, svc, r
 }
