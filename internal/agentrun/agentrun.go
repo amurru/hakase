@@ -9,6 +9,7 @@ package agentrun
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -24,6 +25,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -40,6 +42,10 @@ type EventSink interface {
 	OnUsage(sessionID string, tokens, percent int)
 	// OnDone signals the turn has completed (success, error, or panic).
 	OnDone(sessionID string)
+	// OnGraphEvent reports one structured execution-canvas event (agent
+	// lifecycle, tool call with args/result, transfer). Transports without a
+	// canvas render nothing for it, but must still accept it.
+	OnGraphEvent(sessionID string, ev interfaces.GraphEvent)
 }
 
 // Driver runs agent turns against the ADK runner and persists results to the
@@ -211,6 +217,21 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	interfaces.RegisterTaskSession(taskID, sessionID)
 	defer interfaces.UnregisterTask(taskID)
 
+	// Execution-canvas tracking: the run is the root agent node; tool calls
+	// hang off the currently active agent node (the root, or the agent a
+	// transfer_to_agent switched to). Durations pair a tool_end with the
+	// matching open call; providers that omit call ids are matched by name in
+	// reverse order of opening (tool calls resolve before their responses).
+	graph := newGraphTracker(sessionID, sink, taskID)
+	graph.agentStart(firstTextPart(content))
+	defer func() {
+		// Panic path: the normal agent_end below never ran.
+		if !graph.ended {
+			graph.runStatus = interfaces.GraphStatusFailed
+			graph.agentEnd(contentBuf.String(), "panic in agent run")
+		}
+	}()
+
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
@@ -227,11 +248,14 @@ outer:
 				}
 				log.Printf("agentrun: agent error for session %s: %v", sessionID, err)
 				sink.OnLog(sessionID, fmt.Sprintf("Error: %v", err))
+				graph.runStatus = interfaces.GraphStatusFailed
+				graph.runError = err.Error()
 				break outer
 			}
 			if ev == nil {
 				continue
 			}
+			graph.observeEvent(ev)
 			// Send usage update.
 			if ev.UsageMetadata != nil {
 				lastUsage = ev.UsageMetadata
@@ -256,11 +280,13 @@ outer:
 						sink.OnLog(sessionID,
 							fmt.Sprintf("Call: %s(%v)", part.FunctionCall.Name, part.FunctionCall.Args),
 						)
+						graph.toolStart(part.FunctionCall.ID, part.FunctionCall.Name, part.FunctionCall.Args)
 					}
 					if part.FunctionResponse != nil {
 						sink.OnLog(sessionID,
 							fmt.Sprintf("Response: %s", part.FunctionResponse.Name),
 						)
+						graph.toolEnd(part.FunctionResponse.ID, part.FunctionResponse.Name, part.FunctionResponse.Response)
 					}
 				}
 			}
@@ -272,6 +298,7 @@ outer:
 		}
 		break
 	}
+	graph.agentEnd(contentBuf.String(), graph.runError)
 	d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
 	sink.OnDone(sessionID)
 }
@@ -302,4 +329,222 @@ func (d *Driver) persistAgentResponse(sessionID, content, thinking string, usage
 	if err := store.Save(sess); err != nil {
 		log.Printf("agentrun: warning: failed to persist agent reply for session %s: %v", sessionID, err)
 	}
+}
+
+// rootAgentLabel is the canvas node label for the run's root agent (the
+// orchestrator built in internal/agent).
+const rootAgentLabel = "orchestrator"
+
+// openToolCall tracks one in-flight tool call for canvas duration pairing.
+type openToolCall struct {
+	name  string
+	start time.Time
+}
+
+// graphTracker turns the ADK event stream of one run into structured canvas
+// events on the run's EventSink. It owns the root agent node and the tool
+// calls attributed to the currently active agent node (the root, or the agent
+// a transfer_to_agent switched to); delegated sub-agents report through
+// internal/agent's delegation path instead.
+//
+// All methods are called from the single RunTurn event loop goroutine.
+type graphTracker struct {
+	sessionID string
+	sink      EventSink
+	rootID    string
+	started   time.Time
+
+	activeNode string
+	rootAuthor string // first non-empty event author; transfer-back detection
+
+	transferSeq int // unique node ids for repeated transfers to the same target
+
+	open      map[string]openToolCall // callID -> open call
+	openOrder []string                // open call ids in opening order
+	callSeq   int                     // synthesized call ids for providers that omit them
+
+	runStatus string
+	runError  string
+	ended     bool // root agent_end emitted (panic-path guard)
+}
+
+func newGraphTracker(sessionID string, sink EventSink, rootID string) *graphTracker {
+	return &graphTracker{
+		sessionID:  sessionID,
+		sink:       sink,
+		rootID:     rootID,
+		started:    time.Now(),
+		activeNode: rootID,
+		open:       map[string]openToolCall{},
+		runStatus:  interfaces.GraphStatusCompleted,
+	}
+}
+
+func (g *graphTracker) emit(ev interfaces.GraphEvent) {
+	g.sink.OnGraphEvent(g.sessionID, ev)
+}
+
+// agentStart announces the root node (called once per run, after the task id
+// exists).
+func (g *graphTracker) agentStart(goal string) {
+	g.emit(interfaces.GraphEvent{
+		Type:   interfaces.GraphAgentStart,
+		NodeID: g.rootID,
+		Agent:  rootAgentLabel,
+		Goal:   interfaces.TruncateUTF8(goal, interfaces.GraphLabelCap),
+	})
+}
+
+// observeEvent consumes the per-event metadata the text loop ignores:
+// transfer actions (switch the active node, announce the new agent node) and
+// author changes (transfer-back returns attribution to the root node).
+func (g *graphTracker) observeEvent(ev *session.Event) {
+	if ev == nil {
+		return
+	}
+	if ev.Author != "" {
+		if g.rootAuthor == "" {
+			g.rootAuthor = ev.Author
+		}
+		if g.activeNode != g.rootID && ev.Author == g.rootAuthor {
+			// The delegated agent handed control back to the root; close its
+			// node best-effort (ADK exposes no explicit transfer-back event).
+			g.endNode(g.activeNode, interfaces.GraphStatusCompleted, "", "")
+			g.activeNode = g.rootID
+		}
+	}
+	if target := ev.Actions.TransferToAgent; target != "" {
+		// Unique per transfer instance: two hand-offs to the same target are
+		// distinct nodes, not a reuse of the first one.
+		g.transferSeq++
+		nodeID := fmt.Sprintf("transfer:%s:%d", target, g.transferSeq)
+		g.emit(interfaces.GraphEvent{Type: interfaces.GraphTransfer, NodeID: g.activeNode, Target: target})
+		g.emit(interfaces.GraphEvent{
+			Type:     interfaces.GraphAgentStart,
+			NodeID:   nodeID,
+			ParentID: g.activeNode,
+			Agent:    target,
+		})
+		g.activeNode = nodeID
+	}
+}
+
+// toolStart records and announces a tool call. Empty provider call ids are
+// synthesized.
+func (g *graphTracker) toolStart(id, name string, args map[string]any) {
+	if id == "" {
+		g.callSeq++
+		id = fmt.Sprintf("c%d", g.callSeq)
+	}
+	g.open[id] = openToolCall{name: name, start: time.Now()}
+	g.openOrder = append(g.openOrder, id)
+	g.emit(interfaces.GraphEvent{
+		Type:   interfaces.GraphToolStart,
+		NodeID: g.activeNode,
+		CallID: id,
+		Tool:   name,
+		Args:   interfaces.GraphArgs(args),
+	})
+}
+
+// toolEnd pairs a tool response with its open call (by id, else by tool name
+// in reverse opening order) and announces completion with the measured
+// duration and serialized response.
+func (g *graphTracker) toolEnd(id, name string, resp map[string]any) {
+	if id == "" {
+		for i := len(g.openOrder) - 1; i >= 0; i-- {
+			if oc, ok := g.open[g.openOrder[i]]; ok && oc.name == name {
+				id = g.openOrder[i]
+				break
+			}
+		}
+	}
+	var durationMs int64
+	if oc, ok := g.open[id]; ok {
+		durationMs = time.Since(oc.start).Milliseconds()
+		delete(g.open, id)
+		for i, cid := range g.openOrder {
+			if cid == id {
+				g.openOrder = append(g.openOrder[:i], g.openOrder[i+1:]...)
+				break
+			}
+		}
+	} else if id == "" {
+		g.callSeq++
+		id = fmt.Sprintf("c%d", g.callSeq)
+	}
+	ok := true
+	errMsg := ""
+	if msg, failed := interfaces.ToolError(resp); failed {
+		ok = false
+		errMsg = msg
+	}
+	g.emit(interfaces.GraphEvent{
+		Type:       interfaces.GraphToolEnd,
+		NodeID:     g.activeNode,
+		CallID:     id,
+		Tool:       name,
+		Result:     interfaces.TruncateUTF8(marshalGraphResult(resp), interfaces.GraphResultCap),
+		OK:         ok,
+		Error:      interfaces.TruncateUTF8(errMsg, interfaces.GraphLabelCap),
+		DurationMs: durationMs,
+	})
+}
+
+// agentEnd announces the root node's terminal state (armed the panic-path
+// guard). Status/error come from the run outcome tracked on the tracker.
+func (g *graphTracker) agentEnd(summary, errMsg string) {
+	if g.ended {
+		return
+	}
+	g.ended = true
+	g.emit(interfaces.GraphEvent{
+		Type:       interfaces.GraphAgentEnd,
+		NodeID:     g.rootID,
+		Agent:      rootAgentLabel,
+		Status:     g.runStatus,
+		Summary:    interfaces.TruncateUTF8(summary, interfaces.GraphLabelCap),
+		Error:      interfaces.TruncateUTF8(errMsg, interfaces.GraphLabelCap),
+		DurationMs: time.Since(g.started).Milliseconds(),
+	})
+}
+
+// endNode announces a non-root agent node's terminal state (best-effort
+// close of a transfer target when control returns to the root).
+func (g *graphTracker) endNode(nodeID, status, summary, errMsg string) {
+	g.emit(interfaces.GraphEvent{
+		Type:    interfaces.GraphAgentEnd,
+		NodeID:  nodeID,
+		Agent:   rootAgentLabel,
+		Status:  status,
+		Summary: interfaces.TruncateUTF8(summary, interfaces.GraphLabelCap),
+		Error:   interfaces.TruncateUTF8(errMsg, interfaces.GraphLabelCap),
+	})
+}
+
+// marshalGraphResult serializes a tool response for a canvas payload; nil
+// responses serialize to an empty string (omitted on the wire).
+func marshalGraphResult(resp map[string]any) string {
+	if resp == nil {
+		return ""
+	}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Sprintf("%v", resp)
+	}
+	return string(b)
+}
+
+// firstTextPart returns the first text part of a content, for the canvas
+// root node's goal preview.
+func firstTextPart(content *genai.Content) string {
+	if content == nil {
+		return ""
+	}
+	for _, p := range content.Parts {
+		if p.Text != "" {
+			return p.Text
+		}
+	}
+	return ""
 }

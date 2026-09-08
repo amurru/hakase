@@ -52,3 +52,21 @@ func SessionIDFromCtx(ctx context.Context) (id string) {
 	taskSessions.RUnlock()
 	return id
 }
+
+// TaskIDFromCtx resolves the ADK task id of the invocation a tool is running
+// in from an ADK invocation context. Task ids double as ADK session ids, and
+// the canvas uses them as agent node ids, so a delegating tool handler (e.g.
+// delegate_task) can link its sub-agent node to the parent run's node without
+// a reverse registry. Returns "" outside a probed invocation context; the
+// same recover guard as SessionIDFromCtx applies.
+func TaskIDFromCtx(ctx context.Context) (id string) {
+	if ctx == nil {
+		return ""
+	}
+	defer func() { _ = recover() }()
+	ic, ok := ctx.(interface{ SessionID() string })
+	if !ok {
+		return ""
+	}
+	return ic.SessionID()
+}

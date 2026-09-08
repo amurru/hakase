@@ -93,16 +93,16 @@ const (
 // TaskMeta is the task board's core record.
 // Mirrors agent.go:TaskMeta.
 type TaskMeta struct {
-	ID           string     `json:"id"`
-	Version      int        `json:"version"`
-	Title        string     `json:"title"`
-	Description  string     `json:"description,omitempty"`
-	Status       TaskStatus `json:"status"`
-	Priority     TaskPriority `json:"priority"`
-	Owner        string     `json:"owner,omitempty"`
-	Assignee     string     `json:"assignee,omitempty"`
-	Dependencies []string   `json:"dependencies,omitempty"`
-	BlockedBy    []string   `json:"blocked_by,omitempty"`
+	ID           string         `json:"id"`
+	Version      int            `json:"version"`
+	Title        string         `json:"title"`
+	Description  string         `json:"description,omitempty"`
+	Status       TaskStatus     `json:"status"`
+	Priority     TaskPriority   `json:"priority"`
+	Owner        string         `json:"owner,omitempty"`
+	Assignee     string         `json:"assignee,omitempty"`
+	Dependencies []string       `json:"dependencies,omitempty"`
+	BlockedBy    []string       `json:"blocked_by,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	StartedAt    *time.Time     `json:"started_at,omitempty"`
@@ -159,9 +159,9 @@ type SandboxConfig struct {
 // LoopGuardConfig tunes anti-degeneration guardrails.
 // Mirrors config.go:LoopGuardConfig.
 type LoopGuardConfig struct {
-	MaxOutputTokens     int32
-	RepetitionLimit     int
-	MaxTextWithoutTool  int
+	MaxOutputTokens    int32
+	RepetitionLimit    int
+	MaxTextWithoutTool int
 }
 
 // LogFunc is a thread-safe callback to send status messages to the UI/log.
@@ -183,26 +183,26 @@ type MCPServerStatus struct {
 // SystemInfo is the detected runtime environment of the host machine.
 // Mirrors env.go:SystemInfo, stripped to the portable subset.
 type SystemInfo struct {
-	OS                string
-	Architecture      string
-	KernelVersion     string
-	DistroID          string
-	DistroVersion     string
-	DistroCodename    string
-	DistroPretty      string
-	PackageManager    string
-	Shell             string
-	Locale            string
-	Timezone          string
-	TZOffset          string
-	Username          string
-	HomeDir           string
-	Hostname          string
-	WorkspaceRoot     string
-	DiskFreeHuman     string
-	MemoryTotalHuman  string
-	MemoryAvailHuman  string
-	ExecSandbox       string
+	OS               string
+	Architecture     string
+	KernelVersion    string
+	DistroID         string
+	DistroVersion    string
+	DistroCodename   string
+	DistroPretty     string
+	PackageManager   string
+	Shell            string
+	Locale           string
+	Timezone         string
+	TZOffset         string
+	Username         string
+	HomeDir          string
+	Hostname         string
+	WorkspaceRoot    string
+	DiskFreeHuman    string
+	MemoryTotalHuman string
+	MemoryAvailHuman string
+	ExecSandbox      string
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +275,14 @@ type EventNotifier interface {
 	// status: "started", "running", "thinking", "tool_call", "tool_result",
 	//   "log", "completed", "failed", "timed_out"
 	DelegationProgress(status, taskID, agent, message string)
+
+	// EmitGraphEvent publishes one structured execution-canvas event scoped to
+	// a hakase session (see GraphEvent). sessionID may be empty for
+	// session-less surfaces (TUI, CLI), in which case implementers without a
+	// canvas sink drop the event. Consumed by the web UI's execution canvas;
+	// the legacy DelegationProgress channel stays untouched for transports
+	// that render delegation progress as text.
+	EmitGraphEvent(sessionID string, ev GraphEvent)
 
 	// CronJobEvent pushes a cron job lifecycle event to the TUI.
 	// status: "scheduled", "started", "completed", "failed", "silent", "triggered"

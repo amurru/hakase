@@ -49,6 +49,19 @@ make dev-backend    # go run -tags dev ./cmd/hakase/ web
 - `internal/channel` may import `internal/cli` (cron wrappers) and `internal/web/sse` (event bus), but `internal/cli` must never import `internal/channel` - only the leaf `internal/channel/state` (see the `channels` subcommand in `internal/cli/channels.go`).
 - Inbound prompts go through `agentrun.Driver` (extracted from the web chat handler): same sandbox, project binding, tool-call repair, and persistence as browser runs. One run per chat; `/stop` cancels it.
 
+## Execution canvas (web UI)
+
+> WARNING: this file is rendered into the orchestrator's instruction block, and
+> ADK treats a brace-quoted identifier (like the URL placeholder this file once
+> had for session endpoints) as session-state templating — a missing key fails
+> every run with "state key does not exist". Never write a braced identifier
+> here; write URL placeholders as `<id>`, not the braced form.
+
+- The chat view's toggleable graph panel is driven by the structured `graph` SSE event: typed `interfaces.GraphEvent` frames (`agent_start/agent_end/tool_start/tool_end/agent_text/agent_thought/transfer`) with per-session monotonic `seq` assigned by the bridge. Emitters: the `agentrun` driver loop (root node, tool calls with args/results/durations, ADK `transfer_to_agent`) and `internal/agent`'s delegation reporter (sub-agent nodes, keyed to the parent run via `interfaces.TaskIDFromCtx`).
+- `agentrun.EventSink` carries `OnGraphEvent`, so every transport sink implements it: the web `bridgeSink` publishes under the session topic, the Telegram `runView` mirrors to the bridge (phone-started runs appear on the web canvas), the TUI drops them (it has `DelegationProgress`).
+- The SSE bridge retains the last 500 canvas events per session (in-memory ring, `internal/web/sse/graph.go`); `GET /api/sessions/<id>/graph` backfills the frontend after reload/reconnect and session delete prunes it. Nothing is persisted to disk.
+- Frontend: pure reducer/layout in `webui/src/lib/canvas.ts`, state in `stores/canvas.ts`, components under `webui/src/components/canvas/` (Vue Flow, lazy-loaded chunk).
+
 ## Wiring gotchas
 
 - `web`/`serve` are intercepted in `cmd/hakase/main.go` BEFORE `cli.Dispatch`. The `web`/`serve`/`tui` entries registered inside `internal/cli/command.go` are stubs (`notMigrated`/placeholder); the real TUI launches only when no subcommand is given.

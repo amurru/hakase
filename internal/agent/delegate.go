@@ -8,6 +8,7 @@ import (
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -98,18 +99,58 @@ func notifyDelegation(status string, taskID, agent, message string) {
 	}
 }
 
-// delegationReporter buffers and streams sub-agent output to the TUI through
-// delegationProgressNotify, throttling high-frequency text chunks so the log
-// pane is not flooded with tiny model tokens.
-type delegationReporter struct {
-	taskID    string
-	agent     string
-	textBuf   strings.Builder
-	toolStart map[string]time.Time
+// notifyGraph streams one structured execution-canvas event to the notifier,
+// scoped to the parent run's hakase session. Session-less delegations (TUI,
+// cron) pass "" and are dropped: the canvas is session-scoped, while the
+// legacy DelegationProgress channel above still reaches those transports.
+func notifyGraph(sessionID string, ev interfaces.GraphEvent) {
+	if sessionID == "" || rt == nil {
+		return
+	}
+	if n := rt.EventNotifier(); n != nil {
+		n.EmitGraphEvent(sessionID, ev)
+	}
 }
 
-func newDelegationReporter(taskID, agent string) *delegationReporter {
-	return &delegationReporter{taskID: taskID, agent: agent, toolStart: make(map[string]time.Time)}
+// delegationOpenCall tracks one in-flight sub-agent tool call for canvas
+// duration pairing (mirrors agentrun.openToolCall).
+type delegationOpenCall struct {
+	name  string
+	start time.Time
+}
+
+// delegationReporter buffers and streams sub-agent output: the legacy
+// stringly-typed DelegationProgress channel (TUI log pane, Telegram push) and,
+// when the parent run's session is known, structured canvas GraphEvents (web
+// execution canvas). Tool-call pairing is keyed by call id - synthesized for
+// providers that omit them - so repeated calls to the same tool get distinct
+// durations.
+type delegationReporter struct {
+	taskID        string
+	agent         string
+	parentSession string
+	parentTaskID  string
+	startedAt     time.Time
+	textBuf       strings.Builder
+	toolStart     map[string]delegationOpenCall // call id -> open call
+	openOrder     []string                      // open call ids in opening order (name fallback matching)
+	callSeq       int
+}
+
+func newDelegationReporter(taskID, agent, parentSession, parentTaskID string) *delegationReporter {
+	return &delegationReporter{
+		taskID:        taskID,
+		agent:         agent,
+		parentSession: parentSession,
+		parentTaskID:  parentTaskID,
+		startedAt:     time.Now(),
+		toolStart:     make(map[string]delegationOpenCall),
+	}
+}
+
+// graph emits a canvas event owned by this delegation's node.
+func (r *delegationReporter) graph(ev interfaces.GraphEvent) {
+	notifyGraph(r.parentSession, ev)
 }
 
 // Truncate caps s to n runes, appending an ellipsis when cut.
@@ -123,6 +164,13 @@ func Truncate(s string, n int) string {
 
 func (r *delegationReporter) started(goal string) {
 	notifyDelegation("started", r.taskID, r.agent, Truncate(goal, 200))
+	r.graph(interfaces.GraphEvent{
+		Type:     interfaces.GraphAgentStart,
+		NodeID:   r.taskID,
+		ParentID: r.parentTaskID,
+		Agent:    r.agent,
+		Goal:     interfaces.TruncateUTF8(goal, interfaces.GraphLabelCap),
+	})
 }
 
 func (r *delegationReporter) log(msg string) {
@@ -138,6 +186,11 @@ func (r *delegationReporter) flushText() {
 	r.textBuf.Reset()
 	if msg != "" {
 		notifyDelegation("running", r.taskID, r.agent, msg)
+		r.graph(interfaces.GraphEvent{
+			Type:   interfaces.GraphAgentText,
+			NodeID: r.taskID,
+			Text:   interfaces.TruncateUTF8(msg, interfaces.GraphTextCap),
+		})
 	}
 }
 
@@ -155,36 +208,110 @@ func (r *delegationReporter) thought(chunk string) {
 	trimmed := strings.TrimSpace(chunk)
 	if trimmed != "" {
 		notifyDelegation("thinking", r.taskID, r.agent, Truncate(trimmed, 240))
+		r.graph(interfaces.GraphEvent{
+			Type:   interfaces.GraphAgentThought,
+			NodeID: r.taskID,
+			Text:   interfaces.TruncateUTF8(trimmed, interfaces.GraphTextCap),
+		})
 	}
 }
 
-// toolCall records the start of a tool call and reports it.
-func (r *delegationReporter) toolCall(name string, args map[string]interface{}) {
+// toolCall records the start of a tool call and reports it. callID comes from
+// the provider when available and is synthesized otherwise.
+func (r *delegationReporter) toolCall(callID, name string, args map[string]interface{}) {
 	r.flushText()
-	r.toolStart[name] = time.Now()
+	if callID == "" {
+		r.callSeq++
+		callID = fmt.Sprintf("c%d", r.callSeq)
+	}
+	r.toolStart[callID] = delegationOpenCall{name: name, start: time.Now()}
+	r.openOrder = append(r.openOrder, callID)
 	notifyDelegation("tool_call", r.taskID, r.agent, fmt.Sprintf("%s(%v)", name, args))
+	r.graph(interfaces.GraphEvent{
+		Type:   interfaces.GraphToolStart,
+		NodeID: r.taskID,
+		CallID: callID,
+		Tool:   name,
+		Args:   interfaces.GraphArgs(args),
+	})
 }
 
-// toolResult reports a completed tool call with its execution duration.
-func (r *delegationReporter) toolResult(name string) {
+// toolResult reports a completed tool call with its execution duration and
+// serialized response. Unmatched responses (e.g. a response whose call was
+// never observed) still emit, keyed by the most recent open call for the same
+// tool name.
+func (r *delegationReporter) toolResult(callID, name string, response map[string]interface{}) {
+	if callID == "" {
+		for i := len(r.openOrder) - 1; i >= 0; i-- {
+			if oc, ok := r.toolStart[r.openOrder[i]]; ok && oc.name == name {
+				callID = r.openOrder[i]
+				break
+			}
+		}
+	}
+	var durationMs int64
+	start, ok := r.toolStart[callID]
+	if ok {
+		durationMs = time.Since(start.start).Milliseconds()
+		delete(r.toolStart, callID)
+		for i, cid := range r.openOrder {
+			if cid == callID {
+				r.openOrder = append(r.openOrder[:i], r.openOrder[i+1:]...)
+				break
+			}
+		}
+	}
+	// Legacy message keeps the historical "name (Ns)" shape.
 	msg := name
-	if start, ok := r.toolStart[name]; ok {
-		msg = fmt.Sprintf("%s (%.1fs)", name, time.Since(start).Seconds())
-		delete(r.toolStart, name)
+	if ok {
+		msg = fmt.Sprintf("%s (%.1fs)", name, float64(durationMs)/1000.0)
 	}
 	notifyDelegation("tool_result", r.taskID, r.agent, msg)
+
+	errMsg, failed := interfaces.ToolError(response)
+	resultJSON := ""
+	if response != nil {
+		if b, err := json.Marshal(response); err == nil {
+			resultJSON = string(b)
+		} else {
+			resultJSON = fmt.Sprintf("%v", response)
+		}
+	}
+	r.graph(interfaces.GraphEvent{
+		Type:       interfaces.GraphToolEnd,
+		NodeID:     r.taskID,
+		CallID:     callID,
+		Tool:       name,
+		Result:     interfaces.TruncateUTF8(resultJSON, interfaces.GraphResultCap),
+		OK:         !failed,
+		Error:      interfaces.TruncateUTF8(errMsg, interfaces.GraphLabelCap),
+		DurationMs: durationMs,
+	})
 }
 
 func (r *delegationReporter) finish(status string, err error, summary string) {
 	r.flushText()
+	errText := ""
+	if err != nil {
+		errText = fmt.Sprintf("%v", err)
+	}
 	switch status {
 	case "timed_out":
-		notifyDelegation("timed_out", r.taskID, r.agent, fmt.Sprintf("%v", err))
+		notifyDelegation("timed_out", r.taskID, r.agent, errText)
 	case "failed":
-		notifyDelegation("failed", r.taskID, r.agent, fmt.Sprintf("%v", err))
+		notifyDelegation("failed", r.taskID, r.agent, errText)
 	default:
 		notifyDelegation("completed", r.taskID, r.agent, Truncate(summary, 240))
 	}
+	r.graph(interfaces.GraphEvent{
+		Type:       interfaces.GraphAgentEnd,
+		NodeID:     r.taskID,
+		Agent:      r.agent,
+		Status:     status,
+		Summary:    interfaces.TruncateUTF8(summary, interfaces.GraphLabelCap),
+		Error:      interfaces.TruncateUTF8(errText, interfaces.GraphLabelCap),
+		DurationMs: time.Since(r.startedAt).Milliseconds(),
+	})
 }
 
 // DelegateTaskArgs is the input schema for the delegate_task tool.
@@ -223,8 +350,11 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	}
 	// Gate prompts raised inside the sub-agent (approvals, clarifies) route
 	// to the parent run's session: map the sub-task id onto it for the
-	// duration of the delegation.
-	if parentSession := interfaces.SessionIDFromCtx(ctx); parentSession != "" {
+	// duration of the delegation. The parent's ADK task id doubles as the
+	// parent canvas node for graph events.
+	parentSession := interfaces.SessionIDFromCtx(ctx)
+	parentTaskID := interfaces.TaskIDFromCtx(ctx)
+	if parentSession != "" {
 		interfaces.RegisterTaskSession(taskID, parentSession)
 		defer interfaces.UnregisterTask(taskID)
 	}
@@ -246,7 +376,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	sessionMgr.GetOrCreateSession(taskID, cwd)
 	sessionMgr.RecordCWD(taskID, cwd)
 
-	reporter := newDelegationReporter(taskID, agentLabel)
+	reporter := newDelegationReporter(taskID, agentLabel, parentSession, parentTaskID)
 	reporter.started(input.Goal)
 
 	// 3. Build a restricted sub-agent via llmagent.New() with
@@ -397,11 +527,11 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 						if isFileOpTool(part.FunctionCall.Name) {
 							filesModified = append(filesModified, extractFilePath(part.FunctionCall.Args))
 						}
-						reporter.toolCall(part.FunctionCall.Name, part.FunctionCall.Args)
+						reporter.toolCall(part.FunctionCall.ID, part.FunctionCall.Name, part.FunctionCall.Args)
 						util.DebugEvent("subagent_tool_call", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
 					}
 					if part.FunctionResponse != nil {
-						reporter.toolResult(part.FunctionResponse.Name)
+						reporter.toolResult(part.FunctionResponse.ID, part.FunctionResponse.Name, part.FunctionResponse.Response)
 						util.DebugEvent("subagent_tool_response", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
 					}
 				}
@@ -437,7 +567,9 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		Status:        status,
 		Summary:       strings.TrimSpace(summary.String()),
 		FilesModified: filesModified,
-		Error:         fmt.Sprintf("%v", finalErr),
+	}
+	if finalErr != nil {
+		result.Error = finalErr.Error()
 	}
 	delegationCachePut(normGoal, result)
 	return result, nil
