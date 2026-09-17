@@ -68,12 +68,24 @@ sessions/
 .omc
 .omo
 .mimosa
+.pi/
+.zcode/
+.v2c/
+
+# local agent sessions/tooling state
+knowledge/
 
 # dev-mode structured debug logs
 logs/
 
 # interpreter scratch space (sandboxed script.py + web attachments)
 .hakase-tmp/
+
+# sleep cycle state (SkillOpt-Sleep checkpoint, never committed)
+.hakase/
+
+# root build artifact (make build / go build -o hakase)
+/hakase
 
 # generated runtime artifacts
 outputs/
