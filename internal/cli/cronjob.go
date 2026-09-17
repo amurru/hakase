@@ -245,8 +245,9 @@ type CronJob struct {
 	State      CronJobState `json:"state"`
 	Enabled    bool         `json:"enabled"`
 	// Native marks a built-in task type that runs without an LLM session.
-	// Currently "evolve": runs one skill-evolution pass (evolver.go) and
-	// writes the report to outputs/cron/. Empty = a normal LLM job.
+	// "evolve" runs one skill-evolution pass (evolver.go); "sleep" runs one
+	// SkillOpt-Sleep night (internal/sleep, SL-023). Both report to
+	// outputs/ and are CLI-only to create (SL-006). Empty = a normal LLM job.
 	Native     string       `json:"native,omitempty"`
 	NextRunAt  *time.Time   `json:"next_run_at,omitempty"`
 	LastRunAt  *time.Time   `json:"last_run_at,omitempty"`
@@ -320,7 +321,7 @@ func saveCronRegistryLocked(reg CronRegistry) error {
 	// Acquire exclusive flock for cross-process safety. The lock file is
 	// opened read+write so the Windows handle carries the access rights
 	// LockFileEx requires.
-	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0644)
+	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -330,10 +331,16 @@ func saveCronRegistryLocked(reg CronRegistry) error {
 	}
 	defer util.FlockUnlock(lf)
 
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	// 0600 (plan SL-005): job prompts may echo untrusted session content.
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, file)
+	if err := os.Rename(tmp, file); err != nil {
+		return err
+	}
+	// Tighten legacy registries written 0644 before the hardening.
+	_ = os.Chmod(file, 0o600)
+	return nil
 }
 
 // saveCronRegistry is the public locked saver.
@@ -420,12 +427,13 @@ var CronJobNotify func(status, jobID, name, summary, outputPath string)
 
 // Runtime globals set by cronModelBootstrap() for headless CLI execution.
 var (
-	currentModel     model.LLM
-	currentConfig    *config.Config
-	delegateTimeout  = 300 * time.Second
-	currentApproval  config.ApprovalConfig
-	currentClarify   config.ClarifyConfig
-	currentGuard     config.LoopGuardConfig
+	currentModel      model.LLM
+	currentModelName  string
+	currentConfig     *config.Config
+	delegateTimeout   = 300 * time.Second
+	currentApproval   config.ApprovalConfig
+	currentClarify    config.ClarifyConfig
+	currentGuard      config.LoopGuardConfig
 )
 
 // notifyCronJob emits a lifecycle event to the TUI listener and debug log.
@@ -474,6 +482,27 @@ func CreateCronjobTool(log hakaseagent.LogFunc) (tool.Tool, error) {
 	})
 }
 
+// toolDeniedNative reports whether a native job type must not be managed
+// through the model-facing cronjob tool (plan SL-006). "evolve" is
+// grandfathered: it predates the split, runs no LLM session, and only
+// touches ./skills behind the A/B gate with human-reviewed reports (the
+// darwinian-evolver skill documents tool creation). Every other native
+// type (including the future "sleep") requires local human CLI invocation
+// so a prompt injection reaching the tool cannot schedule, alter, or
+// trigger a privileged loop. CLI paths (triggerCronJob, future schedule
+// helpers writing the registry directly) are unaffected: these guards sit
+// in the tool handlers only.
+func toolDeniedNative(native string) bool {
+	n := strings.TrimSpace(strings.ToLower(native))
+	return n != "" && n != "evolve"
+}
+
+// nativeToolDenyMessage is the fail-closed response for tool attempts on
+// privileged native jobs.
+func nativeToolDenyMessage(native string) string {
+	return fmt.Sprintf("native task %q must be managed via CLI (human approval required), not via the cronjob tool (supported via tool: evolve)", native)
+}
+
 func handleCronCreate(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutput, error) {
 	if input.Schedule == "" {
 		return CronjobOutput{Success: false, Message: "schedule is required for create"}, nil
@@ -487,7 +516,9 @@ func handleCronCreate(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutpu
 	case "evolve":
 		// Native jobs run a built-in task and do not need an LLM prompt.
 	default:
-		return CronjobOutput{Success: false, Message: fmt.Sprintf("unknown native task %q (supported: evolve)", input.Native)}, nil
+		// Unknown AND privileged-future natives land here: either way the
+		// tool cannot create them (SL-006).
+		return CronjobOutput{Success: false, Message: nativeToolDenyMessage(input.Native)}, nil
 	}
 
 	sched, err := parseSchedule(input.Schedule)
@@ -581,6 +612,11 @@ func handleCronUpdate(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutpu
 	if err != nil {
 		return CronjobOutput{Success: false, Message: err.Error()}, nil
 	}
+	// SL-006: privileged native jobs cannot be altered via the tool
+	// (schedule/prompt changes included). Grandfathered "evolve" stays.
+	if toolDeniedNative(job.Native) {
+		return CronjobOutput{Success: false, Message: nativeToolDenyMessage(job.Native)}, nil
+	}
 
 	var changed bool
 	if input.Schedule != "" {
@@ -667,6 +703,12 @@ func handleCronResume(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutpu
 	if err != nil {
 		return CronjobOutput{Success: false, Message: err.Error()}, nil
 	}
+	// SL-006: re-enabling a privileged native job via the tool is denied.
+	// NOTE: pause is deliberately left open (it only reduces privilege:
+	// disables the job and clears its next run).
+	if toolDeniedNative(job.Native) {
+		return CronjobOutput{Success: false, Message: nativeToolDenyMessage(job.Native)}, nil
+	}
 	if job.State == CronStateCompleted {
 		return CronjobOutput{Success: false, Message: "cannot resume a completed job"}, nil
 	}
@@ -698,6 +740,12 @@ func handleCronRemove(input CronjobInput) (CronjobOutput, error) {
 	if err != nil {
 		return CronjobOutput{Success: false, Message: err.Error()}, nil
 	}
+	// SL-006: privileged native jobs cannot be removed via the tool (deletion
+	// via tool would let an injection silently dismantle a human-installed
+	// nightly loop; use the CLI).
+	if toolDeniedNative(job.Native) {
+		return CronjobOutput{Success: false, Message: nativeToolDenyMessage(job.Native)}, nil
+	}
 	removed := *job
 	reg.Jobs = removeFromSlice(reg.Jobs, job)
 	if err := saveCronRegistry(reg); err != nil {
@@ -714,6 +762,11 @@ func handleCronRun(input CronjobInput, log hakaseagent.LogFunc) (CronjobOutput, 
 	job, err := getCronJob(reg, input.JobID)
 	if err != nil {
 		return CronjobOutput{Success: false, Message: err.Error()}, nil
+	}
+	// SL-006: triggering a privileged native job via the tool is denied
+	// (immediate execution without human review). Use `hakase cron run`.
+	if toolDeniedNative(job.Native) {
+		return CronjobOutput{Success: false, Message: nativeToolDenyMessage(job.Native)}, nil
 	}
 	// Fire in background; do not alter the schedule.
 	jobCopy := *job
@@ -1063,6 +1116,10 @@ func runNativeCronJob(job CronJob, log hakaseagent.LogFunc) {
 		log(fmt.Sprintf("[cron] job %s evolution pass complete: %s", job.ID, report.Summary))
 		updateCronJobAfterRun(job, "completed", report.Summary, outputPath)
 		notifyCronJob("completed", job.ID, job.Name, report.Summary, outputPath)
+	case "sleep":
+		// One SkillOpt-Sleep night (plan SL-023). Created only via
+		// `hakase sleep schedule` (SL-006 keeps the tool path denied).
+		runSleepCronJob(job, log)
 	default:
 		summary := fmt.Sprintf("unknown native task %q", job.Native)
 		log(fmt.Sprintf("[cron] job %s %s", job.ID, summary))
@@ -1072,8 +1129,12 @@ func runNativeCronJob(job CronJob, log hakaseagent.LogFunc) {
 }
 
 func writeCronOutput(job CronJob, summaryText string, silent bool) string {
+	// 0700/0600 (plan SL-005): outputs embed prompts and summaries that may
+	// carry echoed secrets. MkdirAll does not chmod existing dirs.
 	dir := filepath.Join("outputs", "cron")
-	_ = os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0o700); err == nil {
+		_ = os.Chmod(dir, 0o700)
+	}
 
 	ts := time.Now().UTC().Format("20060102-150405")
 	filename := fmt.Sprintf("%s-%s.md", job.ID, ts)
@@ -1097,7 +1158,9 @@ func writeCronOutput(job CronJob, summaryText string, silent bool) string {
 		status,
 		summaryText,
 	)
-	_ = os.WriteFile(path, []byte(content), 0644)
+	// 0600 (plan SL-005, Chmod tightens pre-hardening 0644 files).
+	_ = os.WriteFile(path, []byte(content), 0o600)
+	_ = os.Chmod(path, 0o600)
 	return path
 }
 
@@ -1217,6 +1280,30 @@ func cronModelBootstrap() error {
 		return fmt.Errorf("create model: %w", err)
 	}
 	currentModel = model
+	currentModelName = modelName
+
+	// Skill-evolver mutator, headless half of plan SL-001 (live half lives
+	// next to SetupRunner in cmd/hakase/main.go + web.go). Without this,
+	// native cron `evolve` with Mutate:true silently skips mutation because
+	// skill.EvolveMutateFn stays nil. Mirrors agent.SetupRunner lines
+	// 1900-1904 (cheap summarizer, non-fatal) and 1932-1934 (mutator
+	// closure); vision.CurrentConfig + MCP warning behavior above preserved.
+	// NOTE: the local `model` above shadows the adk model package, so the
+	// CurrentModelFunc closure is assigned via a package-level helper in
+	// cron_headless.go (same package, no shadowing there).
+	assignHeadlessModelFunc()
+	if cfg.SummaryModel != "" && cfg.SummaryModel != modelName {
+		if sm, err := provider.CreateModel(context.Background(), cfg.SummaryModel, cfg.APIKey); err == nil {
+			hctx.SummarizeModel = sm
+		}
+	} else {
+		// Clear any stale summarizer from a previous bootstrap in this
+		// process so ModelPromptFn cannot reuse another config's model.
+		hctx.SummarizeModel = nil
+	}
+	skill.EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return hakaseagent.ModelPromptFn(ctx, prompt)
+	}
 
 	if cfg.DelegateTimeoutSeconds > 0 {
 		delegateTimeout = time.Duration(cfg.DelegateTimeoutSeconds) * time.Second

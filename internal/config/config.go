@@ -222,6 +222,109 @@ type Config struct {
 	// progress, answer approvals, and manage tasks/cron jobs. Channels run
 	// inside the web/serve process and are off unless explicitly enabled.
 	Channels ChannelsConfig `json:"channels,omitempty"`
+	// Sleep tunes the SkillOpt-Sleep offline self-improvement loop
+	// (docs/skillopt-sleep/plan.md Phase 2, SL-023). Every field is
+	// optional with a safe default; the loop only runs when explicitly
+	// invoked (`hakase sleep run`) or scheduled via `hakase sleep schedule`.
+	// See SleepConfig for the per-field meaning.
+	Sleep SleepConfig `json:"sleep,omitempty"`
+}
+
+// SleepConfig tunes one SkillOpt-Sleep night. Defaults (documented per
+// field) keep the loop conservative: redaction always on, no evidence log,
+// single-group nights, no auto-adoption. redact_secrets is the one field
+// that can never be set to false from this file: disabling redaction
+// requires the explicit --allow-unredacted CLI flag at invocation time
+// (plan SL-004: file-only-never).
+type SleepConfig struct {
+	// ModelBackend/ModelModel override the optimizer/target model; empty
+	// uses the configured provider stack. JudgeBackend/JudgeModel select a
+	// SEPARATE judge model (H2); empty resolves to the cheap secondary
+	// (summary_model) so miner/judge/optimizer are not silently the same
+	// model.
+	ModelBackend string `json:"model_backend,omitempty"`
+	ModelModel   string `json:"model_model,omitempty"`
+	JudgeBackend string `json:"judge_backend,omitempty"`
+	JudgeModel   string `json:"judge_model,omitempty"`
+	// EditBudget caps applied edits per skill per night (learning rate).
+	// Default 4.
+	EditBudget int `json:"edit_budget,omitempty"`
+	// GateMetric projects (hard, soft) to one comparison: hard | soft |
+	// mixed (default mixed). MixedWeight is the soft weight (default 0.5).
+	GateMetric  string  `json:"gate_metric,omitempty"`
+	MixedWeight float64 `json:"gate_mixed_weight,omitempty"`
+	// GateNoRegression blocks acceptance when ANY val task regresses.
+	// Default false (mean-based gate).
+	GateNoRegression bool `json:"gate_no_regression,omitempty"`
+	// Caps (plan SL-021/SL-022 defaults): MaxTasksPerNight 40,
+	// MaxSessionsPerNight 120, PerTaskTimeoutSeconds 120,
+	// PerNightTimeoutSeconds 3600, MaxToolCallsPerTask 50,
+	// MaxTokensPerNight 2000000 (estimated).
+	MaxTasksPerNight       int `json:"max_tasks_per_night,omitempty"`
+	MaxSessionsPerNight    int `json:"max_sessions_per_night,omitempty"`
+	PerTaskTimeoutSeconds  int `json:"per_task_timeout_seconds,omitempty"`
+	PerNightTimeoutSeconds int `json:"per_night_timeout_seconds,omitempty"`
+	MaxToolCallsPerTask    int `json:"max_tool_calls_per_task,omitempty"`
+	MaxTokensPerNight      int `json:"max_tokens_per_night,omitempty"`
+	// LookbackHours is the first-run harvest window (default 72; later
+	// nights use the state checkpoint).
+	LookbackHours int `json:"lookback_hours,omitempty"`
+	// LLMMine enables the LLM miner over redacted digests (default false:
+	// heuristic miner).
+	LLMMine bool `json:"llm_mine,omitempty"`
+	// Split fractions: TrainFraction/ValFraction/TestFraction must sum to
+	// 1 (defaults 0.6/0.2/0 - the test slice stays empty until evalkit
+	// lands in Phase 3).
+	TrainFraction float64 `json:"train_fraction,omitempty"`
+	ValFraction   float64 `json:"val_fraction,omitempty"`
+	TestFraction  float64 `json:"test_fraction,omitempty"`
+	// SplitSeed drives the deterministic shuffle (default 42).
+	SplitSeed int64 `json:"split_seed,omitempty"`
+	// EvolveSkill is the master switch for skill consolidation (default
+	// true when a night runs). EvolveMemory reserves the memory-trial
+	// surface (Phase 3; ignored today).
+	EvolveSkill  bool `json:"evolve_skill,omitempty"`
+	EvolveMemory bool `json:"evolve_memory,omitempty"`
+	// RecallK and DreamFactor plumb Phase 3 recall/dream consolidation
+	// (defaults 0 and 0: off). RecallK recalls top-k knowledge notes into
+	// the reflector context; DreamRollouts + DreamFactor > 0 synthesizes
+	// contrastive dream tasks quarantined to the train slice. FanOut
+	// enables per-skill consolidation in one night (default false: single
+	// largest group).
+	RecallK       int     `json:"recall_k,omitempty"`
+	DreamFactor   float64 `json:"dream_factor,omitempty"`
+	DreamRollouts bool    `json:"dream_rollouts,omitempty"`
+	FanOut        bool    `json:"fan_out,omitempty"`
+	// Learning-rate schedule (Phase 3, SL-030): LRScheduler constant|
+	// linear|cosine decays EditBudget toward LRFloor across LRHorizon
+	// nights (epoch = nights recorded in the sleep state). Defaults:
+	// constant / floor 0 / horizon 0 (no decay).
+	LRScheduler string `json:"lr_scheduler,omitempty"`
+	LRFloor     int    `json:"lr_floor,omitempty"`
+	LRHorizon   int    `json:"lr_horizon,omitempty"`
+	// SkillAwareReflection enables SKILL_DEFECT vs EXECUTION_LAPSE routing
+	// (Phase 3, SL-032): lapse reminders land in the protected appendix,
+	// bypassing the gate by design. Default off.
+	SkillAwareReflection bool `json:"skill_aware_reflection,omitempty"`
+	// AutoAdopt installs accepted proposals for managed skills only (M5);
+	// hand-written skills always stage for explicit `sleep adopt`.
+	// Default false.
+	AutoAdopt bool `json:"auto_adopt,omitempty"`
+	// EvidenceLog enables outputs/sleep evidence.jsonl (default false:
+	// kill switch stays off until redaction matrix tests pass in CI).
+	EvidenceLog bool `json:"evidence_log,omitempty"`
+	// RedactSecrets is accepted in the file for forward compatibility ONLY
+	// as the true default; loaders must refuse redact_secrets:false
+	// (SL-004: file-only-never). Not consumed directly by the cycle.
+	RedactSecrets *bool `json:"redact_secrets,omitempty"`
+	// SkillRoots adds extra skill discovery roots for group resolution
+	// (disambiguates cross-root collisions with --skill-root at CLI level).
+	SkillRoots []string `json:"skill_roots,omitempty"`
+	// IncludeAuditArgs/IncludeAuditOutputs join audit-log detail into
+	// digests (default false: tool names only). The audit log records no
+	// outputs today; IncludeAuditOutputs reserves the key.
+	IncludeAuditArgs    bool `json:"include_audit_args,omitempty"`
+	IncludeAuditOutputs bool `json:"include_audit_outputs,omitempty"`
 }
 
 // ChannelsConfig tunes the communication-channel subsystem. Absent values are

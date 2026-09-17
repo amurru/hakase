@@ -9,6 +9,7 @@ package skill
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -76,7 +77,7 @@ func saveSkillStateLocked(st SkillState) error {
 	tmp := file + ".tmp"
 	lockFile := file + ".lock"
 
-	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o644)
+	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -86,7 +87,8 @@ func saveSkillStateLocked(st SkillState) error {
 	}
 	defer util.FlockUnlock(lf)
 
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// 0600 (plan SL-005): the disabled list shapes which skills load.
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, file)
@@ -135,6 +137,38 @@ func SetSkillDisabled(kind, name string, disabled bool) error {
 // "not disabled".
 func IsSkillDisabled(kind, name string) bool {
 	return DisabledSkillsSet()[SkillKey(kind, name)]
+}
+
+// CheckSkillEnabled is the fail-closed counterpart of IsSkillDisabled for
+// mutation/adopt paths (plan SL-005/N7): unlike the lenient loader it
+// distinguishes "enabled" from "unknown". It returns nil only when the
+// state file is provably readable (or absent, meaning never disabled) and
+// the skill is not listed. Corrupt state, unreadable files, and disabled
+// entries all yield an error so callers abort instead of evolving a skill
+// whose opt-out they could not verify. Phase 1 adopt must use this, not
+// IsSkillDisabled.
+func CheckSkillEnabled(kind, name string) error {
+	skillStateMu.Lock()
+	defer skillStateMu.Unlock()
+
+	key := SkillKey(kind, name)
+	data, err := os.ReadFile(SkillStateFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("skill state unreadable: %w", err)
+	}
+	var st SkillState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return fmt.Errorf("skill state corrupt: %w", err)
+	}
+	for _, n := range st.Disabled {
+		if n == key {
+			return fmt.Errorf("skill %q is disabled", key)
+		}
+	}
+	return nil
 }
 
 // DisabledSkillsSet returns the set of disabled skill keys ("<kind>:<name>")

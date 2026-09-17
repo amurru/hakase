@@ -209,7 +209,9 @@ func TestRunEvolutionPass_RejectedNoGain(t *testing.T) {
 	}
 }
 
-// TestRunEvolutionPass_ParseFailure: an unparseable mutator reply is a no-op.
+// TestRunEvolutionPass_ParseFailure: an unparseable mutator reply is an
+// unmatched no-op (plan SL-003): it never reached the gate, so it lands in
+// Unmatched, not Rejected.
 func TestRunEvolutionPass_ParseFailure(t *testing.T) {
 	dir := t.TempDir()
 	writePySkill(t, dir, "adder", adderSkill)
@@ -225,11 +227,111 @@ func TestRunEvolutionPass_ParseFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunEvolutionPass: %v", err)
 	}
-	if report.TotalPromote != 0 || len(report.Rejected) != 1 {
-		t.Errorf("expected 1 no-op rejection, got promote=%d reject=%v", report.TotalPromote, report.Rejected)
+	if report.TotalPromote != 0 || len(report.Rejected) != 0 {
+		t.Errorf("expected 0 promote/0 reject, got promote=%d reject=%v", report.TotalPromote, report.Rejected)
 	}
-	if !strings.Contains(report.Rejected[0], "no code block") {
-		t.Errorf("rejection reason should mention parse failure: %v", report.Rejected)
+	if len(report.Unmatched) != 1 {
+		t.Fatalf("expected 1 unmatched, got %v", report.Unmatched)
+	}
+	if !strings.Contains(report.Unmatched[0], "no code block") {
+		t.Errorf("unmatched reason should mention parse failure: %v", report.Unmatched)
+	}
+}
+
+// TestRunEvolutionPass_HoldoutLeaked (SL-003): a skill with no holdout cases
+// can never promote, even when the candidate fixes every train case. The
+// comparison cannot detect overfitting, so the gate reports
+// reject_unverified instead of certifying.
+func TestRunEvolutionPass_HoldoutLeaked(t *testing.T) {
+	dir := t.TempDir()
+	writePySkill(t, dir, "adder", adderSkill)
+	writeEvalSet(t, dir, "adder", `{
+  "cases": [
+    {"name": "t1", "input": {"a": 1, "b": 2}, "expected": "3", "match": "contains", "train": true},
+    {"name": "t2", "input": {"a": 5, "b": 7}, "expected": "12", "match": "contains", "train": true}
+  ]
+}`)
+
+	orig := EvolveMutateFn
+	EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return "```python\n" + adderFix + "```", nil
+	}
+	defer func() { EvolveMutateFn = orig }()
+
+	report, err := RunEvolutionPass(EvolutionOptions{SkillsDir: dir, Mutate: true, ReportPath: ""})
+	if err != nil {
+		t.Fatalf("RunEvolutionPass: %v", err)
+	}
+	if report.TotalPromote != 0 {
+		t.Fatalf("leaked holdout must never promote, got %d", report.TotalPromote)
+	}
+	if len(report.Mutated) != 1 || !report.Mutated[0].HoldoutLeaked {
+		t.Fatalf("mutation record must flag holdout_leaked: %+v", report.Mutated)
+	}
+	if len(report.Rejected) != 1 || !strings.Contains(report.Rejected[0], "reject_unverified") {
+		t.Errorf("rejected should carry reject_unverified: %v", report.Rejected)
+	}
+	src, _ := os.ReadFile(filepath.Join(dir, "adder.py"))
+	if !strings.Contains(string(src), "+ 1") {
+		t.Error("incumbent must be unchanged after leaked rejection")
+	}
+}
+
+// TestRunEvolutionPass_GateNoRegression (SL-003): with GateNoRegression, a
+// candidate that clears the train-gain threshold but breaks a
+// previously-passing holdout case is rejected, even though the aggregate
+// holdout score does not drop (lateral move the mean-only gate accepts).
+func TestRunEvolutionPass_GateNoRegression(t *testing.T) {
+	dir := t.TempDir()
+	// Incumbent fails t1 + h1, passes t2 + h2. Candidate fixes t1 + h1 but
+	// breaks h2: train 0.5 -> 1.0 (gain ok), holdout 0.5 -> 0.5 (mean ok,
+	// but h2 regressed).
+	writePySkill(t, dir, "swap", `def f(x):
+    if x == "t1" or x == "h1":
+        return "wrong"
+    return "right"
+`)
+	writeEvalSet(t, dir, "swap", `{
+  "cases": [
+    {"name": "t1", "input": "t1", "expected": "right", "match": "exact", "train": true},
+    {"name": "t2", "input": "other", "expected": "right", "match": "exact", "train": true},
+    {"name": "h1", "input": "h1", "expected": "right", "match": "exact", "train": false},
+    {"name": "h2", "input": "h2", "expected": "right", "match": "exact", "train": false}
+  ]
+}`)
+	candidate := `def f(x):
+    if x == "h2":
+        return "wrong"
+    return "right"
+`
+	orig := EvolveMutateFn
+	EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return "```python\n" + candidate + "```", nil
+	}
+	defer func() { EvolveMutateFn = orig }()
+
+	report, err := RunEvolutionPass(EvolutionOptions{SkillsDir: dir, Mutate: true, ReportPath: "", GateNoRegression: true})
+	if err != nil {
+		t.Fatalf("RunEvolutionPass: %v", err)
+	}
+	if report.TotalPromote != 0 {
+		t.Fatalf("holdout task regression must block promotion, got %d", report.TotalPromote)
+	}
+	if len(report.Rejected) != 1 || !strings.Contains(report.Rejected[0], "h2") {
+		t.Errorf("rejection should name the regressed holdout case: %v", report.Rejected)
+	}
+
+	// Legacy mean-only gate still accepts the same lateral move (documents
+	// the behavior change; the new default for markdown skills is strict).
+	EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return "```python\n" + candidate + "```", nil
+	}
+	report2, err := RunEvolutionPass(EvolutionOptions{SkillsDir: dir, Mutate: true, ReportPath: ""})
+	if err != nil {
+		t.Fatalf("RunEvolutionPass legacy: %v", err)
+	}
+	if report2.TotalPromote != 1 {
+		t.Errorf("legacy gate should accept the lateral move, got %d (%v)", report2.TotalPromote, report2.Rejected)
 	}
 }
 
@@ -276,6 +378,110 @@ func TestRunEvolutionPass_NoEvalSets(t *testing.T) {
 	}
 	if len(report.Skipped) != 1 || report.TotalPromote != 0 {
 		t.Errorf("skipped=%v promote=%d", report.Skipped, report.TotalPromote)
+	}
+}
+
+// TestEvaluateSkill_FailuresCarryInput (SL-002): failure records carry the
+// declared eval input so the mutator sees what actually failed, and the
+// rendered prompt redacts secret-shaped values before they leave the process.
+func TestEvaluateSkill_FailuresCarryInput(t *testing.T) {
+	dir := t.TempDir()
+	writePySkill(t, dir, "adder", adderSkill)
+	writeEvalSet(t, dir, "adder", adderEval)
+
+	res := evaluateSkill(dir, "adder", "adder.py")
+	if len(res.TrainFail) != 2 {
+		t.Fatalf("trainFail=%d want 2", len(res.TrainFail))
+	}
+	// First train case declares {"a":1,"b":2}: must survive to the failure.
+	inputJSON, _ := json.Marshal(res.TrainFail[0].Input)
+	if !strings.Contains(string(inputJSON), `"a":1`) {
+		t.Errorf("failure input lost: %s", inputJSON)
+	}
+
+	prompt := buildMutationPrompt("adder", adderSkill, res.TrainFail)
+	if !strings.Contains(prompt, `"a":1`) {
+		t.Errorf("mutator prompt missing real input: %s", prompt)
+	}
+
+	// Secret-shaped input is redacted in the prompt but raw in the record.
+	secretFail := []EvalFailure{{
+		Name:     "leak",
+		Input:    map[string]interface{}{"token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"},
+		Expected: "ok",
+		Actual:   "nope",
+	}}
+	secretPrompt := buildMutationPrompt("s", "def f():\n    pass\n", secretFail)
+	if strings.Contains(secretPrompt, "ghp_") {
+		t.Errorf("secret survived in mutator prompt: %s", secretPrompt)
+	}
+	if !strings.Contains(secretPrompt, "[REDACTED:") {
+		t.Errorf("no redaction token in mutator prompt: %s", secretPrompt)
+	}
+}
+
+// TestRunEvolutionPass_RegistryPerms (SL-005/B3): the rewritten registry
+// lands 0600 (buggy adder scores 0 -> deprecated -> registry rewrite).
+func TestRunEvolutionPass_RegistryPerms(t *testing.T) {
+	dir := t.TempDir()
+	writePySkill(t, dir, "adder", adderSkill)
+	writeEvalSet(t, dir, "adder", adderEval)
+
+	if _, err := RunEvolutionPass(EvolutionOptions{SkillsDir: dir, Mutate: false, ReportPath: ""}); err != nil {
+		t.Fatalf("RunEvolutionPass: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "skills.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("registry mode = %o, want 600", got)
+	}
+}
+
+// TestMutateAndSelect_EscapesSkillsDir (SL-005/B4): a skill file resolving
+// outside the library (here via a symlink swap) is never overwritten, even
+// when the candidate would win on scores.
+func TestMutateAndSelect_EscapesSkillsDir(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	evilPath := filepath.Join(outside, "evil.py")
+	if err := os.WriteFile(evilPath, []byte(adderSkill), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// skills/<name>.py is a symlink pointing outside the library.
+	linkDir := filepath.Join(dir, "linked")
+	if err := os.MkdirAll(linkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(evilPath, filepath.Join(linkDir, "evil.py")); err != nil {
+		t.Fatal(err)
+	}
+	reg := SkillRegistry{Skills: []SkillMeta{{Name: "evil", Description: "t", FileName: "linked/evil.py"}}}
+	regBytes, _ := json.MarshalIndent(reg, "", "  ")
+	_ = os.WriteFile(filepath.Join(dir, "skills.json"), regBytes, 0o600)
+	writeEvalSet(t, dir, "evil", adderEval)
+
+	// Sanity: incumbent (read through the link) fails, candidate fixes all.
+	orig := EvolveMutateFn
+	EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return "```python\n" + adderFix + "```", nil
+	}
+	defer func() { EvolveMutateFn = orig }()
+
+	report, err := RunEvolutionPass(EvolutionOptions{SkillsDir: dir, Mutate: true, ReportPath: ""})
+	if err != nil {
+		t.Fatalf("RunEvolutionPass: %v", err)
+	}
+	if report.TotalPromote != 0 {
+		t.Fatalf("escaping promotion must never happen, got %d", report.TotalPromote)
+	}
+	if len(report.Rejected) != 1 || !strings.Contains(report.Rejected[0], "escapes skills dir") {
+		t.Errorf("rejection must cite the escape: %v", report.Rejected)
+	}
+	after, _ := os.ReadFile(evilPath)
+	if !strings.Contains(string(after), "+ 1") {
+		t.Error("outside file must be untouched")
 	}
 }
 

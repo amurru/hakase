@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -43,4 +44,34 @@ func ModelPromptFn(ctx context.Context, prompt string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// PromptModelCaller returns a ModelPromptFn-style single-prompt caller over
+// an explicit model. Used where a SECOND model identity is required - the
+// sleep judge seam (plan H2), which must be independent of the
+// SummarizeModel/CurrentModel pairing ModelPromptFn serves.
+func PromptModelCaller(llm model.LLM) func(ctx context.Context, prompt string) (string, error) {
+	return func(ctx context.Context, prompt string) (string, error) {
+		if llm == nil {
+			return "", fmt.Errorf("no model available")
+		}
+		req := &adkLLMRequest{
+			Model:    llm.Name(),
+			Contents: []*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)},
+		}
+		var out strings.Builder
+		for resp, err := range llm.GenerateContent(ctx, req, false) {
+			if err != nil {
+				return "", err
+			}
+			if resp != nil && resp.Content != nil {
+				for _, part := range resp.Content.Parts {
+					if part != nil && part.Text != "" && !part.Thought {
+						out.WriteString(part.Text)
+					}
+				}
+			}
+		}
+		return strings.TrimSpace(out.String()), nil
+	}
 }

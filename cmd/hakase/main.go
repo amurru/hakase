@@ -158,6 +158,11 @@ func runTUI() {
 		log.Fatalf("Failed to setup agent runner: %v", err)
 	}
 
+	// NOTE (plan SL-001, audit B5): the skill-evolver mutator bridge
+	// (skill.EvolveMutateFn) and the hctx.CurrentModelFunc hook are owned
+	// by agent.SetupRunner above (it already imports internal/skill), so
+	// live TUI runs mutate correctly with no per-entrypoint wiring.
+
 	// Build the TUI model and the tea.Program.
 	m := tui.NewModel(ctx, r, sessionSvc, cfg.ChatBufferSize, cfg.ShowThinking, cfg.ModelName, cfg.ThinkingLevel)
 	program = tea.NewProgram(&m)

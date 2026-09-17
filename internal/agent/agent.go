@@ -42,6 +42,13 @@ import (
 // variable shadows the package import there.
 type adkLLMRequest = model.LLMRequest
 
+// currentModelFunc returns an hctx.CurrentModelFunc hook closing over llm.
+// Package-level (not inline in SetupRunner) because SetupRunner's local
+// `model` variable shadows the adk model package import.
+func currentModelFunc(llm model.LLM) func() model.LLM {
+	return func() model.LLM { return llm }
+}
+
 // buildSidekickConfig returns a *config.Config that selects the sidekick's
 // model: each sidekick override (provider/model/base_url/api_key) falls back
 // to the primary config when empty. Used to build a second, independent model
@@ -1930,6 +1937,21 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// given the current source and a failure case. Falls back to no-op
 	// (no mutation) when unset (CLI/tests) or when the call fails.
 	deps.EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
+		return ModelPromptFn(ctx, prompt)
+	}
+
+	// Skill-evolver bridge, live half of plan SL-001 (headless half is
+	// assignHeadlessModelFunc in internal/cli/cron_headless.go). The skill
+	// package consumes its own EvolveMutateFn global; this package already
+	// imports skill, so SetupRunner assigns it directly instead of leaving
+	// the bridge to each main entrypoint (audit B5: bridges without the
+	// CurrentModelFunc hook below left ModelPromptFn model-less).
+	// hctx.CurrentModelFunc previously stayed a nil stub outside headless
+	// runs, so with no summary_model configured every live mutation failed
+	// with "no model available" while tests (which stub EvolveMutateFn)
+	// stayed green.
+	hctx.CurrentModelFunc = currentModelFunc(model)
+	skill.EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
 		return ModelPromptFn(ctx, prompt)
 	}
 
