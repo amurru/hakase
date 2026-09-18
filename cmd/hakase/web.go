@@ -281,6 +281,11 @@ func runServer(args []string, serveSPA bool) int {
 		return 1
 	}
 
+	// NOTE (plan SL-001, audit B5): skill.EvolveMutateFn and
+	// hctx.CurrentModelFunc are owned by agent.SetupRunner above; the
+	// web/serve process (hosting cron-driven native jobs) needs no
+	// per-entrypoint bridge.
+
 	// Fetch model capabilities (context window, thinking support) in the
 	// background and feed them to the HistoryBuilder for budget math and to
 	// the vision package for main-model vision detection (mirrors runTUI in

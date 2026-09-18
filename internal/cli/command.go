@@ -156,6 +156,11 @@ func init() {
 		Handler:     RunChannelsCLI,
 	})
 	registerCommand(Command{
+		Name:        "sleep",
+		Description: "offline skill self-improvement loop (harvest, review, run, adopt)",
+		Handler:     RunSleepCLI,
+	})
+	registerCommand(Command{
 		Name:        "web",
 		Description: "serve the web UI",
 		Handler:     notMigrated("web"),

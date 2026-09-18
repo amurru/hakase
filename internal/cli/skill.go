@@ -40,6 +40,8 @@ func RunSkillCLI(args []string) int {
 		return runSkillValidate(args[1:])
 	case "evolve":
 		return runSkillEvolve(args[1:])
+	case "evolve-md":
+		return runSkillEvolveMD(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown skill subcommand %q\n\n", args[0])
 		skillCLIUsage()
@@ -56,6 +58,7 @@ func skillCLIUsage() {
 	fmt.Fprintln(os.Stderr, "  list       list discovered skills (Python + markdown) with source paths")
 	fmt.Fprintln(os.Stderr, "  validate   validate a skill directory or SKILL.md file; exit non-zero on failure")
 	fmt.Fprintln(os.Stderr, "  evolve     run one skill-evolution pass (evaluate + optional mutate); writes report to outputs/cron/")
+	fmt.Fprintln(os.Stderr, "  evolve-md  run one markdown-skill consolidation epoch (replay + reflect + gate); stages to outputs/sleep/")
 }
 
 // runSkillCreate scaffolds a new markdown skill at <dir>/<name>/SKILL.md.
@@ -377,6 +380,17 @@ func runSkillEvolve(args []string) int {
 	opts := skill.EvolutionOptions{
 		SkillsDir: dirFlag,
 		Mutate:    mutate,
+	}
+	if mutate {
+		// Audit B6: --mutate needs the model-backed mutator. This CLI runs
+		// in a separate process from the TUI/web bootstraps, so without
+		// an explicit bootstrap skill.EvolveMutateFn stays nil and the
+		// pass would silently degrade to evaluation-only while the
+		// summary still claims "mutations enabled". Fail loudly instead.
+		if err := cronModelBootstrap(); err != nil {
+			fmt.Fprintf(os.Stderr, "evolve --mutate requires a configured model: %v\n", err)
+			return 1
+		}
 	}
 	if !noReport {
 		if reportFlag != "" {

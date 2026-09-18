@@ -63,6 +63,49 @@ func TestSetSkillDisabledRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCheckSkillEnabled_FailClosed (SL-005/N7): corrupt or unreadable state
+// aborts adopt-path checks instead of defaulting to enabled, while a
+// missing file (never opted out) and a clean file pass.
+func TestCheckSkillEnabled_FailClosed(t *testing.T) {
+	home := setupStateTest(t)
+
+	// Missing file: enabled.
+	if err := CheckSkillEnabled(KindPython, "x"); err != nil {
+		t.Fatalf("missing state must mean enabled: %v", err)
+	}
+
+	// Disabled entry: error naming the skill.
+	if err := SetSkillDisabled(KindPython, "x", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSkillEnabled(KindPython, "x"); err == nil {
+		t.Fatal("disabled skill must fail CheckSkillEnabled")
+	}
+
+	// Corrupt file: fail closed (IsSkillDisabled stays lenient by design).
+	if err := os.WriteFile(filepath.Join(home, "skill-state.json"), []byte("not json{{{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSkillEnabled(KindPython, "x"); err == nil {
+		t.Fatal("corrupt state must fail CheckSkillEnabled")
+	}
+}
+
+// TestSkillState_Perms asserts the state file lands 0600 (plan SL-005).
+func TestSkillState_Perms(t *testing.T) {
+	home := setupStateTest(t)
+	if err := SetSkillDisabled(KindPython, "perm", true); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(home, "skill-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("state file mode = %o, want 600", got)
+	}
+}
+
 func TestDisabledSkillsSetMultiple(t *testing.T) {
 	setupStateTest(t)
 

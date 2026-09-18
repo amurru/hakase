@@ -361,8 +361,9 @@ func TestDueCronJobs(t *testing.T) {
 }
 
 // TestHandleCronCreateNativeEvolve verifies the native "evolve" job contract
-// (plan Phase 3b cron wiring): creation without an LLM prompt, and rejection
-// of unknown native types. The registry is sandboxed to a temp HAKASE_HOME.
+// (plan Phase 3b cron wiring, SL-006 grandfathered): creation without an LLM
+// prompt, and CLI-pointing rejection of privileged/unknown native types.
+// The registry is sandboxed to a temp HAKASE_HOME.
 func TestHandleCronCreateNativeEvolve(t *testing.T) {
 	t.Setenv("HAKASE_HOME", t.TempDir())
 
@@ -407,6 +408,145 @@ func TestHandleCronCreateNativeEvolve(t *testing.T) {
 	}
 	if out3.Success {
 		t.Fatalf("prompt-less plain job should be rejected: %+v", out3)
+	}
+}
+
+// TestHandleCronCreateNativeDeniedViaTool (plan SL-006): privileged native
+// types cannot be created through the model-facing tool; the denial must
+// point at the CLI. Grandfathered "evolve" stays creatable (documented
+// darwinian-evolver workflow, no LLM session, A/B-gated).
+func TestHandleCronCreateNativeDeniedViaTool(t *testing.T) {
+	cronTestEnv(t)
+	noop := func(string) {}
+
+	out, err := handleCronCreate(CronjobInput{
+		Action:   "create",
+		Name:     "nightly sleep",
+		Schedule: "every 24h",
+		Native:   "sleep",
+	}, noop)
+	if err != nil {
+		t.Fatalf("handleCronCreate: %v", err)
+	}
+	if out.Success {
+		t.Fatalf("privileged native must be denied via tool: %+v", out.Job)
+	}
+	if !strings.Contains(out.Message, "CLI") {
+		t.Errorf("denial must point at the CLI: %q", out.Message)
+	}
+
+	evolve, err := handleCronCreate(CronjobInput{
+		Action:   "create",
+		Name:     "nightly evolution",
+		Schedule: "every 24h",
+		Native:   "evolve",
+	}, noop)
+	if err != nil {
+		t.Fatalf("handleCronCreate(evolve): %v", err)
+	}
+	if !evolve.Success {
+		t.Fatalf("grandfathered evolve must stay creatable via tool: %s", evolve.Message)
+	}
+}
+
+// TestHandleCronNativeToolGuards (plan SL-006): update/resume/run/remove on
+// a privileged native job are denied via the tool; pause stays open (it
+// only reduces privilege); grandfathered evolve jobs remain manageable.
+func TestHandleCronNativeToolGuards(t *testing.T) {
+	cronTestEnv(t)
+	noop := func(string) {}
+	now := time.Now().UTC()
+
+	seed := func(job CronJob) {
+		t.Helper()
+		reg, err := loadCronRegistry()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.Jobs = append(reg.Jobs, job)
+		if err := saveCronRegistry(reg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := now.Add(time.Hour)
+	seed(CronJob{ID: "sleep1", Name: "sleep", Schedule: "every 24h", Native: "sleep",
+		State: CronStateScheduled, Enabled: true, NextRunAt: &next,
+		CreatedAt: now, UpdatedAt: now})
+	seed(CronJob{ID: "evolve1", Name: "evolve", Schedule: "every 24h", Native: "evolve",
+		State: CronStateScheduled, Enabled: true, NextRunAt: &next,
+		CreatedAt: now, UpdatedAt: now})
+
+	denied := []struct {
+		name string
+		call func() (CronjobOutput, error)
+	}{
+		{"update", func() (CronjobOutput, error) {
+			return handleCronUpdate(CronjobInput{Action: "update", JobID: "sleep1", Name: "renamed"}, noop)
+		}},
+		{"resume", func() (CronjobOutput, error) {
+			return handleCronResume(CronjobInput{Action: "resume", JobID: "sleep1"}, noop)
+		}},
+		{"run", func() (CronjobOutput, error) {
+			return handleCronRun(CronjobInput{Action: "run", JobID: "sleep1"}, noop)
+		}},
+		{"remove", func() (CronjobOutput, error) {
+			return handleCronRemove(CronjobInput{Action: "remove", JobID: "sleep1"})
+		}},
+	}
+	for _, d := range denied {
+		out, err := d.call()
+		if err != nil {
+			t.Fatalf("%s: %v", d.name, err)
+		}
+		if out.Success {
+			t.Errorf("%s on privileged native must be denied via tool", d.name)
+		}
+		if !strings.Contains(out.Message, "CLI") {
+			t.Errorf("%s denial must point at the CLI: %q", d.name, out.Message)
+		}
+	}
+
+	// The denied remove must not have deleted the job.
+	reg, err := loadCronRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Jobs) != 2 {
+		t.Fatalf("denied remove altered the registry: %d jobs", len(reg.Jobs))
+	}
+
+	// Pause stays open and actually pauses.
+	paused, err := handleCronPause(CronjobInput{Action: "pause", JobID: "sleep1"})
+	if err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if !paused.Success {
+		t.Fatalf("pause on privileged native must stay allowed: %s", paused.Message)
+	}
+
+	// Grandfathered evolve jobs remain manageable via the tool.
+	updated, err := handleCronUpdate(CronjobInput{Action: "update", JobID: "evolve1", Name: "renamed"}, noop)
+	if err != nil {
+		t.Fatalf("evolve update: %v", err)
+	}
+	if !updated.Success {
+		t.Fatalf("evolve update must stay allowed via tool: %s", updated.Message)
+	}
+}
+
+// TestRunSkillEvolveMutateRequiresModel (audit B6): --mutate without a
+// configured model fails loudly instead of silently degrading to
+// evaluation-only while the summary claims "mutations enabled".
+func TestRunSkillEvolveMutateRequiresModel(t *testing.T) {
+	cronTestEnv(t) // temp HOME + temp cwd: no config.json anywhere reachable
+	for _, k := range []string{
+		"HAKASE_API_KEY", "HAKASE_PROVIDER", "HAKASE_MODEL",
+		"HAKASE_BASE_URL", "HAKASE_SUMMARY_MODEL",
+	} {
+		t.Setenv(k, "")
+	}
+	if code := runSkillEvolve([]string{"--mutate", "--dir", t.TempDir(), "--no-report"}); code != 1 {
+		t.Fatalf("runSkillEvolve --mutate without model = %d, want 1", code)
 	}
 }
 
