@@ -168,11 +168,12 @@ func runSkillEvolveMD(args []string) int {
 		return 0
 	}
 	if reportPath != "" {
+		// MkdirAll applies 0700 to directories it creates; never chmod an
+		// existing (possibly shared or current) directory (CodeRabbit).
 		if err := os.MkdirAll(filepath.Dir(reportPath), 0o700); err != nil {
 			fmt.Fprintf(os.Stderr, "evolve-md: %v\n", err)
 			return 1
 		}
-		_ = os.Chmod(filepath.Dir(reportPath), 0o700)
 		if err := os.WriteFile(reportPath, []byte(sleep.RenderSleepReport(skillName, result)), 0o600); err != nil {
 			fmt.Fprintf(os.Stderr, "evolve-md: %v\n", err)
 			return 1

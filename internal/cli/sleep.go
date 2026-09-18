@@ -242,6 +242,7 @@ func runSleepRun(args []string, dryRun bool) int {
 	var noRegression, greedy, fanOut, autoAdopt, agentic bool
 	var perTaskTimeout, perNightTimeout int
 	var maxTokens int
+	var maxToolCalls int
 	var ackModelChange bool
 	var lrScheduler, knowledgeDir string
 	var lrFloor, lrHorizon, recallK int
@@ -275,6 +276,7 @@ func runSleepRun(args []string, dryRun bool) int {
 	fs.IntVar(&perTaskTimeout, "per-task-timeout", 0, "per-task replay budget in seconds (default: config or 120)")
 	fs.IntVar(&perNightTimeout, "per-night-timeout", 0, "whole-night budget in seconds (default: config or 3600)")
 	fs.IntVar(&maxTokens, "max-tokens", 0, "estimated token budget for the night (default: config or 2000000)")
+	fs.IntVar(&maxToolCalls, "max-tool-calls", 0, "agentic tool-call budget per task (default: config or 50)")
 	fs.BoolVar(&agentic, "agentic", false, "replay via an isolated runner with read-only tools")
 	fs.BoolVar(&ackModelChange, "acknowledge-model-change", false, "confirm the provider/model changed since the last night")
 	fs.StringVar(&lrScheduler, "lr-scheduler", "", "edit-budget schedule: constant | linear | cosine (default: config or constant)")
@@ -412,6 +414,9 @@ func runSleepRun(args []string, dryRun bool) int {
 	if set["max-tokens"] {
 		opts.MaxTokensPerNight = maxTokens
 	}
+	if set["max-tool-calls"] {
+		opts.MaxToolCallsPerTask = maxToolCalls
+	}
 	if set["state"] {
 		opts.StatePath = statePath
 	}
@@ -482,7 +487,7 @@ func runSleepRun(args []string, dryRun bool) int {
 			opts.JudgeModelKey = judgeKey
 		}
 		if agentic {
-			ar, err := sleep.AgenticTarget(sleep.AgenticOpts{Model: currentModel, Timeout: opts.PerTaskTimeout})
+			ar, err := sleep.AgenticTarget(sleep.AgenticOpts{Model: currentModel, Timeout: opts.PerTaskTimeout, MaxToolCalls: opts.MaxToolCallsPerTask})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "sleep run: agentic replay unavailable: %v\n", err)
 				return 1
@@ -701,11 +706,24 @@ func runSleepSchedule(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if _, err := parseSchedule(at); err != nil {
+	sched, err := parseSchedule(at)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "sleep schedule: %v\n", err)
 		return 2
 	}
 	now := time.Now().UTC()
+	// Persist the first run time (CodeRabbit): dueCronJobs skips scheduled
+	// jobs with a nil NextRunAt, so without this the job would never fire
+	// via cron tick or the background scheduler.
+	next, err := sched.next(now)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sleep schedule: cannot compute next run: %v\n", err)
+		return 2
+	}
+	if sched.OneShot && !next.After(now) {
+		fmt.Fprintln(os.Stderr, "sleep schedule: schedule is in the past")
+		return 2
+	}
 	job := CronJob{
 		ID:        session.GenerateTaskID(),
 		Name:      name,
@@ -714,6 +732,7 @@ func runSleepSchedule(args []string) int {
 		State:     CronStateScheduled,
 		Enabled:   true,
 		Native:    "sleep",
+		NextRunAt: &next,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

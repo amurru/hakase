@@ -24,10 +24,12 @@ import (
 	"amurru/hakase/internal/skill"
 )
 
-// Mining caps and defaults (plan SL-021).
+// Mining caps and defaults (plan SL-021). The default split is 0.8/0.2/0:
+// with the legacy empty test slice, train takes everything val does not
+// (CodeRabbit: the constants must sum to one so logs and behavior agree).
 const (
 	DefaultMaxTasksPerNight = 40
-	DefaultTrainFraction    = 0.6
+	DefaultTrainFraction    = 0.8
 	DefaultValFraction      = 0.2
 	DefaultTestFraction     = 0.0 // legacy behavior: no test slice
 	DefaultSplitSeed        = 42
@@ -122,22 +124,24 @@ func Mine(digests []SessionDigest, opts MineOpts) MineResult {
 	return finalizeTasks(turns, maxTasks, opts.TrainFraction, opts.ValFraction, opts.TestFraction, seed)
 }
 
-// heuristicTurns extracts one candidate task per harvested turn.
+// heuristicTurns extracts one candidate task per harvested turn. Turns are
+// self-contained records, so prompt/final/signals pairing cannot drift
+// (CodeRabbit).
 func heuristicTurns(digests []SessionDigest) []minedTurn {
 	var turns []minedTurn
 	for _, d := range digests {
-		for i, prompt := range d.Prompts {
+		for i, turn := range d.Turns {
+			prompt := turn.Prompt
+			final := turn.Final
 			t := minedTurn{task: skill.MarkdownTask{
 				ID:        minedTaskID(d.SessionID, i, prompt),
 				Intent:    prompt,
 				SkillHint: skillHint(d),
 				Origin:    "real",
 			}}
-			if i < len(d.Finals) {
-				t.task.ContextExcerpt = d.Finals[i]
-			}
+			t.task.ContextExcerpt = final
 			var neg, pos bool
-			for _, sig := range d.FeedbackSignals {
+			for _, sig := range turn.Signals {
 				if negativeSignal[sig] {
 					neg = true
 				}
@@ -145,13 +149,12 @@ func heuristicTurns(digests []SessionDigest) []minedTurn {
 					pos = true
 				}
 			}
-			final := t.task.ContextExcerpt
 			switch {
 			case finalErrorRe.MatchString(final) || lessonsRe.MatchString(final):
 				neg = true
 			}
-			// Retry co-occurrence: the NEXT prompt asks to redo this turn.
-			if i+1 < len(d.Prompts) && retryRe.MatchString(d.Prompts[i+1]) {
+			// Retry co-occurrence: the NEXT turn's prompt asks to redo this one.
+			if i+1 < len(d.Turns) && retryRe.MatchString(d.Turns[i+1].Prompt) {
 				neg = true
 			}
 			switch {
@@ -297,18 +300,16 @@ func normalizeFractions(trainF, valF, testF float64) (float64, float64, float64,
 	return trainF, valF, testF, true
 }
 
-// splitsDisjoint asserts every task appears in exactly one split and that
-// no test task is also train/val (disjoint-by-ID, plan SL-021).
+// splitsDisjoint asserts every task appears exactly once (disjoint-by-ID,
+// plan SL-021). Any duplicate ID fails the invariant - same-split duplicates
+// would double-count in replay denominators and evalkit pairing (CodeRabbit).
 func splitsDisjoint(tasks []skill.MarkdownTask) bool {
-	seen := make(map[string]string, len(tasks))
+	seen := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
-		if t.ID == "" {
+		if t.ID == "" || seen[t.ID] {
 			return false
 		}
-		if prev, ok := seen[t.ID]; ok && prev != t.Split {
-			return false
-		}
-		seen[t.ID] = t.Split
+		seen[t.ID] = true
 	}
 	return true
 }

@@ -87,6 +87,11 @@ type CycleOpts struct {
 	PerTaskTimeout    time.Duration
 	PerNightTimeout   time.Duration
 	MaxTokensPerNight int
+	// MaxToolCallsPerTask is the agentic-replay tool-call budget (plan M2,
+	// sleep.max_tool_calls_per_task). The cycle records it in the night
+	// diagnostics and the CLI/cron pass it to the agentic runner; single-shot
+	// replay makes no tool calls, so it is inert there. Zero = default.
+	MaxToolCallsPerTask int
 
 	// Skill selection: SkillName evolves one hint (fail-closed when it
 	// does not resolve); FanOut evolves every resolvable group; neither
@@ -920,7 +925,9 @@ func pruneStagingDirs(baseDir string, age time.Duration, now func() time.Time) {
 	}
 	cutoff := now().UTC().Add(-age)
 	for _, e := range entries {
-		if !e.IsDir() || len(e.Name()) < 8 {
+		// Timestamped night dirs are exactly 15 chars (20060102-150405);
+		// anything shorter cannot parse, and slicing it would panic.
+		if !e.IsDir() || len(e.Name()) < 15 {
 			continue
 		}
 		if ts, err := time.Parse("20060102-150405", e.Name()[:15]); err == nil {

@@ -40,11 +40,12 @@ func BuildMarkdownMutationPrompt(skillName, body string, failures []MarkdownFail
 	if len(failures) > 0 {
 		b.WriteString("The skill fails these evaluation tasks when its guidance is followed:\n")
 		for i, f := range failures {
+			taskID, _ := util.RedactSecrets(f.Task.ID)
 			intent, _ := util.RedactSecrets(f.Task.Intent)
 			ctxExcerpt, _ := util.RedactSecrets(f.Task.ContextExcerpt)
 			expected, _ := util.RedactSecrets(taskExpected(f.Task))
 			actual, _ := util.RedactSecrets(f.Actual)
-			b.WriteString(fmt.Sprintf("\nTask %d: %s\n", i+1, f.Task.ID))
+			b.WriteString(fmt.Sprintf("\nTask %d: %s\n", i+1, taskID))
 			b.WriteString(fmt.Sprintf("  intent:   %s\n", intent))
 			if ctxExcerpt != "" {
 				b.WriteString(fmt.Sprintf("  context:  %s\n", ctxExcerpt))

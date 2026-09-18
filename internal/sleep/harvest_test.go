@@ -121,8 +121,8 @@ func TestHarvest_WalkFilters(t *testing.T) {
 		t.Fatalf("checkpoint harvest sessions = %+v, want only sess_active", file.Sessions)
 	}
 	d := file.Sessions[0]
-	if len(d.Prompts) != 1 || !strings.Contains(d.Prompts[0], "new turn") {
-		t.Errorf("prompts = %v, want only the post-checkpoint turn", d.Prompts)
+	if len(d.Turns) != 1 || !strings.Contains(d.Turns[0].Prompt, "new turn") {
+		t.Errorf("turns = %+v, want only the post-checkpoint turn", d.Turns)
 	}
 	if len(d.SkillsUsed) != 1 || d.SkillsUsed[0] != "pdf-tools" {
 		t.Errorf("skills_used = %v, want [pdf-tools]", d.SkillsUsed)
@@ -173,16 +173,24 @@ func TestHarvest_TurnShapeAndAttachments(t *testing.T) {
 	if d.TurnCount != 2 {
 		t.Errorf("turn_count = %d, want 2", d.TurnCount)
 	}
-	if len(d.Prompts) != 2 || len(d.Finals) != 3 {
-		t.Errorf("prompts=%d finals=%d, want 2 prompts (3 finals incl. summary)", len(d.Prompts), len(d.Finals))
+	// Turn records keep pairing exact: each prompt carries its own final,
+	// and a summary arriving after a closed turn cannot shift the join
+	// (CodeRabbit) - it is dropped entirely.
+	if len(d.Turns) != 2 ||
+		d.Turns[0].Prompt != "first prompt" || d.Turns[0].Final != "first final" ||
+		d.Turns[1].Prompt != "second prompt, that works now" || d.Turns[1].Final != "second final" {
+		t.Errorf("turn pairing drifted: %+v", d.Turns)
 	}
-	if len(d.FeedbackSignals) == 0 {
-		t.Error("feedback_signals empty, want the works lexicon hit")
+	if len(d.Turns[1].Signals) == 0 {
+		t.Error("turn signals empty, want the works lexicon hit on that turn")
 	}
 	blob, _ := json.Marshal(file)
 	out := string(blob)
 	if strings.Contains(out, "/home/user/.ssh/id_rsa") || strings.Contains(out, "id_rsa") {
 		t.Error("attachment path/name leaked into digest")
+	}
+	if strings.Contains(out, "summary of history") {
+		t.Error("an already-closed turn must not absorb a later summary as its final")
 	}
 }
 

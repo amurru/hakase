@@ -102,7 +102,7 @@
     "max_tokens_per_night": 2000000,
     "lookback_hours": 72,
     "llm_mine": false,
-    "train_fraction": 0.6,
+    "train_fraction": 0.8,
     "val_fraction": 0.2,
     "test_fraction": 0,
     "split_seed": 42,

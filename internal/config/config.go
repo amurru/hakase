@@ -273,8 +273,8 @@ type SleepConfig struct {
 	// heuristic miner).
 	LLMMine bool `json:"llm_mine,omitempty"`
 	// Split fractions: TrainFraction/ValFraction/TestFraction must sum to
-	// 1 (defaults 0.6/0.2/0 - the test slice stays empty until evalkit
-	// lands in Phase 3).
+	// 1 (defaults 0.8/0.2/0 - train takes everything the legacy empty test
+	// slice does not).
 	TrainFraction float64 `json:"train_fraction,omitempty"`
 	ValFraction   float64 `json:"val_fraction,omitempty"`
 	TestFraction  float64 `json:"test_fraction,omitempty"`

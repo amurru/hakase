@@ -44,23 +44,32 @@ const (
 	DefaultMaxSessions   = 120
 )
 
+// SessionTurn is one prompt/outcome pair in a session digest (CodeRabbit):
+// the prompt, the agent final that answered it, and the feedback signals
+// detected on that prompt. Storing turns as records (not parallel slices)
+// keeps the pairing exact even when summaries or window edges would
+// misalign a positional join.
+type SessionTurn struct {
+	Prompt  string   `json:"prompt"`
+	Final   string   `json:"final,omitempty"`
+	Signals []string `json:"signals,omitempty"`
+}
+
 // SessionDigest is the privacy-preserving summary of one harvested session.
-// It is the miner's (SL-021) input unit: prompts carry user intent, finals
-// carry the agent's per-turn outcome, skills_used feeds skill clustering,
-// and feedback_signals mark turns where the user corrected or approved.
+// It is the miner's (SL-021) input unit: each turn pairs a user prompt with
+// the agent's outcome, skills_used feeds skill clustering, and per-turn
+// signals mark where the user corrected or approved.
 type SessionDigest struct {
-	SessionID       string    `json:"session_id"`
-	Title           string    `json:"title,omitempty"`
-	ProjectID       string    `json:"project_id,omitempty"`
-	Archived        bool      `json:"archived,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	TurnCount       int       `json:"turn_count"`
-	Prompts         []string  `json:"prompts"`
-	Finals          []string  `json:"finals,omitempty"`
-	SkillsUsed      []string  `json:"skills_used,omitempty"`
-	FeedbackSignals []string  `json:"feedback_signals,omitempty"`
-	ToolsUsed       []string  `json:"tools_used,omitempty"`
+	SessionID  string        `json:"session_id"`
+	Title      string        `json:"title,omitempty"`
+	ProjectID  string        `json:"project_id,omitempty"`
+	Archived   bool          `json:"archived,omitempty"`
+	CreatedAt  time.Time     `json:"created_at"`
+	UpdatedAt  time.Time     `json:"updated_at"`
+	TurnCount  int           `json:"turn_count"`
+	Turns      []SessionTurn `json:"turns"`
+	SkillsUsed []string      `json:"skills_used,omitempty"`
+	ToolsUsed  []string      `json:"tools_used,omitempty"`
 	// AuditArgs carry redacted "command args..." strings from the exec
 	// audit log and exist only when HarvestOpts.IncludeAuditArgs is set.
 	AuditArgs []string `json:"audit_args,omitempty"`
@@ -227,7 +236,10 @@ func Harvest(opts HarvestOpts) (HarvestFile, error) {
 }
 
 // digestSession extracts one session's turns. Returns nil when no turn
-// falls inside the window (nothing new to mine).
+// falls inside the window (nothing new to mine). Turns are built as records:
+// a user message opens a turn, the next agent text/summary final closes it.
+// Agent texts with no open turn (window edge before the first prompt) are
+// dropped rather than shifting the pairing (CodeRabbit).
 func digestSession(sess *session.Session, cutoff time.Time, audit []harvestAuditLine, opts HarvestOpts) *SessionDigest {
 	d := &SessionDigest{
 		SessionID: sess.ID,
@@ -241,8 +253,7 @@ func digestSession(sess *session.Session, cutoff time.Time, audit []harvestAudit
 	for _, msg := range sess.Messages {
 		kind := strings.ToLower(strings.TrimSpace(msg.Kind))
 		// Tool transcripts exist for compaction only and sidekick notes are
-		// watchdog meta-noise: neither is a task outcome. Summaries are
-		// agent-authored session digests and count as finals.
+		// watchdog meta-noise: neither is a task outcome.
 		if kind == string(session.MessageKindToolCall) || kind == string(session.MessageKindToolResult) ||
 			kind == string(session.MessageKindSidekick) {
 			continue
@@ -256,29 +267,35 @@ func digestSession(sess *session.Session, cutoff time.Time, audit []harvestAudit
 			if prompt == "" {
 				continue
 			}
-			d.TurnCount++
-			d.Prompts = append(d.Prompts, truncStr(opts.redact(prompt), TruncatePrompt))
+			turn := SessionTurn{Prompt: truncStr(opts.redact(prompt), TruncatePrompt)}
 			for _, sig := range feedbackLexicon {
 				if sig.re.MatchString(prompt) {
-					d.FeedbackSignals = append(d.FeedbackSignals, sig.name)
+					turn.Signals = append(turn.Signals, sig.name)
 				}
 			}
+			d.Turns = append(d.Turns, turn)
 			if windowStart.IsZero() {
 				windowStart = msg.Timestamp
 			}
 		case msg.Role == "agent" && (kind == "" || kind == string(session.MessageKindText) || kind == string(session.MessageKindSummary)):
 			final := strings.TrimSpace(msg.Content)
-			if final == "" {
+			if final == "" || len(d.Turns) == 0 {
 				continue
 			}
-			d.Finals = append(d.Finals, truncStr(opts.redact(final), TruncateFinal))
+			// Close the open turn; agentrun accumulates one final per turn,
+			// so an already-closed turn keeps its first (complete) final.
+			last := &d.Turns[len(d.Turns)-1]
+			if last.Final == "" {
+				last.Final = truncStr(opts.redact(final), TruncateFinal)
+			}
 		}
 	}
+	d.TurnCount = len(d.Turns)
 	if d.TurnCount == 0 {
 		return nil
 	}
-	for _, text := range append(append([]string{}, d.Prompts...), d.Finals...) {
-		for _, name := range skillMentionRe.FindAllStringSubmatch(text, -1) {
+	for _, t := range d.Turns {
+		for _, name := range skillMentionRe.FindAllStringSubmatch(t.Prompt+" "+t.Final, -1) {
 			d.SkillsUsed = appendUnique(d.SkillsUsed, name[1])
 		}
 	}

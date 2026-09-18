@@ -121,6 +121,7 @@ func buildSleepCycleOpts(cfg *config.Config, env sleep.SleepEnv) (sleep.CycleOpt
 		PerTaskTimeout:    time.Duration(sc.PerTaskTimeoutSeconds) * time.Second,
 		PerNightTimeout:   time.Duration(sc.PerNightTimeoutSeconds) * time.Second,
 		MaxTokensPerNight: sc.MaxTokensPerNight,
+		MaxToolCallsPerTask: sc.MaxToolCallsPerTask,
 		FanOut:            sc.FanOut,
 		AutoAdopt:         sc.AutoAdopt,
 		OutputDir:         filepath.Join("outputs", "sleep"),

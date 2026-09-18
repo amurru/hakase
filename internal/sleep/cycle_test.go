@@ -344,6 +344,21 @@ func TestCycle_CorruptStateRollsBack(t *testing.T) {
 	}
 }
 
+func TestPruneStagingDirs_ShortNamesDoNotPanic(t *testing.T) {
+	// CodeRabbit: the old len<8 guard sliced [:15] and panicked on 8-14
+	// character directory names.
+	dir := t.TempDir()
+	for _, name := range []string{"20260101", "night-1234567", "20260102-150405", "not-a-timestamp-long"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20260102-150405", "night.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pruneStagingDirs(dir, StatePruneAge, time.Now) // must not panic
+}
+
 func TestCycle_FanOutRunsEveryGroup(t *testing.T) {
 	root := t.TempDir()
 	writeCycleSkill(t, root, true)

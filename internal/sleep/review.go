@@ -125,8 +125,14 @@ func VerifyTaskReview(tasksFile string) error {
 			return fmt.Errorf("review sidecar %s is stale (reviewed more than %v after generation): re-review",
 				sidecarPath(tasksFile), ReviewFreshness)
 		}
-	} else if time.Since(sidecar.ReviewedAt) > ReviewFreshness {
-		return fmt.Errorf("review sidecar %s is stale (older than %v): re-review", sidecarPath(tasksFile), ReviewFreshness)
+	}
+	// Freshness measures the AGE OF THE REVIEW against now, for hand-written
+	// and machine-generated files alike (CodeRabbit): the generation-to-review
+	// delay above only bounds backdating, it does not keep an old review
+	// authoritative forever.
+	if time.Since(sidecar.ReviewedAt) > ReviewFreshness {
+		return fmt.Errorf("review sidecar %s is stale (review older than %v): re-review",
+			sidecarPath(tasksFile), ReviewFreshness)
 	}
 	return nil
 }

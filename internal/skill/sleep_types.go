@@ -255,9 +255,12 @@ func setLearned(doc string, learned []string) string {
 }
 
 // cleanEditContent strips protected-region markers from edit content and
-// trims whitespace.
+// normalizes it to a single-line learned bullet: internal newlines collapse
+// to spaces so continuation lines can never be written into the block and
+// then silently dropped by the next apply (learned bullets are one line by
+// construction - CodeRabbit).
 func cleanEditContent(s string) string {
-	return strings.TrimSpace(markerStripRe.ReplaceAllString(s, ""))
+	return strings.Join(strings.Fields(markerStripRe.ReplaceAllString(s, "")), " ")
 }
 
 // CleanEditContent is the exported form of cleanEditContent for consumers

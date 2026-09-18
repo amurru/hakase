@@ -109,10 +109,13 @@ func TestVerifyTaskReview_StaleOrPredated(t *testing.T) {
 			content := machineGeneratedTasks(gen)
 			writeTasksFile(t, path, content)
 			// Real hash so the targeted check (stale/predated/empty-reviewer)
-			// is the one that fires, not the tamper check.
+			// is the one that fires, not the tamper check. The sidecar goes to
+			// sidecarPath(path) - tasks.review.json - exactly where the
+			// verifier looks (a previous revision wrote the wrong filename,
+			// which made every case pass via the missing-sidecar path).
 			tc.sidecar.TasksSHA256 = sha256Hex([]byte(content))
 			blob, _ := json.Marshal(tc.sidecar)
-			if err := os.WriteFile(path+".review.json", blob, 0o600); err != nil {
+			if err := os.WriteFile(sidecarPath(path), blob, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if err := VerifyTaskReview(path); err == nil {
@@ -129,7 +132,7 @@ func TestMarkTasksReviewed_RequiresReviewer(t *testing.T) {
 	if err := MarkTasksReviewed(path, "  "); err == nil {
 		t.Error("empty reviewer must be refused")
 	}
-	if _, err := os.Stat(path + ".review.json"); !os.IsNotExist(err) {
+	if _, err := os.Stat(sidecarPath(path)); !os.IsNotExist(err) {
 		t.Error("no sidecar may be written for an empty reviewer")
 	}
 }
