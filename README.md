@@ -168,6 +168,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `rules` | List/show active project context files (`AGENTS.md`) |
 | `env` | Print the detected runtime-environment block |
 | `cron` | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
+| `sleep` | SkillOpt-Sleep self-improvement loop for markdown skills (`harvest`, `review`, `dry-run`, `run`, `adopt`, `status`, `schedule`, `evalkit`; real runs need a configured model) |
 | `channels` | Manage communication channels (`status`, `pair-code`, `revoke`) |
 | `auth` | Manage web authentication (`set-password`) |
 | `version` | Print build version (version, commit, build date, Go runtime) |
@@ -265,6 +266,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 | **Multi-Agent Orchestration** | ADK root orchestrator delegates to `web_researcher`, `code_interpreter`, `general_purpose` |
 | **Python Interpreter** | Isolated `.venv`, auto pip install on `ModuleNotFoundError`, sandbox-aware |
 | **Skill Library** | Persisted Python skills + markdown skills, with a darwinian evolver loop |
+| **Self-Evolving Skills (SkillOpt-Sleep)** | Markdown skills improve overnight: harvest sessions → mine tasks → offline replay behind a held-out gate → staged proposals with hash-pinned adopt (`hakase sleep`; Go-native port of Microsoft SkillOpt, default-off optimizer knobs) |
 | **Knowledge Base** | Wiki-style notes with `[[wikilinks]]`, 8 knowledge tools, `hakase knowledge` CLI |
 | **Git Operations** | Structured `git_status`/`git_diff`/`git_log`/`git_branch` (read-only) and `git_stage`/`git_commit` (mutating, approval-gated) through the same policy as `system_exec` |
 | **Sandboxing** | `paths` by default (bubblewrap optional), secret-file deny list, symlink-safe |

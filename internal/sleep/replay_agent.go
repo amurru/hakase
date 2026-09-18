@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
@@ -38,6 +39,82 @@ import (
 var replayAllowTools = map[string]bool{
 	"read_file": true,
 	"vision":    true,
+}
+
+// ReplayAudit counts deny-by-default events observed during agentic replay
+// (plan SL-040): attempts to call tools the replay agent does not carry,
+// and sandbox path refusals surfacing through tool responses. It is
+// visibility for the staged diagnostics, not a control - the allowlist and
+// sandbox are the controls.
+type ReplayAudit struct {
+	mu                 sync.Mutex
+	DeniedToolAttempts map[string]int `json:"denied_tool_attempts,omitempty"`
+	SandboxPathDenials int            `json:"sandbox_path_denials,omitempty"`
+}
+
+func (a *ReplayAudit) addToolAttempt(name string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.DeniedToolAttempts == nil {
+		a.DeniedToolAttempts = make(map[string]int)
+	}
+	a.DeniedToolAttempts[name]++
+}
+
+func (a *ReplayAudit) addSandboxDenial() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.SandboxPathDenials++
+}
+
+// snapshot returns a plain copy for storage in results.
+func (a *ReplayAudit) snapshot() DeniedToolAttempts {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := DeniedToolAttempts{
+		DeniedToolAttempts: make(map[string]int, len(a.DeniedToolAttempts)),
+		SandboxPathDenials: a.SandboxPathDenials,
+	}
+	for k, v := range a.DeniedToolAttempts {
+		out.DeniedToolAttempts[k] = v
+	}
+	return out
+}
+
+// DeniedToolAttempts is the diagnostic shape staged with a consolidation:
+// which off-allowlist tools the replay probe tried to call (and how often),
+// plus how many sandbox path refusals fired.
+type DeniedToolAttempts struct {
+	DeniedToolAttempts map[string]int `json:"denied_tool_attempts,omitempty"`
+	SandboxPathDenials int            `json:"sandbox_path_denials,omitempty"`
+}
+
+// sandbox refusal markers from sandbox.ResolveScopedPath (an audit count,
+// not a control; drift only undercounts).
+var sandboxDenialMarkers = []string{
+	"denied root", "denied sensitive file", "outside approved",
+}
+
+// auditKey carries the per-group audit through the replay ctx.
+type auditKeyType struct{}
+
+var auditKey auditKeyType
+
+// withReplayAudit attaches an audit to ctx for runGroup to collect.
+func withReplayAudit(ctx context.Context, audit *ReplayAudit) context.Context {
+	return context.WithValue(ctx, auditKey, audit)
+}
+
+// auditFrom returns the ctx audit or nil (single-shot replay: no tools).
+func auditFrom(ctx context.Context) *ReplayAudit {
+	audit, _ := ctx.Value(auditKey).(*ReplayAudit)
+	return audit
 }
 
 // AgenticOpts configures one agentic replay runner.
@@ -162,6 +239,7 @@ func runAgenticReplay(ctx context.Context, llm model.LLM, tools []tool.Tool, tim
 	var called []string
 	seen := make(map[string]bool)
 	toolCalls := 0
+	audit := auditFrom(ctx)
 	for ev, err := range r.Run(runCtx, "sleep", fmt.Sprintf("sleep-replay-%d", time.Now().UnixNano()), genai.NewContentFromText(msg, genai.RoleUser), agent.RunConfig{}) {
 		if err != nil {
 			return "", nil, fmt.Errorf("replay run: %w", err)
@@ -181,9 +259,26 @@ func runAgenticReplay(ctx context.Context, llm model.LLM, tools []tool.Tool, tim
 				if toolCalls > maxToolCalls {
 					return "", called, fmt.Errorf("tool-call budget exceeded (%d > %d): aborting task", toolCalls, maxToolCalls)
 				}
+				// Deny-by-default audit (SL-040): the allowlist keeps
+				// non-allowlisted tools unattached, but the model can still
+				// emit calls for them - record every such attempt.
+				if !replayAllowTools[part.FunctionCall.Name] {
+					audit.addToolAttempt(part.FunctionCall.Name)
+				}
 				if !seen[part.FunctionCall.Name] {
 					seen[part.FunctionCall.Name] = true
 					called = append(called, part.FunctionCall.Name)
+				}
+			}
+			if part.FunctionResponse != nil {
+				// Sandbox path refusals come back as tool-response errors;
+				// count the recognizable refusal markers for the audit.
+				rendered := fmt.Sprintf("%v", part.FunctionResponse.Response)
+				for _, marker := range sandboxDenialMarkers {
+					if strings.Contains(rendered, marker) {
+						audit.addSandboxDenial()
+						break
+					}
 				}
 			}
 		}

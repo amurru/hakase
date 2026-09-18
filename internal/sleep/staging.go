@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -230,6 +231,7 @@ func StageConsolidationInto(dir, skillName, livePath string, result Consolidatio
 		"ranking_details":  result.RankingDetails,
 		"lapse_bypassed":   result.LapseBypassed,
 		"noise_range":      result.NoiseRange,
+		"replay_denials":   result.ReplayDenials,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -256,76 +258,100 @@ func StageConsolidationInto(dir, skillName, livePath string, result Consolidatio
 // installs it. Every check fails closed: hash mismatch (concurrent
 // hand-edit), realpath mismatch (symlink swap), unaccepted staging, and
 // frontmatter drift all abort with the live file untouched. The incumbent
-// is preserved as <path>.bak.
-func AdoptStaging(stagingDir string) (string, error) {
+// is preserved as a versioned `<path>.bak.<ts>` copy (plus the plain
+// `.bak`, matching the Python evolver's rollback convention), pruned to
+// the newest 3 versioned copies. It returns the installed path and the
+// versioned backup path.
+func AdoptStaging(stagingDir string) (installed, backup string, err error) {
 	metaBytes, err := os.ReadFile(filepath.Join(stagingDir, "adopt.json"))
 	if err != nil {
-		return "", fmt.Errorf("read adopt.json: %w", err)
+		return "", "", fmt.Errorf("read adopt.json: %w", err)
 	}
 	var meta AdoptMeta
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return "", fmt.Errorf("parse adopt.json: %w", err)
+		return "", "", fmt.Errorf("parse adopt.json: %w", err)
 	}
 	if !meta.Accepted {
-		return "", fmt.Errorf("nothing accepted to adopt (gate: %s)", meta.GateAction)
+		return "", "", fmt.Errorf("nothing accepted to adopt (gate: %s)", meta.GateAction)
 	}
 	// Fail closed on disabled skills (plan SL-013/M6): a skill disabled
 	// after staging must not adopt, and corrupt state aborts (unlike the
 	// lenient live-path check).
 	if err := skill.CheckSkillEnabled(skill.KindMarkdown, meta.SkillName); err != nil {
-		return "", fmt.Errorf("adopt blocked: %w", err)
+		return "", "", fmt.Errorf("adopt blocked: %w", err)
 	}
 	if meta.LivePath == "" || meta.LiveSHA256 == "" || meta.LiveRealpath == "" {
-		return "", fmt.Errorf("adopt.json missing live-file pins")
+		return "", "", fmt.Errorf("adopt.json missing live-file pins")
 	}
 	liveBytes, err := os.ReadFile(meta.LivePath)
 	if err != nil {
-		return "", fmt.Errorf("read live skill: %w", err)
+		return "", "", fmt.Errorf("read live skill: %w", err)
 	}
 	if sha256Hex(liveBytes) != meta.LiveSHA256 {
-		return "", fmt.Errorf("live skill changed since staging (hash mismatch): review and re-run")
+		return "", "", fmt.Errorf("live skill changed since staging (hash mismatch): review and re-run")
 	}
 	liveRealpath, err := filepath.EvalSymlinks(meta.LivePath)
 	if err != nil {
-		return "", fmt.Errorf("resolve live skill: %w", err)
+		return "", "", fmt.Errorf("resolve live skill: %w", err)
 	}
 	if liveRealpath != meta.LiveRealpath {
-		return "", fmt.Errorf("live skill path changed since staging (symlink swap?): review and re-run")
+		return "", "", fmt.Errorf("live skill path changed since staging (symlink swap?): review and re-run")
 	}
 	proposed, err := os.ReadFile(filepath.Join(stagingDir, "proposed_SKILL.md"))
 	if err != nil {
-		return "", fmt.Errorf("read proposal: %w", err)
+		return "", "", fmt.Errorf("read proposal: %w", err)
 	}
 	if err := skill.CheckFrontmatterFrozen(string(liveBytes), string(proposed)); err != nil {
-		return "", fmt.Errorf("proposal rejected: %w", err)
+		return "", "", fmt.Errorf("proposal rejected: %w", err)
 	}
+	// Backups: plain .bak for the one-step rollback drill, plus a versioned
+	// .bak.<ts> copy pruned to the newest 3 (plan SL-040/SL-005).
+	backup = fmt.Sprintf("%s.bak.%s", meta.LivePath, time.Now().UTC().Format("20060102-150405"))
+	bakPath := meta.LivePath + ".bak"
+	if err := os.WriteFile(bakPath, liveBytes, 0o600); err != nil {
+		return "", "", fmt.Errorf("write .bak: %w", err)
+	}
+	_ = os.Chmod(bakPath, 0o600)
+	if err := os.WriteFile(backup, liveBytes, 0o600); err != nil {
+		return "", "", fmt.Errorf("write versioned backup: %w", err)
+	}
+	_ = os.Chmod(backup, 0o600)
+	pruneVersionedBackups(meta.LivePath, 3)
 	// Full skill validation through a temp file in the live dir (the
 	// parser checks directory-name agreement, so the temp must sit next
 	// to the live file, not in os.TempDir).
 	tmp, err := os.CreateTemp(filepath.Dir(meta.LivePath), ".adopt-*.md")
 	if err != nil {
-		return "", fmt.Errorf("stage proposal: %w", err)
+		return "", "", fmt.Errorf("stage proposal: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op after successful rename
 	if _, err := tmp.Write(proposed); err != nil {
 		_ = tmp.Close()
-		return "", fmt.Errorf("stage proposal: %w", err)
+		return "", "", fmt.Errorf("stage proposal: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("stage proposal: %w", err)
+		return "", "", fmt.Errorf("stage proposal: %w", err)
 	}
 	if _, err := skill.ParseMarkdownSkill(tmpName); err != nil {
-		return "", fmt.Errorf("proposal failed skill validation: %w", err)
+		return "", "", fmt.Errorf("proposal failed skill validation: %w", err)
 	}
-	bakPath := meta.LivePath + ".bak"
-	if err := os.WriteFile(bakPath, liveBytes, 0o600); err != nil {
-		return "", fmt.Errorf("write .bak: %w", err)
-	}
-	_ = os.Chmod(bakPath, 0o600)
 	if err := os.Rename(tmpName, meta.LivePath); err != nil {
-		return "", fmt.Errorf("install proposal: %w", err)
+		return "", "", fmt.Errorf("install proposal: %w", err)
 	}
 	_ = os.Chmod(meta.LivePath, 0o600)
-	return meta.LivePath, nil
+	return meta.LivePath, backup, nil
+}
+
+// pruneVersionedBackups keeps the newest `keep` versioned
+// `<path>.bak.<ts>` copies; the timestamp suffix sorts chronologically.
+func pruneVersionedBackups(path string, keep int) {
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		_ = os.Remove(old)
+	}
 }

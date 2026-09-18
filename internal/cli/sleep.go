@@ -166,12 +166,12 @@ func runSleepAdopt(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	installed, err := sleep.AdoptStaging(dir)
+	installed, backup, err := sleep.AdoptStaging(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sleep adopt: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Adopted: %s (incumbent preserved as %s.bak)\n", installed, installed)
+	fmt.Printf("Adopted: %s (incumbent preserved as %s)\n", installed, backup)
 	return 0
 }
 
@@ -245,7 +245,7 @@ func runSleepRun(args []string, dryRun bool) int {
 	var ackModelChange bool
 	var lrScheduler, knowledgeDir string
 	var lrFloor, lrHorizon, recallK int
-	var skillAware, allowSharedJudge, dreamRollouts bool
+	var skillAware, allowSharedJudge, dreamRollouts, progress bool
 	var dreamFactor float64
 	fs.StringVar(&tasksFile, "tasks", "", "seed task file (reviewed; default: harvest+mine)")
 	fs.StringVar(&sessionsDir, "sessions-dir", session.Dir, "session store directory")
@@ -286,6 +286,7 @@ func runSleepRun(args []string, dryRun bool) int {
 	fs.StringVar(&knowledgeDir, "knowledge-dir", "", "knowledge base directory for recall (default: config knowledge_dir)")
 	fs.BoolVar(&dreamRollouts, "dream-rollouts", false, "synthesize contrastive dream tasks (SL-033; requires --dream-factor > 0)")
 	fs.Float64Var(&dreamFactor, "dream-factor", 0, "dream tasks as a fraction of train tasks")
+	fs.BoolVar(&progress, "progress", false, "print one progress line per night milestone as the night runs")
 	fs.StringVar(&statePath, "state", "", "sleep state file (default .hakase/sleep-state.json)")
 	fs.StringVar(&outputDir, "output-dir", "", "staging output directory (default outputs/sleep)")
 	if err := fs.Parse(args); err != nil {
@@ -347,12 +348,9 @@ func runSleepRun(args []string, dryRun bool) int {
 	opts.Harvest.Checkpoint = checkpointTs
 	opts.Harvest.ProjectID = project
 	opts.Harvest.IncludeArchived = includeArchived
-	opts.AcknowledgeModelChange = ackModelChange
 	opts.Greedy = greedy
 	opts.SkillName = skillName
 	opts.SkillRoot = skillRoot
-	opts.SkillAware = skillAware
-	opts.AllowSharedJudge = allowSharedJudge
 
 	// Explicit flags win over env/file (fs.Visit reports only set flags).
 	set := map[string]bool{}
@@ -419,6 +417,41 @@ func runSleepRun(args []string, dryRun bool) int {
 	}
 	if set["output-dir"] {
 		opts.OutputDir = outputDir
+	}
+	if set["acknowledge-model-change"] {
+		opts.AcknowledgeModelChange = ackModelChange
+	}
+	if set["lr-scheduler"] {
+		opts.LRScheduler = lrScheduler
+	}
+	if set["lr-floor"] {
+		opts.LRFloor = lrFloor
+	}
+	if set["lr-horizon"] {
+		opts.LRHorizon = lrHorizon
+	}
+	if set["skill-aware"] {
+		opts.SkillAware = skillAware
+	}
+	if set["allow-shared-judge"] {
+		opts.AllowSharedJudge = allowSharedJudge
+	}
+	if set["recall-k"] {
+		opts.RecallK = recallK
+	}
+	if set["knowledge-dir"] {
+		opts.KnowledgeDir = knowledgeDir
+	}
+	if set["dream-rollouts"] {
+		opts.DreamRollouts = dreamRollouts
+	}
+	if set["dream-factor"] {
+		opts.DreamFactor = dreamFactor
+	}
+	if progress {
+		opts.Progress = func(line string) {
+			fmt.Fprintf(os.Stderr, "[sleep %s] %s\n", verb, line)
+		}
 	}
 
 	// Dry-run stays provider-free; a real run bootstraps the model or exits

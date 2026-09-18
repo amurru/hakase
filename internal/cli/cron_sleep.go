@@ -58,6 +58,11 @@ func runSleepCronJob(job CronJob, log hakaseagent.LogFunc) {
 		opts.JudgeModelKey = judgeKey
 	}
 	opts.ModelKey = sleepModelKey()
+	// Night milestones surface in the cron log (SL-041): a scheduled night
+	// runs unattended, so per-group progress is the only live signal.
+	opts.Progress = func(line string) {
+		log(fmt.Sprintf("[cron] job %s sleep: %s", job.ID, line))
+	}
 
 	res, err := sleep.RunCycle(context.Background(), opts)
 	if err != nil {

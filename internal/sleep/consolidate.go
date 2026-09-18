@@ -112,11 +112,15 @@ type ConsolidationResult struct {
 	LapseBypassed  bool             `json:"lapse_bypassed,omitempty"`
 	// NoiseRange marks an accepted result whose win is inside single-seed
 	// noise (delta < 1.5pt or val n < 20): a claim, not a proof (SL-034).
-	NoiseRange   bool            `json:"noise_range,omitempty"`
-	HoldoutLeaked bool           `json:"holdout_leaked"`
-	ReflectRaw     string          `json:"reflect_raw,omitempty"`
-	CallError      string          `json:"call_error,omitempty"`
-	NoEditsReason  string          `json:"no_edits_reason,omitempty"`
+	NoiseRange bool `json:"noise_range,omitempty"`
+	// ReplayDenials records deny-by-default events from agentic replay
+	// (plan SL-040): off-allowlist tool-call attempts and sandbox path
+	// refusals. Nil for single-shot replay (no tools involved).
+	ReplayDenials  *DeniedToolAttempts `json:"replay_denials,omitempty"`
+	HoldoutLeaked  bool                `json:"holdout_leaked"`
+	ReflectRaw     string              `json:"reflect_raw,omitempty"`
+	CallError      string              `json:"call_error,omitempty"`
+	NoEditsReason  string              `json:"no_edits_reason,omitempty"`
 }
 
 // normalizeSplit maps legacy split names to the canonical three.

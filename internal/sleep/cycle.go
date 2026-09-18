@@ -126,6 +126,10 @@ type CycleOpts struct {
 	// DreamConsolidate is reserved (memory-trial surface, not implemented);
 	// recorded in diagnostics when set.
 	DreamConsolidate bool
+	// Progress, when set, receives one line per night milestone (group
+	// selection, per-group completion, truncation) for long-running
+	// nights. Nil stays silent (SL-041).
+	Progress func(line string)
 
 	// DryRun makes the night read-only: harvest + mine + counts, with no
 	// model call, no staging, no adopt, and no state advance.
@@ -350,6 +354,12 @@ func RunCycle(ctx context.Context, opts CycleOpts) (CycleResult, error) {
 	grouped := groupTasks(tasks)
 	selected, selLog := selectGroups(grouped, opts)
 	res.Log = append(res.Log, selLog...)
+	progressf := func(format string, args ...any) {
+		if opts.Progress != nil {
+			opts.Progress(fmt.Sprintf(format, args...))
+		}
+	}
+	progressf("%d skill group(s) selected for tonight", len(selected))
 
 	// Learning-rate epoch: nights already recorded. The state save below
 	// appends tonight, so tonight's epoch index is exactly this.
@@ -373,12 +383,14 @@ func RunCycle(ctx context.Context, opts CycleOpts) (CycleResult, error) {
 		if gr.StagingDir != "" {
 			anyStaged = true
 		}
+		progressf("group %s: %s", gr.SkillName, groupVerdict(gr))
 	}
 	res.TokensUsed = ledger.used()
 	if ledger.exceeded() || nightCtx.Err() != nil {
 		res.Truncated = true
 		res.Log = append(res.Log, fmt.Sprintf("night truncated: tokens=%d (est.) deadline_left=%v",
 			res.TokensUsed, perNight))
+		progressf("night truncated by a spend guard")
 	}
 
 	// Stage the night container (report + diagnostics) when anything ran.
@@ -475,6 +487,23 @@ func nightGroups(res CycleResult, started time.Time) []NightGroupRecord {
 
 // DryRunMode reports whether opts selects read-only dry-run behavior.
 func (o CycleOpts) DryRunMode() bool { return o.DryRun }
+
+// groupVerdict renders one progress line for a finished group.
+func groupVerdict(gr GroupResult) string {
+	if gr.Skipped != "" {
+		return "skipped: " + gr.Skipped
+	}
+	if gr.Adopted {
+		return "accepted + auto-adopted (managed skill)"
+	}
+	if gr.StagingDir != "" {
+		return fmt.Sprintf("gate %s, staged for review", gr.Consolidation.GateAction)
+	}
+	if gr.Consolidation != nil {
+		return fmt.Sprintf("gate %s, no proposal", gr.Consolidation.GateAction)
+	}
+	return "no work"
+}
 
 // runOpts bundles the counted seams for runGroup.
 type runOpts struct {
@@ -592,7 +621,11 @@ func runGroup(ctx context.Context, g taskGroup, opts CycleOpts, r runOpts) Group
 		}
 	}
 
-	result := Consolidate(ctx, r.run, r.rubric, groupTasks, baseline,
+	// Deny-by-default audit (SL-040): agentic replay records off-allowlist
+	// tool attempts and sandbox path refusals onto this per-group audit;
+	// single-shot replay has no tools and records nothing.
+	var audit ReplayAudit
+	result := Consolidate(withReplayAudit(ctx, &audit), r.run, r.rubric, groupTasks, baseline,
 		ReplayOpts{Timeout: r.perTask},
 		ConsolidateOpts{
 			EditBudget: budget, GateMetric: opts.GateMetric,
@@ -600,6 +633,9 @@ func runGroup(ctx context.Context, g taskGroup, opts CycleOpts, r runOpts) Group
 			Greedy: opts.Greedy, Ranker: r.ranker, SkillAware: r.skillAware,
 			Reflect: r.reflectorFor(r.call, g.hint, budget, rc),
 		})
+	if snap := audit.snapshot(); len(snap.DeniedToolAttempts) > 0 || snap.SandboxPathDenials > 0 {
+		result.ReplayDenials = &snap
+	}
 	gr.Consolidation = &result
 	gr.Consolidated = consolidationRan(result)
 
@@ -633,7 +669,7 @@ func runGroup(ctx context.Context, g taskGroup, opts CycleOpts, r runOpts) Group
 
 	// Managed-only auto-adopt (M5): hand-written skills stage and wait.
 	if r.autoAdopt && result.Accepted && skill.IsSleepManagedDoc(baseline) {
-		if _, err := AdoptStaging(skillDir); err != nil {
+		if _, _, err := AdoptStaging(skillDir); err != nil {
 			gr.Skipped = fmt.Sprintf("auto-adopt refused: %v", err)
 			return gr
 		}
@@ -829,7 +865,10 @@ func RenderNightReport(res CycleResult) string {
 	b.WriteString("\n| Skill | Tasks | Baseline → Candidate | Gate | Result |\n|---|---:|---:|---|---|\n")
 	for _, g := range res.Groups {
 		gate, score := "-", "-"
-		verdict := "skipped: " + g.Skipped
+		verdict := "no work"
+		if g.Skipped != "" {
+			verdict = "skipped: " + g.Skipped
+		}
 		if g.Consolidation != nil {
 			gate = g.Consolidation.GateAction
 			score = fmt.Sprintf("%.3f → %.3f", g.Consolidation.BaselineScore, g.Consolidation.CandidateScore)

@@ -194,12 +194,12 @@ func runSkillEvolveMD(args []string) int {
 		fmt.Fprintf(os.Stderr, "evolve-md: --adopt requested but nothing accepted (gate: %s)\n", result.GateAction)
 		return 1
 	}
-	adopted, err := sleep.AdoptStaging(stagingDir)
+	adopted, backup, err := sleep.AdoptStaging(stagingDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "evolve-md: adopt: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Adopted: %s (incumbent preserved as %s.bak)\n", adopted, adopted)
+	fmt.Printf("Adopted: %s (incumbent preserved as %s)\n", adopted, backup)
 	return 0
 }
 

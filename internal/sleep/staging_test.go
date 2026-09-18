@@ -3,10 +3,13 @@ package sleep
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"amurru/hakase/internal/skill"
 )
@@ -73,7 +76,7 @@ func TestStageAndAdopt_RoundTrip(t *testing.T) {
 		}
 	}
 
-	adopted, err := AdoptStaging(dir)
+	adopted, backup, err := AdoptStaging(dir)
 	if err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
@@ -86,6 +89,49 @@ func TestStageAndAdopt_RoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(live + ".bak"); err != nil {
 		t.Errorf("missing .bak: %v", err)
+	}
+	// Versioned backup (plan SL-040): <path>.bak.<ts> with the incumbent.
+	if backup == "" || !strings.HasPrefix(backup, live+".bak.") {
+		t.Fatalf("backup = %q, want a versioned %s.bak.<ts>", backup, live)
+	}
+	if info, err := os.Stat(backup); err != nil {
+		t.Errorf("missing versioned backup: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Errorf("backup mode = %o, want 600", info.Mode().Perm())
+	}
+	if bak, _ := os.ReadFile(backup); !strings.Contains(string(bak), "Hand-written guidance.") {
+		t.Error("backup must hold the incumbent content")
+	}
+}
+
+func TestAdopt_VersionedBackupsPrunedTo3(t *testing.T) {
+	isolateSkillState(t)
+	root := t.TempDir()
+	live := writeLiveSkill(t, root)
+	// Seed 5 stale versioned backups with chronological names.
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 5; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute).Format("20060102-150405")
+		if err := os.WriteFile(fmt.Sprintf("%s.bak.%s", live, ts), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir, err := StageConsolidation(filepath.Join(root, "out"), "demo", live, acceptedResult())
+	if err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if _, _, err := AdoptStaging(dir); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	matches, _ := filepath.Glob(live + ".bak.*")
+	if len(matches) != 3 {
+		t.Errorf("versioned backups = %d, want pruned to 3", len(matches))
+	}
+	sort.Strings(matches)
+	// The newest stale one plus tonight's must survive; the oldest go.
+	newestStale := fmt.Sprintf("%s.bak.%s", live, base.Add(4*time.Minute).Format("20060102-150405"))
+	if len(matches) > 0 && matches[len(matches)-1] < newestStale {
+		t.Errorf("newest backup = %s, want >= %s", matches[len(matches)-1], newestStale)
 	}
 }
 
@@ -102,7 +148,7 @@ func TestAdopt_RejectsUnaccepted(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "proposed_SKILL.md")); !os.IsNotExist(err) {
 		t.Error("rejected night must not stage a proposal")
 	}
-	if _, err := AdoptStaging(dir); err == nil {
+	if _, _, err := AdoptStaging(dir); err == nil {
 		t.Error("adopt of unaccepted staging must fail")
 	}
 }
@@ -117,7 +163,7 @@ func TestAdopt_HashMismatch(t *testing.T) {
 	// Concurrent hand-edit after staging.
 	f, _ := os.ReadFile(live)
 	_ = os.WriteFile(live, append(f, []byte("\nHand edit.\n")...), 0o600)
-	if _, err := AdoptStaging(dir); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+	if _, _, err := AdoptStaging(dir); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Errorf("must fail on hash mismatch: %v", err)
 	}
 	after, _ := os.ReadFile(live)
@@ -148,7 +194,7 @@ func TestAdopt_SymlinkSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = live // live skill file itself is untouched by this scenario
-	if _, err := AdoptStaging(dir); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, _, err := AdoptStaging(dir); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Errorf("must fail on symlink swap: %v", err)
 	}
 }
@@ -164,7 +210,7 @@ func TestAdopt_FrontmatterTamper(t *testing.T) {
 	prop, _ := os.ReadFile(filepath.Join(dir, "proposed_SKILL.md"))
 	tampered := strings.Replace(string(prop), "description: Demo skill.", "description: Hijacked.", 1)
 	_ = os.WriteFile(filepath.Join(dir, "proposed_SKILL.md"), []byte(tampered), 0o600)
-	if _, err := AdoptStaging(dir); err == nil || !strings.Contains(err.Error(), "frontmatter") {
+	if _, _, err := AdoptStaging(dir); err == nil || !strings.Contains(err.Error(), "frontmatter") {
 		t.Errorf("must fail on frontmatter tamper: %v", err)
 	}
 }
@@ -212,7 +258,7 @@ func TestAdopt_BlockedWhenDisabled(t *testing.T) {
 	if err := skill.SetSkillDisabled(skill.KindMarkdown, "demo", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AdoptStaging(dir); err == nil {
+	if _, _, err := AdoptStaging(dir); err == nil {
 		t.Error("adopt of a disabled skill must fail")
 	}
 }
