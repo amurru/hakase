@@ -2,6 +2,7 @@
 
 A high-autonomy, general-purpose AI research and navigation agent built in Go, featuring a rich terminal TUI **and a browser-based web UI**, Google ADK orchestration across multiple model providers (Gemini, OpenAI, and OpenAI-compatible endpoints), MCP server integration, a Python code interpreter, and a self-evolving skill library.
 
+[![CI](https://github.com/amurru/hakase/actions/workflows/test.yml/badge.svg)](https://github.com/amurru/hakase/actions/workflows/test.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/amurru/hakase)
 ![Go](https://img.shields.io/badge/Go-1.26-blue?logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -16,7 +17,8 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
 
 The agent can:
 
-- 🔍 **Browse & research** the web using MCP-connected browser tools
+- 🔍 **Browse & research** the web -- works out of the box with built-in keyless `web_search`/`web_fetch` (no MCP setup required); connect a browser MCP (Lightpanda, Playwright, ...) for full JavaScript navigation
+- 🎨 **Generate media** -- images and video via OpenAI/fal.ai with an offline Go-native fallback
 - 📥 **Download** files, PDFs, and images
 - 🐍 **Execute Python** in an isolated venv with auto-dependency resolution
 - 📊 **Analyze data**, generate charts, and produce visual artifacts
@@ -37,7 +39,22 @@ The agent can:
 - **Node.js + pnpm** -- builds the web UI (`webui/`). The SPA is embedded into the Go binary via `//go:embed`, so a frontend build is part of compiling the project
 - **Python 3** -- code interpreter (`.venv` execution) and the skill library (`./skills/`)
 - An **API key** for your chosen provider -- Gemini, OpenAI, or an OpenAI-compatible endpoint (Ollama, vLLM). The required key depends on the `provider` field in `config.json`.
-- **Lightpanda** (optional but recommended) -- the MCP browser automation server at [lightpanda.ai](https://lightpanda.ai) (`http://localhost:9223/mcp` by default). Any spec-compliant browser MCP also works -- see [Browser MCP presets](docs/browser-mcp-presets.md).
+- **Lightpanda** (optional) -- the MCP browser automation server at [lightpanda.ai](https://lightpanda.ai) (`http://localhost:9223/mcp` by default). **Not required**: without any browser MCP, hakase automatically exposes built-in keyless `web_search`/`web_fetch` tools so research works from the first run. Any spec-compliant browser MCP also works -- see [Browser MCP presets](docs/browser-mcp-presets.md).
+
+## Install
+
+Prebuilt binaries and packages ship with every [release](https://github.com/amurru/hakase/releases) (checksums in `SHA256SUMS.txt`, SLSA L3 provenance in `multiple.intoto.jsonl`):
+
+| Platform | How |
+| -------- | --- |
+| Debian / Ubuntu | Download `hakase_<version>_amd64.deb` from the release, then `sudo apt install ./hakase_*.deb` |
+| Fedora / RHEL | Download `hakase-<version>.x86_64.rpm`, then `sudo rpm -i hakase-*.rpm` |
+| Arch | `yay -S hakase-bin` (AUR, [`packaging/aur/hakase-bin`](packaging/aur/hakase-bin)) |
+| Linux (any distro) | Download `hakase-<version>-linux-amd64`, `chmod +x`, run |
+| Windows | Download `hakase-<version>-windows-amd64.zip` and extract |
+| macOS / from source | See [Quick Start](#quick-start) below (no prebuilt darwin binary yet) |
+
+Then continue with step 1 of the Quick Start (`cp config.json.example config.json` and add your API key).
 
 ### Setup
 
@@ -417,6 +434,9 @@ See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [
 | Document | What it covers |
 | -------- | -------------- |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | **Start here for developers** -- project structure, build/release, architecture, every feature deep dive, full config reference |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, test, and submit changes |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What's planned, tiered issue index, deferred-work ledger |
+| [SECURITY.md](SECURITY.md) | How to report vulnerabilities (privately) |
 | [docs/browser-mcp-presets.md](docs/browser-mcp-presets.md) | Browser MCP presets (Lightpanda, chrome-devtools-mcp, @playwright/mcp, @browsermcp/mcp) |
 | [docs/media-generation/support.md](docs/media-generation/support.md) | Media generation provider matrix and troubleshooting |
 | [docs/sidekick-agent/](docs/sidekick-agent/) | Sidekick second-model design |
@@ -479,6 +499,12 @@ the host materializes into a managed checkout. See
 See [docs/DEVELOPMENT.md#windows-notes](docs/DEVELOPMENT.md#windows-notes).
 
 </details>
+
+---
+
+## Contributing
+
+Contributions are welcome! [CONTRIBUTING.md](CONTRIBUTING.md) covers the build, the hermetic-test conventions, and the PR flow; [docs/ROADMAP.md](docs/ROADMAP.md) indexes the current priorities by tier. Please report security issues privately via [SECURITY.md](SECURITY.md).
 
 ---
 
