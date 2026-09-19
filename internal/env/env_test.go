@@ -63,16 +63,17 @@ func TestPackageManagerFromDistro(t *testing.T) {
 }
 
 func TestFindExecutableAndPATHProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-only: shebang script, exec bits, no PATHEXT lookup")
+	}
 	// Create a temp dir with an executable named "pacman" on PATH.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "pacman")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho fake\n"), 0o755); err != nil {
 		t.Fatalf("write fake pacman: %v", err)
 	}
-	// Put ONLY the fake dir on PATH: detectPackageManager probes candidates
-	// in a fixed order, so a host that really has apt-get/dnf (CI runners,
-	// Debian/ Fedora boxes) would otherwise win over the fake pacman and
-	// break the assertion below.
+	// Put ONLY the fake dir on PATH so the PATH half of findExecutable
+	// resolves the fake and nothing else.
 	oldPath := os.Getenv("PATH")
 	os.Setenv("PATH", dir)
 	defer os.Setenv("PATH", oldPath)
@@ -80,9 +81,25 @@ func TestFindExecutableAndPATHProbe(t *testing.T) {
 	if got := findExecutable("pacman"); got != bin {
 		t.Errorf("findExecutable(pacman) = %q, want %q", got, bin)
 	}
-	// A distro-ID probe should now return the PATH hit, not the fallback.
+
+	// detectPackageManager walks a fixed candidate order, and its probe also
+	// stat()s common sbin/bin locations — so a host with a real package
+	// manager installed (CI runners ship apt-get) wins regardless of PATH.
+	// Swap the probe seam instead: with only pacman resolvable, the walk
+	// must answer pacman, proving the ordering without host dependence.
+	origProbe := findExecutableFn
+	findExecutableFn = func(name string) string {
+		if name == "pacman" {
+			return bin
+		}
+		return ""
+	}
+	defer func() { findExecutableFn = origProbe }()
+
+	// A distro-ID probe should return the resolvable candidate, not the
+	// distro fallback ("apt" for ubuntu).
 	if got := detectPackageManager("ubuntu"); got != "pacman" {
-		t.Errorf("detectPackageManager with fake pacman on PATH = %q, want %q", got, "pacman")
+		t.Errorf("detectPackageManager with only pacman resolvable = %q, want %q", got, "pacman")
 	}
 }
 

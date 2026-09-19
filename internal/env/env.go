@@ -184,11 +184,17 @@ func DetectSystemInfo(cwd string, log LogFunc) *SystemInfo {
 	return info
 }
 
+// findExecutableFn is the probe seam behind detectPackageManager. Tests swap
+// it because findExecutable also stat()s common sbin/bin locations — a host
+// with a real package manager installed (CI runners ship apt-get) would win
+// the fixed-order candidate walk regardless of PATH.
+var findExecutableFn = findExecutable
+
 // detectPackageManager resolves the default package manager: first by PATH
 // availability (handles hybrids and non-default installs), then by distro ID.
 func detectPackageManager(distroID string) string {
 	for _, name := range pkgManagerCandidates {
-		if findExecutable(name) != "" {
+		if findExecutableFn(name) != "" {
 			return name
 		}
 	}
