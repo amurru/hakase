@@ -69,8 +69,12 @@ func TestFindExecutableAndPATHProbe(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho fake\n"), 0o755); err != nil {
 		t.Fatalf("write fake pacman: %v", err)
 	}
+	// Put ONLY the fake dir on PATH: detectPackageManager probes candidates
+	// in a fixed order, so a host that really has apt-get/dnf (CI runners,
+	// Debian/ Fedora boxes) would otherwise win over the fake pacman and
+	// break the assertion below.
 	oldPath := os.Getenv("PATH")
-	os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	os.Setenv("PATH", dir)
 	defer os.Setenv("PATH", oldPath)
 
 	if got := findExecutable("pacman"); got != bin {

@@ -56,12 +56,13 @@ func splitGitOut(s string) string {
 	return strings.TrimRight(s, "\r\n")
 }
 
-// isNotARepoErr reports whether a git failure is the "not a git repository"
-// shape (or a bare fatal), which read-only tools surface as NotARepo=true
-// instead of an error.
+// isNotARepoErr reports whether a git failure is specifically the
+// "not a git repository" shape, which tools surface as NotARepo=true
+// instead of an error. Match only that phrase: a loose "fatal:" arm
+// classified every fatal git failure (missing commit identity, unknown
+// ref, ...) as NotARepo and silently swallowed it as a nil error.
 func isNotARepoErr(res gitResult) bool {
-	return strings.Contains(res.Stderr, "not a git repository") ||
-		strings.Contains(res.Stderr, "fatal:")
+	return strings.Contains(res.Stderr, "not a git repository")
 }
 
 // resolveRepoDir resolves the tool's repo_dir input through the sandbox.

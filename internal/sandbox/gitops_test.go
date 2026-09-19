@@ -30,6 +30,21 @@ func gitTestEnv() []string {
 	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
 }
 
+// setGitIdentity points GIT_CONFIG_GLOBAL at a temp config with a commit
+// identity. The git tools run with the process environment and read the
+// committer identity from the ambient global config, which this machine's
+// user has but a CI runner does not — without this, a commit in a cloned
+// (not initRepo'd) repo fails with "Author identity unknown".
+func setGitIdentity(t *testing.T) {
+	t.Helper()
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	body := "[user]\n\tname = Hakase Test\n\temail = hakase@example.invalid\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatalf("write gitconfig: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+}
+
 // initRepo creates a git repository at dir with a local identity and one
 // "initial" commit. Uses the system git directly (not runGit) so test setup
 // bypasses the policy stubs.
@@ -1020,6 +1035,7 @@ func TestOperatorFetchUpdatesBehindCount(t *testing.T) {
 
 func TestGitPushPullLoop(t *testing.T) {
 	stubGitPolicy(t, false)
+	setGitIdentity(t)
 	seed := t.TempDir()
 	initRepo(t, seed)
 	bare := bareCloneOf(t, seed)
@@ -1040,8 +1056,12 @@ func TestGitPushPullLoop(t *testing.T) {
 	if _, err := gitStageContent(context.Background(), GitStageInput{RepoDir: workA, Paths: []string{"extra.txt"}}, nil); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: workA, Message: "feat: extra"}, nil); err != nil {
+	commitOut, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: workA, Message: "feat: extra"}, nil)
+	if err != nil {
 		t.Fatalf("commit: %v", err)
+	}
+	if commitOut.NotARepo {
+		t.Fatal("commit reported NotARepo in a valid repo")
 	}
 	upstream := true
 	pushOut, err := gitPushContent(context.Background(), GitPushInput{RepoDir: workA, Remote: "origin", Branch: "main", SetUpstream: &upstream}, nil)
