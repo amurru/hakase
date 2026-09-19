@@ -18,7 +18,7 @@ make build-frontend
 - `make build-frontend` - `pnpm install && pnpm build` in `webui/`, then copy `webui/dist/` into `internal/web/dist/` (go:embed cannot follow symlinks, hence the real copy)
 - `make test` - `go test ./...`
 - Single Go test: `go test ./internal/agent/ -run TestName`
-- Frontend tests: `cd webui && pnpm test` (vitest, jsdom). Single file: `cd webui && pnpm vitest run src/lib/markdown/useMermaid.test.ts`
+- Frontend tests: `cd webui && pnpm test` (vitest, jsdom). Single file: `cd webui && pnpm vitest run src/composables/useMermaid.test.ts`
 - `pnpm build` runs `vue-tsc -b` first, so the typecheck is part of the build
 
 ## Build tags (internal/web)

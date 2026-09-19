@@ -69,7 +69,7 @@
   "vision_provider": "",
   "model_vision": "auto",
   "sandbox": {
-    "mode": "bubblewrap",
+    "mode": "paths",
     "workspace_roots": ["."],
     "read_roots": [],
     "deny_roots": [],
