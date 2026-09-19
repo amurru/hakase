@@ -49,15 +49,15 @@ type ConfigResponse struct {
 	// never returned).
 	HasAPIKey bool `json:"has_api_key"`
 	// HasVisionAPIKey reports whether a vision_api_key is configured.
-	HasVisionAPIKey bool `json:"has_vision_api_key"`
+	HasVisionAPIKey   bool `json:"has_vision_api_key"`
 	HasFalKey         bool `json:"has_fal_key"`
 	HasOpenAIImageKey bool `json:"has_openai_image_key"`
 	HasOpenAIVideoKey bool `json:"has_openai_video_key"`
 	// HasTelegramBotToken / HasTelegramPairingCode report channel secrets
 	// (values never returned). HasSidekickAPIKey reports the sidekick key.
-	HasTelegramBotToken     bool `json:"has_telegram_bot_token"`
-	HasTelegramPairingCode  bool `json:"has_telegram_pairing_code"`
-	HasSidekickAPIKey       bool `json:"has_sidekick_api_key"`
+	HasTelegramBotToken    bool `json:"has_telegram_bot_token"`
+	HasTelegramPairingCode bool `json:"has_telegram_pairing_code"`
+	HasSidekickAPIKey      bool `json:"has_sidekick_api_key"`
 	// EffectiveModel is the model the agent will actually use, resolved from the
 	// configured model_name or the provider default. Exposed so the web UI can
 	// label the active model without recomputing provider defaults client-side.

@@ -371,13 +371,13 @@ func evaluateSkillAt(skillsDir, name, filePath string) SkillEvalResult {
 		return res
 	}
 	var cases []struct {
-		Name     string      `json:"name"`
-		Train    bool        `json:"train"`
-		Expected string      `json:"expected"`
-		Match    string      `json:"match"`
-		Passed   bool        `json:"passed"`
-		Actual   string      `json:"actual"`
-		Error    string      `json:"error"`
+		Name     string `json:"name"`
+		Train    bool   `json:"train"`
+		Expected string `json:"expected"`
+		Match    string `json:"match"`
+		Passed   bool   `json:"passed"`
+		Actual   string `json:"actual"`
+		Error    string `json:"error"`
 	}
 	if err := json.Unmarshal(data, &cases); err != nil {
 		res.EvalSetError = "cannot parse runner output"

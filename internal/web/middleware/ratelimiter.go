@@ -13,8 +13,8 @@ import (
 
 // Default rate limiter tunables.
 const (
-	DefaultRate     rate.Limit     = 1   // tokens per second
-	DefaultBurst    int            = 10  // max burst
+	DefaultRate      rate.Limit    = 1  // tokens per second
+	DefaultBurst     int           = 10 // max burst
 	DefaultBaseDelay time.Duration = 1 * time.Second
 	DefaultMaxDelay  time.Duration = 15 * time.Minute
 )

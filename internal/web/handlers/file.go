@@ -540,14 +540,14 @@ type browseEntry struct {
 
 // skippedDirNames lists directory basenames to skip during the bounded walk.
 var skippedDirNames = map[string]bool{
-	".git":          true,
-	".hakase-tmp":   true,
-	"node_modules":  true,
-	"vendor":        true,
-	"__pycache__":   true,
-	".venv":         true,
-	".omc":          true,
-	".omo":          true,
+	".git":         true,
+	".hakase-tmp":  true,
+	"node_modules": true,
+	"vendor":       true,
+	"__pycache__":  true,
+	".venv":        true,
+	".omc":         true,
+	".omo":         true,
 }
 
 // BrowseFiles handles GET /api/files/browse?q=<prefix> - bounded workspace

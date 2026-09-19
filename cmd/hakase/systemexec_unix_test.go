@@ -31,4 +31,3 @@ func TestBuildExecCommandSysProcAttr(t *testing.T) {
 		t.Errorf("Pdeathsig: expected SIGKILL, got %v", cmd.SysProcAttr.Pdeathsig)
 	}
 }
-

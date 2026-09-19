@@ -133,9 +133,9 @@ func extractToken(r *http.Request) string {
 // In production, the SPA and API are served from the same origin so CORS is not needed.
 func CORSMiddleware() func(http.Handler) http.Handler {
 	allowedOrigins := map[string]bool{
-		"http://localhost:5173":   true, // Vite dev server
-		"http://localhost:3000":   true, // alternative
-		"http://127.0.0.1:5173":  true,
+		"http://localhost:5173": true, // Vite dev server
+		"http://localhost:3000": true, // alternative
+		"http://127.0.0.1:5173": true,
 	}
 
 	return func(next http.Handler) http.Handler {

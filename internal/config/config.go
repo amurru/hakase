@@ -129,8 +129,8 @@ type Config struct {
 	// Units tunes the user's preferred measurement system injected as a
 	// system-reminder block so the agent reports quantities in the user's
 	// preferred units. Absent = metric (SI/ISO).
-	Units UnitsConfig `json:"units,omitempty"`
-	MCPServerURL string             `json:"mcp_server_url"`
+	Units        UnitsConfig `json:"units,omitempty"`
+	MCPServerURL string      `json:"mcp_server_url"`
 	// MCPServers configures MCP servers (see mcp_config.go). Legacy
 	// mcp_server_url is auto-migrated into the "lightpanda" server.
 	MCPServers        MCPConfig              `json:"mcp,omitempty"`
@@ -477,18 +477,18 @@ const (
 
 // Sidekick mode constants.
 const (
-	ModeOff       = "off"       // disabled
-	ModeOnDemand  = "on_demand" // ask_sidekick only (default when enabled)
-	ModeWatch     = "watch"     // watchdog consults, notes injected into context
-	ModeFull      = "full"      // watch + orchestrator told to act on notes
+	ModeOff      = "off"       // disabled
+	ModeOnDemand = "on_demand" // ask_sidekick only (default when enabled)
+	ModeWatch    = "watch"     // watchdog consults, notes injected into context
+	ModeFull     = "full"      // watch + orchestrator told to act on notes
 )
 
 // validSidekickModes is the set of recognized Mode values.
 var validSidekickModes = map[string]bool{
-	ModeOff:       true,
-	ModeOnDemand:  true,
-	ModeWatch:     true,
-	ModeFull:      true,
+	ModeOff:      true,
+	ModeOnDemand: true,
+	ModeWatch:    true,
+	ModeFull:     true,
 }
 
 // ApplyDefaults fills zero values with sidekick defaults. Call after load.

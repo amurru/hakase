@@ -48,8 +48,8 @@ func TestParseScheduleRelative(t *testing.T) {
 	from := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		raw    string
-		delta  time.Duration
+		raw     string
+		delta   time.Duration
 		oneShot bool
 	}{
 		{"30m", 30 * time.Minute, true},

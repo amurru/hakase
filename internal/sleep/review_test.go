@@ -76,7 +76,7 @@ func TestRequireReviewed_MachineGeneratedBlocksUntilReviewed(t *testing.T) {
 	}
 
 	// Any edit after review invalidates the pin.
-	writeTasksFile(t, path, machineGeneratedTasks(gen)+ "\n")
+	writeTasksFile(t, path, machineGeneratedTasks(gen)+"\n")
 	if err := RequireReviewed(path); err == nil {
 		t.Error("tampered file must be refused (hash mismatch)")
 	}

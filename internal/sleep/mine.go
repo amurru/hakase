@@ -317,7 +317,7 @@ func splitsDisjoint(tasks []skill.MarkdownTask) bool {
 // MineTasksFile is the on-disk shape of a mined task file: the machine
 // marker (generated_at) is what triggers the M4 review requirement.
 type MineTasksFile struct {
-	GeneratedAt string                `json:"generated_at"`
+	GeneratedAt string               `json:"generated_at"`
 	Tasks       []skill.MarkdownTask `json:"tasks"`
 }
 

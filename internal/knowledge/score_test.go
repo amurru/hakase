@@ -21,8 +21,8 @@ func TestTokenize(t *testing.T) {
 		{"Quantum Computing", []string{"quantum", "computing"}},
 		{"the quick brown fox", []string{"quick", "brown", "fox"}},
 		{"  spaced,out--tokens  ", []string{"spaced", "out", "tokens"}},
-		{"a b c", nil},             // all stopwords/single-rune
-		{"", nil},                  // empty
+		{"a b c", nil},                // all stopwords/single-rune
+		{"", nil},                     // empty
 		{"C++ & Go!", []string{"go"}}, // single-rune tokens are dropped by design
 	}
 	for _, c := range cases {

@@ -51,9 +51,9 @@ type CycleOpts struct {
 	// the CLI when it resolves to the target model unless
 	// AllowSharedJudge. Nil shares the Call seam (recorded in the report
 	// as shared_backend=true).
-	JudgeCall ModelCaller
-	JudgeModelKey      string
-	AllowSharedJudge   bool
+	JudgeCall        ModelCaller
+	JudgeModelKey    string
+	AllowSharedJudge bool
 	// Run overrides the replay runner (agentic mode). Nil builds a
 	// single-shot runner over Call. Agentic runners cannot report token
 	// usage at this seam; the diagnostics note the unaccounted spend.
@@ -63,11 +63,11 @@ type CycleOpts struct {
 	ReflectorFor func(call ModelCaller, skillName string, budget int, rc ReflectContext) Reflector
 
 	// Gate knobs (identical semantics to ConsolidateOpts).
-	EditBudget        int
-	GateMetric        string
-	MixedWeight       float64
-	GateNoRegression  bool
-	Greedy            bool
+	EditBudget       int
+	GateMetric       string
+	MixedWeight      float64
+	GateNoRegression bool
+	Greedy           bool
 
 	// Learning-rate schedule (Phase 3, SL-030): LRScheduler
 	// constant|linear|cosine decays the per-night edit budget from
@@ -186,9 +186,9 @@ type CycleResult struct {
 // Tokens := chars/4 (provider-reported counts are not visible at this
 // seam); the estimate is documented in the night diagnostics.
 type tokenLedger struct {
-	mu    sync.Mutex
+	mu     sync.Mutex
 	tokens int
-	max   int
+	max    int
 }
 
 // wrap returns a ModelCaller that accounts and enforces the budget.
@@ -412,12 +412,12 @@ func RunCycle(ctx context.Context, opts CycleOpts) (CycleResult, error) {
 		LastModelKey: opts.ModelKey,
 	}
 	rec := NightRecord{
-		StartedAt:  started,
-		Outcome:    nightOutcome(res),
-		StagingDir: res.StagingDir,
-		Sessions:   harvested,
-		Tasks:      res.MinedTasks,
-		Tokens:     res.TokensUsed,
+		StartedAt:   started,
+		Outcome:     nightOutcome(res),
+		StagingDir:  res.StagingDir,
+		Sessions:    harvested,
+		Tasks:       res.MinedTasks,
+		Tokens:      res.TokensUsed,
 		AbortReason: abortReason(res),
 		Groups:      nightGroups(res, started),
 	}

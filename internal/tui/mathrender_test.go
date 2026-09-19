@@ -13,19 +13,19 @@ import (
 
 // canonical math expressions used across the tests (the 6 requested probes).
 const (
-	mathFrac      = `\frac{dy}{dx}`
-	mathSum       = `\sum_{i=1}^{n} x_i`
-	mathIntegral  = `\int_0^\infty e^{-x^2} dx`
-	mathSqrt      = `\sqrt{a^2 + b^2}`
-	mathGreek     = `\alpha + \beta = \gamma`
-	mathMatrix    = `\begin{pmatrix} a & b \\ c & d \end{pmatrix}`
+	mathFrac     = `\frac{dy}{dx}`
+	mathSum      = `\sum_{i=1}^{n} x_i`
+	mathIntegral = `\int_0^\infty e^{-x^2} dx`
+	mathSqrt     = `\sqrt{a^2 + b^2}`
+	mathGreek    = `\alpha + \beta = \gamma`
+	mathMatrix   = `\begin{pmatrix} a & b \\ c & d \end{pmatrix}`
 )
 
 func TestSplitMathSegments(t *testing.T) {
 	cases := []struct {
-		name    string
-		in      string
-		want    []string
+		name string
+		in   string
+		want []string
 	}{
 		{
 			name: "single display block",
@@ -93,10 +93,10 @@ func TestTermtexCanonicalExpressions(t *testing.T) {
 		in     string
 		expect string // substring that must appear in the Unicode output
 	}{
-		{mathFrac, "────"},     // stacked fraction bar
-		{mathSum, "∑"},         // big operator
-		{mathIntegral, "∫"},    // integral
-		{mathSqrt, "√"},        // sqrt radical
+		{mathFrac, "────"},  // stacked fraction bar
+		{mathSum, "∑"},      // big operator
+		{mathIntegral, "∫"}, // integral
+		{mathSqrt, "√"},     // sqrt radical
 		{mathGreek, "α + β = γ"},
 		{mathMatrix, "⎛"}, // tall matrix delimiter
 	}

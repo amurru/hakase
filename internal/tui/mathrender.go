@@ -125,7 +125,7 @@ func detectMathToolchain() bool {
 // canRenderImages reports whether the kitty PNG path is available.
 func (mr *MathRenderer) canRenderImages() bool {
 	return mr.kittyOK && mr.toolchainOK && !mr.asciiMode
-	}
+}
 
 // parseOSC11 extracts an rgb color from an OSC 11 response. Handles the
 // rgb:RRRR/GGGG/BBBB form (kitty, 16-bit channels), the rgb:RR/GG/BB form
@@ -195,13 +195,13 @@ func useWhiteText(bgHex string) bool {
 func (mr *MathRenderer) ApplyBackgroundColor(msg tea.BackgroundColorMsg) {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	
+
 	newBgColor := "000000"
 	newTextColor := "black"
 	if msg.IsDark() {
 		newTextColor = "white"
 	}
-	
+
 	// Clear caches when background or text color changes to force re-rendering
 	// with the new colors. The nextImageID counter is preserved to maintain
 	// monotonicity.
@@ -1088,6 +1088,7 @@ func terminalCellPx() (w, h int) {
 	}
 	return w, h
 }
+
 // termiosWinsize returns the terminal window size including pixel geometry.
 // Implemented per-platform (mathrender_winsize.go); returns an error when the
 // terminal does not report pixel geometry.

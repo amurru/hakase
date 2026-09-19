@@ -18,8 +18,8 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
-	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/sleep"
 )

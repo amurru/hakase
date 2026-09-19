@@ -116,18 +116,18 @@ func TestValidateSkillName(t *testing.T) {
 	}
 
 	invalid := []string{
-		"",          // empty
-		"Bad_Name",  // underscore
-		"bad--name", // double hyphen
-		"-bad",      // leading hyphen
-		"bad-",      // trailing hyphen
-		"UPPER",     // uppercase
+		"",                      // empty
+		"Bad_Name",              // underscore
+		"bad--name",             // double hyphen
+		"-bad",                  // leading hyphen
+		"bad-",                  // trailing hyphen
+		"UPPER",                 // uppercase
 		strings.Repeat("a", 65), // too long
-		"a b",  // space
-		"a_b",  // underscore
-		"a.b",  // dot
-		"a/b",  // slash
-		"中文",   // non-ASCII
+		"a b",                   // space
+		"a_b",                   // underscore
+		"a.b",                   // dot
+		"a/b",                   // slash
+		"中文",                    // non-ASCII
 	}
 	for _, name := range invalid {
 		if err := ValidateSkillName(name); err == nil {

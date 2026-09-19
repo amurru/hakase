@@ -27,16 +27,16 @@ type MCPServerDTO struct {
 
 // MCPServerRequest is the write payload for add/update.
 type MCPServerRequest struct {
-	Name      string              `json:"name"`
-	Type      string              `json:"type"`
-	URL       string              `json:"url"`
-	Command   []string            `json:"command"`
-	Env       map[string]string   `json:"env"`
-	Headers   map[string]string   `json:"headers"`
-	Disabled  bool                `json:"disabled"`
+	Name      string                       `json:"name"`
+	Type      string                       `json:"type"`
+	URL       string                       `json:"url"`
+	Command   []string                     `json:"command"`
+	Env       map[string]string            `json:"env"`
+	Headers   map[string]string            `json:"headers"`
+	Disabled  bool                         `json:"disabled"`
 	Tools     *config.MCPServerToolsConfig `json:"tools"`
-	TimeoutMs int                 `json:"timeout_ms"`
-	OAuth     map[string]string   `json:"oauth"`
+	TimeoutMs int                          `json:"timeout_ms"`
+	OAuth     map[string]string            `json:"oauth"`
 }
 
 // MCPRouter is the minimum interface needed by RegisterMCPRoutes.

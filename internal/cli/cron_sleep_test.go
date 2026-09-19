@@ -60,11 +60,11 @@ func TestBuildSleepCycleOpts(t *testing.T) {
 	}
 
 	cfg = &config.Config{Sleep: config.SleepConfig{
-		EditBudget:       2,
+		EditBudget:        2,
 		MaxTokensPerNight: 999,
-		ValFraction:      0.2,
-		TestFraction:     0.2,
-		GateNoRegression: true,
+		ValFraction:       0.2,
+		TestFraction:      0.2,
+		GateNoRegression:  true,
 	}}
 	opts, err = buildSleepCycleOpts(cfg, sleep.SleepEnv{MaxTokens: 555})
 	if err != nil {
