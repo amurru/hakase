@@ -354,7 +354,7 @@ Design notes for the future implementer:
 
 ## Quality Control Checklist
 
-- [ ] Each atomic spec is independently testable (MG-008, MG-009, MG-010 especially).
+- [x] Each atomic spec is independently testable (MG-008, MG-009, MG-010 especially).
 - [x] Dependency map reflects real files (verified by read of `internal/agent`, `internal/config`, `internal/web`, `internal/sandbox`, `webui`).
 - [x] Guardrails are specific (CSP untouched by design, sandbox paths named, redact rules named, env-var convention named).
 - [x] Sequence respects dependencies.

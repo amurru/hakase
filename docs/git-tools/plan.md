@@ -6,6 +6,11 @@ Date: 2026-09-01 (r1). Scope: v1 = read-only `git_status` / `git_diff` /
 `git_log` / `git_branch` + mutating `git_stage` / `git_commit`; no push/pull/
 clone, no checkout/reset/clean (deferred to v2 per research D4).
 
+> **Status (2026-09-19):** shipped well past this plan — v1 + v2 through
+> Phase 7 (`git_stash`/`git_tag` first slice; 13 git tools total). The
+> remainder (git_remote management, rebase/merge, amend/signing) is tracked
+> as T7.x in `tasks.md`.
+
 ## Phases
 
 ### Phase 1 - Foundation (serial)
@@ -24,23 +29,23 @@ clone, no checkout/reset/clean (deferred to v2 per research D4).
 
 ### Phase 2 - Read-only tools (parallelizable)
 
-- [ ] **GT-002** `git_status` — `git status --porcelain=v1 -b` + parse. LOW/allow.
-- [ ] **GT-003** `git_diff` — `git diff [--staged] [-- path]`, 20k-line cap. LOW/allow.
-- [ ] **GT-004** `git_log` — `git log --pretty=format:%h|%an|%ad|%s --date=short -n N [-- path]`,
+- [x] **GT-002** `git_status` — `git status --porcelain=v1 -b` + parse. LOW/allow.
+- [x] **GT-003** `git_diff` — `git diff [--staged] [-- path]`, 20k-line cap. LOW/allow.
+- [x] **GT-004** `git_log` — `git log --pretty=format:%h|%an|%ad|%s --date=short -n N [-- path]`,
       N default 20 max 100. LOW/allow.
-- [ ] **GT-005** `git_branch` — `git branch --list [--all]`, parse `*`. LOW/allow.
+- [x] **GT-005** `git_branch` — `git branch --list [--all]`, parse `*`. LOW/allow.
 
 ### Phase 3 - Mutating tools (approval-gated)
 
-- [ ] **GT-006** `git_stage` — `git add -- paths...`, paths required, `unstage`
+- [x] **GT-006** `git_stage` — `git add -- paths...`, paths required, `unstage`
       switch maps to `git rm --cached -- paths...`. MEDIUM/ask.
-- [ ] **GT-007** `git_commit` — optional `stage_all` (`git add -A`), commit with
+- [x] **GT-007** `git_commit` — optional `stage_all` (`git add -A`), commit with
       `-m message`, `allow_empty` adds `--allow-empty`, returns full + short sha.
       MEDIUM/ask.
 
 ### Phase 4 - Wiring & docs
 
-- [ ] **GT-008** Build `CreateGitOpsTools(log)` in `internal/sandbox/gitops.go`
+- [x] **GT-008** Build `CreateGitOpsTools(log)` in `internal/sandbox/gitops.go`
       returning the six tools; append to `orchestratorTools` and to
       `generalPurposeAgent` tools in `internal/agent/agent.go` `SetupRunner`;
       CHANGELOG Unreleased entry; README capability list mention; this directory.
