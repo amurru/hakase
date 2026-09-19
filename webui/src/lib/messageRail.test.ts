@@ -4,7 +4,9 @@ import {
   activeTickIndex,
   railPreviewText,
   shouldShowRail,
+  tickHitHeight,
   type RailAnchor,
+  type RailTick,
   type ScrollMetrics,
 } from './messageRail'
 
@@ -90,6 +92,27 @@ describe('activeTickIndex', () => {
 
   it('returns -1 without ticks', () => {
     expect(activeTickIndex([], metrics())).toBe(-1)
+  })
+})
+
+describe('tickHitHeight', () => {
+  const stack = (...ys: number[]): RailTick[] =>
+    ys.map((y, i) => ({ id: `m${i}`, anchorTop: i * 100, scrollTarget: i * 100, y }))
+
+  it('caps the hit height at 12px for normal pitch', () => {
+    expect(tickHitHeight(stack(0, 14, 28))).toBe(12)
+  })
+
+  it('shrinks the hit height to the pitch on dense stacks', () => {
+    expect(tickHitHeight(stack(0, 8, 16))).toBe(8)
+  })
+
+  it('floors the hit height at 4px on extreme density', () => {
+    expect(tickHitHeight(stack(0, 3.05, 6.1))).toBe(4)
+  })
+
+  it('returns 12px for a lone tick', () => {
+    expect(tickHitHeight(stack(150))).toBe(12)
   })
 })
 

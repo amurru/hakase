@@ -322,6 +322,14 @@ function jumpToMessage(id: string) {
 // Canvas panel toggle and window resizes reflow the transcript.
 useResizeObserver(scrollContainer, () => scheduleRailLayout())
 
+// Sidekick notes render inside the scroll container: appending one grows
+// scrollHeight without touching messages or the container's box, which
+// would otherwise leave the rail's visibility and targets stale.
+watch(
+  () => sidekickNotes.value.length,
+  () => scheduleRailLayout(),
+)
+
 onUnmounted(() => {
   if (railLayoutRaf) cancelAnimationFrame(railLayoutRaf)
   if (railActiveRaf) cancelAnimationFrame(railActiveRaf)

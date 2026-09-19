@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import type { RailTickVM } from '@/lib/messageRail'
+import { tickHitHeight, type RailTickVM } from '@/lib/messageRail'
 
 const props = defineProps<{
   ticks: RailTickVM[]
@@ -8,6 +9,10 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ select: [id: string] }>()
+
+// Dense stacks shrink the layout pitch; shrink the buttons' hit height with
+// it so adjacent strips never overlap their pointer targets.
+const hitHeight = computed(() => tickHitHeight(props.ticks))
 
 function tickClass(tick: RailTickVM): string {
   if (tick.id === props.activeId) {
@@ -42,9 +47,10 @@ function tickLabel(tick: RailTickVM): string {
         <TooltipTrigger as-child>
           <button
             type="button"
-            class="group/tick pointer-events-auto absolute left-1 flex h-3 w-5 -translate-y-1/2 cursor-pointer items-center rounded-sm outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3"
-            :style="{ top: `${tick.y}px` }"
+            class="group/tick pointer-events-auto absolute left-1 flex w-5 -translate-y-1/2 cursor-pointer items-center rounded-sm outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3"
+            :style="{ top: `${tick.y}px`, height: `${hitHeight}px` }"
             :aria-label="tickLabel(tick)"
+            :aria-current="tick.id === props.activeId ? 'location' : undefined"
             @click="emit('select', tick.id)"
           >
             <span

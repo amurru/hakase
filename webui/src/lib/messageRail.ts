@@ -85,6 +85,17 @@ export function activeTickIndex(ticks: RailTick[], metrics: ScrollMetrics): numb
 }
 
 /**
+ * Pointer hit-target height for the tick buttons: never taller than the
+ * stack pitch, so dense stacks (shrunken pitch) never let later buttons
+ * paint over earlier ones. A 4px floor keeps extreme densities clickable.
+ */
+export function tickHitHeight(ticks: RailTick[]): number {
+  if (ticks.length < 2) return 12
+  const pitch = Math.abs(ticks[1].y - ticks[0].y)
+  return Math.min(12, Math.max(4, pitch))
+}
+
+/**
  * First-line preview for the hover tooltip: user prompts render as plain
  * pre-wrapped text, so this only flattens whitespace and truncates.
  */
