@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Go 1.26 agent harness (module `amurru/hakase`) with a Vue 3 web UI. No CI or lint config exists; verification is `go build ./...` + `go test ./...` and `pnpm test` in `webui/`.
+Go 1.26 agent harness (module `amurru/hakase`) with a Vue 3 web UI. CI (`.github/workflows/test.yml`) runs `gofmt -l`, `go vet ./...`, `go test ./...` and `pnpm test` in `webui/` on every push/PR — the same suite you should run locally before pushing.
 
 ## Critical setup gotcha
 
