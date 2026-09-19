@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & discussions
+    url: https://github.com/amurru/hakase/discussions
+    about: Usage questions, config help, and ideas that are not yet concrete feature requests.
+  - name: Security vulnerabilities
+    url: https://github.com/amurru/hakase/security/advisories/new
+    about: Please report vulnerabilities privately (see SECURITY.md) — not as public issues.

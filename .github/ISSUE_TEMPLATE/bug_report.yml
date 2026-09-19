@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in hakase is broken or behaves contrary to its documentation
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search existing
+        issues first — if you find yours, add a 👍 and any new details there.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, expected vs actual behavior.
+      placeholder: |
+        1. Start `hakase web` with config ...
+        2. Send message ...
+        3. ...
+        Expected: ... Actual: ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      options:
+        - TUI
+        - Web UI
+        - Telegram channel
+        - CLI (non-interactive)
+        - Other / N/A
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `hakase version`, or the commit you are running.
+      placeholder: v0.1.0-alpha.5
+    validations:
+      required: true
+  - type: dropdown
+    id: sandbox
+    attributes:
+      label: Sandbox mode
+      description: 'The "mode" field of the "sandbox" block in your config.'
+      options:
+        - "paths"
+        - bubblewrap
+        - landlock
+        - "off"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from `logs/exec-audit.jsonl` or console output. Redact secrets.
+      render: shell
