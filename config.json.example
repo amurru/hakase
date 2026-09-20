@@ -153,5 +153,10 @@
     "fal_base_url": "",
     "fal_image_model": "fal-ai/flux/schnell",
     "fal_video_model": "fal-ai/wan/v2.7/text-to-video"
+  },
+  "memory": {
+    "enabled": true,
+    "max_prompt_chars": 4000,
+    "max_notes": 200
   }
 }

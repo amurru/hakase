@@ -106,8 +106,9 @@ contract, and config already accommodate them. Recorded in the issue.
 
 - `Note{ID, Category, Content, Project, CreatedAt, UpdatedAt}`;
   `State{Version, Notes}`; `Categories` = the D4 enum in render order.
-- `DefaultPath()` = `<HakaseHome>/memory/notes.json`; `Default()` returns a
-  process-wide `*Store` singleton; `Open(path)` for tests/CLI.
+- `DefaultPath()` = `<HakaseHome>/memory/notes.json`; `OpenDefault()` /
+  `Open(path)` open per use — deliberately no process-wide singleton, so
+  `$HAKASE_HOME` stays authoritative and tests stay deterministic.
 - `Store`: `Get() (State, error)` (reloads when another process wrote),
   `Update(fn func(*State) error) error` (reload → mutate → save → refresh
   cache), `Add(note) (final Note, err)` (dedupe D3, content trim/cap,
