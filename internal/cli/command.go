@@ -173,6 +173,11 @@ func init() {
 		Handler:     RunChannelsCLI,
 	})
 	registerCommand(Command{
+		Name:        "memory",
+		Description: "manage agent-written memory notes (list, add, forget)",
+		Handler:     RunMemoryCLI,
+	})
+	registerCommand(Command{
 		Name:        "sleep",
 		Description: "offline skill self-improvement loop (harvest, review, run, adopt)",
 		Handler:     RunSleepCLI,
