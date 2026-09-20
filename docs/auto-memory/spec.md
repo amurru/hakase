@@ -121,11 +121,14 @@ contract, and config already accommodate them. Recorded in the issue.
   category validation), `Remove(id) (bool, error)`.
 - Save: the exclusive flock (`<path>.lock`, `util.FlockExclusive`) is held
   across the whole load-mutate-save transaction, so concurrent writers
-  cannot interleave and last-save-wins over each other's notes; the store
-  dir is `MkdirAll 0700` + `Chmod 0700` and the tmp file is created and
-  re-chmodded 0600 before the rename (mode arguments only apply at
-  creation — a pre-existing permissive tmp must not leak into the renamed
-  store). Corrupt JSON on load → quarantine (D1).
+  cannot interleave and last-save-wins over each other's notes; disk-reading
+  readers (`Open`, `Get`'s reload path) take the same flock, so a corrupt-file
+  quarantine can never race a concurrent write into renaming away a
+  freshly-written valid store (the unchanged-cache fast path stays
+  lock-free). The store dir is `MkdirAll 0700` + `Chmod 0700` and the tmp
+  file is created and re-chmodded 0600 before the rename (mode arguments
+  only apply at creation — a pre-existing permissive tmp must not leak into
+  the renamed store). Corrupt JSON on load → quarantine (D1).
 - `SelectForProject(state, root) []Note` — D2 filter.
 - `RenderBlock(notes, maxChars) string` — D5/D6 format, `""` when no notes.
 

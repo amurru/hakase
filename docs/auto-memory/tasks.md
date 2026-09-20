@@ -122,6 +122,13 @@ items are the two deferred follow-ups at the bottom.
   debug, max-output-tokens); making one section strict diverges. Revisit as
   a house-wide strictness pass if wanted.
 
+- [x] **R4 [BE]** `internal/memory` (CodeRabbit round 2): disk-reading
+      readers (`Open`/`reload`, `Get`'s reload path) take the same flock as
+      writers, so a corrupt-file quarantine cannot race a concurrent write
+      into renaming away a freshly-written valid store; the unchanged-cache
+      fast path stays lock-free.
+      Verify: `Get`-reload flock-blocking test in `internal/memory`.
+
 ## Deferred (tracked in the issue, not boxes here)
 
 - Session-end extraction pass (cheap `summary_model` proposer + sleep-miner
