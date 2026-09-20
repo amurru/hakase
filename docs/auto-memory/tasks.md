@@ -99,6 +99,29 @@ items are the two deferred follow-ups at the bottom.
       `cd webui && pnpm test`.
       Verify: all four green (2026-09-20).
 
+## Review fixes (PR #35, CodeRabbit round 1)
+
+- [x] **R1 [BE]** `internal/memory`: the exclusive flock is held across the
+      whole load-mutate-save transaction (concurrent agent/CLI/web writers
+      can no longer last-save-wins over each other's notes); the store dir
+      is `Chmod 0700` and the tmp file re-chmodded 0600 on every write so a
+      pre-existing permissive dir/tmp cannot leak into the renamed store;
+      `OpenDefault` fails closed when no home directory resolves.
+      Verify: flock-serialization, perm-tightening, and no-home tests in
+      `internal/memory`.
+- [x] **R2 [BE]** `internal/context`: the once-per-session gate is an
+      atomic reserve-before-render (rollback on empty block), so concurrent
+      model calls for one session inject exactly once.
+      Verify: 8-callback concurrency race test in `internal/context`.
+- [x] **R3 [BE]** `internal/cli`: `memory add --project` is normalized to
+      the absolute enclosing project root (matching the agent's write path)
+      before storing.
+      Verify: CLI test case (`./sub/repo` → `project.FindRoot(abs)`).
+- Declined: strict rejection of malformed `HAKASE_MEMORY_*` env values —
+  the silent-fallback bool/int env idiom is house-wide (sidekick, telegram,
+  debug, max-output-tokens); making one section strict diverges. Revisit as
+  a house-wide strictness pass if wanted.
+
 ## Deferred (tracked in the issue, not boxes here)
 
 - Session-end extraction pass (cheap `summary_model` proposer + sleep-miner

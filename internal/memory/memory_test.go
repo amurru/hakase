@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"amurru/hakase/internal/util"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -282,5 +284,112 @@ func TestRenderBlockBudgetCap(t *testing.T) {
 	full := RenderBlock(notes, 1<<20)
 	if strings.Contains(full, "omitted") {
 		t.Fatalf("uncapped block should not truncate")
+	}
+}
+
+func TestUpdateWaitsForCrossProcessFlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.json")
+	a, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open a: %v", err)
+	}
+	b, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open b: %v", err)
+	}
+	if _, err := a.Add("user", "seed note", "", 0); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Hold the flock the way another process would (same semantics: flock is
+	// per open file description, so this second open conflicts).
+	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer lf.Close()
+	if err := util.FlockExclusive(lf); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Add("user", "must wait for the lock", "", 0)
+		done <- err
+	}()
+	// The load-mutate-save transaction must be serialized behind the held
+	// flock, not just the final rename (the pre-fix code sailed straight
+	// through here).
+	select {
+	case err := <-done:
+		t.Fatalf("Update completed while another holder owned the flock (err=%v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := util.FlockUnlock(lf); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Add after unlock: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Update did not complete after the flock was released")
+	}
+	got := a.Get()
+	if len(got.Notes) != 2 {
+		t.Fatalf("want both notes after serialized writes, got %d", len(got.Notes))
+	}
+}
+
+func TestSaveTightensExistingPerms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.json")
+	// A pre-existing permissive store dir and tmp file (e.g. from an old
+	// install or a manual copy) must be tightened by the next write.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".tmp", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.Add("lesson", "perm tightening", "", 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	dirFi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirFi.Mode().Perm() != 0o700 {
+		t.Fatalf("dir perms = %o, want 700", dirFi.Mode().Perm())
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The renamed store inherits the tmp file's mode; without the explicit
+	// re-chmod it would still be 644.
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("store perms = %o, want 600", fi.Mode().Perm())
+	}
+}
+
+func TestOpenDefaultFailsWithoutHome(t *testing.T) {
+	t.Setenv("HAKASE_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	s, err := OpenDefault()
+	if err == nil {
+		t.Fatal("OpenDefault must fail closed when no home directory resolves")
+	}
+	if !strings.Contains(err.Error(), "no home directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s != nil {
+		t.Fatalf("expected nil store on failure")
 	}
 }

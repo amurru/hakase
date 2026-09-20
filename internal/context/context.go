@@ -107,25 +107,28 @@ func (h *HistoryBuilder) MemoryProvider() func(ctx agent.Context) string {
 	return h.memoryProvider
 }
 
-// memoryBlockFor returns the session-start memory block for ctx, or "" when
-// there is nothing to inject (provider nil/empty, or session already served).
-func (h *HistoryBuilder) memoryBlockFor(sessionID string, ctx agent.Context) string {
+// reserveMemory atomically claims the session's one-shot memory injection:
+// overlapping model calls for one session (concurrent runs share the
+// builder) cannot both pass this gate, so the block is injected exactly
+// once. ok is false when memory is disabled, the session is already served,
+// or another in-flight callback holds the reservation.
+func (h *HistoryBuilder) reserveMemory(sessionID string) bool {
 	h.memoryMu.Lock()
 	defer h.memoryMu.Unlock()
 	if h.memoryProvider == nil || h.memorySeen[sessionID] {
-		return ""
-	}
-	return h.memoryProvider(ctx)
-}
-
-// markMemorySeen records that sessionID has received its memory block.
-func (h *HistoryBuilder) markMemorySeen(sessionID string) {
-	h.memoryMu.Lock()
-	defer h.memoryMu.Unlock()
-	if h.memorySeen == nil {
-		h.memorySeen = make(map[string]bool)
+		return false
 	}
 	h.memorySeen[sessionID] = true
+	return true
+}
+
+// rollbackMemory releases a reservation whose rendered block came back
+// empty, keeping the session eligible for a later call (e.g. the first note
+// is written mid-session).
+func (h *HistoryBuilder) rollbackMemory(sessionID string) {
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	delete(h.memorySeen, sessionID)
 }
 
 // SetLogFunc installs a logger (usually the TUI log pane) for compaction
@@ -173,18 +176,22 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		}
 	}
 
-	// Session-start auto-memory: render once per session and splice at the
-	// very head of the request via defer, so it fires on every return path
-	// below - including brand-new sessions with no persisted history, where
-	// the history prepend never runs. An empty block (no notes yet, or the
-	// store read failed) marks nothing and stays eligible for a later call.
+	// Session-start auto-memory: reserve the session's one shot atomically,
+	// render, and splice the block at the very head of the request via
+	// defer, so it fires on every return path below - including brand-new
+	// sessions with no persisted history, where the history prepend never
+	// runs. An empty block (no notes yet, or the store read failed) rolls
+	// the reservation back so the session stays eligible for a later call.
 	var memoryContent *genai.Content
-	if block := h.memoryBlockFor(session.ID, ctx); block != "" {
-		memoryContent = genai.NewContentFromText(block, genai.RoleUser)
+	if h.reserveMemory(session.ID) {
+		if block := h.memoryProvider(ctx); block != "" {
+			memoryContent = genai.NewContentFromText(block, genai.RoleUser)
+		} else {
+			h.rollbackMemory(session.ID)
+		}
 	}
 	defer func() {
 		if memoryContent != nil {
-			h.markMemorySeen(session.ID)
 			req.Contents = append([]*genai.Content{memoryContent}, req.Contents...)
 		}
 	}()
