@@ -180,10 +180,10 @@ func TestRetryAfterCappedAtMax(t *testing.T) {
 
 func TestExtractClientIP(t *testing.T) {
 	tests := []struct {
-		name           string
-		remoteAddr     string
-		xForwardedFor  string
-		expectedIP     string
+		name          string
+		remoteAddr    string
+		xForwardedFor string
+		expectedIP    string
 	}{
 		{
 			name:       "remote addr with port",

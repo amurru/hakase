@@ -953,7 +953,7 @@ func findRelatedNotes(idx *KnowledgeIndex, note *KnowledgeNote, maxResults int) 
 // GitHub repository detection. githubURLRe matches github.com URLs; the bare
 // pattern matches owner/repo mentions in prose (validated by the API later).
 var (
-	githubURLRe = regexp.MustCompile(`(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9_.-]+)`)
+	githubURLRe  = regexp.MustCompile(`(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9_.-]+)`)
 	githubBareRe = regexp.MustCompile(`(^|[^A-Za-z0-9/])([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?)/([A-Za-z0-9_.-]+)([^A-Za-z0-9_.-]|$)`)
 )
 
@@ -1041,11 +1041,11 @@ var fetchGitHubMetadata = func(owner, repo string) (map[string]string, error) {
 	}
 
 	var repoInfo struct {
-		Description   string `json:"description"`
-		Language      string `json:"language"`
-		Stargazers    int    `json:"stargazers_count"`
-		Forks         int    `json:"forks_count"`
-		License       *struct {
+		Description string `json:"description"`
+		Language    string `json:"language"`
+		Stargazers  int    `json:"stargazers_count"`
+		Forks       int    `json:"forks_count"`
+		License     *struct {
 			SpdxID string `json:"spdx_id"`
 		} `json:"license"`
 		DefaultBranch string `json:"default_branch"`

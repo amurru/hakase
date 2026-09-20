@@ -128,6 +128,9 @@ type harvestAuditLine struct {
 	Command   string    `json:"command"`
 	Args      []string  `json:"args"`
 	Decision  string    `json:"decision"`
+	// SessionID joins audit entries to sessions directly when present
+	// (issue #13); empty falls back to the time-window join.
+	SessionID string `json:"session_id"`
 }
 
 // skillMentionRe extracts a skill name from narrative or JSON-shaped
@@ -306,12 +309,16 @@ func digestSession(sess *session.Session, cutoff time.Time, audit []harvestAudit
 	return d
 }
 
-// joinAudit attaches audit-log evidence whose timestamp falls inside the
-// harvested turn window. Best-effort by design: the audit log carries no
-// session ID, so overlapping sessions can share entries.
+// joinAudit attaches audit-log evidence to the digest. Entries carrying a
+// session_id join directly on it; entries without one fall back to the
+// timestamp window (best-effort: overlapping sessions can share entries).
 func joinAudit(d *SessionDigest, audit []harvestAuditLine, start, end time.Time, opts HarvestOpts) {
 	for _, e := range audit {
-		if e.Timestamp.Before(start) || e.Timestamp.After(end) {
+		if e.SessionID != "" {
+			if e.SessionID != d.SessionID {
+				continue
+			}
+		} else if e.Timestamp.Before(start) || e.Timestamp.After(end) {
 			continue
 		}
 		if e.Tool != "" {

@@ -47,6 +47,7 @@ func init() {
 			Reason:    req.Reason,
 			Source:    req.Source,
 			ExpiresAt: req.ExpiresAt,
+			SessionID: req.SessionID,
 		})
 	}
 
@@ -63,6 +64,7 @@ func init() {
 			Command:     entry.Command,
 			Args:        entry.Args,
 			CWD:         entry.CWD,
+			SessionID:   entry.SessionID,
 			SandboxMode: entry.SandboxMode,
 			Decision:    entry.Decision,
 			Risk:        entry.Risk,

@@ -199,3 +199,93 @@ func TestNewFallbackModel(t *testing.T) {
 		t.Error("NewFallbackModel with unsupported primary: expected error, got nil")
 	}
 }
+
+// ProviderFactory without fallback_providers returns the single provider
+// unwrapped (backward compatible).
+func TestProviderFactoryWithoutFallbackReturnsSingle(t *testing.T) {
+	p, err := ProviderFactory(&config.Config{Provider: "gemini"})
+	if err != nil {
+		t.Fatalf("ProviderFactory: unexpected error: %v", err)
+	}
+	if _, ok := p.(*FallbackProvider); ok {
+		t.Error("ProviderFactory without fallback_providers: expected single provider, got *FallbackProvider")
+	}
+	if _, ok := p.(*GeminiProvider); !ok {
+		t.Errorf("ProviderFactory(gemini): expected *GeminiProvider, got %T", p)
+	}
+}
+
+// ProviderFactory with fallback_providers returns a *FallbackProvider that
+// skips broken fallback names and whose models are fallback-aware.
+func TestProviderFactoryReturnsFallbackProvider(t *testing.T) {
+	cfg := &config.Config{
+		Provider:          "gemini",
+		APIKey:            "test-key",
+		FallbackProviders: []string{"bogus-provider", "openai"},
+	}
+	p, err := ProviderFactory(cfg)
+	if err != nil {
+		t.Fatalf("ProviderFactory: unexpected error: %v", err)
+	}
+	fp, ok := p.(*FallbackProvider)
+	if !ok {
+		t.Fatalf("ProviderFactory with fallback_providers: expected *FallbackProvider, got %T", p)
+	}
+	if len(fp.providers) != 2 {
+		t.Fatalf("providers: expected 2 (gemini primary + openai fallback, bogus skipped), got %d", len(fp.providers))
+	}
+	if err := fp.ValidateConfig(cfg); err != nil {
+		t.Fatalf("ValidateConfig: unexpected error: %v", err)
+	}
+	if got := fp.GetDefaultModel(); got != "gemini-3.7-flash" {
+		t.Errorf("GetDefaultModel: expected primary default, got %q", got)
+	}
+
+	m, err := fp.CreateModel(context.Background(), "test-model", "test-key")
+	if err != nil {
+		t.Fatalf("CreateModel: unexpected error: %v", err)
+	}
+	fm, ok := m.(*FallbackModel)
+	if !ok {
+		t.Fatalf("CreateModel: expected *FallbackModel, got %T", m)
+	}
+	if got := fm.Name(); got != "fallback(gemini)" {
+		t.Errorf("Name: expected %q, got %q", "fallback(gemini)", got)
+	}
+}
+
+// A deliberately failing primary provider falls over to the fallback through
+// the ProviderFactory-wired chain: CreateModel on the *FallbackProvider, then
+// GenerateContent on the resulting model. No network is touched (stubs).
+func TestFallbackProviderFallsOverOnPrimaryOutage(t *testing.T) {
+	fallbackResp := resp()
+	primary := &stubProvider{name: "primary", genErr: fmt.Errorf("primary outage")}
+	fallback := &stubProvider{name: "fallback", responses: []*model.LLMResponse{fallbackResp}}
+	fp := &FallbackProvider{
+		cfg:       &config.Config{Provider: "gemini"},
+		providers: []LLMProvider{primary, fallback},
+	}
+
+	m, err := fp.CreateModel(context.Background(), "stub-model", "test-key")
+	if err != nil {
+		t.Fatalf("CreateModel: unexpected error: %v", err)
+	}
+	fm, ok := m.(*FallbackModel)
+	if !ok {
+		t.Fatalf("CreateModel: expected *FallbackModel, got %T", m)
+	}
+
+	responses, err := collectFallback(fm, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if primary.callCount != 1 {
+		t.Errorf("primary GenerateContent calls: expected 1, got %d", primary.callCount)
+	}
+	if fallback.callCount != 1 {
+		t.Errorf("fallback GenerateContent calls: expected 1, got %d", fallback.callCount)
+	}
+	if len(responses) != 1 || responses[0] != fallbackResp {
+		t.Fatal("expected the fallback response after primary outage")
+	}
+}

@@ -9,13 +9,13 @@ package cli
 
 import (
 	hakaseagent "amurru/hakase/internal/agent"
-	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
 	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
 	"context"
 	"encoding/json"
@@ -48,17 +48,17 @@ type ScheduleKind int
 
 const (
 	ScheduleInvalid  ScheduleKind = iota
-	ScheduleOneShot                // relative delay or ISO timestamp
-	ScheduleInterval               // recurring "every ..."
-	ScheduleCron                   // 5-field cron expression
+	ScheduleOneShot               // relative delay or ISO timestamp
+	ScheduleInterval              // recurring "every ..."
+	ScheduleCron                  // 5-field cron expression
 )
 
 // Schedule is a parsed schedule expression that can compute the next fire time.
 type Schedule struct {
-	Kind    ScheduleKind // flavour
-	Raw     string       // original user string
-	Display string       // human-readable description ("every 2h", "0 9 * * *", "once in 30m")
-	OneShot bool         // true for relative delays and ISO timestamps
+	Kind    ScheduleKind                            // flavour
+	Raw     string                                  // original user string
+	Display string                                  // human-readable description ("every 2h", "0 9 * * *", "once in 30m")
+	OneShot bool                                    // true for relative delays and ISO timestamps
 	next    func(from time.Time) (time.Time, error) // next fire strictly after from
 }
 
@@ -236,26 +236,26 @@ const (
 
 // CronJob is a persisted scheduled task entry.
 type CronJob struct {
-	ID         string       `json:"id"`
-	Name       string       `json:"name,omitempty"`
-	Prompt     string       `json:"prompt"`
-	Schedule   string       `json:"schedule"`
-	Skills     []string     `json:"skills,omitempty"`
-	Repeat     int          `json:"repeat,omitempty"`
-	State      CronJobState `json:"state"`
-	Enabled    bool         `json:"enabled"`
+	ID       string       `json:"id"`
+	Name     string       `json:"name,omitempty"`
+	Prompt   string       `json:"prompt"`
+	Schedule string       `json:"schedule"`
+	Skills   []string     `json:"skills,omitempty"`
+	Repeat   int          `json:"repeat,omitempty"`
+	State    CronJobState `json:"state"`
+	Enabled  bool         `json:"enabled"`
 	// Native marks a built-in task type that runs without an LLM session.
 	// "evolve" runs one skill-evolution pass (evolver.go); "sleep" runs one
 	// SkillOpt-Sleep night (internal/sleep, SL-023). Both report to
 	// outputs/ and are CLI-only to create (SL-006). Empty = a normal LLM job.
-	Native     string       `json:"native,omitempty"`
-	NextRunAt  *time.Time   `json:"next_run_at,omitempty"`
-	LastRunAt  *time.Time   `json:"last_run_at,omitempty"`
-	LastStatus string       `json:"last_status,omitempty"`
-	RunCount   int          `json:"run_count"`
-	OutputPath string       `json:"output_path,omitempty"`
-	CreatedAt  time.Time    `json:"created_at"`
-	UpdatedAt  time.Time    `json:"updated_at"`
+	Native     string     `json:"native,omitempty"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	LastRunAt  *time.Time `json:"last_run_at,omitempty"`
+	LastStatus string     `json:"last_status,omitempty"`
+	RunCount   int        `json:"run_count"`
+	OutputPath string     `json:"output_path,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // CronRegistry is the top-level persistence envelope.
@@ -384,10 +384,6 @@ func getCronJob(reg CronRegistry, idOrName string) (*CronJob, error) {
 	}
 }
 
-
-
-
-
 // ---------------------------------------------------------------------------
 // 3. Tool input / output types
 // ---------------------------------------------------------------------------
@@ -427,13 +423,13 @@ var CronJobNotify func(status, jobID, name, summary, outputPath string)
 
 // Runtime globals set by cronModelBootstrap() for headless CLI execution.
 var (
-	currentModel      model.LLM
-	currentModelName  string
-	currentConfig     *config.Config
-	delegateTimeout   = 300 * time.Second
-	currentApproval   config.ApprovalConfig
-	currentClarify    config.ClarifyConfig
-	currentGuard      config.LoopGuardConfig
+	currentModel     model.LLM
+	currentModelName string
+	currentConfig    *config.Config
+	delegateTimeout  = 300 * time.Second
+	currentApproval  config.ApprovalConfig
+	currentClarify   config.ClarifyConfig
+	currentGuard     config.LoopGuardConfig
 )
 
 // notifyCronJob emits a lifecycle event to the TUI listener and debug log.

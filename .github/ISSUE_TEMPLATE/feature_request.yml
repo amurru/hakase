@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a capability or improvement for hakase
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [docs/ROADMAP.md](https://github.com/amurru/hakase/blob/develop/docs/ROADMAP.md)
+        and existing issues first — your idea may already be tracked.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what stands in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like to happen. Concrete behavior beats implementation detail.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, other tools, or configs that get close today.
+    validations:
+      required: false

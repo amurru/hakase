@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Go 1.26 agent harness (module `amurru/hakase`) with a Vue 3 web UI. No CI or lint config exists; verification is `go build ./...` + `go test ./...` and `pnpm test` in `webui/`.
+Go 1.26 agent harness (module `amurru/hakase`) with a Vue 3 web UI. CI (`.github/workflows/test.yml`) runs `gofmt -l`, `go vet ./...`, `go test ./...` and `pnpm test` in `webui/` on every push/PR — the same suite you should run locally before pushing.
 
 ## Critical setup gotcha
 
@@ -18,7 +18,7 @@ make build-frontend
 - `make build-frontend` - `pnpm install && pnpm build` in `webui/`, then copy `webui/dist/` into `internal/web/dist/` (go:embed cannot follow symlinks, hence the real copy)
 - `make test` - `go test ./...`
 - Single Go test: `go test ./internal/agent/ -run TestName`
-- Frontend tests: `cd webui && pnpm test` (vitest, jsdom). Single file: `cd webui && pnpm vitest run src/lib/markdown/useMermaid.test.ts`
+- Frontend tests: `cd webui && pnpm test` (vitest, jsdom). Single file: `cd webui && pnpm vitest run src/composables/useMermaid.test.ts`
 - `pnpm build` runs `vue-tsc -b` first, so the typecheck is part of the build
 
 ## Build tags (internal/web)
@@ -64,7 +64,7 @@ make dev-backend    # go run -tags dev ./cmd/hakase/ web
 
 ## Wiring gotchas
 
-- `web`/`serve` are intercepted in `cmd/hakase/main.go` BEFORE `cli.Dispatch`. The `web`/`serve`/`tui` entries registered inside `internal/cli/command.go` are stubs (`notMigrated`/placeholder); the real TUI launches only when no subcommand is given.
+- `web`/`serve`/`tui` dispatch through `cli.Dispatch` like every other subcommand. Their real handlers live in package main (`cmd/hakase/web.go`, `main.go`) and are injected at startup via `cli.RegisterCommand`; `internal/cli/command.go` holds only fallbacks for use without the main wiring (e.g. tests).
 - The web/serve bootstrap (`cmd/hakase/web.go`) must live in package main: `internal/web/handlers` imports `internal/cli`, so a shared bootstrap package would create an import cycle.
 - `cmd/hakase/main.go` wires `agent.Deps` with bridge factories (MCP manager, skill discovery, knowledge tools, cron) to keep `internal/agent` decoupled from those packages; new agent-facing cross-package capabilities usually need a factory added there.
 - `internal/sleep` (SkillOpt-Sleep offline skill-evolution loop, `docs/skillopt-sleep/plan.md`) may import `skill/session/knowledge/config/sandbox/util` but NEVER `internal/agent` - the model seams are function-injected (`ModelCaller`/`TargetRunner`/`RubricJudge`/`Reflector`); the headless CLI layer (`internal/cli/sleep.go`, `cron_sleep.go`) wires them to `agent.ModelPromptFn`. Mined task files carry a `generated_at` marker and are refused by real-backend consumers (`evolve-md`, `sleep run`) until `hakase sleep review` signs a sidecar; redaction is flag-only (`redact_secrets:false` is refused in config and env, `HAKASE_SLEEP_*REDACT*` hard-errors). Native cron `sleep` jobs are CLI-only (`hakase sleep schedule`); the cronjob tool denies them per SL-006. Runtime artifacts: `outputs/sleep/` (gitignored), `.hakase/sleep-state.json` (+ `.lock`, gitignore `.hakase/`).

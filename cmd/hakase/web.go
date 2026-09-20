@@ -159,7 +159,17 @@ func runServer(args []string, serveSPA bool) int {
 	cfg.Auth.AllowInsecureCookie = applyInsecureCookiePrecedence(cfg.Auth.AllowInsecureCookie, insecureCookie.set, insecureCookie.value)
 
 	// Init sandbox before any file or exec operations.
+	// LoadConfig already refused landlock mode (issue #14); re-validate here
+	// defensively so a directly-constructed config can never slip through.
 	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
+	if err := sandbox.ValidateSandboxConfig(sandbox.CurrentSandbox); err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: invalid sandbox config: %v\n", err)
+		return 1
+	}
+	if warn := sandbox.SandboxStartupWarning(sandbox.CurrentSandbox); warn != "" {
+		fmt.Fprintf(os.Stderr, "hakase: WARNING: %s\n", warn)
+		log.Printf("web: WARNING: %s", warn)
+	}
 
 	// Channels enabled? Approvals/clarifications may then be answered from a
 	// phone, where sub-minute expiry is unanswerable (Hermes uses 600s).
@@ -258,6 +268,14 @@ func runServer(args []string, serveSPA bool) int {
 	// Create the SSE bridge for real-time event streaming.
 	bridge := sse.NewEventBridge()
 
+	// Issue #14: per-exec sandbox fallback notices reach the run's web UI log
+	// stream (visible) in addition to the audit trail (normative). Empty
+	// sessionID falls back to the global topic so the notice is still seen.
+	sandbox.SandboxNoticeFunc = func(sessionID, msg string) {
+		log.Printf("web: sandbox fallback (session %s): %s", sessionID, msg)
+		bridge.SendLog(sessionID, "WARNING: "+msg)
+	}
+
 	// Create web-based gates backed by the SSE bridge.
 	approvalGate := handlers.NewWebApprovalGate(bridge, "", interfaces.ApprovalConfig{
 		Mode:          cfg.Approval.Mode,
@@ -304,6 +322,9 @@ func runServer(args []string, serveSPA bool) int {
 	}()
 
 	// Build the web server.
+	handlers.HealthVersion = cli.Version
+	handlers.HealthCommit = cli.Commit
+	handlers.HealthDate = cli.Date
 	srv := web.NewServer(jwtKey, sessionSvc)
 	srv.SetAllowInsecureCookie(cfg.Auth.AllowInsecureCookie)
 	srv.SetChatDeps(bridge, runner, runtime)

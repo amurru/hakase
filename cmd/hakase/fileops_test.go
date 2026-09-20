@@ -3,8 +3,8 @@
 package main
 
 import (
-	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/sandbox"
 	"fmt"
 	"os"

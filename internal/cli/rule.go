@@ -6,8 +6,8 @@
 package cli
 
 import (
-	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/config"
+	hctx "amurru/hakase/internal/context"
 	"errors"
 	"flag"
 	"fmt"

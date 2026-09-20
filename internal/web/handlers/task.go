@@ -12,26 +12,26 @@ import (
 
 // TaskDTO is the API response for a task.
 type TaskDTO struct {
-	ID           string                     `json:"id"`
-	Version      int                        `json:"version"`
-	Title        string                     `json:"title"`
-	Description  string                     `json:"description,omitempty"`
-	Status       string                     `json:"status"`
-	Priority     string                     `json:"priority"`
-	Owner        string                     `json:"owner,omitempty"`
-	Assignee     string                     `json:"assignee,omitempty"`
-	Dependencies []string                   `json:"dependencies,omitempty"`
-	BlockedBy    []string                   `json:"blocked_by,omitempty"`
-	CreatedAt    string                     `json:"created_at"`
-	UpdatedAt    string                     `json:"updated_at"`
-	StartedAt    string                     `json:"started_at,omitempty"`
-	CompletedAt  string                     `json:"completed_at,omitempty"`
-	Attempts     int                        `json:"attempts"`
-	MaxAttempts  int                        `json:"max_attempts"`
-	LastError    string                     `json:"last_error,omitempty"`
-	ParentID     string                     `json:"parent_id,omitempty"`
-	Tags         []string                   `json:"tags,omitempty"`
-	Metadata     map[string]any             `json:"metadata,omitempty"`
+	ID           string         `json:"id"`
+	Version      int            `json:"version"`
+	Title        string         `json:"title"`
+	Description  string         `json:"description,omitempty"`
+	Status       string         `json:"status"`
+	Priority     string         `json:"priority"`
+	Owner        string         `json:"owner,omitempty"`
+	Assignee     string         `json:"assignee,omitempty"`
+	Dependencies []string       `json:"dependencies,omitempty"`
+	BlockedBy    []string       `json:"blocked_by,omitempty"`
+	CreatedAt    string         `json:"created_at"`
+	UpdatedAt    string         `json:"updated_at"`
+	StartedAt    string         `json:"started_at,omitempty"`
+	CompletedAt  string         `json:"completed_at,omitempty"`
+	Attempts     int            `json:"attempts"`
+	MaxAttempts  int            `json:"max_attempts"`
+	LastError    string         `json:"last_error,omitempty"`
+	ParentID     string         `json:"parent_id,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 // TaskAPI wraps task CRUD operations for the web API layer.
@@ -236,5 +236,3 @@ func taskToDTO(t hakaseagent.TaskMeta) TaskDTO {
 	}
 	return dto
 }
-
-

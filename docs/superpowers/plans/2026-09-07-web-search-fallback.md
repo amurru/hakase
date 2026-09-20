@@ -4,6 +4,11 @@
 
 **Goal:** When no research-capable MCP server (browser/search MCP like lightpanda) is connected, expose built-in keyless `web_search` and `web_fetch` tools so the agent keeps web research ability.
 
+> **Status (2026-09-19):** fully executed and shipped — `internal/websearch`
+> (providers + tools), `internal/agent/websearch_fallback.go`, the
+> `web_search.enabled`/`force` config, wiring, and docs all landed; boxes
+> recorded complete retroactively.
+
 **Architecture:** New leaf package `internal/websearch` (DuckDuckGo HTML search + Wikipedia API supplement, Jina Reader page fetch with direct-GET fallback). New `internal/agent/websearch_fallback.go` wraps the tools in a dynamic `tool.Toolset` that probes the MCP manager's current tool names on every `Tools()` call (ADK re-evaluates per model turn) and yields the tools only when no name matches a research hint. Wired into orchestrator, `web_researcher`, and `BuildSubAgentTools`; kill-switch via `web_search.enabled` in config.json.
 
 **Tech Stack:** Go stdlib net/http + golang.org/x/net/html (already in go.mod), ADK functiontool via `util.NewDocTool`, vision's `CheckHostPublic` for SSRF. No frontend changes.
@@ -28,7 +33,7 @@
 **Interfaces:**
 - Produces: `type Result struct { Title, URL, Snippet string; Source string }` (JSON tags `title,url,snippet,source`); `type Providers struct` with fields `DDGSearchURL, WikiAPIURL, JinaReaderURL string`, unexported `client *http.Client`, `hostCheck func(string) error`; `func NewProviders() *Providers`; `func (p *Providers) Search(ctx context.Context, query string, maxResults int) ([]Result, error)`; `func parseDDGHTML(body string, maxResults int) ([]Result, error)`; `func unwrapDDGHref(href string) (string, error)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package websearch
@@ -109,12 +114,12 @@ func TestSearchRejectsEmptyQuery(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests, verify failure**
+- [x] **Step 2: Run tests, verify failure**
 
 Run: `go test ./internal/websearch/ -v`
 Expected: FAIL (package does not exist yet / undefined symbols).
 
-- [ ] **Step 3: Implement `providers.go` (minimal for this task)**
+- [x] **Step 3: Implement `providers.go` (minimal for this task)**
 
 ```go
 // Package websearch implements the built-in keyless web research fallback:
@@ -368,12 +373,12 @@ func nodeText(n *html.Node) string {
 
 Add `"amurru/hakase/internal/vision"` to imports for `vision.CheckHostPublic` in NewProviders.
 
-- [ ] **Step 4: Run tests, verify pass**
+- [x] **Step 4: Run tests, verify pass**
 
 Run: `go test ./internal/websearch/ -v`
 Expected: PASS (3 tests). Note: `go build ./...` still passes overall.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/websearch/
@@ -392,7 +397,7 @@ git commit -m "feat(websearch): keyless DuckDuckGo HTML search provider"
 - Consumes: `Providers.WikiAPIURL`, `Result`.
 - Produces: `func (p *Providers) searchWikipedia(ctx context.Context, query string, maxResults int) ([]Result, error)`; `func stripHTMLFragment(s string) string`; `func wikiArticleURL(apiURL, title string) string`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 const wikiFixtureJSON = `{"batchcomplete":"","query":{"search":[
@@ -479,12 +484,12 @@ func TestStripHTMLFragment(t *testing.T) {
 
 (Note: the combined-error test points at `127.0.0.1:1` — connection refused, no server needed. Provider endpoints are fixed config, not user URLs, so no hostCheck applies there and httptest/localhost URLs are fine.)
 
-- [ ] **Step 2: Run, verify new tests fail**
+- [x] **Step 2: Run, verify new tests fail**
 
 Run: `go test ./internal/websearch/ -run 'Wikipedia|FallsBack|Supplements|ReportsBoth|StripHTML' -v`
 Expected: FAIL (searchWikipedia is a stub).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace the stub in `providers.go`:
 
@@ -566,12 +571,12 @@ var (
 
 Everywhere the stdlib unescape is needed use `htmlescape.UnescapeString`.
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/websearch/ -v`
 Expected: PASS (all 8 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/websearch/
@@ -589,7 +594,7 @@ git commit -m "feat(websearch): wikipedia supplement and ddg failure fallback"
 **Interfaces:**
 - Produces: `func (p *Providers) FetchPage(ctx context.Context, rawURL string) (string, error)`; `func stripHTMLPage(s string) string`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestFetchPageViaJina(t *testing.T) {
@@ -678,12 +683,12 @@ func TestFetchPageBodyCapped(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run, verify fail**
+- [x] **Step 2: Run, verify fail**
 
 Run: `go test ./internal/websearch/ -run FetchPage -v`
 Expected: FAIL (FetchPage undefined).
 
-- [ ] **Step 3: Implement (append to providers.go)**
+- [x] **Step 3: Implement (append to providers.go)**
 
 ```go
 // FetchPage returns the content of rawURL as markdown. Primary path is the
@@ -751,12 +756,12 @@ Add `blockRe` to the package vars:
 blockRe = regexp.MustCompile(`(?i)<(?:br|/p|/div|/h[1-6]|/li|/ul|/ol|/tr|/table|/blockquote)[^>]*>`)
 ```
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/websearch/ -v`
 Expected: PASS (14 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/websearch/
@@ -775,7 +780,7 @@ git commit -m "feat(websearch): markdown page fetch with reader fallback and SSR
 - Consumes: `Providers.Search`, `Providers.FetchPage`, `util.NewDocTool`.
 - Produces: `func NewTools(p *Providers) ([]tool.Tool, error)` returning exactly two tools named `web_search`, `web_fetch`. Input/output structs: `SearchToolInput{Query string; MaxResults int}`, `SearchResultOutput{Query string; Results []Result}`, `FetchToolInput{URL string}`, `FetchOutput{URL, Content string}`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```go
 package websearch
@@ -842,12 +847,12 @@ func TestFetchToolHandler(t *testing.T) {
 
 (If a minimal handler invocation is achievable with a trivial `agent.Context` fake like `mcpTestCtx`, do that instead and actually invoke the handler; otherwise the providers tests carry coverage.)
 
-- [ ] **Step 2: Run, verify fail**
+- [x] **Step 2: Run, verify fail**
 
 Run: `go test ./internal/websearch/ -run Tools -v`
 Expected: FAIL (NewTools undefined).
 
-- [ ] **Step 3: Implement tools.go**
+- [x] **Step 3: Implement tools.go**
 
 ```go
 package websearch
@@ -920,12 +925,12 @@ func NewTools(p *Providers) ([]tool.Tool, error) {
 }
 ```
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/websearch/ -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/websearch/
@@ -943,7 +948,7 @@ git commit -m "feat(websearch): web_search and web_fetch agent tools"
 **Interfaces:**
 - Produces: `type WebSearchConfig struct { Enabled *bool `json:"enabled,omitempty"`; Force bool `json:"force,omitempty"` }`; `Config.WebSearch WebSearchConfig` (json key `web_search`); `func WebSearchEnabled(c *Config) bool`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```go
 func TestWebSearchEnabled(t *testing.T) {
@@ -964,9 +969,9 @@ func TestWebSearchEnabled(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run, verify fail** — `go test ./internal/config/ -run WebSearchEnabled -v` → FAIL (undefined).
+- [x] **Step 2: Run, verify fail** — `go test ./internal/config/ -run WebSearchEnabled -v` → FAIL (undefined).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```go
 // WebSearchConfig controls the built-in keyless web search fallback
@@ -992,9 +997,9 @@ func WebSearchEnabled(c *Config) bool {
 
 Field on Config: `WebSearch WebSearchConfig `json:"web_search,omitempty"``.
 
-- [ ] **Step 4: Run, verify pass** — `go test ./internal/config/ -v` → PASS.
+- [x] **Step 4: Run, verify pass** — `go test ./internal/config/ -v` → PASS.
 
-- [ ] **Step 5: Commit** — `git commit -am "feat(config): web_search fallback kill-switch and force flag"`
+- [x] **Step 5: Commit** — `git commit -am "feat(config): web_search fallback kill-switch and force flag"`
 
 ---
 
@@ -1008,7 +1013,7 @@ Field on Config: `WebSearch WebSearchConfig `json:"web_search,omitempty"``.
 - Consumes: `config.WebSearchEnabled`, `config.WebSearchConfig`, `websearch.NewTools`, `websearch.NewProviders`.
 - Produces: `var researchToolHints []string`; `func hasResearchMCP(names []string) bool`; `type fallbackSearchToolset` implementing `tool.Toolset` (`Tools(ctx adkagent.ReadonlyContext) ([]tool.Tool, error)`, plus `Name/Description/IsLongRunning`); `func newFallbackSearchToolset(cfg *config.Config, mcpManager tool.Toolset, log interfaces.LogFunc) *fallbackSearchToolset`; package var `webSearchFallback *fallbackSearchToolset`; `func buildWebSearchFallback(cfg *config.Config) string`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package agent
@@ -1148,9 +1153,9 @@ func TestBuildWebSearchFallbackPrompt(t *testing.T) {
 
 (`context` import needed for the error test.)
 
-- [ ] **Step 2: Run, verify fail** — `go test ./internal/agent/ -run 'Fallback|HasResearch' -v` → FAIL (undefined).
+- [x] **Step 2: Run, verify fail** — `go test ./internal/agent/ -run 'Fallback|HasResearch' -v` → FAIL (undefined).
 
-- [ ] **Step 3: Implement websearch_fallback.go**
+- [x] **Step 3: Implement websearch_fallback.go**
 
 ```go
 // websearch_fallback.go - built-in keyless web research fallback.
@@ -1285,12 +1290,12 @@ You have built-in keyless research tools: 'web_search' (DuckDuckGo with Wikipedi
 }
 ```
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/agent/ -run 'Fallback|HasResearch' -v`
 Expected: PASS. (If package-level compile errors from other tests, fix imports only.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/agent/websearch_fallback.go internal/agent/websearch_fallback_test.go
@@ -1309,7 +1314,7 @@ git commit -m "feat(agent): mcp-aware dynamic web search fallback toolset"
 - Consumes: `newFallbackSearchToolset`, `webSearchFallback`, `buildWebSearchFallback`.
 - Produces: fallback tools reachable from orchestrator, web_researcher agent, and delegated `web_researcher` runs; prompt sections on both instructions.
 
-- [ ] **Step 1: Create the shared instance after the MCP manager block** (agent.go, after the `mcpManager` type assert, ~line 1969, before the researcher agent):
+- [x] **Step 1: Create the shared instance after the MCP manager block** (agent.go, after the `mcpManager` type assert, ~line 1969, before the researcher agent):
 
 ```go
 	// Built-in keyless web search fallback (internal/websearch): shared by
@@ -1318,7 +1323,7 @@ git commit -m "feat(agent): mcp-aware dynamic web search fallback toolset"
 	webSearchFallback = newFallbackSearchToolset(cfg, mcpManager, log)
 ```
 
-- [ ] **Step 2: Attach to researcher toolsets** (agent.go:1985-1989):
+- [x] **Step 2: Attach to researcher toolsets** (agent.go:1985-1989):
 
 ```go
 	// Build toolsets slice for the researcher agent (MCP manager only when present).
@@ -1331,7 +1336,7 @@ git commit -m "feat(agent): mcp-aware dynamic web search fallback toolset"
 	}
 ```
 
-- [ ] **Step 3: Add the prompt section to the researcher instruction** (agent.go:1998): change
+- [x] **Step 3: Add the prompt section to the researcher instruction** (agent.go:1998): change
 
 ```go
 		) + "\n\n" + buildTimeReminder() + ContextBlockFor(
@@ -1341,7 +1346,7 @@ to
 		) + "\n\n" + buildTimeReminder() + "\n\n" + buildWebSearchFallback(cfg) + ContextBlockFor(
 ```
 
-- [ ] **Step 4: Orchestrator prompt + toolsets.** At the instruction tail (agent.go:1698) change
+- [x] **Step 4: Orchestrator prompt + toolsets.** At the instruction tail (agent.go:1698) change
 
 ```go
 	` + DiagramInstruction + "\n\n" + installedSkills + "\n\n" + buildSidekickInstruction(cfg) + "\n\n" + buildTimeReminder()
@@ -1367,7 +1372,7 @@ Before the orchestrator `llmagent.New` (~line 2259) build:
 
 and change `Toolsets:            []tool.Toolset{mcpManager},` (agent.go:2281) to `Toolsets:            orchestratorToolsets,`.
 
-- [ ] **Step 5: delegate.go web_researcher case** (delegate.go:502-504) — change
+- [x] **Step 5: delegate.go web_researcher case** (delegate.go:502-504) — change
 
 ```go
 	case "web_researcher":
@@ -1385,12 +1390,12 @@ to
 		return []tool.Tool{dlTool, visionTool}, toolsets
 ```
 
-- [ ] **Step 6: Build + full agent tests**
+- [x] **Step 6: Build + full agent tests**
 
 Run: `go build ./... && go test ./internal/agent/ ./internal/mcp/ -count=1`
 Expected: build OK, tests PASS (no regressions from the toolsets change).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/agent/
@@ -1405,7 +1410,7 @@ git commit -m "feat(agent): wire web search fallback into orchestrator and web_r
 - Modify: `docs/browser-mcp-presets.md` (new section after the intro)
 - Modify: `AGENTS.md` (layout list)
 
-- [ ] **Step 1: docs/browser-mcp-presets.md** — add after the legacy-migration paragraph:
+- [x] **Step 1: docs/browser-mcp-presets.md** — add after the legacy-migration paragraph:
 
 ```markdown
 ## Built-in fallback (no MCP needed)
@@ -1435,14 +1440,14 @@ Config (project `config.json`):
 connected.
 ```
 
-- [ ] **Step 2: AGENTS.md** — extend the `internal/` list: after `` `vision` `` insert `` `websearch` (keyless web_search/web_fetch fallback shown when no research MCP is connected), ``.
+- [x] **Step 2: AGENTS.md** — extend the `internal/` list: after `` `vision` `` insert `` `websearch` (keyless web_search/web_fetch fallback shown when no research MCP is connected), ``.
 
-- [ ] **Step 3: Full verification**
+- [x] **Step 3: Full verification**
 
 Run: `go build ./... && go test ./... -count=1`
 Expected: all PASS. (`internal/web/dist` must exist for the embed; if missing run `make build-frontend` first.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/browser-mcp-presets.md AGENTS.md

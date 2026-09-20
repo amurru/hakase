@@ -102,3 +102,33 @@ func TestLoadCredentialsMissingFile(t *testing.T) {
 		t.Error("LoadCredentials should return error for missing file")
 	}
 }
+
+func TestGenerateOrLoadSecret(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "jwt-secret")
+
+	// First call generates a new secret.
+	secret, err := GenerateOrLoadSecret(path)
+	if err != nil {
+		t.Fatalf("GenerateOrLoadSecret failed: %v", err)
+	}
+	if len(secret) != 32 {
+		t.Errorf("expected 32-byte secret, got %d bytes", len(secret))
+	}
+
+	// Second call loads the same secret.
+	secret2, err := GenerateOrLoadSecret(path)
+	if err != nil {
+		t.Fatalf("second GenerateOrLoadSecret failed: %v", err)
+	}
+	if len(secret2) != 32 {
+		t.Errorf("expected 32-byte secret on second call, got %d bytes", len(secret2))
+	}
+
+	// Verify the two secrets are byte-identical.
+	for i := range secret {
+		if secret[i] != secret2[i] {
+			t.Fatalf("secret mismatch at byte %d: first=%d, second=%d", i, secret[i], secret2[i])
+		}
+	}
+}

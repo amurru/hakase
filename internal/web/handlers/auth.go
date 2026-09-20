@@ -24,11 +24,12 @@ type Router interface {
 }
 
 // RegisterAuthRoutes registers auth-related API routes on the given router.
-// Unauthenticated routes: /api/login, /api/health
+// Unauthenticated routes: /api/login, /api/health, /api/ready
 // Authenticated routes (inside an auth-protected group): /api/me, /api/logout
 func RegisterAuthRoutes(r Router, jwtKey []byte, credentialsPath string, rateLimiter *middleware.LoginRateLimiter, allowInsecureCookie bool) {
 	// Unauthenticated routes
 	r.Get("/api/health", HealthHandler())
+	r.Get("/api/ready", ReadyHandler())
 	r.Post("/api/login", LoginHandler(jwtKey, credentialsPath, 24*time.Hour, rateLimiter, allowInsecureCookie))
 
 	// Authenticated routes group
@@ -169,10 +170,16 @@ func MeHandler() http.HandlerFunc {
 }
 
 // HealthHandler returns a handler for GET /api/health.
-// Unauthenticated health check.
+// Unauthenticated liveness check: 200 whenever the process serves HTTP,
+// plus build metadata so operators know what is running.
 func HealthHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		writeJSON(w, http.StatusOK, HealthResponse{
+			Status:  "ok",
+			Version: HealthVersion,
+			Commit:  HealthCommit,
+			Built:   HealthDate,
+		})
 	}
 }
 

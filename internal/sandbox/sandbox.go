@@ -21,7 +21,13 @@ const (
 	SandboxModeOff        SandboxMode = "off"
 	SandboxModePaths      SandboxMode = "paths"
 	SandboxModeBubblewrap SandboxMode = "bubblewrap"
-	SandboxModeLandlock   SandboxMode = "landlock"
+	// SandboxModeLandlock is reserved for future in-process Landlock + seccomp
+	// confinement (Phase 3). It is accepted as a string so existing configs
+	// fail with an actionable error from ValidateSandboxConfig instead of a
+	// JSON-shape error, but it is never enforced: buildExecCommand refuses it
+	// and config loading must reject it (issue #14). Do not add it to any
+	// "supported modes" list until a real LSM enforcement lands.
+	SandboxModeLandlock SandboxMode = "landlock"
 )
 
 // SandboxConfig is the resolved, normalized sandbox configuration used
@@ -131,12 +137,13 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 		sb.Mode = SandboxModePaths
 	}
 
-	// WIN-005: bubblewrap and landlock do not exist on Windows - coerce to
-	// paths mode (the only supported v1 mode) with a logged warning. No
-	// hard error, no silent bare-exec fallback; the audit trail shows the
-	// effective mode.
-	if runtime.GOOS == "windows" &&
-		(sb.Mode == SandboxModeBubblewrap || sb.Mode == SandboxModeLandlock) {
+	// WIN-005: bubblewrap does not exist on Windows - coerce to paths mode
+	// (the only supported v1 mode) with a logged warning. No hard error, no
+	// silent bare-exec fallback; the audit trail shows the effective mode.
+	// Landlock is deliberately NOT coerced here: it is unimplemented on every
+	// platform (issue #14) and must fail loudly via ValidateSandboxConfig /
+	// buildExecCommand instead of silently becoming paths.
+	if runtime.GOOS == "windows" && sb.Mode == SandboxModeBubblewrap {
 		fmt.Printf("hakase: sandbox mode %q is not supported on Windows; coercing to %q\n",
 			sb.Mode, SandboxModePaths)
 		sb.Mode = SandboxModePaths
@@ -165,6 +172,71 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 	}
 
 	return sb
+}
+
+// ErrLandlockNotImplemented is returned when sandbox.mode is "landlock".
+// Landlock LSM confinement is planned (Phase 3) but not implemented: accepting
+// the mode and silently degrading to path-auditing-only exec would be silent
+// isolation loss, the worst failure mode a harness can have (issue #14).
+// Callers must surface this error at config load, never coerce it to paths.
+var ErrLandlockNotImplemented = fmt.Errorf("sandbox.mode %q is not yet implemented (Phase 3 planned); use %q or %q",
+	SandboxModeLandlock, SandboxModePaths, SandboxModeBubblewrap)
+
+// ValidateSandboxConfig rejects sandbox configurations that cannot be
+// enforced. Currently that is only landlock mode (unimplemented on every
+// platform). A nil config means confinement disabled and is valid. Unknown
+// modes are already normalized to paths by LoadSandboxConfig before this runs,
+// so only the explicit landlock reservation fails here - consistent with the
+// repo's config-honesty precedent (redact_secrets:false hard-errors rather
+// than being ignored).
+func ValidateSandboxConfig(sb *SandboxConfig) error {
+	if sb == nil {
+		return nil
+	}
+	if sb.Mode == SandboxModeLandlock {
+		return ErrLandlockNotImplemented
+	}
+	return nil
+}
+
+// BwrapAvailable reports whether the bubblewrap binary resolves on PATH.
+// It is the runtime counterpart to the config-time mode check: bubblewrap
+// mode is enforceable only when this is true.
+func BwrapAvailable() bool {
+	_, err := bwrapPath()
+	return err == nil
+}
+
+// SandboxStartupWarning returns a human-readable warning when the configured
+// sandbox mode cannot actually be enforced in this process, or "" when the
+// mode is enforceable. Callers (TUI, web/serve bootstrap) must surface a
+// non-empty return loudly at startup (stderr + log + UI), not just debug
+// logs (issue #14 acceptance: no sandboxed-to-unsandboxed transition without
+// a visible notice).
+//
+// Cases:
+//   - landlock: always unenforceable (unimplemented) - points at Validate.
+//   - bubblewrap without bwrap on PATH and AllowFallback=false: hard error at
+//     exec time, but warn at startup so the operator learns before the first
+//     tool call fails.
+//   - bubblewrap without bwrap on PATH and AllowFallback=true: every exec
+//     degrades to path-auditing-only confinement - warn that isolation is
+//     reduced and each fallback is audit-logged.
+func SandboxStartupWarning(sb *SandboxConfig) string {
+	if sb == nil || sb.Mode == SandboxModeOff {
+		return ""
+	}
+	if sb.Mode == SandboxModeLandlock {
+		return fmt.Sprintf("sandbox.mode %q is not implemented; system_exec will be refused - set mode to %q or %q",
+			SandboxModeLandlock, SandboxModePaths, SandboxModeBubblewrap)
+	}
+	if sb.Mode == SandboxModeBubblewrap && !BwrapAvailable() {
+		if sb.AllowFallback {
+			return "sandbox.mode bubblewrap configured but bwrap not found on PATH; commands will run with path-confinement only (no kernel isolation) and each fallback is audit-logged - install the bubblewrap package for full isolation"
+		}
+		return "sandbox.mode bubblewrap configured but bwrap not found on PATH; system_exec will be refused until bwrap is installed or sandbox.allow_fallback is explicitly enabled"
+	}
+	return ""
 }
 
 // hakaseHomeDir mirrors config.HakaseHome without importing internal/config
@@ -441,17 +513,19 @@ func (sb *SandboxConfig) DeniedPath(target string) bool {
 
 // CommandAuditEntry records one command-execution decision.
 type CommandAuditEntry struct {
-	Timestamp   time.Time `json:"timestamp"`
-	Tool        string    `json:"tool"`
-	Command     string    `json:"command"`
-	Args        []string  `json:"args"`
-	CWD         string    `json:"cwd"`
-	SandboxMode string    `json:"sandbox_mode"`
-	Decision    string    `json:"decision"`
-	Risk        string    `json:"risk"`
-	Reason      string    `json:"reason"`
-	DurationMs  int64     `json:"duration_ms"`
-	ExitCode    int       `json:"exit_code"`
+	Timestamp time.Time `json:"timestamp"`
+	Tool      string    `json:"tool"`
+	Command   string    `json:"command"`
+	Args      []string  `json:"args"`
+	CWD       string    `json:"cwd"`
+	// SessionID is the hakase session of the asking run (possibly empty).
+	SessionID   string `json:"session_id,omitempty"`
+	SandboxMode string `json:"sandbox_mode"`
+	Decision    string `json:"decision"`
+	Risk        string `json:"risk"`
+	Reason      string `json:"reason"`
+	DurationMs  int64  `json:"duration_ms"`
+	ExitCode    int    `json:"exit_code"`
 }
 
 // GateDecision is the outcome of evaluating one command.
@@ -519,6 +593,21 @@ var SubdirContextHintFunc func(dir string) string
 // search matches) in <UNTRUSTED_DATA> tags after injection scanning.
 // When nil, returns the input unchanged (no-op).
 var WrapUntrustedDataFunc func(s string) string
+
+// SandboxNoticeFunc surfaces a sandbox-degradation notice in the UI for the
+// run that triggered it (web SSE log line, TUI status bar). Set by the main
+// package at startup (TUI, web/serve); when nil, notices are audit-logged and
+// debug-logged only. sessionID may be empty for session-less surfaces.
+// Issue #14: a sandboxed-to-unsandboxed transition must never be debug-only.
+var SandboxNoticeFunc func(sessionID, msg string)
+
+// notifySandboxFallback fans a fallback notice out to the UI hook (when set).
+// The audit entry is always emitted by the caller; this is the visible half.
+func notifySandboxFallback(sessionID, msg string) {
+	if SandboxNoticeFunc != nil {
+		SandboxNoticeFunc(sessionID, msg)
+	}
+}
 
 // fileOpsInfo mirrors the root FileOpsSession type for RootDir access.
 type fileOpsInfo struct {

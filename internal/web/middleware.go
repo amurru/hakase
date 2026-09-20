@@ -12,9 +12,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// JWTManager handles JWT token generation and validation.
-// This is a self-contained implementation for the web package.
-// When internal/auth lands (task 15), this can be replaced with auth.JWTManager.
+// JWTManager handles JWT token generation and validation for the web
+// package. This is the single JWT implementation, built on jwt/v5; the former
+// hand-rolled HS256 manager in internal/auth was removed (it had no
+// production callers).
 type JWTManager struct {
 	signingKey []byte
 	issuer     string
@@ -133,9 +134,9 @@ func extractToken(r *http.Request) string {
 // In production, the SPA and API are served from the same origin so CORS is not needed.
 func CORSMiddleware() func(http.Handler) http.Handler {
 	allowedOrigins := map[string]bool{
-		"http://localhost:5173":   true, // Vite dev server
-		"http://localhost:3000":   true, // alternative
-		"http://127.0.0.1:5173":  true,
+		"http://localhost:5173": true, // Vite dev server
+		"http://localhost:3000": true, // alternative
+		"http://127.0.0.1:5173": true,
 	}
 
 	return func(next http.Handler) http.Handler {

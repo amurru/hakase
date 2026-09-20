@@ -76,8 +76,8 @@ type TextEdit struct {
 
 // Edit route classes (SL-032).
 const (
-	RouteSkillDefect     = "skill_defect"
-	RouteExecutionLapse  = "execution_lapse"
+	RouteSkillDefect    = "skill_defect"
+	RouteExecutionLapse = "execution_lapse"
 )
 
 // ScoreDelta is one held-out task's baseline-vs-candidate comparison.

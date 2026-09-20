@@ -567,9 +567,9 @@ func runTaskFail(args []string) int {
 	}
 
 	input := agent.UpdateTaskInput{
-		ID:    id,
+		ID:     id,
 		Status: agent.TaskStatusFailed,
-		Error: errorFlag,
+		Error:  errorFlag,
 	}
 
 	task, err := agent.UpdateTask(input)

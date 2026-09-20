@@ -12,8 +12,8 @@ import (
 // CurrentGuard holds the agent's degeneracy guard config, set before the
 // TUI starts. LoopGuardDefaults holds the function that populates defaults.
 var (
-	CurrentGuard       config.LoopGuardConfig
-	LoopGuardDefaults  func(config.LoopGuardConfig) any // returns agent.DegenerationGuard
+	CurrentGuard      config.LoopGuardConfig
+	LoopGuardDefaults func(config.LoopGuardConfig) any // returns agent.DegenerationGuard
 )
 
 // CurrentHistoryBuilder is the active HistoryBuilder for /compact.

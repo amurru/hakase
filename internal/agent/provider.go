@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -280,15 +281,41 @@ func fetchRaw(client *http.Client, ctx context.Context, base, path, apiKey strin
 	return body, nil
 }
 
-// ProviderFactory returns the provider matching cfg.Provider, defaulting to
-// Gemini when the field is empty.
-func ProviderFactory(cfg *config.Config) (LLMProvider, error) {
-	switch cfg.Provider {
+// providerForName returns the single provider matching name, defaulting to
+// Gemini when the name is empty. It never wraps in a fallback chain; use
+// ProviderFactory for the config-driven (possibly fallback-aware) provider.
+func providerForName(provider, baseURL string) (LLMProvider, error) {
+	switch provider {
 	case "gemini", "":
 		return &GeminiProvider{}, nil
 	case "openai", "openai-compatible":
-		return &OpenAIProvider{BaseURL: cfg.BaseURL}, nil
+		return &OpenAIProvider{BaseURL: baseURL}, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}
+}
+
+// ProviderFactory returns the provider matching cfg.Provider, defaulting to
+// Gemini when the field is empty. When cfg.FallbackProviders is non-empty the
+// returned provider is a *FallbackProvider whose CreateModel yields a
+// fallback-aware model: per-request provider outages fall over to the next
+// provider in the chain (primary first) instead of failing the run.
+func ProviderFactory(cfg *config.Config) (LLMProvider, error) {
+	primary, err := providerForName(cfg.Provider, cfg.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.FallbackProviders) == 0 {
+		return primary, nil
+	}
+	providers := []LLMProvider{primary}
+	for _, name := range cfg.FallbackProviders {
+		p, err := providerForName(name, cfg.BaseURL)
+		if err != nil {
+			log.Printf("fallback: skipping broken fallback provider %q: %v", name, err)
+			continue
+		}
+		providers = append(providers, p)
+	}
+	return &FallbackProvider{cfg: cfg, providers: providers}, nil
 }

@@ -59,9 +59,9 @@ const (
 // lapse reminders land in the protected appendix per night (ungated content
 // stays bounded), and sub-threshold wins are annotated as noise (SL-034).
 const (
-	DefaultLapseCap        = 3
-	NoiseDeltaThreshold    = 0.015 // 1.5 points on the 0..1 gate scale
-	MinValTasksForClaim    = 20
+	DefaultLapseCap     = 3
+	NoiseDeltaThreshold = 0.015 // 1.5 points on the 0..1 gate scale
+	MinValTasksForClaim = 20
 )
 
 // consolidationRan reports whether a consolidation result reflects real
@@ -116,11 +116,11 @@ type ConsolidationResult struct {
 	// ReplayDenials records deny-by-default events from agentic replay
 	// (plan SL-040): off-allowlist tool-call attempts and sandbox path
 	// refusals. Nil for single-shot replay (no tools involved).
-	ReplayDenials  *DeniedToolAttempts `json:"replay_denials,omitempty"`
-	HoldoutLeaked  bool                `json:"holdout_leaked"`
-	ReflectRaw     string              `json:"reflect_raw,omitempty"`
-	CallError      string              `json:"call_error,omitempty"`
-	NoEditsReason  string              `json:"no_edits_reason,omitempty"`
+	ReplayDenials *DeniedToolAttempts `json:"replay_denials,omitempty"`
+	HoldoutLeaked bool                `json:"holdout_leaked"`
+	ReflectRaw    string              `json:"reflect_raw,omitempty"`
+	CallError     string              `json:"call_error,omitempty"`
+	NoEditsReason string              `json:"no_edits_reason,omitempty"`
 }
 
 // normalizeSplit maps legacy split names to the canonical three.

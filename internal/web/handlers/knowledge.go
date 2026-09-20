@@ -21,21 +21,21 @@ type KnowledgeRouter interface {
 
 // KnowledgeDTO is the API response for a knowledge note.
 type KnowledgeDTO struct {
-	Slug        string                       `json:"slug"`
-	Title       string                       `json:"title"`
-	Summary     string                       `json:"summary,omitempty"`
-	Status      string                       `json:"status,omitempty"`
-	Confidence  string                       `json:"confidence,omitempty"`
-	Tags        []string                     `json:"tags,omitempty"`
-	Aliases     []string                     `json:"aliases,omitempty"`
-	Created     string                       `json:"created,omitempty"`
-	Updated     string                       `json:"updated,omitempty"`
-	Sources     []KnowledgeSourceDTO         `json:"sources,omitempty"`
-	Related     []string                     `json:"related,omitempty"`
-	Metadata    map[string]string            `json:"metadata,omitempty"`
-	Body        string                       `json:"body,omitempty"`
-	Backlinks   []string                     `json:"backlinks,omitempty"`
-	Dangling    []string                     `json:"dangling,omitempty"`
+	Slug       string               `json:"slug"`
+	Title      string               `json:"title"`
+	Summary    string               `json:"summary,omitempty"`
+	Status     string               `json:"status,omitempty"`
+	Confidence string               `json:"confidence,omitempty"`
+	Tags       []string             `json:"tags,omitempty"`
+	Aliases    []string             `json:"aliases,omitempty"`
+	Created    string               `json:"created,omitempty"`
+	Updated    string               `json:"updated,omitempty"`
+	Sources    []KnowledgeSourceDTO `json:"sources,omitempty"`
+	Related    []string             `json:"related,omitempty"`
+	Metadata   map[string]string    `json:"metadata,omitempty"`
+	Body       string               `json:"body,omitempty"`
+	Backlinks  []string             `json:"backlinks,omitempty"`
+	Dangling   []string             `json:"dangling,omitempty"`
 }
 
 // KnowledgeSourceDTO is a source reference for a knowledge note.
@@ -46,9 +46,9 @@ type KnowledgeSourceDTO struct {
 
 // KnowledgeSearchResultDTO is a scored search result.
 type KnowledgeSearchResultDTO struct {
-	Note     KnowledgeDTO `json:"note"`
-	Score    float64      `json:"score"`
-	Snippet  string       `json:"snippet,omitempty"`
+	Note    KnowledgeDTO `json:"note"`
+	Score   float64      `json:"score"`
+	Snippet string       `json:"snippet,omitempty"`
 }
 
 // KnowledgeCreateRequest is the request body for POST /api/knowledge.
@@ -98,18 +98,18 @@ func knowledgeSlug(r *http.Request) string {
 // noteToDTO converts an internal KnowledgeNote to a KnowledgeDTO.
 func noteToDTO(n *knowledge.KnowledgeNote) KnowledgeDTO {
 	dto := KnowledgeDTO{
-		Slug:      n.Slug,
-		Title:     n.Frontmatter.Title,
-		Summary:   n.Frontmatter.Summary,
-		Status:    n.Frontmatter.Status,
+		Slug:       n.Slug,
+		Title:      n.Frontmatter.Title,
+		Summary:    n.Frontmatter.Summary,
+		Status:     n.Frontmatter.Status,
 		Confidence: n.Frontmatter.Confidence,
-		Tags:      n.Frontmatter.Tags,
-		Aliases:   n.Frontmatter.Aliases,
-		Created:   n.Frontmatter.Created,
-		Updated:   n.Frontmatter.Updated,
-		Related:   n.Frontmatter.Related,
-		Metadata:  n.Frontmatter.Metadata,
-		Body:      n.Body,
+		Tags:       n.Frontmatter.Tags,
+		Aliases:    n.Frontmatter.Aliases,
+		Created:    n.Frontmatter.Created,
+		Updated:    n.Frontmatter.Updated,
+		Related:    n.Frontmatter.Related,
+		Metadata:   n.Frontmatter.Metadata,
+		Body:       n.Body,
 	}
 	if len(n.Frontmatter.Sources) > 0 {
 		dto.Sources = make([]KnowledgeSourceDTO, 0, len(n.Frontmatter.Sources))

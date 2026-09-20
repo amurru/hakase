@@ -51,7 +51,10 @@ func currentModelFunc(llm model.LLM) func() model.LLM {
 
 // buildSidekickConfig returns a *config.Config that selects the sidekick's
 // model: each sidekick override (provider/model/base_url/api_key) falls back
-// to the primary config when empty. Used to build a second, independent model
+// to the primary config when empty. The primary's fallback_providers chain is
+// NOT inherited: the sidekick is an independent second opinion, and replaying
+// the primary chain under a swapped provider/model would produce incoherent
+// provider/model pairs. Used to build a second, independent model
 // via the provider factory.
 func buildSidekickConfig(cfg *config.Config) *config.Config {
 	sc := cfg.Sidekick
@@ -68,6 +71,7 @@ func buildSidekickConfig(cfg *config.Config) *config.Config {
 	if sc.APIKey != "" {
 		sk.APIKey = sc.APIKey
 	}
+	sk.FallbackProviders = nil
 	return &sk
 }
 
@@ -438,7 +442,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) e
 		AuditCommandExec(CommandAuditEntry{
 			Timestamp: time.Now(), Tool: "python_interpreter",
 			Decision: "denied", Risk: "high", Reason: "permission denied",
-			SandboxMode: sandboxMode,
+			SandboxMode: sandboxMode, SessionID: sessionID,
 		})
 		return fmt.Errorf("python_interpreter is denied by sandbox permissions")
 	}
@@ -446,7 +450,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) e
 		AuditCommandExec(CommandAuditEntry{
 			Timestamp: time.Now(), Tool: "python_interpreter",
 			Decision: "allowed", Risk: "high",
-			SandboxMode: sandboxMode,
+			SandboxMode: sandboxMode, SessionID: sessionID,
 		})
 		return nil
 	}
@@ -468,7 +472,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) e
 			Command:  util.TruncateStr(code),
 			Decision: "not_approved", Risk: "high",
 			Reason:      "python code execution not approved by user",
-			SandboxMode: sandboxMode,
+			SandboxMode: sandboxMode, SessionID: sessionID,
 		})
 		return fmt.Errorf("python code execution not approved by user")
 	}
@@ -477,7 +481,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) e
 		Command:  util.TruncateStr(code),
 		Decision: "approved", Risk: "high",
 		Reason:      "arbitrary Python code execution",
-		SandboxMode: sandboxMode,
+		SandboxMode: sandboxMode, SessionID: sessionID,
 	})
 	return nil
 }
@@ -617,7 +621,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 						Command:  "pip install " + missingPkg,
 						Decision: "denied", Risk: "medium",
 						Reason:      "pip install not allowed (allow_pip_install)",
-						SandboxMode: sandboxMode,
+						SandboxMode: sandboxMode, SessionID: interfaces.SessionIDFromCtx(ctx),
 					})
 					return PythonExecOutput{Stdout: stdout, Stderr: stderr}, nil
 				}
@@ -629,7 +633,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 					Timestamp: time.Now(), Tool: "pip",
 					Command:  "pip install " + missingPkg,
 					Decision: "allowed", Risk: "medium",
-					SandboxMode: sandboxMode,
+					SandboxMode: sandboxMode, SessionID: interfaces.SessionIDFromCtx(ctx),
 				})
 
 				pipBin := filepath.Join("./.venv", "bin", "pip")
@@ -1151,13 +1155,86 @@ func CreateLoadMarkdownSkillTool(
 }
 
 // Task persistence functions
+//
+// Writer rules (issue #13, mirroring channel/state + sleep SL-005):
+//   - 0600 file, atomic tmp+rename with fsync so a kill mid-save cannot tear
+//   - cross-process flock via tasks.json.lock during every read and every
+//     read-modify-write, so TUI + `hakase web` in one directory are safe
+//   - torn files are quarantined aside (tasks.json.corrupt-<ts>) and the
+//     registry restarts empty instead of wedging the task board
 
 const tasksFile = "./tasks.json"
 
 // taskRegistryMu serializes in-process access to tasks.json. Multiple task
 // tool calls can run in the same turn (e.g. several create_task calls), and
 // without this lock concurrent read-modify-write cycles corrupt the file.
+// Cross-process safety comes from the tasks.json.lock flock held alongside
+// this mutex in every load/save path below.
 var taskRegistryMu sync.Mutex
+
+// acquireTaskFileLock opens tasks.json.lock and takes an exclusive flock.
+// The caller must hold taskRegistryMu and release via releaseTaskFileLock.
+func acquireTaskFileLock() (*os.File, error) {
+	f, err := os.OpenFile(tasksFile+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := util.FlockExclusive(f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func releaseTaskFileLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = util.FlockUnlock(f)
+	_ = f.Close()
+}
+
+// writeTasksFileAtomic durably persists data to tasksFile.
+func writeTasksFileAtomic(data []byte) error {
+	dir := filepath.Dir(tasksFile)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(".", ".tasks-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, tasksFile); err != nil {
+		return err
+	}
+	return os.Chmod(tasksFile, 0600)
+}
+
+// quarantineTasksCorrupt preserves a torn tasks.json aside for forensics.
+func quarantineTasksCorrupt() {
+	aside := tasksFile + ".corrupt-" + time.Now().UTC().Format("20060102-150405")
+	// Best-effort: a failed quarantine still returns empty so the board
+	// does not wedge; the torn file is then overwritten on next save.
+	_ = os.Rename(tasksFile, aside)
+}
 
 func loadTaskRegistryLocked() (TaskRegistry, error) {
 	var registry TaskRegistry
@@ -1169,16 +1246,28 @@ func loadTaskRegistryLocked() (TaskRegistry, error) {
 		return TaskRegistry{}, err
 	}
 	if err := json.Unmarshal(data, &registry); err != nil {
-		return TaskRegistry{}, err
+		quarantineTasksCorrupt()
+		return TaskRegistry{Tasks: []TaskMeta{}}, nil
 	}
+	if registry.Tasks == nil {
+		registry.Tasks = []TaskMeta{}
+	}
+	// Tighten pre-hardening 0644 files to 0600 best-effort.
+	_ = os.Chmod(tasksFile, 0600)
 	return registry, nil
 }
 
 // LoadTaskRegistry reads the persisted task registry from disk, returning an
-// empty registry when no tasks file exists yet.
+// empty registry when no tasks file exists yet. A corrupt file is
+// quarantined aside and yields an empty registry (never a wedge).
 func LoadTaskRegistry() (TaskRegistry, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
+	lf, err := acquireTaskFileLock()
+	if err != nil {
+		return TaskRegistry{}, err
+	}
+	defer releaseTaskFileLock(lf)
 	return loadTaskRegistryLocked()
 }
 
@@ -1187,17 +1276,19 @@ func saveTaskRegistryLocked(registry TaskRegistry) error {
 	if err != nil {
 		return err
 	}
-	// Write to a temp file and rename so readers never observe a torn file.
-	tmp := tasksFile + ".tmp"
-	if err := os.WriteFile(tmp, registryBytes, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, tasksFile)
+	// Atomic rename so readers never observe a torn file; 0600 consistent
+	// with sessions/channels/sleep posture (was 0644 before issue #13).
+	return writeTasksFileAtomic(registryBytes)
 }
 
 func saveTaskRegistry(registry TaskRegistry) error {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
+	lf, err := acquireTaskFileLock()
+	if err != nil {
+		return err
+	}
+	defer releaseTaskFileLock(lf)
 	return saveTaskRegistryLocked(registry)
 }
 
@@ -1234,6 +1325,11 @@ func isValidTransition(from, to TaskStatus) bool {
 func CreateTask(input CreateTaskInput) (TaskMeta, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
+	lf, err := acquireTaskFileLock()
+	if err != nil {
+		return TaskMeta{}, err
+	}
+	defer releaseTaskFileLock(lf)
 
 	registry, err := loadTaskRegistryLocked()
 	if err != nil {
@@ -1298,6 +1394,11 @@ func CreateTask(input CreateTaskInput) (TaskMeta, error) {
 func UpdateTask(input UpdateTaskInput) (TaskMeta, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
+	lf, err := acquireTaskFileLock()
+	if err != nil {
+		return TaskMeta{}, err
+	}
+	defer releaseTaskFileLock(lf)
 
 	registry, err := loadTaskRegistryLocked()
 	if err != nil {
@@ -1435,6 +1536,11 @@ func GetTask(id string) (*TaskMeta, error) {
 func DeleteTask(id string) (bool, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
+	lf, err := acquireTaskFileLock()
+	if err != nil {
+		return false, err
+	}
+	defer releaseTaskFileLock(lf)
 
 	registry, err := loadTaskRegistryLocked()
 	if err != nil {
@@ -1470,6 +1576,11 @@ func DeleteTask(id string) (bool, error) {
 func ArchiveTask(id string) (TaskMeta, error) {
 	taskRegistryMu.Lock()
 	defer taskRegistryMu.Unlock()
+	lf, err := acquireTaskFileLock()
+	if err != nil {
+		return TaskMeta{}, err
+	}
+	defer releaseTaskFileLock(lf)
 
 	registry, err := loadTaskRegistryLocked()
 	if err != nil {
@@ -1873,6 +1984,14 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 	if err := provider.ValidateConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	// Fallback visibility: ProviderFactory returns a *FallbackProvider
+	// whenever fallback_providers is configured, so every model it creates
+	// fails over per-request. Log the chain once at startup so an outage
+	// that later falls over is attributable, not mysterious.
+	if len(cfg.FallbackProviders) > 0 && log != nil {
+		log(fmt.Sprintf("fallback: primary=%s with %d fallback provider(s) %v",
+			cfg.Provider, len(cfg.FallbackProviders), cfg.FallbackProviders))
 	}
 	modelName := cfg.EffectiveModelName()
 	model, err := provider.CreateModel(ctx, modelName, cfg.APIKey)

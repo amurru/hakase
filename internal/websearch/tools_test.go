@@ -23,7 +23,9 @@ func TestNewToolsNamesAndSchemas(t *testing.T) {
 	}
 	// Declaration() lives on an optional ADK interface; functiontool tools
 	// implement it. The doc tags must surface in the schema descriptions.
-	type declarer interface{ Declaration() *genai.FunctionDeclaration }
+	type declarer interface {
+		Declaration() *genai.FunctionDeclaration
+	}
 	d, ok := tools[0].(declarer)
 	if !ok || d.Declaration() == nil || d.Declaration().Description == "" {
 		t.Errorf("web_search missing declaration/description")

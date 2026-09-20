@@ -6,8 +6,8 @@
 package cli
 
 import (
-	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/sandbox"
 	"errors"
 	"flag"

@@ -49,15 +49,15 @@ type ConfigResponse struct {
 	// never returned).
 	HasAPIKey bool `json:"has_api_key"`
 	// HasVisionAPIKey reports whether a vision_api_key is configured.
-	HasVisionAPIKey bool `json:"has_vision_api_key"`
+	HasVisionAPIKey   bool `json:"has_vision_api_key"`
 	HasFalKey         bool `json:"has_fal_key"`
 	HasOpenAIImageKey bool `json:"has_openai_image_key"`
 	HasOpenAIVideoKey bool `json:"has_openai_video_key"`
 	// HasTelegramBotToken / HasTelegramPairingCode report channel secrets
 	// (values never returned). HasSidekickAPIKey reports the sidekick key.
-	HasTelegramBotToken     bool `json:"has_telegram_bot_token"`
-	HasTelegramPairingCode  bool `json:"has_telegram_pairing_code"`
-	HasSidekickAPIKey       bool `json:"has_sidekick_api_key"`
+	HasTelegramBotToken    bool `json:"has_telegram_bot_token"`
+	HasTelegramPairingCode bool `json:"has_telegram_pairing_code"`
+	HasSidekickAPIKey      bool `json:"has_sidekick_api_key"`
 	// EffectiveModel is the model the agent will actually use, resolved from the
 	// configured model_name or the provider default. Exposed so the web UI can
 	// label the active model without recomputing provider defaults client-side.
@@ -122,7 +122,7 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 
 // editableConfigKeys is the allowlist of top-level config.json keys the web UI
 // may edit. Everything else in the file (mcp servers, provider_options,
-// env_overrides, unknown/custom keys) is preserved untouched on save.
+// unknown/custom keys) is preserved untouched on save.
 var editableConfigKeys = []string{
 	"provider",
 	"model_name",
@@ -391,9 +391,11 @@ func validateConfigUpdate(req map[string]interface{}) error {
 	if v, ok := req["sandbox"].(map[string]interface{}); ok {
 		if mode, ok := v["mode"].(string); ok && mode != "" {
 			switch mode {
-			case "paths", "bubblewrap", "landlock", "off":
+			case "paths", "bubblewrap", "off":
+			case "landlock":
+				return fmt.Errorf("invalid sandbox.mode %q: landlock confinement is not yet implemented (Phase 3 planned); use paths, bubblewrap, or off", mode)
 			default:
-				return fmt.Errorf("invalid sandbox.mode %q: must be paths, bubblewrap, landlock, or off", mode)
+				return fmt.Errorf("invalid sandbox.mode %q: must be paths, bubblewrap, or off", mode)
 			}
 		}
 	}

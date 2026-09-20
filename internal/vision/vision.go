@@ -565,7 +565,7 @@ func LoadDataURL(raw string) ([]byte, string, error) {
 
 // downloadImage downloads an image from an http(s) URL with SSRF protection,
 // retries for transient failures, and caps the response at 10 MB.
-func downloadImage(ctx 	gocontext.Context, rawURL string) ([]byte, string, error) {
+func downloadImage(ctx gocontext.Context, rawURL string) ([]byte, string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid URL: %w", err)
@@ -612,7 +612,7 @@ func downloadImage(ctx 	gocontext.Context, rawURL string) ([]byte, string, error
 
 // downloadOnce performs a single HTTP GET with the shared httpClient, streams
 // the body through a limit reader, and detects the MIME type from magic bytes.
-func downloadOnce(ctx 	gocontext.Context, u *url.URL) ([]byte, string, error) {
+func downloadOnce(ctx gocontext.Context, u *url.URL) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("create request: %w", err)
@@ -852,7 +852,7 @@ func rasterizeSVG(data []byte) ([]byte, string, error) {
 
 	// Try rsvg-convert first.
 	if rsvg, err := exec.LookPath("rsvg-convert"); err == nil {
-		ctx, cancel := 	gocontext.WithTimeout(	gocontext.Background(), 30*time.Second)
+		ctx, cancel := gocontext.WithTimeout(gocontext.Background(), 30*time.Second)
 		defer cancel()
 		cmd := &exec.Cmd{Path: rsvg, Args: []string{rsvg, "-o", outPath, svgFile.Name()}}
 		if out, err := util.CombinedOutputContext(ctx, cmd); err != nil {
@@ -863,7 +863,7 @@ func rasterizeSVG(data []byte) ([]byte, string, error) {
 
 	// Try inkscape.
 	if inkscape, err := exec.LookPath("inkscape"); err == nil {
-		ctx, cancel := 	gocontext.WithTimeout(	gocontext.Background(), 30*time.Second)
+		ctx, cancel := gocontext.WithTimeout(gocontext.Background(), 30*time.Second)
 		defer cancel()
 		cmd := &exec.Cmd{Path: inkscape, Args: []string{inkscape,
 			svgFile.Name(),
@@ -1072,7 +1072,7 @@ func describeImageWithVisionModel(ctx gocontext.Context, img []byte, mime string
 		},
 	}
 
-	ctx, cancel := 	gocontext.WithTimeout(ctx, visionLegacyTimeout)
+	ctx, cancel := gocontext.WithTimeout(ctx, visionLegacyTimeout)
 	defer cancel()
 
 	var parts []string

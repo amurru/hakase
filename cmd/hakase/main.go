@@ -30,21 +30,25 @@ import (
 )
 
 func main() {
-	// Intercept web/serve subcommands before CLI dispatch.
-	// These live in package main because handlers/cron.go imports internal/cli,
-	// preventing a shared bootstrap package (import cycle).
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "web":
-			os.Exit(runWeb(os.Args[2:]))
-		case "serve":
-			os.Exit(runServe(os.Args[2:]))
-		}
-		os.Exit(cli.Dispatch(os.Args[1:]))
-	}
+	// Wire the real web/serve/TUI handlers into the dispatcher. They live in
+	// package main (not internal/cli) because their dependencies import
+	// internal/cli back (internal/web/handlers -> internal/cli): registering
+	// from here keeps every subcommand on the uniform Dispatch path with no
+	// import cycle.
+	cli.RegisterCommand("web", "serve the web UI", runWeb)
+	cli.RegisterCommand("serve", "run the API-only server", runServe)
+	cli.RegisterCommand("tui", "launch the interactive terminal UI", runTUICommand)
 
-	// No subcommand -> launch the interactive TUI.
+	// No subcommand falls through to the TUI handler via Dispatch, like
+	// every other subcommand.
+	os.Exit(cli.Dispatch(os.Args[1:]))
+}
+
+// runTUICommand adapts runTUI to the dispatcher handler shape: launching the
+// interactive terminal UI, for both bare `hakase` and `hakase tui`.
+func runTUICommand(args []string) int {
 	runTUI()
+	return 0
 }
 
 func runTUI() {
@@ -56,7 +60,12 @@ func runTUI() {
 	}
 
 	// Init sandbox before any file or exec operations.
+	// LoadConfig already refused landlock mode (issue #14); re-validate here
+	// defensively so a directly-constructed config can never slip through.
 	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
+	if err := sandbox.ValidateSandboxConfig(sandbox.CurrentSandbox); err != nil {
+		log.Fatalf("Invalid sandbox config: %v", err)
+	}
 
 	// Vision hooks: feed the live config to the vision package so the
 	// BeforeModel callback can rewrite user-attached image parts before the
@@ -78,6 +87,21 @@ func runTUI() {
 		util.DebugEvent("status_log", "msg", msg)
 		if program != nil {
 			program.Send(tui.StatusLogMsg{Text: msg})
+		}
+	}
+
+	// Issue #14: surface sandbox degradation visibly at startup (not just
+	// debug logs) and per fallback exec. The audit trail is the normative
+	// record; this hook is the TUI-visible half.
+	if warn := sandbox.SandboxStartupWarning(sandbox.CurrentSandbox); warn != "" {
+		log.Printf("WARNING: %s", warn)
+		logToUI("WARNING: " + warn)
+	}
+	sandbox.SandboxNoticeFunc = func(sessionID, msg string) {
+		if sessionID != "" {
+			logToUI(fmt.Sprintf("WARNING [session %s]: %s", sessionID, msg))
+		} else {
+			logToUI("WARNING: " + msg)
 		}
 	}
 

@@ -1,0 +1,92 @@
+name: test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: webui/pnpm-lock.yaml
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install bubblewrap (enables sandbox isolation tests)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      # internal/web embeds the SPA via //go:embed all:dist; the mirror is
+      # gitignored, so every Go command needs it built first (AGENTS.md).
+      - name: Build frontend (go:embed mirror)
+        run: |
+          pnpm --dir webui install --frozen-lockfile
+          pnpm --dir webui build
+          rm -rf internal/web/dist
+          mkdir -p internal/web/dist
+          cp -r webui/dist/. internal/web/dist/
+
+      - name: gofmt gate
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error title=gofmt::Files needing gofmt:"
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Go tests
+        run: go test ./...
+
+      - name: Frontend tests
+        run: pnpm --dir webui test
+
+  # First Windows run: non-blocking while it proves itself (bubblewrap mode is
+  # coerced to paths on Windows by design, so only the paths-mode tests apply;
+  # landlock is refused on every platform). Flip continue-on-error off once green.
+  windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: webui/pnpm-lock.yaml
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build frontend (go:embed mirror)
+        shell: bash
+        run: |
+          pnpm --dir webui install --frozen-lockfile
+          pnpm --dir webui build
+          rm -rf internal/web/dist
+          mkdir -p internal/web/dist
+          cp -r webui/dist/. internal/web/dist/
+
+      - name: Go tests
+        run: go test ./...

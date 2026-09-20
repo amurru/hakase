@@ -1061,7 +1061,6 @@ onMounted(loadConfig)
                 >
                   <option value="paths">paths</option>
                   <option value="bubblewrap">bubblewrap</option>
-                  <option value="landlock">landlock</option>
                   <option value="off">off</option>
                 </select>
               </div>

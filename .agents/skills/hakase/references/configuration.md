@@ -92,9 +92,10 @@ subprocess environments (system_exec / sandboxed Python) so secrets never leak.
   absolute path args audited against read roots + trusted system dirs
   (`/usr /lib /bin /etc /proc /dev /sys /tmp /run`).
 - `bubblewrap` - kernel-level bwrap isolation (PID/IPC/UTS/user namespaces, dropped
-  caps, ro system dirs, optional network unshare). Falls back to `paths` if bwrap
-  is not installed (logged warning).
-- `landlock` - reserved for future in-process confinement.
+  caps, ro system dirs, optional network unshare). Requires bwrap on PATH: without
+  it exec is refused unless `allow_fallback` is explicitly true, and every fallback
+  is audit-logged plus surfaced in the UI.
+- `landlock` - refused at config load (unimplemented, Phase 3 planned).
 - `off` - disables confinement (opt-in only).
 
 ## Knowledge dir

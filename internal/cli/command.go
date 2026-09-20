@@ -1,11 +1,13 @@
 // Package cli provides the command dispatch framework for the hakase binary.
 //
-// This is the skeleton phase (plan task 3): every command is registered with a
-// stub handler so the framework compiles standalone with zero dependencies on
-// the root package main. Real CLI implementations migrate into this package in
-// a later phase (plan task 12) by swapping the stub handlers for the real
-// `runXCLI(args []string) int` implementations; the Command.Handler field is
-// the seam that makes that swap a one-line change.
+// Every subcommand is registered with a handler; Dispatch routes os.Args[1]
+// to the matching handler. Commands whose bootstrap would create an import
+// cycle (web/serve/TUI need packages that import this package back, e.g.
+// internal/web/handlers imports internal/cli) are registered here with a
+// fallback handler and re-registered with their real implementations by
+// package main at startup via RegisterCommand. The fallback therefore only
+// runs when the dispatcher is used without the main binary wiring (e.g. in
+// tests), never as a "not migrated" stub.
 //
 // Exit code convention (mirrors the root package): 0 = success/help,
 // 1 = runtime failure, 2 = usage error. The caller decides whether to exit.
@@ -25,7 +27,6 @@ type Command struct {
 	Description string
 	// Handler runs the command with the args after the command name and
 	// returns the process exit code (0 = success, 1 = runtime, 2 = usage).
-	// Handlers are stubs until the real CLI implementations migrate in.
 	Handler func(args []string) int
 }
 
@@ -33,18 +34,27 @@ type Command struct {
 var commands = make(map[string]*Command)
 
 // registerCommand adds a command to the registry. A duplicate name replaces
-// the previous entry, which lets a later phase re-register a command with its
+// the previous entry, which lets package main re-register a command with its
 // real handler without changing the dispatch code.
 func registerCommand(cmd Command) {
 	commands[cmd.Name] = &cmd
 }
 
+// RegisterCommand adds or replaces a command in the dispatcher. Package main
+// uses it at startup to wire the real web/serve/TUI handlers, which cannot
+// live in this package without creating an import cycle (their dependencies
+// import this package back).
+func RegisterCommand(name, description string, handler func(args []string) int) {
+	registerCommand(Command{Name: name, Description: description, Handler: handler})
+}
+
 // Dispatch routes the first argument to its registered command. args is the
 // full argument slice after the program name (i.e. os.Args[1:]).
 //
-// With no subcommand the dispatch falls through to the tui placeholder stub:
-// the real TUI wiring lands in a later phase. An unknown subcommand prints the
-// usage listing and returns 2. The returned int is the process exit code.
+// With no subcommand the dispatch falls through to the TUI handler (wired by
+// package main; the in-package fallback explains that wiring is missing). An
+// unknown subcommand prints the usage listing and returns 2. The returned int
+// is the process exit code.
 func Dispatch(args []string) int {
 	if len(args) == 0 {
 		return runTUIPlaceholder(nil)
@@ -85,30 +95,33 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Run 'hakase <command>' with no subcommand for command-specific help.")
 }
 
-// notMigrated returns a stub handler that reports the command still lives in
-// the root package main and has not yet been wired into this dispatcher. Exit
-// code 1 = runtime failure (command unavailable).
-func notMigrated(name string) func(args []string) int {
+// unregisteredExternal returns a fallback handler for commands whose real
+// implementation is wired by package main via RegisterCommand (web, serve,
+// tui). It only runs when the dispatcher is used without that wiring, e.g.
+// in tests that call Dispatch directly. Exit code 1 = runtime failure
+// (command unavailable in this context).
+func unregisteredExternal(name string) func(args []string) int {
 	return func(args []string) int {
 		fmt.Fprintf(os.Stderr,
-			"hakase: '%s' is not yet migrated into the internal/cli dispatcher (plan task 12); "+
-				"use the root package main binary for now\n", name)
+			"hakase: '%s' is wired by the main binary (package main registers the real handler "+
+				"at startup via cli.RegisterCommand); it is not available in this context\n", name)
 		return 1
 	}
 }
 
-// runTUIPlaceholder is the default handler when no subcommand is given. The
-// real TUI wiring replaces this in a later phase (plan task 13).
+// runTUIPlaceholder is the fallback handler when no subcommand is given and
+// package main has not wired the real TUI handler. The real binary launches
+// the interactive TUI here.
 func runTUIPlaceholder(args []string) int {
 	fmt.Fprintln(os.Stderr,
-		"hakase: interactive TUI is not wired into internal/cli yet (plan task 13). "+
-			"Use the root package main binary (`go run .`) for the TUI, or pass a subcommand.")
+		"hakase: interactive TUI is wired by the main binary (package main registers the real "+
+			"handler at startup); no subcommand was given and no TUI handler is registered.")
 	return 0
 }
 
-// init registers the command skeleton: the existing commands (which will get
-// their real handlers in plan task 12) plus the new web, serve and auth
-// commands, and the tui placeholder default.
+// init registers the command tree: the in-package commands with their real
+// handlers, plus web, serve and tui with fallback handlers that package main
+// replaces at startup with the real implementations.
 func init() {
 	registerCommand(Command{
 		Name:        "skill",
@@ -163,12 +176,12 @@ func init() {
 	registerCommand(Command{
 		Name:        "web",
 		Description: "serve the web UI",
-		Handler:     notMigrated("web"),
+		Handler:     unregisteredExternal("web"),
 	})
 	registerCommand(Command{
 		Name:        "serve",
 		Description: "run the API-only server",
-		Handler:     notMigrated("serve"),
+		Handler:     unregisteredExternal("serve"),
 	})
 	registerCommand(Command{
 		Name:        "auth",
@@ -177,7 +190,7 @@ func init() {
 	})
 	registerCommand(Command{
 		Name:        "tui",
-		Description: "launch the interactive terminal UI (placeholder)",
+		Description: "launch the interactive terminal UI",
 		Handler:     runTUIPlaceholder,
 	})
 }

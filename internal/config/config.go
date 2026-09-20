@@ -32,14 +32,6 @@ type LoopGuardConfig struct {
 	MaxTextWithoutTool int `json:"max_text_without_tool,omitempty"`
 }
 
-type EnvOverrideConfig struct {
-	DockerImage   string `json:"docker_image,omitempty"`
-	ModalImage    string `json:"modal_image,omitempty"`
-	EnvType       string `json:"env_type,omitempty"` // "local", "docker", "ssh"
-	CPULimit      int    `json:"cpu_limit,omitempty"`
-	MemoryLimitMB int    `json:"memory_limit_mb,omitempty"`
-}
-
 // ApprovalConfig tunes the interactive approval gate.
 type ApprovalConfig struct {
 	// Mode: "interactive" (default) | "deny" (auto-deny everything) | "allow" (auto-approve everything).
@@ -129,8 +121,8 @@ type Config struct {
 	// Units tunes the user's preferred measurement system injected as a
 	// system-reminder block so the agent reports quantities in the user's
 	// preferred units. Absent = metric (SI/ISO).
-	Units UnitsConfig `json:"units,omitempty"`
-	MCPServerURL string             `json:"mcp_server_url"`
+	Units        UnitsConfig `json:"units,omitempty"`
+	MCPServerURL string      `json:"mcp_server_url"`
 	// MCPServers configures MCP servers (see mcp_config.go). Legacy
 	// mcp_server_url is auto-migrated into the "lightpanda" server.
 	MCPServers        MCPConfig              `json:"mcp,omitempty"`
@@ -169,9 +161,6 @@ type Config struct {
 	// ModelVision overrides multimodal detection for the primary model:
 	// "auto" (default), "yes", or "no".
 	ModelVision string `json:"model_vision,omitempty"`
-	// EnvOverrides maps task IDs or agent names to environment
-	// isolation configurations for delegated sub-agents.
-	EnvOverrides map[string]EnvOverrideConfig `json:"env_overrides,omitempty"`
 	// DelegateTimeoutSeconds bounds how long a delegated sub-agent may run
 	// before it is aborted as timed out. 0 uses the default (300s). Prevents
 	// stuck sub-agents from hanging the orchestrator indefinitely.
@@ -477,18 +466,18 @@ const (
 
 // Sidekick mode constants.
 const (
-	ModeOff       = "off"       // disabled
-	ModeOnDemand  = "on_demand" // ask_sidekick only (default when enabled)
-	ModeWatch     = "watch"     // watchdog consults, notes injected into context
-	ModeFull      = "full"      // watch + orchestrator told to act on notes
+	ModeOff      = "off"       // disabled
+	ModeOnDemand = "on_demand" // ask_sidekick only (default when enabled)
+	ModeWatch    = "watch"     // watchdog consults, notes injected into context
+	ModeFull     = "full"      // watch + orchestrator told to act on notes
 )
 
 // validSidekickModes is the set of recognized Mode values.
 var validSidekickModes = map[string]bool{
-	ModeOff:       true,
-	ModeOnDemand:  true,
-	ModeWatch:     true,
-	ModeFull:      true,
+	ModeOff:      true,
+	ModeOnDemand: true,
+	ModeWatch:    true,
+	ModeFull:     true,
 }
 
 // ApplyDefaults fills zero values with sidekick defaults. Call after load.
@@ -710,6 +699,28 @@ func ResolveConfigPath(local string) string {
 	return local
 }
 
+// removedConfigKeys names top-level config.json keys that were deleted from
+// the schema because they promised behavior that was never implemented.
+// LoadConfig refuses them loudly (instead of silently ignoring) so a stale
+// config fails fast with a pointer at the removal.
+var removedConfigKeys = map[string]string{
+	"env_overrides": "the docker/ssh environment isolation it described was parsed but never implemented (no code ever created those environments)",
+}
+
+// rejectRemovedKeys errors when raw config JSON still carries a removed key.
+func rejectRemovedKeys(filePath string, data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil // malformed JSON: let the typed unmarshal below report it
+	}
+	for key, why := range removedConfigKeys {
+		if _, ok := raw[key]; ok {
+			return fmt.Errorf("config: %s was removed (%s); remove the %s block from %s", key, why, key, filePath)
+		}
+	}
+	return nil
+}
+
 // LoadConfig reads the JSON config file and applies HAKASE_* environment
 // overrides on top. Environment variables win over file values. When the file
 // is missing, config can still come entirely from the environment; only when
@@ -720,6 +731,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	data, err := os.ReadFile(filePath)
 	switch {
 	case err == nil:
+		if err := rejectRemovedKeys(filePath, data); err != nil {
+			return nil, err
+		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, err
 		}
@@ -821,6 +835,16 @@ func LoadConfig(filePath string) (*Config, error) {
 	cfg.Channels.ApplyDefaults()
 	if err := cfg.Channels.Validate(); err != nil {
 		return nil, err
+	}
+
+	// Issue #14: landlock mode is reserved but unimplemented - refuse at
+	// config load instead of silently degrading to path-auditing-only exec.
+	// LoadSandboxConfig normalizes the roots so Validate sees the effective
+	// mode; a nil sandbox block means confinement disabled (valid).
+	if cfg.Sandbox != nil {
+		if err := sandbox.ValidateSandboxConfig(sandbox.LoadSandboxConfig(cfg.Sandbox)); err != nil {
+			return nil, err
+		}
 	}
 
 	cfg.Media.ApplyDefaults()

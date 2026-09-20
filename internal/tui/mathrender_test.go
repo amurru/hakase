@@ -13,19 +13,19 @@ import (
 
 // canonical math expressions used across the tests (the 6 requested probes).
 const (
-	mathFrac      = `\frac{dy}{dx}`
-	mathSum       = `\sum_{i=1}^{n} x_i`
-	mathIntegral  = `\int_0^\infty e^{-x^2} dx`
-	mathSqrt      = `\sqrt{a^2 + b^2}`
-	mathGreek     = `\alpha + \beta = \gamma`
-	mathMatrix    = `\begin{pmatrix} a & b \\ c & d \end{pmatrix}`
+	mathFrac     = `\frac{dy}{dx}`
+	mathSum      = `\sum_{i=1}^{n} x_i`
+	mathIntegral = `\int_0^\infty e^{-x^2} dx`
+	mathSqrt     = `\sqrt{a^2 + b^2}`
+	mathGreek    = `\alpha + \beta = \gamma`
+	mathMatrix   = `\begin{pmatrix} a & b \\ c & d \end{pmatrix}`
 )
 
 func TestSplitMathSegments(t *testing.T) {
 	cases := []struct {
-		name    string
-		in      string
-		want    []string
+		name string
+		in   string
+		want []string
 	}{
 		{
 			name: "single display block",
@@ -84,19 +84,30 @@ func TestMathHashStable(t *testing.T) {
 	}
 }
 
-func TestTermtexCanonicalExpressions(t *testing.T) {
+// newFallbackMathRenderer pins the renderer to the Unicode fallback path:
+// no kitty, no external toolchain, and a Unicode-capable terminal. The
+// asciiMode pin matters on machines where newMathRenderer would otherwise
+// derive it from TERM — CI runners run tests with TERM unset, which maps
+// to 7-bit ASCII mode and would break every Unicode assertion here.
+func newFallbackMathRenderer() *MathRenderer {
 	mr := newMathRenderer()
-	mr.kittyOK = false // force the Unicode path regardless of environment
+	mr.kittyOK = false
 	mr.toolchainOK = false
+	mr.asciiMode = false
+	return mr
+}
+
+func TestTermtexCanonicalExpressions(t *testing.T) {
+	mr := newFallbackMathRenderer()
 
 	checks := []struct {
 		in     string
 		expect string // substring that must appear in the Unicode output
 	}{
-		{mathFrac, "────"},     // stacked fraction bar
-		{mathSum, "∑"},         // big operator
-		{mathIntegral, "∫"},    // integral
-		{mathSqrt, "√"},        // sqrt radical
+		{mathFrac, "────"},  // stacked fraction bar
+		{mathSum, "∑"},      // big operator
+		{mathIntegral, "∫"}, // integral
+		{mathSqrt, "√"},     // sqrt radical
 		{mathGreek, "α + β = γ"},
 		{mathMatrix, "⎛"}, // tall matrix delimiter
 	}
@@ -112,9 +123,7 @@ func TestTermtexCanonicalExpressions(t *testing.T) {
 }
 
 func TestRenderMarkdownMathUnicodeFallback(t *testing.T) {
-	mr := newMathRenderer()
-	mr.kittyOK = false
-	mr.toolchainOK = false
+	mr := newFallbackMathRenderer()
 
 	// Display math renders as Unicode when the kitty path is unavailable.
 	md := "Equation:\n\n$$\n\\frac{dy}{dx}\n$$\n\nDone."
@@ -132,9 +141,7 @@ func TestRenderMarkdownMathUnicodeFallback(t *testing.T) {
 }
 
 func TestRenderMarkdownInlineMath(t *testing.T) {
-	mr := newMathRenderer()
-	mr.kittyOK = false
-	mr.toolchainOK = false
+	mr := newFallbackMathRenderer()
 
 	out := mr.RenderMarkdown("Energy is $E=mc^2$ inline", 80, true)
 	plain := stripANSI(out)
@@ -144,9 +151,7 @@ func TestRenderMarkdownInlineMath(t *testing.T) {
 }
 
 func TestRenderMarkdownCodeSpanNotTouched(t *testing.T) {
-	mr := newMathRenderer()
-	mr.kittyOK = false
-	mr.toolchainOK = false
+	mr := newFallbackMathRenderer()
 
 	out := mr.RenderMarkdown("Use `$x$` in code", 80, true)
 	plain := stripANSI(out)
@@ -156,9 +161,7 @@ func TestRenderMarkdownCodeSpanNotTouched(t *testing.T) {
 }
 
 func TestTermtexBlockFallbackOnError(t *testing.T) {
-	mr := newMathRenderer()
-	mr.kittyOK = false
-	mr.toolchainOK = false
+	mr := newFallbackMathRenderer()
 
 	// An expression termtex cannot parse should degrade to a code block with
 	// the raw LaTeX rather than silently wrong output.
@@ -306,6 +309,7 @@ func TestMathRendererUnicodeWhenToolchainMissing(t *testing.T) {
 	// renderer degrades to Unicode without erroring even when images are
 	// requested.
 	mr := newMathRenderer()
+	mr.asciiMode = false // Unicode assertions need a Unicode-capable terminal pin
 	if mr.canRenderImages() {
 		t.Skip("tectonic+pdftoppm present; image path active")
 	}
@@ -373,6 +377,7 @@ func TestStreamingUsesUnicode(t *testing.T) {
 	m := newTestModel(t)
 	m.math.kittyOK = true
 	m.math.toolchainOK = true
+	m.math.asciiMode = false // Unicode assertions need the terminal pinned
 	m.mathImages = false
 
 	m.chatHistory = []ChatMessage{{Role: "agent", Content: "$$\n" + mathFrac + "\n$$"}}
@@ -416,6 +421,7 @@ func TestEndToEndKittyRenderMarkdown(t *testing.T) {
 	mr := newMathRenderer()
 	mr.kittyOK = true
 	mr.toolchainOK = true
+	mr.asciiMode = false // the kitty path needs a Unicode-capable terminal pin
 
 	out := mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
 	plain := stripANSI(out)
@@ -495,9 +501,7 @@ func TestSplitMathSegmentsInlineCodeDollar(t *testing.T) {
 // stacked fraction through the full pipeline (golden output for the fallback
 // tier).
 func TestRenderMarkdownGoldenFrac(t *testing.T) {
-	mr := newMathRenderer()
-	mr.kittyOK = false
-	mr.toolchainOK = false
+	mr := newFallbackMathRenderer()
 
 	out := mr.RenderMarkdown("$$\n\\frac{dy}{dx}\n$$", 40, true)
 	plain := stripANSI(out)
@@ -524,9 +528,7 @@ func TestRenderMarkdownGoldenFrac(t *testing.T) {
 // TestRenderMarkdownMathThenCode verifies a message mixing display math and a
 // code block renders both correctly (fence tracking must not leak state).
 func TestRenderMarkdownMathThenCode(t *testing.T) {
-	mr := newMathRenderer()
-	mr.kittyOK = false
-	mr.toolchainOK = false
+	mr := newFallbackMathRenderer()
 
 	in := "$$\nx^2\n$$\n\n```\n$$not math$$\n```"
 	out := mr.RenderMarkdown(in, 80, true)
@@ -570,7 +572,10 @@ func TestDecisionTree(t *testing.T) {
 		os.Setenv("TERM_PROGRAM", oldProg)
 	}()
 
-	// Branch 1: kitty + toolchain -> images (when allowed).
+	// Branch 1: kitty + toolchain -> images (when allowed). The placeholder
+	// only materializes when the external tectonic+pdftoppm toolchain is
+	// really installed — forcing the toolchainOK flag alone cannot compile
+	// a PNG — so gate this branch on the actual toolchain.
 	mr := newMathRenderer()
 	mr.kittyOK = true
 	mr.toolchainOK = true
@@ -578,12 +583,14 @@ func TestDecisionTree(t *testing.T) {
 	if !mr.canRenderImages() {
 		t.Fatal("kitty+toolchain must enable images")
 	}
-	out := mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
-	if !strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
-		t.Fatal("branch kitty+toolchain should emit placeholder runes")
+	if detectMathToolchain() {
+		out := mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, true)
+		if !strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
+			t.Fatal("branch kitty+toolchain should emit placeholder runes")
+		}
 	}
 	// Streaming (allowImages=false) -> Unicode even with images available.
-	out = mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, false)
+	out := mr.RenderMarkdown("$$\n"+mathFrac+"\n$$", 80, false)
 	if strings.ContainsRune(stripANSI(out), '\U0010EEEE') {
 		t.Fatal("streaming must not emit placeholders")
 	}

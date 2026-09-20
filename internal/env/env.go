@@ -67,27 +67,27 @@ type ToolInfo struct {
 // Linux-specific fields (KernelVersion, Distro*, Memory, Disk) are empty on
 // non-Linux platforms; the portable fields are always populated.
 type SystemInfo struct {
-	OS              string // runtime.GOOS: linux, darwin, windows
-	Architecture    string // runtime.GOARCH: amd64, arm64, ...
-	KernelVersion   string // syscall.Uname().Release (Linux)
-	DistroID        string // /etc/os-release ID: arch, ubuntu, debian
-	DistroVersion   string // /etc/os-release VERSION_ID (e.g. "24.04")
-	DistroCodename  string // /etc/os-release VERSION_CODENAME (when present)
-	DistroPretty    string // /etc/os-release PRETTY_NAME (e.g. "Arch Linux")
-	PackageManager  string // resolved: pacman, apt, dnf, zypper, apk, brew, ...
-	Shell           string // basename($SHELL): zsh, bash, fish
-	Locale          string // $LC_ALL or $LANG, e.g. en_US.UTF-8
-	Timezone        string // time.Now().Zone() name, e.g. Asia/Damascus
-	TZOffset        string // current UTC offset, e.g. +03:00
-	Username        string // current OS user
-	HomeDir         string // current user's home directory
-	Hostname        string // machine hostname
-	WorkspaceRoot   string // cwd at startup
-	DiskFreeHuman   string // free space on the workspace filesystem, humanized
-	MemoryTotalHuman string // total physical memory, humanized
-	MemoryAvailHuman string // currently available memory, humanized (for staleness)
-	ExecSandbox     string // sandbox mode for system_exec: "paths", "bubblewrap", "off"
-	Tools           []ToolInfo // available toolchains (versioned)
+	OS               string     // runtime.GOOS: linux, darwin, windows
+	Architecture     string     // runtime.GOARCH: amd64, arm64, ...
+	KernelVersion    string     // syscall.Uname().Release (Linux)
+	DistroID         string     // /etc/os-release ID: arch, ubuntu, debian
+	DistroVersion    string     // /etc/os-release VERSION_ID (e.g. "24.04")
+	DistroCodename   string     // /etc/os-release VERSION_CODENAME (when present)
+	DistroPretty     string     // /etc/os-release PRETTY_NAME (e.g. "Arch Linux")
+	PackageManager   string     // resolved: pacman, apt, dnf, zypper, apk, brew, ...
+	Shell            string     // basename($SHELL): zsh, bash, fish
+	Locale           string     // $LC_ALL or $LANG, e.g. en_US.UTF-8
+	Timezone         string     // time.Now().Zone() name, e.g. Asia/Damascus
+	TZOffset         string     // current UTC offset, e.g. +03:00
+	Username         string     // current OS user
+	HomeDir          string     // current user's home directory
+	Hostname         string     // machine hostname
+	WorkspaceRoot    string     // cwd at startup
+	DiskFreeHuman    string     // free space on the workspace filesystem, humanized
+	MemoryTotalHuman string     // total physical memory, humanized
+	MemoryAvailHuman string     // currently available memory, humanized (for staleness)
+	ExecSandbox      string     // sandbox mode for system_exec: "paths", "bubblewrap", "off"
+	Tools            []ToolInfo // available toolchains (versioned)
 }
 
 // pkgManagerCandidates is the PATH-availability probe order for package
@@ -109,7 +109,7 @@ var distroPkgManagers = map[string]string{
 	"opensuse": "zypper", "opensuse-leap": "zypper",
 	"opensuse-tumbleweed": "zypper", "sles": "zypper",
 	"alpine": "apk",
-	"nixos": "nix-env",
+	"nixos":  "nix-env",
 	"gentoo": "emerge", "exherbo": "paludis", "void": "xbps",
 }
 
@@ -184,11 +184,17 @@ func DetectSystemInfo(cwd string, log LogFunc) *SystemInfo {
 	return info
 }
 
+// findExecutableFn is the probe seam behind detectPackageManager. Tests swap
+// it because findExecutable also stat()s common sbin/bin locations — a host
+// with a real package manager installed (CI runners ship apt-get) would win
+// the fixed-order candidate walk regardless of PATH.
+var findExecutableFn = findExecutable
+
 // detectPackageManager resolves the default package manager: first by PATH
 // availability (handles hybrids and non-default installs), then by distro ID.
 func detectPackageManager(distroID string) string {
 	for _, name := range pkgManagerCandidates {
-		if findExecutable(name) != "" {
+		if findExecutableFn(name) != "" {
 			return name
 		}
 	}

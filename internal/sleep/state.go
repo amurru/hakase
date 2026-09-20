@@ -29,13 +29,13 @@ type SleepState struct {
 
 // NightRecord is one cycle run. Outcome: staged | empty | aborted.
 type NightRecord struct {
-	StartedAt   time.Time          `json:"started_at"`
-	Outcome     string             `json:"outcome"`
-	StagingDir  string             `json:"staging_dir,omitempty"`
-	Sessions    int                `json:"sessions,omitempty"`
-	Tasks       int                `json:"tasks,omitempty"`
-	Tokens      int                `json:"tokens,omitempty"`
-	AbortReason string             `json:"abort_reason,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	Outcome     string    `json:"outcome"`
+	StagingDir  string    `json:"staging_dir,omitempty"`
+	Sessions    int       `json:"sessions,omitempty"`
+	Tasks       int       `json:"tasks,omitempty"`
+	Tokens      int       `json:"tokens,omitempty"`
+	AbortReason string    `json:"abort_reason,omitempty"`
 	// Groups records per-skill epoch outcomes (plan Phase 3, SL-031): the
 	// slow-update trend compare reads this history; older state files
 	// without groups still validate.
@@ -45,12 +45,12 @@ type NightRecord struct {
 // NightGroupRecord is one skill group's outcome within a night: the gate
 // scores the slow-update compare tracks longitudinally.
 type NightGroupRecord struct {
-	SkillName       string    `json:"skill_name"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	BaselineScore   float64   `json:"baseline_score"`
-	CandidateScore  float64   `json:"candidate_score"`
-	Accepted        bool      `json:"accepted"`
-	Consolidated    bool      `json:"consolidated"`
+	SkillName      string    `json:"skill_name"`
+	StartedAt      time.Time `json:"started_at,omitempty"`
+	BaselineScore  float64   `json:"baseline_score"`
+	CandidateScore float64   `json:"candidate_score"`
+	Accepted       bool      `json:"accepted"`
+	Consolidated   bool      `json:"consolidated"`
 }
 
 // DefaultStatePath is the project-local state file (plan: .hakase/sleep-state.json).

@@ -49,8 +49,8 @@ type Deps struct {
 
 	// Knowledge enrichment / query expansion callbacks (model-backed).
 	EnrichKnowledgeFn func(ctx context.Context, prompt string) (string, error)
-	ExpandQueryFn      func(ctx context.Context, query string) ([]string, error)
-	EvolveMutateFn     func(ctx context.Context, prompt string) (string, error)
+	ExpandQueryFn     func(ctx context.Context, query string) ([]string, error)
+	EvolveMutateFn    func(ctx context.Context, prompt string) (string, error)
 
 	// --- Bridge factories for root functions (tasks 8-10 will eliminate these) ---
 

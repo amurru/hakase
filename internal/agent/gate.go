@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/sandbox"
+	"amurru/hakase/internal/util"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -138,8 +138,8 @@ func classifyRisk(argv []string) CommandRisk {
 		"halt": true, "init": true, "mount": true, "umount": true,
 		"chroot": true, "mkswap": true, "swapon": true, "swapoff": true,
 		"blkdiscard": true,
-		"del": true, "rd": true,
-		"mkfs.ext2":  true, "mkfs.ext3": true, "mkfs.ext4": true,
+		"del":        true, "rd": true,
+		"mkfs.ext2": true, "mkfs.ext3": true, "mkfs.ext4": true,
 		"mkfs.xfs": true, "mkfs.btrfs": true, "mkfs.vfat": true,
 		"mkfs.fat": true, "mkfs.ntfs": true, "mkfs.exfat": true,
 	}
