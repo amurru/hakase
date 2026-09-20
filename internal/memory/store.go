@@ -83,23 +83,32 @@ func (s *Store) Get() State {
 		// File gone (deleted underneath us): fall back to the cache.
 		return cloneState(s.cache)
 	} else if fi.ModTime() != s.mtime || fi.Size() != s.size {
-		if st, err := loadFile(s.path); err == nil {
-			s.cache = st
-			s.mtime, s.size = fi.ModTime(), fi.Size()
-		}
+		// The slow path reads (and, on a corrupt file, quarantines), so it
+		// must hold the same flock Update holds: an unlocked quarantine
+		// could otherwise race a concurrent writer and rename away a
+		// freshly-written valid store. The fast path above only touches the
+		// in-memory cache and stays lock-free.
+		_ = s.withFileLock(func() error {
+			fi, err := os.Stat(s.path)
+			if err != nil || (fi.ModTime() == s.mtime && fi.Size() == s.size) {
+				return nil // gone or already current: keep the cache
+			}
+			if st, err := loadFile(s.path); err == nil {
+				s.cache = st
+				s.mtime, s.size = fi.ModTime(), fi.Size()
+			}
+			return nil
+		})
 	}
 	return cloneState(s.cache)
 }
 
-// Update applies fn to the on-disk state under an exclusive flock held
-// across the whole load-mutate-save transaction, so concurrent writers (the
-// agent runtime, the CLI, the web panel) cannot interleave and overwrite
-// each other's notes. fn may reject the mutation by returning an error, in
-// which case nothing is written.
-func (s *Store) Update(fn func(*State) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// withFileLock runs fn while holding the store's cross-process exclusive
+// flock, creating the parent dir and lock file as needed. Callers must not
+// nest it (a second open file description in the same process would block
+// on its own lock); loadFile and writeFileAtomic are deliberately lock-free
+// because every caller holds the lock by the time it reaches them.
+func (s *Store) withFileLock(fn func() error) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -118,22 +127,54 @@ func (s *Store) Update(fn func(*State) error) error {
 		return err
 	}
 	defer util.FlockUnlock(lf)
+	return fn()
+}
 
+// reloadLocked re-reads the on-disk state into the cache. It must be called
+// with the flock held (see withFileLock).
+func (s *Store) reloadLocked() error {
+	fi, err := os.Stat(s.path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	st, err := loadFile(s.path)
 	if err != nil {
 		return err
 	}
-	if err := fn(st); err != nil {
-		return err
-	}
-	if err := writeFileAtomic(s.path, st); err != nil {
-		return err
-	}
 	s.cache = st
-	if fi, err := os.Stat(s.path); err == nil {
+	if fi != nil {
 		s.mtime, s.size = fi.ModTime(), fi.Size()
+	} else {
+		s.mtime, s.size = time.Time{}, 0
 	}
 	return nil
+}
+
+// Update applies fn to the on-disk state under an exclusive flock held
+// across the whole load-mutate-save transaction, so concurrent writers (the
+// agent runtime, the CLI, the web panel) cannot interleave and overwrite
+// each other's notes. fn may reject the mutation by returning an error, in
+// which case nothing is written.
+func (s *Store) Update(fn func(*State) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.withFileLock(func() error {
+		st, err := loadFile(s.path)
+		if err != nil {
+			return err
+		}
+		if err := fn(st); err != nil {
+			return err
+		}
+		if err := writeFileAtomic(s.path, st); err != nil {
+			return err
+		}
+		s.cache = st
+		if fi, err := os.Stat(s.path); err == nil {
+			s.mtime, s.size = fi.ModTime(), fi.Size()
+		}
+		return nil
+	})
 }
 
 // Add validates and stamps a new note, dedupes an exact prior note (same
@@ -239,17 +280,12 @@ func (s *Store) Touch(id, category, content string) (Note, error) {
 	return note, nil
 }
 
-// reload unconditionally (re)loads the on-disk state into the cache.
+// reload unconditionally (re)loads the on-disk state into the cache. The
+// read (and, on a corrupt file, the quarantine rename) happens under the
+// same flock Update holds, so it can never race a concurrent write into
+// quarantining a freshly-written valid store.
 func (s *Store) reload() error {
-	st, err := loadFile(s.path)
-	if err != nil {
-		return err
-	}
-	s.cache = st
-	if fi, err := os.Stat(s.path); err == nil {
-		s.mtime, s.size = fi.ModTime(), fi.Size()
-	}
-	return nil
+	return s.withFileLock(s.reloadLocked)
 }
 
 func loadFile(path string) (*State, error) {

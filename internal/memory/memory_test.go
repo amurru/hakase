@@ -393,3 +393,51 @@ func TestOpenDefaultFailsWithoutHome(t *testing.T) {
 		t.Fatalf("expected nil store on failure")
 	}
 }
+
+func TestGetReloadWaitsForCrossProcessFlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.Add("user", "seed note", "", 0); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Another "process" holds the flock and swaps the file underneath us
+	// (its in-progress transaction wrote a new store).
+	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer lf.Close()
+	if err := util.FlockExclusive(lf); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // make sure the mtime moves past s.mtime
+	if err := os.WriteFile(path, []byte(`{"version":1,"notes":[{"id":"mem_ext1","category":"user","content":"written by the other process","created_at":"2026-09-20T00:00:00Z","updated_at":"2026-09-20T00:00:00Z"}]}`), 0o600); err != nil {
+		t.Fatalf("external write: %v", err)
+	}
+
+	done := make(chan State, 1)
+	go func() { done <- s.Get() }()
+	// Get must detect the mtime/size change and block on the flock through
+	// its reload (an unlocked reload could quarantine a valid file that a
+	// concurrent Update just installed).
+	select {
+	case st := <-done:
+		t.Fatalf("Get reload ran while another holder owned the flock (%d notes)", len(st.Notes))
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := util.FlockUnlock(lf); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	select {
+	case st := <-done:
+		if len(st.Notes) != 1 || st.Notes[0].Content != "written by the other process" {
+			t.Fatalf("Get did not see the externally written note: %+v", st.Notes)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Get did not complete after the flock was released")
+	}
+}
