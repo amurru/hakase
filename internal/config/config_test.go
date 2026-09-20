@@ -364,8 +364,12 @@ func TestConfigExampleFileValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMCPRegistry(../../config.json.example): %v", err)
 	}
-	if len(reg.Servers) != 3 {
-		t.Fatalf("expected 3 MCP servers (lightpanda, github, remote), got %d", len(reg.Servers))
+	if len(reg.Servers) != 4 {
+		t.Fatalf("expected 4 MCP servers (lightpanda, github, remote, oauth-remote), got %d", len(reg.Servers))
+	}
+	oauthSrv, ok := reg.Servers["oauth-remote"]
+	if !ok || oauthSrv.OAuth == nil || oauthSrv.OAuth.ClientIDURL == "" {
+		t.Fatalf("oauth-remote server wrong: %+v", oauthSrv)
 	}
 	lp, ok := reg.Servers["lightpanda"]
 	if !ok || lp.Type != "http" || lp.URL != "http://localhost:9223/mcp" {

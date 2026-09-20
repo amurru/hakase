@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -414,5 +415,57 @@ func TestSanitizeMCPServerName(t *testing.T) {
 		if got != tc.out {
 			t.Errorf("SanitizeMCPServerName(%q) = %q, want %q", tc.in, got, tc.out)
 		}
+	}
+}
+
+func TestMCPOAuthValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		oauth   MCPOAuthConfig
+		wantErr bool
+	}{
+		{"empty", MCPOAuthConfig{}, true},
+		{"cimd", MCPOAuthConfig{ClientIDURL: "https://hakase.example.com/.well-known/oauth-client.json"}, false},
+		{"cimd root refused", MCPOAuthConfig{ClientIDURL: "https://hakase.example.com/"}, true},
+		{"cimd http refused", MCPOAuthConfig{ClientIDURL: "http://hakase.example.com/client.json"}, true},
+		{"preregistered", MCPOAuthConfig{ClientID: "abc"}, false},
+		{"preregistered with secret", MCPOAuthConfig{ClientID: "abc", ClientSecret: "s3cr3t"}, false},
+		{"secret without id", MCPOAuthConfig{ClientSecret: "s3cr3t"}, true},
+		{"bad redirect", MCPOAuthConfig{ClientID: "abc", RedirectURL: "ftp://x/cb"}, true},
+	}
+	for _, tc := range cases {
+		err := tc.oauth.Validate()
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: Validate() = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+func TestMCPServerConfigOAuthWiredThroughValidate(t *testing.T) {
+	srv := &MCPServerConfig{Type: "http", URL: "https://mcp.example.com/mcp", OAuth: &MCPOAuthConfig{}}
+	if err := srv.Validate(); err == nil {
+		t.Error("empty oauth block must fail server validation")
+	}
+	srv.OAuth = &MCPOAuthConfig{ClientIDURL: "https://h.example.com/client.json"}
+	if err := srv.Validate(); err != nil {
+		t.Errorf("valid oauth rejected: %v", err)
+	}
+}
+
+func TestMCPServerConfigOAuthJSONRoundTrip(t *testing.T) {
+	in := `{"type":"http","url":"https://mcp.example.com/mcp","oauth":{"client_id":"abc","client_secret":"s","scopes":["mcp:read"]}}`
+	var srv MCPServerConfig
+	if err := json.Unmarshal([]byte(in), &srv); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if srv.OAuth == nil || srv.OAuth.ClientID != "abc" || srv.OAuth.ClientSecret != "s" || len(srv.OAuth.Scopes) != 1 {
+		t.Fatalf("round trip = %+v", srv.OAuth)
+	}
+	out, err := json.Marshal(srv.OAuth)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"client_id":"abc"`) {
+		t.Fatalf("marshaled = %s", out)
 	}
 }
