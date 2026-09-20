@@ -217,6 +217,83 @@ type Config struct {
 	// invoked (`hakase sleep run`) or scheduled via `hakase sleep schedule`.
 	// See SleepConfig for the per-field meaning.
 	Sleep SleepConfig `json:"sleep,omitempty"`
+	// Memory tunes agent-written auto-memory (docs/auto-memory/spec.md):
+	// typed notes the agent saves via the remember/forget_memory tools,
+	// persisted at ~/.hakase/memory/notes.json and injected at session
+	// start. On by default; enabled:false removes the tools and the
+	// session-start injection. See MemoryConfig for the per-field meaning.
+	Memory MemoryConfig `json:"memory,omitempty"`
+}
+
+// Memory default constants. The block caps keep prompts lean; the note cap
+// bounds the store and is enforced with an actionable error (never silent
+// eviction).
+const (
+	DefaultMemoryMaxPromptChars = 4000
+	DefaultMemoryMaxNotes       = 200
+)
+
+// MemoryConfig tunes agent-written auto-memory.
+type MemoryConfig struct {
+	// Enabled tri-state: nil (default) = on; an explicit false removes the
+	// remember/forget_memory tools and the session-start injection. The
+	// pointer keeps "absent" distinguishable from "false" (system_env
+	// pattern).
+	Enabled *bool `json:"enabled,omitempty"`
+	// MaxPromptChars caps the injected session-start memory block (the
+	// truncation notice may exceed it by ~130 chars). Default 4000.
+	MaxPromptChars int `json:"max_prompt_chars,omitempty"`
+	// MaxNotes bounds the store; remember refuses to add beyond it and
+	// names forget_memory as the remedy. Default 200.
+	MaxNotes int `json:"max_notes,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after loading config.
+// Explicitly negative values are NOT defaulted here - Validate rejects them
+// so a mistyped config fails loudly instead of silently reverting.
+func (c *MemoryConfig) ApplyDefaults() {
+	if c.MaxPromptChars == 0 {
+		c.MaxPromptChars = DefaultMemoryMaxPromptChars
+	}
+	if c.MaxNotes == 0 {
+		c.MaxNotes = DefaultMemoryMaxNotes
+	}
+}
+
+// Validate checks MemoryConfig for sane values.
+func (c *MemoryConfig) Validate() error {
+	if c.MaxPromptChars < 0 {
+		return fmt.Errorf("invalid memory.max_prompt_chars %d: must be >= 0", c.MaxPromptChars)
+	}
+	if c.MaxNotes < 0 {
+		return fmt.Errorf("invalid memory.max_notes %d: must be >= 0", c.MaxNotes)
+	}
+	return nil
+}
+
+// MemoryEnabled reports whether agent-written auto-memory is on: only an
+// explicit enabled=false disables it.
+func MemoryEnabled(c *Config) bool {
+	if c == nil || c.Memory.Enabled == nil {
+		return true
+	}
+	return *c.Memory.Enabled
+}
+
+// MemoryMaxPromptChars returns the effective injected-block cap.
+func MemoryMaxPromptChars(c *Config) int {
+	if c == nil || c.Memory.MaxPromptChars <= 0 {
+		return DefaultMemoryMaxPromptChars
+	}
+	return c.Memory.MaxPromptChars
+}
+
+// MemoryMaxNotes returns the effective store-size cap.
+func MemoryMaxNotes(c *Config) int {
+	if c == nil || c.Memory.MaxNotes <= 0 {
+		return DefaultMemoryMaxNotes
+	}
+	return c.Memory.MaxNotes
 }
 
 // SleepConfig tunes one SkillOpt-Sleep night. Defaults (documented per
@@ -663,7 +740,10 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_SIDEKICK_BASE_URL") != "" ||
 		os.Getenv("HAKASE_SIDEKICK_API_KEY") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_ENABLED") != "" ||
-		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != ""
+		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != "" ||
+		os.Getenv("HAKASE_MEMORY_ENABLED") != "" ||
+		os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS") != "" ||
+		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -834,6 +914,26 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Channels.ApplyDefaults()
 	if err := cfg.Channels.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Memory env overrides (mirrors the sidekick pattern).
+	if v := os.Getenv("HAKASE_MEMORY_ENABLED"); v != "" {
+		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		cfg.Memory.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Memory.MaxPromptChars = n
+		}
+	}
+	if v := os.Getenv("HAKASE_MEMORY_MAX_NOTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Memory.MaxNotes = n
+		}
+	}
+	cfg.Memory.ApplyDefaults()
+	if err := cfg.Memory.Validate(); err != nil {
 		return nil, err
 	}
 

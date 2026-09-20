@@ -32,6 +32,16 @@ type HistoryBuilder struct {
 	pending     *util.PendingQueue      // mid-run steering queue (may be nil)
 	sidekick    *util.SidekickNoteQueue // sidekick advisory notes (may be nil)
 
+	// Auto-memory (docs/auto-memory/spec.md D5): memoryProvider renders the
+	// session-start memory block ("" = nothing to inject); memorySeen tracks
+	// the sessions already served so the block is injected once per session,
+	// not re-paid on every model call of a run. Both are guarded by
+	// memoryMu. The provider is wired in SetupRunner and stays nil when
+	// memory is disabled.
+	memoryProvider func(ctx agent.Context) string
+	memorySeen     map[string]bool
+	memoryMu       sync.Mutex
+
 	// Token estimates of the rendered project-context block and the git
 	// workspace snapshot that are folded into the system prompt
 	// (setupRunner). fitToBudget reserves them so large AGENTS.md files or
@@ -75,6 +85,47 @@ func (h *HistoryBuilder) SetModelInfo(info *interfaces.ModelInfo) {
 	h.modelInfoMu.Lock()
 	defer h.modelInfoMu.Unlock()
 	h.modelInfo = info
+}
+
+// SetMemoryProvider attaches the auto-memory block renderer (SetupRunner).
+// The provider is called at most once per session; a nil provider (memory
+// disabled) disables injection entirely.
+func (h *HistoryBuilder) SetMemoryProvider(fn func(ctx agent.Context) string) {
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	h.memoryProvider = fn
+	if h.memorySeen == nil {
+		h.memorySeen = make(map[string]bool)
+	}
+}
+
+// MemoryProvider returns the attached auto-memory renderer (nil when memory
+// is disabled or not yet wired).
+func (h *HistoryBuilder) MemoryProvider() func(ctx agent.Context) string {
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	return h.memoryProvider
+}
+
+// memoryBlockFor returns the session-start memory block for ctx, or "" when
+// there is nothing to inject (provider nil/empty, or session already served).
+func (h *HistoryBuilder) memoryBlockFor(sessionID string, ctx agent.Context) string {
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	if h.memoryProvider == nil || h.memorySeen[sessionID] {
+		return ""
+	}
+	return h.memoryProvider(ctx)
+}
+
+// markMemorySeen records that sessionID has received its memory block.
+func (h *HistoryBuilder) markMemorySeen(sessionID string) {
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	if h.memorySeen == nil {
+		h.memorySeen = make(map[string]bool)
+	}
+	h.memorySeen[sessionID] = true
 }
 
 // SetLogFunc installs a logger (usually the TUI log pane) for compaction
@@ -121,6 +172,23 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 			return nil, nil
 		}
 	}
+
+	// Session-start auto-memory: render once per session and splice at the
+	// very head of the request via defer, so it fires on every return path
+	// below - including brand-new sessions with no persisted history, where
+	// the history prepend never runs. An empty block (no notes yet, or the
+	// store read failed) marks nothing and stays eligible for a later call.
+	var memoryContent *genai.Content
+	if block := h.memoryBlockFor(session.ID, ctx); block != "" {
+		memoryContent = genai.NewContentFromText(block, genai.RoleUser)
+	}
+	defer func() {
+		if memoryContent != nil {
+			h.markMemorySeen(session.ID)
+			req.Contents = append([]*genai.Content{memoryContent}, req.Contents...)
+		}
+	}()
+
 	if len(session.Messages) == 0 {
 		return nil, nil
 	}

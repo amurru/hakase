@@ -2398,6 +2398,15 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}
 	}
 
+	// Agent-written auto-memory (docs/auto-memory/spec.md): orchestrator-only
+	// tools plus the session-start injection provider. When disabled, both
+	// are absent entirely so the model is never told about tools it lacks.
+	if memoryTools, err := wireMemory(cfg, historyBuilder); err != nil {
+		return nil, err
+	} else if len(memoryTools) > 0 {
+		orchestratorTools = append(orchestratorTools, memoryTools...)
+	}
+
 	// Orchestrator toolsets: MCP manager plus the web search fallback when
 	// enabled. A nil manager element is omitted (ADK would panic).
 	orchestratorToolsets := make([]tool.Toolset, 0, 2)
