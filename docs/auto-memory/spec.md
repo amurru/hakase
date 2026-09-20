@@ -59,6 +59,9 @@ by the tool with the allowed list in the error.
 
 **D5 — Injection is a once-per-session user-role content block via
 `HistoryBuilder.BeforeModelCallback`, not a system-prompt block.**
+The once-per-session gate is an atomic reserve-before-render step (with
+rollback when the block renders empty), so overlapping model calls for one
+session — concurrent runs share the builder — inject exactly once.
 SetupRunner renders system-prompt blocks once per *process* (the web/serve
 process keeps one runner across many sessions), so a prompt block would go
 stale the moment session 2 starts. The callback fires per model call with
@@ -109,12 +112,20 @@ contract, and config already accommodate them. Recorded in the issue.
 - `DefaultPath()` = `<HakaseHome>/memory/notes.json`; `OpenDefault()` /
   `Open(path)` open per use — deliberately no process-wide singleton, so
   `$HAKASE_HOME` stays authoritative and tests stay deterministic.
+  `OpenDefault` fails closed when no home directory can be determined
+  (the relative-path fallback would scatter memory across working
+  directories).
 - `Store`: `Get() (State, error)` (reloads when another process wrote),
   `Update(fn func(*State) error) error` (reload → mutate → save → refresh
   cache), `Add(note) (final Note, err)` (dedupe D3, content trim/cap,
   category validation), `Remove(id) (bool, error)`.
-- Save: `MkdirAll 0700`, flock `<path>.lock` (`util.FlockExclusive`),
-  write `path.tmp` 0600, rename. Corrupt JSON on load → quarantine (D1).
+- Save: the exclusive flock (`<path>.lock`, `util.FlockExclusive`) is held
+  across the whole load-mutate-save transaction, so concurrent writers
+  cannot interleave and last-save-wins over each other's notes; the store
+  dir is `MkdirAll 0700` + `Chmod 0700` and the tmp file is created and
+  re-chmodded 0600 before the rename (mode arguments only apply at
+  creation — a pre-existing permissive tmp must not leak into the renamed
+  store). Corrupt JSON on load → quarantine (D1).
 - `SelectForProject(state, root) []Note` — D2 filter.
 - `RenderBlock(notes, maxChars) string` — D5/D6 format, `""` when no notes.
 

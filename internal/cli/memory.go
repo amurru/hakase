@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -107,6 +108,16 @@ func runMemoryAdd(store *memory.Store, args []string) int {
 		*projectPath = ""
 	} else if *projectPath == "" {
 		*projectPath = cliProjectRoot()
+	} else {
+		// Match the agent's write path: absolute, resolved to the enclosing
+		// project root, so the note is visible to session injection (which
+		// compares against absolute roots).
+		abs, err := filepath.Abs(*projectPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hakase: cannot resolve --project %q: %v\n", *projectPath, err)
+			return 2
+		}
+		*projectPath = project.FindRoot(abs)
 	}
 	note, err := store.Add(*category, content, *projectPath, 0)
 	if err != nil {

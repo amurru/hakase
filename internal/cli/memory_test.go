@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"amurru/hakase/internal/memory"
+	"amurru/hakase/internal/project"
 )
 
 // TestMemoryCLI exercises add/list/forget against a redirected HAKASE_HOME
@@ -62,6 +63,36 @@ func TestMemoryCLI(t *testing.T) {
 	}
 	if got := store.Get(); len(got.Notes) != 0 {
 		t.Fatalf("store not empty after forget: %+v", got.Notes)
+	}
+
+	// An explicit --project is normalized to the absolute enclosing project
+	// root before storing, so injection (which compares absolute roots)
+	// actually sees the note. "./sub/repo" has no .git of its own, and the
+	// walk finds the hakase repo root above the package cwd.
+	addedRel := captureStdout(t, func() {
+		if rc := RunMemoryCLI([]string{"add", "--category", "project", "--project", "./sub/repo", "scoped note"}); rc != 0 {
+			t.Fatalf("add --project rc = %d", rc)
+		}
+	})
+	if !strings.Contains(addedRel, "Saved mem_") {
+		t.Fatalf("add --project output = %q", addedRel)
+	}
+	var scoped *memory.Note
+	for i := range store.Get().Notes {
+		if store.Get().Notes[i].Content == "scoped note" {
+			n := store.Get().Notes[i]
+			scoped = &n
+		}
+	}
+	if scoped == nil {
+		t.Fatalf("scoped note not stored")
+	}
+	abs, err := filepath.Abs("./sub/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := project.FindRoot(abs); scoped.Project != want || scoped.Project == "./sub/repo" {
+		t.Fatalf("project not normalized: got %q, want %q", scoped.Project, want)
 	}
 
 	// Usage errors: unknown subcommand and missing args exit 2.

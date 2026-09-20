@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,8 +61,13 @@ func Open(path string) (*Store, error) {
 // OpenDefault opens the store at DefaultPath(). Callers open per use (the
 // file is small and Update re-reads from disk anyway); there is deliberately
 // no process-wide singleton so $HAKASE_HOME changes and tests stay
-// deterministic.
+// deterministic. It fails closed when no home directory can be determined:
+// the relative FileName fallback would scatter memory across working
+// directories.
 func OpenDefault() (*Store, error) {
+	if config.HakaseHome() == "" {
+		return nil, errors.New("memory: no home directory available (set HAKASE_HOME or HOME)")
+	}
 	return Open(DefaultPath())
 }
 
@@ -85,12 +91,33 @@ func (s *Store) Get() State {
 	return cloneState(s.cache)
 }
 
-// Update applies fn to the on-disk state under an exclusive flock and
-// refreshes the cache. fn may reject the mutation by returning an error, in
+// Update applies fn to the on-disk state under an exclusive flock held
+// across the whole load-mutate-save transaction, so concurrent writers (the
+// agent runtime, the CLI, the web panel) cannot interleave and overwrite
+// each other's notes. fn may reject the mutation by returning an error, in
 // which case nothing is written.
 func (s *Store) Update(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// MkdirAll leaves an existing too-permissive directory untouched;
+	// tighten it so notes.json is never resurrected world-readable.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	lf, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	if err := util.FlockExclusive(lf); err != nil {
+		return err
+	}
+	defer util.FlockUnlock(lf)
 
 	st, err := loadFile(s.path)
 	if err != nil {
@@ -99,7 +126,7 @@ func (s *Store) Update(fn func(*State) error) error {
 	if err := fn(st); err != nil {
 		return err
 	}
-	if err := saveFile(s.path, st); err != nil {
+	if err := writeFileAtomic(s.path, st); err != nil {
 		return err
 	}
 	s.cache = st
@@ -248,34 +275,30 @@ func loadFile(path string) (*State, error) {
 	return &st, nil
 }
 
-func saveFile(path string, st *State) error {
+// writeFileAtomic persists st as path: tmp + rename, so POSIX readers never
+// observe a torn file. The tmp file is created 0600 and re-chmodded before
+// the rename — os.WriteFile-style mode arguments only apply at creation, so
+// a pre-existing permissive tmp would otherwise leak its mode into the
+// renamed store.
+func writeFileAtomic(path string, st *State) error {
 	st.Version = Version
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	lockFile := path + ".lock"
-
-	// The notes dir may not exist yet on first write; the lock file needs it
-	// before the open below.
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-
-	// Exclusive flock for cross-process safety (the server, the CLI, and the
-	// web panel may all write), mirroring channels.json.
-	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	defer lf.Close()
-	if err := util.FlockExclusive(lf); err != nil {
+	if _, err := f.Write(data); err != nil {
+		f.Close()
 		return err
 	}
-	defer util.FlockUnlock(lf)
-
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

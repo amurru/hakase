@@ -2,7 +2,10 @@ package context
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"amurru/hakase/internal/interfaces"
 	sesspkg "amurru/hakase/internal/session"
@@ -135,5 +138,68 @@ func TestMemoryPerSessionIsolation(t *testing.T) {
 	runMemoryCallback(t, b, "task_mem_A")
 	if calls != 2 {
 		t.Fatalf("provider called %d times, want 2 (once per session)", calls)
+	}
+}
+
+func TestMemoryReservationAtomicUnderConcurrency(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	newMemorySession(t, svc, "task_mem_race", "race")
+
+	calls := 0
+	var callMu sync.Mutex
+	b.SetMemoryProvider(func(ctx agent.Context) string {
+		callMu.Lock()
+		calls++
+		callMu.Unlock()
+		time.Sleep(20 * time.Millisecond) // widen the check-then-act window
+		return "AUTO MEMORY BLOCK"
+	})
+
+	// Concurrent model calls for the same session (e.g. PostMessage stacking
+	// runs): the reservation must make the injection exactly-once, not
+	// check-then-mark per callback.
+	runOne := func() (int, error) {
+		req := &model.LLMRequest{
+			Contents: []*genai.Content{genai.NewContentFromText("current", genai.RoleUser)},
+		}
+		cctx := &testCallbackContext{
+			userContent: genai.NewContentFromText("current", genai.RoleUser),
+			sessionID:   "task_mem_race",
+		}
+		if _, err := b.BeforeModelCallback(cctx, req); err != nil {
+			return 0, err
+		}
+		n := 0
+		for _, c := range req.Contents {
+			if len(c.Parts) > 0 && strings.Contains(c.Parts[0].Text, "AUTO MEMORY BLOCK") {
+				n++
+			}
+		}
+		return n, nil
+	}
+
+	const callbacks = 8
+	var wg sync.WaitGroup
+	var injected int64
+	errs := make(chan error, callbacks)
+	for i := 0; i < callbacks; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := runOne()
+			if err != nil {
+				errs <- err
+				return
+			}
+			atomic.AddInt64(&injected, int64(n))
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("callback: %v", err)
+	}
+	if got := atomic.LoadInt64(&injected); got != 1 {
+		t.Fatalf("block injected %d times across %d concurrent callbacks, want exactly 1", got, callbacks)
 	}
 }
