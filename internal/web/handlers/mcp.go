@@ -36,7 +36,7 @@ type MCPServerRequest struct {
 	Disabled  bool                         `json:"disabled"`
 	Tools     *config.MCPServerToolsConfig `json:"tools"`
 	TimeoutMs int                          `json:"timeout_ms"`
-	OAuth     map[string]string            `json:"oauth"`
+	OAuth     *config.MCPOAuthConfig       `json:"oauth"`
 }
 
 // MCPRouter is the minimum interface needed by RegisterMCPRoutes.
@@ -109,12 +109,17 @@ func (api *MCPAPI) ListServers(w http.ResponseWriter, r *http.Request) {
 			Error:     s.Error,
 		}
 		if cfg, ok := mg.ServerConfig(s.Name); ok {
-			// Env and Headers are write-only: they must never be returned
-			// via the read API. Strip them to empty maps so the caller
-			// sees the key is configurable but never receives values.
+			// Env, Headers, and OAuth secrets are write-only: they must
+			// never be returned via the read API. Strip them so the caller
+			// sees the fields are configurable but never receives values.
 			safeCfg := *cfg
 			safeCfg.Env = map[string]string{}
 			safeCfg.Headers = map[string]string{}
+			if safeCfg.OAuth != nil {
+				oauthCopy := *safeCfg.OAuth
+				oauthCopy.ClientSecret = ""
+				safeCfg.OAuth = &oauthCopy
+			}
 			dto.Config = &safeCfg
 		}
 		dtos = append(dtos, dto)

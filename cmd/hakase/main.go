@@ -243,6 +243,9 @@ func runTUI() {
 	runtime.SetApprovalGate(&m)
 	runtime.SetClarifyGate(&m)
 	runtime.SetEventNotifier(&m)
+	// MCP elicitation prompts (2026-07-28 MRTR) ride the same TUI gates.
+	mcp.SetApprovalGate(&m)
+	mcp.SetClarifyGate(&m)
 
 	// Wire the event notifier into the sidekick after the TUI model
 	// exists. The sidekick is created during SetupRunner before the

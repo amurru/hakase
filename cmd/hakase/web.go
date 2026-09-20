@@ -290,6 +290,12 @@ func runServer(args []string, serveSPA bool) int {
 	runtime.SetApprovalGate(approvalGate)
 	runtime.SetClarifyGate(clarifyGate)
 	runtime.SetEventNotifier(bridge)
+	// MCP elicitation prompts (2026-07-28 MRTR) ride the same gates, so a
+	// remote server's confirm/form request lands in the web UI and Telegram
+	// like any local approval/clarification. Headless processes never install
+	// these and fail closed in internal/mcp.
+	mcp.SetApprovalGate(approvalGate)
+	mcp.SetClarifyGate(clarifyGate)
 
 	// SetupRunner builds the ADK runner.
 	ctx := context.Background()

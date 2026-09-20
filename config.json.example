@@ -31,6 +31,15 @@
         "type": "http",
         "url": "https://mcp.example.com/mcp",
         "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+      },
+      "oauth-remote": {
+        "type": "http",
+        "url": "https://mcp.acme.com/mcp",
+        "oauth": {
+          "client_id_url": "https://hakase.example.com/.well-known/oauth-client.json",
+          "redirect_url": "http://localhost:8931/callback",
+          "scopes": ["mcp:read", "mcp:write"]
+        }
       }
     }
   },

@@ -8,6 +8,19 @@ import (
 	"strings"
 )
 
+// MCPOAuthConfig configures OAuth2 client authorization for one remote MCP
+// server (spec 2026-07-28: CIMD-first, DCR deprecated). Exactly one client
+// identity is required: ClientIDURL (Client ID Metadata Document, preferred)
+// or ClientID (pre-registered client, optional secret). Token material never
+// lives here - tokens persist under ~/.hakase (0600) in the mcp runtime.
+type MCPOAuthConfig struct {
+	ClientIDURL  string   `json:"client_id_url,omitempty"` // CIMD document URL (https, non-root path)
+	RedirectURL  string   `json:"redirect_url,omitempty"`  // default http://localhost:<port>/callback
+	Scopes       []string `json:"scopes,omitempty"`        // extra scopes beyond the server's challenge
+	ClientID     string   `json:"client_id,omitempty"`     // pre-registered client id (fallback)
+	ClientSecret string   `json:"client_secret,omitempty"` // pre-registered secret; requires ClientID
+}
+
 // MCPServerConfig describes one MCP server. Name comes from the map key.
 type MCPServerConfig struct {
 	Type      string                `json:"type,omitempty"`       // "stdio" (default when Command set) | "http"
@@ -18,7 +31,7 @@ type MCPServerConfig struct {
 	Disabled  bool                  `json:"disabled,omitempty"`   // explicit opt-out; default = enabled
 	TimeoutMs int                   `json:"timeout_ms,omitempty"` // http servers: per-request timeout (connect+initialize+tools/list); default 10s
 	Tools     *MCPServerToolsConfig `json:"tools,omitempty"`      // per-server tool filtering
-	OAuth     map[string]string     `json:"oauth,omitempty"`      // reserved (phase 3): remote auth
+	OAuth     *MCPOAuthConfig       `json:"oauth,omitempty"`      // remote auth (CIMD / pre-registered client)
 }
 
 // MCPServerToolsConfig holds per-server tool allow/deny lists.
@@ -74,6 +87,46 @@ func (s *MCPServerConfig) Validate() error {
 	for k := range s.Headers {
 		if k == "" {
 			return fmt.Errorf("header key must be non-empty")
+		}
+	}
+	if s.OAuth != nil {
+		if err := s.OAuth.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate checks an OAuth client block: exactly one identity (CIMD URL or
+// pre-registered client id), secret only alongside a client id, https-only
+// CIMD URL with a non-root path (the go-sdk refuses root CIMD URLs), and
+// http(s) redirect.
+func (o *MCPOAuthConfig) Validate() error {
+	if o.ClientIDURL == "" && o.ClientID == "" {
+		return fmt.Errorf("mcp oauth needs client_id_url (CIMD) or client_id (pre-registered)")
+	}
+	if o.ClientSecret != "" && o.ClientID == "" {
+		return fmt.Errorf("mcp oauth client_secret requires client_id")
+	}
+	if o.ClientIDURL != "" {
+		u, err := url.Parse(o.ClientIDURL)
+		if err != nil {
+			return fmt.Errorf("invalid mcp oauth client_id_url %q: %w", o.ClientIDURL, err)
+		}
+		if u.Scheme != "https" {
+			return fmt.Errorf("invalid mcp oauth client_id_url %q: scheme must be https", o.ClientIDURL)
+		}
+		if u.Path == "" || u.Path == "/" {
+			return fmt.Errorf("invalid mcp oauth client_id_url %q: must point at a metadata document, not the host root", o.ClientIDURL)
+		}
+	}
+	if o.RedirectURL != "" {
+		u, err := url.Parse(o.RedirectURL)
+		if err != nil {
+			return fmt.Errorf("invalid mcp oauth redirect_url %q: %w", o.RedirectURL, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("invalid mcp oauth redirect_url %q: scheme must be http or https", o.RedirectURL)
 		}
 	}
 	return nil

@@ -144,6 +144,15 @@ func (m *MCPServerManager) reload() error {
 	if err != nil {
 		return err
 	}
+	// Drop cached OAuth handlers for servers that vanished or changed shape;
+	// stale token sources would keep authorizing against the old config.
+	oauthFingerprints := map[string]string{}
+	for name, srvCfg := range reg.Servers {
+		if srvCfg.OAuth != nil {
+			oauthFingerprints[name] = srvCfg.OAuth.ClientIDURL + "|" + srvCfg.OAuth.ClientID + "|" + srvCfg.OAuth.RedirectURL
+		}
+	}
+	dropStaleOAuthHandlers(oauthFingerprints)
 	servers := make(map[string]*managedServer, len(reg.Servers))
 	for name, srvCfg := range reg.Servers {
 		ms := &managedServer{name: name, cfg: srvCfg, status: "idle"}
@@ -395,8 +404,17 @@ func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Tools
 		if len(cfg.Headers) > 0 {
 			client.Transport = &headerTransport{headers: config.ExpandEnvMap(cfg.Headers)}
 		}
+		transport := &mcp.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: client}
+		if cfg.OAuth != nil {
+			handler, err := oauthHandlerFor(name, cfg.OAuth, mcpHTTPTimeout(cfg.TimeoutMs))
+			if err != nil {
+				return nil, err
+			}
+			transport.OAuthHandler = handler
+		}
 		return mcptoolset.New(mcptoolset.Config{
-			Transport: &mcp.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: client},
+			Client:    newElicitingClient(name),
+			Transport: transport,
 		})
 	case cfg.Type == "stdio" || len(cfg.Command) > 0:
 		argv := make([]string, 0, len(cfg.Command))
@@ -422,6 +440,7 @@ func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Tools
 		}
 		cmd.Env = buildMCPChildEnv(cfg.Env)
 		return mcptoolset.New(mcptoolset.Config{
+			Client:    newElicitingClient(name),
 			Transport: &mcp.CommandTransport{Command: cmd},
 		})
 	default:

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -558,3 +559,92 @@ func TestMCPServerHTTPTimeoutFastFail(t *testing.T) {
 		t.Fatalf("status after timeout: %+v", st)
 	}
 }
+
+// revisionTestServer starts an httptest MCP server with one tool ("ping")
+// under the given handler options: nil opts = stateful (negotiates down to
+// 2025-11-25), Stateless = 2026-07-28. Returns the server URL.
+func revisionTestServer(t *testing.T, opts *mcp.StreamableHTTPOptions) string {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "revtest", Version: "0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "ping", Description: "revision probe", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "pong"}},
+			}, nil
+		})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, opts)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return ts.URL
+}
+
+// TestMCPServerManagerProtocolRevisions is the T1.2 smoke matrix: the same
+// manager must list tools from a stateful (old-revision) and a stateless
+// (2026-07-28) HTTP server in one Tools() call.
+func TestMCPServerManagerProtocolRevisions(t *testing.T) {
+	mcpTestIsolate(t)
+	oldURL := revisionTestServer(t, nil)
+	newURL := revisionTestServer(t, &mcp.StreamableHTTPOptions{Stateless: true})
+	cfg := &config.Config{MCPServers: config.MCPConfig{Servers: map[string]*config.MCPServerConfig{
+		// TimeoutMs bounds the stateful server's standing SSE stream so
+		// the test server closes promptly at cleanup.
+		"oldrev": {Type: "http", URL: oldURL, TimeoutMs: 250},
+		"newrev": {Type: "http", URL: newURL, TimeoutMs: 250},
+	}}}
+	m, err := NewMCPServerManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+	MCPManager = m
+
+	tools, err := m.Tools(mcpTestCtx{})
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	names := map[string]bool{}
+	for _, tl := range tools {
+		names[tl.Name()] = true
+	}
+	for _, want := range []string{"mcp_oldrev_ping", "mcp_newrev_ping"} {
+		if !names[want] {
+			t.Errorf("missing tool %q, got %v", want, names)
+		}
+	}
+	for _, srv := range []string{"oldrev", "newrev"} {
+		if st, _ := m.ServerStatus(srv); st.Status != "connected" {
+			t.Errorf("server %q status = %+v, want connected", srv, st)
+		}
+	}
+}
+
+// TestHeaderTransportMerges is the T5.1 audit: the static-header
+// RoundTripper must preserve SDK-set routing headers (Mcp-Method, Mcp-Name,
+// MCP-Protocol-Version, Authorization) and only add its own.
+func TestHeaderTransportMerges(t *testing.T) {
+	var got http.Header
+	base := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header.Clone()
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}}, nil
+	})
+	tr := &headerTransport{headers: map[string]string{"X-Static": "1"}, base: base}
+	req, _ := http.NewRequest(http.MethodPost, "http://localhost/mcp", nil)
+	req.Header.Set("Mcp-Method", "tools/call")
+	req.Header.Set("Mcp-Name", "ping")
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set("Authorization", "Bearer t")
+	if _, err := tr.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	for k, want := range map[string]string{
+		"Mcp-Method": "tools/call", "Mcp-Name": "ping",
+		"Mcp-Protocol-Version": "2026-07-28", "Authorization": "Bearer t", "X-Static": "1",
+	} {
+		if got.Get(k) != want {
+			t.Errorf("header %s = %q, want %q", k, got.Get(k), want)
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
