@@ -32,14 +32,6 @@ type LoopGuardConfig struct {
 	MaxTextWithoutTool int `json:"max_text_without_tool,omitempty"`
 }
 
-type EnvOverrideConfig struct {
-	DockerImage   string `json:"docker_image,omitempty"`
-	ModalImage    string `json:"modal_image,omitempty"`
-	EnvType       string `json:"env_type,omitempty"` // "local", "docker", "ssh"
-	CPULimit      int    `json:"cpu_limit,omitempty"`
-	MemoryLimitMB int    `json:"memory_limit_mb,omitempty"`
-}
-
 // ApprovalConfig tunes the interactive approval gate.
 type ApprovalConfig struct {
 	// Mode: "interactive" (default) | "deny" (auto-deny everything) | "allow" (auto-approve everything).
@@ -169,9 +161,6 @@ type Config struct {
 	// ModelVision overrides multimodal detection for the primary model:
 	// "auto" (default), "yes", or "no".
 	ModelVision string `json:"model_vision,omitempty"`
-	// EnvOverrides maps task IDs or agent names to environment
-	// isolation configurations for delegated sub-agents.
-	EnvOverrides map[string]EnvOverrideConfig `json:"env_overrides,omitempty"`
 	// DelegateTimeoutSeconds bounds how long a delegated sub-agent may run
 	// before it is aborted as timed out. 0 uses the default (300s). Prevents
 	// stuck sub-agents from hanging the orchestrator indefinitely.
@@ -710,6 +699,28 @@ func ResolveConfigPath(local string) string {
 	return local
 }
 
+// removedConfigKeys names top-level config.json keys that were deleted from
+// the schema because they promised behavior that was never implemented.
+// LoadConfig refuses them loudly (instead of silently ignoring) so a stale
+// config fails fast with a pointer at the removal.
+var removedConfigKeys = map[string]string{
+	"env_overrides": "the docker/ssh environment isolation it described was parsed but never implemented (no code ever created those environments)",
+}
+
+// rejectRemovedKeys errors when raw config JSON still carries a removed key.
+func rejectRemovedKeys(filePath string, data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil // malformed JSON: let the typed unmarshal below report it
+	}
+	for key, why := range removedConfigKeys {
+		if _, ok := raw[key]; ok {
+			return fmt.Errorf("config: %s was removed (%s); remove the %s block from %s", key, why, key, filePath)
+		}
+	}
+	return nil
+}
+
 // LoadConfig reads the JSON config file and applies HAKASE_* environment
 // overrides on top. Environment variables win over file values. When the file
 // is missing, config can still come entirely from the environment; only when
@@ -720,6 +731,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	data, err := os.ReadFile(filePath)
 	switch {
 	case err == nil:
+		if err := rejectRemovedKeys(filePath, data); err != nil {
+			return nil, err
+		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, err
 		}

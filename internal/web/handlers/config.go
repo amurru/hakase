@@ -122,7 +122,7 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 
 // editableConfigKeys is the allowlist of top-level config.json keys the web UI
 // may edit. Everything else in the file (mcp servers, provider_options,
-// env_overrides, unknown/custom keys) is preserved untouched on save.
+// unknown/custom keys) is preserved untouched on save.
 var editableConfigKeys = []string{
 	"provider",
 	"model_name",

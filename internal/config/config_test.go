@@ -186,6 +186,23 @@ func TestLoadConfigSummaryModel(t *testing.T) {
 	}
 }
 
+// TestLoadConfigRejectsRemovedEnvOverrides verifies that a stale
+// env_overrides block fails load with a pointer at the removal instead of
+// being silently ignored (it promised docker/ssh isolation that never existed).
+func TestLoadConfigRejectsRemovedEnvOverrides(t *testing.T) {
+	path := writeTempConfig(t, fmt.Sprintf(`{
+		"provider": "gemini",
+		"api_key": %q,
+		"env_overrides": {"task_1": {"env_type": "docker", "docker_image": "ubuntu:latest"}}
+	}`, cfgFixtureFileValue))
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig with env_overrides: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "env_overrides was removed") {
+		t.Errorf("LoadConfig error should point at the removal, got: %v", err)
+	}
+}
+
 func TestLoadConfigMissingFile(t *testing.T) {
 	t.Setenv("HAKASE_API_KEY", "")
 	t.Setenv("HAKASE_PROVIDER", "")

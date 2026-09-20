@@ -12,9 +12,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// JWTManager handles JWT token generation and validation.
-// This is a self-contained implementation for the web package.
-// When internal/auth lands (task 15), this can be replaced with auth.JWTManager.
+// JWTManager handles JWT token generation and validation for the web
+// package. This is the single JWT implementation, built on jwt/v5; the former
+// hand-rolled HS256 manager in internal/auth was removed (it had no
+// production callers).
 type JWTManager struct {
 	signingKey []byte
 	issuer     string

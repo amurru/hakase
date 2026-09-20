@@ -30,21 +30,25 @@ import (
 )
 
 func main() {
-	// Intercept web/serve subcommands before CLI dispatch.
-	// These live in package main because handlers/cron.go imports internal/cli,
-	// preventing a shared bootstrap package (import cycle).
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "web":
-			os.Exit(runWeb(os.Args[2:]))
-		case "serve":
-			os.Exit(runServe(os.Args[2:]))
-		}
-		os.Exit(cli.Dispatch(os.Args[1:]))
-	}
+	// Wire the real web/serve/TUI handlers into the dispatcher. They live in
+	// package main (not internal/cli) because their dependencies import
+	// internal/cli back (internal/web/handlers -> internal/cli): registering
+	// from here keeps every subcommand on the uniform Dispatch path with no
+	// import cycle.
+	cli.RegisterCommand("web", "serve the web UI", runWeb)
+	cli.RegisterCommand("serve", "run the API-only server", runServe)
+	cli.RegisterCommand("tui", "launch the interactive terminal UI", runTUICommand)
 
-	// No subcommand -> launch the interactive TUI.
+	// No subcommand falls through to the TUI handler via Dispatch, like
+	// every other subcommand.
+	os.Exit(cli.Dispatch(os.Args[1:]))
+}
+
+// runTUICommand adapts runTUI to the dispatcher handler shape: launching the
+// interactive terminal UI, for both bare `hakase` and `hakase tui`.
+func runTUICommand(args []string) int {
 	runTUI()
+	return 0
 }
 
 func runTUI() {

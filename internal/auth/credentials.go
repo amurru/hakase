@@ -122,3 +122,33 @@ func parsePHCHash(phc string) (salt, hash []byte, err error) {
 
 	return salt, hash, nil
 }
+
+// GenerateOrLoadSecret loads a 32-byte secret from path if it exists,
+// otherwise generates a new random secret, writes it with 0600, and returns
+// it. Used for the web session signing key (the single remaining JWT stack
+// lives in internal/web on top of jwt/v5).
+func GenerateOrLoadSecret(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if len(data) != 32 {
+			return nil, fmt.Errorf("invalid secret file: expected 32 bytes, got %d", len(data))
+		}
+		return data, nil
+	}
+
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read secret file: %w", err)
+	}
+
+	// Generate new 32-byte random secret.
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate secret: %w", err)
+	}
+
+	if err := os.WriteFile(path, secret, 0600); err != nil {
+		return nil, fmt.Errorf("save secret: %w", err)
+	}
+
+	return secret, nil
+}

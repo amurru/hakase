@@ -51,7 +51,10 @@ func currentModelFunc(llm model.LLM) func() model.LLM {
 
 // buildSidekickConfig returns a *config.Config that selects the sidekick's
 // model: each sidekick override (provider/model/base_url/api_key) falls back
-// to the primary config when empty. Used to build a second, independent model
+// to the primary config when empty. The primary's fallback_providers chain is
+// NOT inherited: the sidekick is an independent second opinion, and replaying
+// the primary chain under a swapped provider/model would produce incoherent
+// provider/model pairs. Used to build a second, independent model
 // via the provider factory.
 func buildSidekickConfig(cfg *config.Config) *config.Config {
 	sc := cfg.Sidekick
@@ -68,6 +71,7 @@ func buildSidekickConfig(cfg *config.Config) *config.Config {
 	if sc.APIKey != "" {
 		sk.APIKey = sc.APIKey
 	}
+	sk.FallbackProviders = nil
 	return &sk
 }
 
@@ -1873,6 +1877,14 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 	if err := provider.ValidateConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	// Fallback visibility: ProviderFactory returns a *FallbackProvider
+	// whenever fallback_providers is configured, so every model it creates
+	// fails over per-request. Log the chain once at startup so an outage
+	// that later falls over is attributable, not mysterious.
+	if len(cfg.FallbackProviders) > 0 && log != nil {
+		log(fmt.Sprintf("fallback: primary=%s with %d fallback provider(s) %v",
+			cfg.Provider, len(cfg.FallbackProviders), cfg.FallbackProviders))
 	}
 	modelName := cfg.EffectiveModelName()
 	model, err := provider.CreateModel(ctx, modelName, cfg.APIKey)
