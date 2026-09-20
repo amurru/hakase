@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-19. Living index of planned work. The GitHub issues are
+Last updated: 2026-09-20. Living index of planned work. The GitHub issues are
 the source of truth for status — update this file only when priorities or
 scope change, not when individual boxes tick.
 
@@ -23,14 +23,6 @@ knowledge wiki, three skill systems, and the shipped SkillOpt-Sleep offline
 self-improvement loop. Recent arcs: execution canvas, Telegram threads,
 built-in web search fallback, git tools + project registry, sidekick, media
 generation, SkillOpt-Sleep phases 0–4.
-
-## Tier 0 — Foundation (do first)
-
-| Issue | What | Why now |
-|---|---|---|
-| [#12](https://github.com/amurru/hakase/issues/12) | CI: `go test` + `pnpm test` on push/PR, linux + windows, bwrap installed | ~150 test files currently run nowhere; sandbox tests skip without bwrap |
-| [#13](https://github.com/amurru/hakase/issues/13) | Persistence hardening: atomic + flocked session/task stores, log rotation, readiness health | session saves can tear on crash; TUI + web race on `tasks.json`; unbounded `logs/` |
-| [#15](https://github.com/amurru/hakase/issues/15) | Wire provider fallback chain; remove phantom config + dead stubs | `fallback_providers` is shipped-but-dormant; config promises features that don't exist |
 
 ## Tier 1 — Catch up to the 2026 harness landscape
 
