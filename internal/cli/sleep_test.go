@@ -121,7 +121,8 @@ func TestSleepHarvest_RedactionRefusal(t *testing.T) {
 
 func TestSleepReview_Flow(t *testing.T) {
 	cronTestEnv(t)
-	if err := os.WriteFile("tasks.json", []byte(`{"generated_at":"2026-09-13T00:00:00Z","tasks":[{"id":"t1","intent":"q"}]}`), 0o600); err != nil {
+	gen := time.Now().UTC().Add(-time.Hour)
+	if err := os.WriteFile("tasks.json", []byte(`{"generated_at":"`+gen.Format(time.RFC3339)+`","tasks":[{"id":"t1","intent":"q"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var code int
