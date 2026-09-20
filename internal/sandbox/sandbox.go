@@ -441,17 +441,19 @@ func (sb *SandboxConfig) DeniedPath(target string) bool {
 
 // CommandAuditEntry records one command-execution decision.
 type CommandAuditEntry struct {
-	Timestamp   time.Time `json:"timestamp"`
-	Tool        string    `json:"tool"`
-	Command     string    `json:"command"`
-	Args        []string  `json:"args"`
-	CWD         string    `json:"cwd"`
-	SandboxMode string    `json:"sandbox_mode"`
-	Decision    string    `json:"decision"`
-	Risk        string    `json:"risk"`
-	Reason      string    `json:"reason"`
-	DurationMs  int64     `json:"duration_ms"`
-	ExitCode    int       `json:"exit_code"`
+	Timestamp time.Time `json:"timestamp"`
+	Tool      string    `json:"tool"`
+	Command   string    `json:"command"`
+	Args      []string  `json:"args"`
+	CWD       string    `json:"cwd"`
+	// SessionID is the hakase session of the asking run (possibly empty).
+	SessionID   string `json:"session_id,omitempty"`
+	SandboxMode string `json:"sandbox_mode"`
+	Decision    string `json:"decision"`
+	Risk        string `json:"risk"`
+	Reason      string `json:"reason"`
+	DurationMs  int64  `json:"duration_ms"`
+	ExitCode    int    `json:"exit_code"`
 }
 
 // GateDecision is the outcome of evaluating one command.

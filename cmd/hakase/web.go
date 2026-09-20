@@ -304,6 +304,9 @@ func runServer(args []string, serveSPA bool) int {
 	}()
 
 	// Build the web server.
+	handlers.HealthVersion = cli.Version
+	handlers.HealthCommit = cli.Commit
+	handlers.HealthDate = cli.Date
 	srv := web.NewServer(jwtKey, sessionSvc)
 	srv.SetAllowInsecureCookie(cfg.Auth.AllowInsecureCookie)
 	srv.SetChatDeps(bridge, runner, runtime)

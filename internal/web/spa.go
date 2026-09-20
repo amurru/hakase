@@ -32,6 +32,7 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 
 	// Unauthenticated API routes
 	r.Get("/api/health", handlers.HealthHandler())
+	r.Get("/api/ready", handlers.ReadyHandler())
 	r.Post("/api/login", handlers.LoginHandler(jwtKey, credentialsPath(), 24*time.Hour, middleware.NewLoginRateLimiter(), allowInsecureCookie))
 
 	// Authenticated API group

@@ -61,6 +61,8 @@ config.json
 
 # runtime state (written by the app)
 tasks.json
+tasks.json.lock
+tasks.json.corrupt-*
 .checkpoints/
 sessions/
 
