@@ -28,7 +28,7 @@ is the leaf JSON store + CLI inspection (`hakase memory list/forget/add`),
 which keeps the human-prunable property. Per-project files were rejected:
 a `Project` field on each note plus read-time filtering gives the same scoping
 with one file, one lock, one CLI. Corrupt file → quarantined to
-`notes.corrupt-<UTC timestamp>.json` and the store restarts empty (loud log),
+`<store path>.corrupt-<UTC timestamp>.json` and the store restarts empty,
 never wedges the agent.
 
 **D2 — Scoping: every note carries the project root it was written under.**

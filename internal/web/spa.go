@@ -13,6 +13,7 @@ import (
 	"amurru/hakase/internal/channel/state"
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/memory"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/web/handlers"
 	"amurru/hakase/internal/web/middleware"
@@ -71,6 +72,12 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 			skillDirs = cfg.SkillDirs
 		}
 		handlers.RegisterKnowledgeRoutes(r, knowledgeDir)
+		// Agent memory notes (docs/auto-memory/spec.md) - inspect/prune in
+		// the UI. Read/write only the notes file; nil-tolerant (no hakase
+		// home = no routes).
+		if memoryStore, err := memory.OpenDefault(); err == nil {
+			handlers.RegisterMemoryRoutes(r, memoryStore)
+		}
 		// Skill management routes (web UI skill manager)
 		handlers.RegisterSkillRoutes(r, ".", skillDirs)
 		// MCP server management routes (task 32)
