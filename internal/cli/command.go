@@ -57,7 +57,11 @@ func RegisterCommand(name, description string, handler func(args []string) int) 
 // is the process exit code.
 func Dispatch(args []string) int {
 	if len(args) == 0 {
-		return runTUIPlaceholder(nil)
+		// Bare invocation falls through to the TUI: the registered "tui"
+		// command (the real interactive TUI once package main is wired, the
+		// placeholder below when the dispatcher is used without that wiring,
+		// e.g. in tests).
+		return commands["tui"].Handler(nil)
 	}
 
 	name := args[0]
@@ -172,6 +176,11 @@ func init() {
 		Name:        "sleep",
 		Description: "offline skill self-improvement loop (harvest, review, run, adopt)",
 		Handler:     RunSleepCLI,
+	})
+	registerCommand(Command{
+		Name:        "mcp",
+		Description: "expose hakase skills over MCP (serve)",
+		Handler:     RunMCPCLI,
 	})
 	registerCommand(Command{
 		Name:        "web",
