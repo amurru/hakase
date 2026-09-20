@@ -60,7 +60,12 @@ func runTUI() {
 	}
 
 	// Init sandbox before any file or exec operations.
+	// LoadConfig already refused landlock mode (issue #14); re-validate here
+	// defensively so a directly-constructed config can never slip through.
 	sandbox.CurrentSandbox = sandbox.LoadSandboxConfig(cfg.Sandbox)
+	if err := sandbox.ValidateSandboxConfig(sandbox.CurrentSandbox); err != nil {
+		log.Fatalf("Invalid sandbox config: %v", err)
+	}
 
 	// Vision hooks: feed the live config to the vision package so the
 	// BeforeModel callback can rewrite user-attached image parts before the
@@ -82,6 +87,21 @@ func runTUI() {
 		util.DebugEvent("status_log", "msg", msg)
 		if program != nil {
 			program.Send(tui.StatusLogMsg{Text: msg})
+		}
+	}
+
+	// Issue #14: surface sandbox degradation visibly at startup (not just
+	// debug logs) and per fallback exec. The audit trail is the normative
+	// record; this hook is the TUI-visible half.
+	if warn := sandbox.SandboxStartupWarning(sandbox.CurrentSandbox); warn != "" {
+		log.Printf("WARNING: %s", warn)
+		logToUI("WARNING: " + warn)
+	}
+	sandbox.SandboxNoticeFunc = func(sessionID, msg string) {
+		if sessionID != "" {
+			logToUI(fmt.Sprintf("WARNING [session %s]: %s", sessionID, msg))
+		} else {
+			logToUI("WARNING: " + msg)
 		}
 	}
 

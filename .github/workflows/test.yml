@@ -56,9 +56,9 @@ jobs:
       - name: Frontend tests
         run: pnpm --dir webui test
 
-  # First Windows run: non-blocking while it proves itself (bubblewrap/
-  # landlock modes are coerced to paths on Windows by design, so only the
-  # paths-mode tests apply). Flip continue-on-error off once green.
+  # First Windows run: non-blocking while it proves itself (bubblewrap mode is
+  # coerced to paths on Windows by design, so only the paths-mode tests apply;
+  # landlock is refused on every platform). Flip continue-on-error off once green.
   windows:
     runs-on: windows-latest
     continue-on-error: true

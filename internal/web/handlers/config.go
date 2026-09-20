@@ -391,9 +391,11 @@ func validateConfigUpdate(req map[string]interface{}) error {
 	if v, ok := req["sandbox"].(map[string]interface{}); ok {
 		if mode, ok := v["mode"].(string); ok && mode != "" {
 			switch mode {
-			case "paths", "bubblewrap", "landlock", "off":
+			case "paths", "bubblewrap", "off":
+			case "landlock":
+				return fmt.Errorf("invalid sandbox.mode %q: landlock confinement is not yet implemented (Phase 3 planned); use paths, bubblewrap, or off", mode)
 			default:
-				return fmt.Errorf("invalid sandbox.mode %q: must be paths, bubblewrap, landlock, or off", mode)
+				return fmt.Errorf("invalid sandbox.mode %q: must be paths, bubblewrap, or off", mode)
 			}
 		}
 	}

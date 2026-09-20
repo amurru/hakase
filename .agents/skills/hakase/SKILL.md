@@ -86,7 +86,7 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 - `vision_api_key` - optional separate key for the vision model; empty = primary `api_key`. `HAKASE_VISION_API_KEY` env override.
 - `vision_provider` - optional provider for the vision model (`gemini` | `openai` | `openai-compatible`); empty = primary provider, except a `vision_base_url` alone forces an OpenAI-compatible endpoint. Lets a Gemini vision model serve an OpenAI-compatible main model. `HAKASE_VISION_PROVIDER` env override.
 - `model_vision` - override multimodal detection for the main model (`auto` | `yes` | `no`). `HAKASE_MODEL_VISION` env override.
-- `sandbox` - confinement strategy (`paths` default, `bubblewrap`, `landlock` reserved, `off`).
+- `sandbox` - confinement strategy (`paths` default, `bubblewrap`, `off`; `landlock` refused until implemented).
 - `loop_guard` - anti-degeneration guardrails: `max_output_tokens` (default 8192), `repetition_limit` (8), `max_text_without_tool` (20000).
 - `approval` - interactive approval gate: `mode` (`interactive` default, `deny`, `allow`), `expiry_seconds` (60).
 - `thinking_level` - passed to provider (`off`, `low`, `medium`, `high`, `maximum`, `xhigh`).
@@ -151,7 +151,7 @@ Eight tools: `save_knowledge`, `recall_knowledge`, `search_knowledge`, `update_k
 
 ## 7. Safety Model
 
-- **Sandbox on by default**: absent `sandbox` block yields `paths` mode. Modes: `paths` (pure path confinement - file ops, downloads, python resolve against workspace roots; `system_exec` absolute path args audited against read roots + trusted system dirs `/usr /lib /bin /etc /proc /dev /sys /tmp /run`), `bubblewrap` (kernel-level `bwrap` isolation, network unshare, env scrubbing), `landlock` (reserved), `off` (opt-in disable).
+- **Sandbox on by default**: absent `sandbox` block yields `paths` mode. Modes: `paths` (pure path confinement - file ops, downloads, python resolve against workspace roots; `system_exec` absolute path args audited against read roots + trusted system dirs `/usr /lib /bin /etc /proc /dev /sys /tmp /run`), `bubblewrap` (kernel-level `bwrap` isolation, network unshare, env scrubbing; fallback without bwrap is audit-logged + UI-surfaced), `landlock` (refused until implemented), `off` (opt-in disable).
 - Roots: `workspace_roots` (writable, default `["."]`), `read_roots`, `deny_roots` (highest precedence); symlink escapes prevented via securejoin + EvalSymlinks.
 - **Approval gate**: harmful commands require interactive user approval (`approval.mode`; interactive default with 60s expiry).
 - **Loop guard**: aborts runs stuck in repetition loops or text-only bloat.

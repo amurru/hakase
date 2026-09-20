@@ -137,7 +137,10 @@ const (
 	SandboxModeOff        SandboxMode = "off"
 	SandboxModePaths      SandboxMode = "paths"
 	SandboxModeBubblewrap SandboxMode = "bubblewrap"
-	SandboxModeLandlock   SandboxMode = "landlock"
+	// SandboxModeLandlock is reserved but unimplemented (issue #14): refused
+	// at config load and at exec time, never enforced. Kept so existing
+	// configs fail with an actionable error instead of a shape error.
+	SandboxModeLandlock SandboxMode = "landlock"
 )
 
 // SandboxConfig is the resolved, normalized sandbox configuration.

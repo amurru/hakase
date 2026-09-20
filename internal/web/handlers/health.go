@@ -86,9 +86,11 @@ func ReadyHandler() http.HandlerFunc {
 		}
 
 		// Sandbox: nil or off means confinement disabled (available by
-		// definition); paths mode is always available; bubblewrap/landlock
-		// report the configured mode and are assumed available (the exec
-		// path coerces to paths when the binary is missing).
+		// definition); paths mode is always available. Bubblewrap is
+		// available only when the bwrap binary resolves on PATH; landlock is
+		// never available (unimplemented, issue #14 - config load refuses it,
+		// but a directly-constructed config can still reach here). An
+		// unenforceable sandbox degrades readiness so operators notice.
 		sb := sandbox.CurrentSandbox
 		if sb == nil || sb.Mode == "" || sb.Mode == sandbox.SandboxModeOff {
 			resp.Sandbox.Mode = "off"
@@ -98,9 +100,17 @@ func ReadyHandler() http.HandlerFunc {
 			resp.Sandbox.Mode = string(sb.Mode)
 			resp.Sandbox.Enabled = true
 			resp.Sandbox.Available = true
+			if sb.Mode == sandbox.SandboxModeLandlock {
+				resp.Sandbox.Available = false
+			} else if sb.Mode == sandbox.SandboxModeBubblewrap && !sandbox.BwrapAvailable() {
+				resp.Sandbox.Available = false
+			}
 		}
 
 		if !resp.Provider.Configured {
+			resp.Status = "degraded"
+		}
+		if resp.Sandbox.Enabled && !resp.Sandbox.Available {
 			resp.Status = "degraded"
 		}
 		writeJSON(w, http.StatusOK, resp)

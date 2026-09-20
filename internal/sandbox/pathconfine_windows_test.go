@@ -232,13 +232,20 @@ func TestBuildExecCommandCoercesBubblewrapOnWindows(t *testing.T) {
 	}
 }
 
-// TestLoadSandboxConfigCoercesOnWindows pins the central coercion point.
+// TestLoadSandboxConfigCoercesOnWindows pins the central coercion point:
+// bubblewrap (Linux-only) coerces to paths, while landlock (unimplemented
+// everywhere, issue #14) is preserved so ValidateSandboxConfig refuses it.
 func TestLoadSandboxConfigCoercesOnWindows(t *testing.T) {
-	for _, mode := range []string{"bubblewrap", "landlock"} {
-		sb := LoadSandboxConfig(&SandboxJSON{Mode: mode})
-		if sb.Mode != SandboxModePaths {
-			t.Errorf("LoadSandboxConfig(%q): expected coercion to paths, got %q", mode, sb.Mode)
-		}
+	sb := LoadSandboxConfig(&SandboxJSON{Mode: "bubblewrap"})
+	if sb.Mode != SandboxModePaths {
+		t.Errorf("LoadSandboxConfig(bubblewrap): expected coercion to paths, got %q", sb.Mode)
+	}
+	sb = LoadSandboxConfig(&SandboxJSON{Mode: "landlock"})
+	if sb.Mode != SandboxModeLandlock {
+		t.Errorf("LoadSandboxConfig(landlock): expected preservation for refusal, got %q", sb.Mode)
+	}
+	if err := ValidateSandboxConfig(sb); err == nil {
+		t.Error("ValidateSandboxConfig(landlock) on Windows should still refuse")
 	}
 }
 

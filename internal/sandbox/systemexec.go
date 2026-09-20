@@ -256,17 +256,24 @@ func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args 
 		return nil, fmt.Errorf("command must not be empty")
 	}
 
-	// WIN-005 defensive mode coercion: bubblewrap/landlock do not exist on
-	// Windows and tests construct sb directly (bypassing
-	// LoadSandboxConfig), so the coercion also happens here. Mutating the
-	// mode in place is idempotent and makes every audit entry below record
-	// the effective mode (paths).
-	if sb != nil && runtime.GOOS == "windows" &&
-		(sb.Mode == SandboxModeBubblewrap || sb.Mode == SandboxModeLandlock) {
+	// Issue #14: landlock is unimplemented on every platform - refuse loudly
+	// instead of silently degrading to path-auditing-only exec. This check
+	// runs before everything (including the Windows coercion below) so a
+	// landlock config fails closed no matter how it was constructed
+	// (config file, direct struct, pinned override).
+	if sb != nil && sb.Mode == SandboxModeLandlock {
+		return nil, ErrLandlockNotImplemented
+	}
+
+	// WIN-005 defensive mode coercion: bubblewrap does not exist on Windows
+	// and tests construct sb directly (bypassing LoadSandboxConfig), so the
+	// coercion also happens here. Mutating the mode in place is idempotent
+	// and makes every audit entry below record the effective mode (paths).
+	if sb != nil && runtime.GOOS == "windows" && sb.Mode == SandboxModeBubblewrap {
 		util.DebugWarn("sandbox_mode_coerced",
 			"from", string(sb.Mode),
 			"to", string(SandboxModePaths),
-			"reason", "bubblewrap and landlock are unsupported on windows")
+			"reason", "bubblewrap is unsupported on windows")
 		sb.Mode = SandboxModePaths
 	}
 
@@ -402,9 +409,34 @@ func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args 
 		bwCmd, err := wrapBwrapCmd(sb, innerArgv, wd, sb.AllowNetwork, nil)
 		if err != nil {
 			if sb.AllowFallback {
-				// Explicitly configured to allow fallback: warn and
-				// fall through to the plain exec path below.
-				util.DebugWarn("sandbox_bwrap_fallback", "error", err)
+				// Explicitly configured to allow fallback: fail LOUD and fall
+				// through to the plain exec path below. Issue #14: a
+				// sandboxed-to-unsandboxed transition must never be
+				// debug-only. The audit entry is the normative record
+				// (always on, unlike DebugWarn which needs debug mode); the
+				// UI hook makes it visible in the web UI / TUI for this run.
+				fallbackCWD := wd
+				if fallbackCWD == "" {
+					fallbackCWD, _ = os.Getwd()
+				}
+				reason := fmt.Sprintf("bubblewrap unavailable (%v); running with path-confinement only (no kernel isolation)", err)
+				if AuditCommandFunc != nil {
+					AuditCommandFunc(CommandAuditEntry{
+						Timestamp:   time.Now(),
+						Tool:        "system_exec",
+						Command:     command,
+						Args:        args,
+						CWD:         fallbackCWD,
+						SessionID:   sessionID,
+						SandboxMode: string(sb.Mode),
+						Decision:    "sandbox_fallback",
+						Risk:        decision.Risk.String(),
+						Reason:      reason,
+					})
+				}
+				util.DebugWarn("sandbox_bwrap_fallback", "error", err.Error(), "session_id", sessionID)
+				notifySandboxFallback(sessionID,
+					fmt.Sprintf("Sandbox fallback: bwrap unavailable, command %q runs with path-confinement only (no kernel isolation)", command))
 			} else {
 				return nil, fmt.Errorf("bubblewrap sandbox unavailable (bwrap not installed?) and sandbox.allow_fallback is false: %w", err)
 			}

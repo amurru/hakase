@@ -837,6 +837,16 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 
+	// Issue #14: landlock mode is reserved but unimplemented - refuse at
+	// config load instead of silently degrading to path-auditing-only exec.
+	// LoadSandboxConfig normalizes the roots so Validate sees the effective
+	// mode; a nil sandbox block means confinement disabled (valid).
+	if cfg.Sandbox != nil {
+		if err := sandbox.ValidateSandboxConfig(sandbox.LoadSandboxConfig(cfg.Sandbox)); err != nil {
+			return nil, err
+		}
+	}
+
 	cfg.Media.ApplyDefaults()
 	// Fallback chain for OpenAI image provider (mirrors vision pattern):
 	// openai_image_key empty -> cfg.APIKey, openai_image_base_url empty -> cfg.BaseURL

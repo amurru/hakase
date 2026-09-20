@@ -47,7 +47,6 @@ body:
       options:
         - "paths"
         - bubblewrap
-        - landlock
         - "off"
     validations:
       required: false

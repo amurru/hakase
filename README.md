@@ -238,7 +238,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `system_env` -- runtime environment block (`enabled`, `max_chars`, `apply_to`). See [Runtime Environment Awareness](docs/DEVELOPMENT.md#runtime-environment-awareness).
 - `knowledge_dir` -- knowledge base directory (default `./knowledge`; `~` expands to home).
 - `mcp` / `mcp_server_url` -- MCP servers (legacy `mcp_server_url` auto-migrates to `lightpanda`). See [MCP Integration](docs/DEVELOPMENT.md#mcp-integration).
-- `sandbox` -- confinement (`paths` default, `bubblewrap`, `landlock`, `off`). See [Sandboxing](docs/DEVELOPMENT.md#sandboxing--workspace-confinement).
+- `sandbox` -- confinement (`paths` default, `bubblewrap`, `off`; `landlock` refused until implemented). See [Sandboxing](docs/DEVELOPMENT.md#sandboxing--workspace-confinement).
 - `loop_guard`, `approval`, `clarify`, `auth`, `thinking_level`, `chat_buffer_size` -- gates and TUI tuning
 - `vision_*` / `model_vision` -- vision routing for non-vision main models
 - `summary_model` -- cheaper model for context compaction
@@ -491,7 +491,7 @@ the host materializes into a managed checkout. See
 - Shell: string commands run via `cmd /D /C`; POSIX constructs (`$()`, backticks, `VAR=x cmd`) are NOT interpreted -- use cmd syntax (`%VAR%`, `&&`, `|`, `>`).
 - Bare executable names resolve from PATH only (`NoDefaultCurrentDirectoryInExePath=1`), rewritten to absolute PATH paths before exec.
 - Python: install from [python.org](https://www.python.org/downloads/) so `py` or `python` is on PATH; venv under `.venv\Scripts\`.
-- Sandbox: `bubblewrap`/`landlock` coerce to `paths` with a warning on Windows.
+- Sandbox: `bubblewrap` coerces to `paths` with a warning on Windows; `landlock` is refused on every platform.
 - Unsigned binary: v1 Windows builds are not code-signed; verify sha256 in `SHA256SUMS.txt`.
 - Browser MCP: use [presets](docs/browser-mcp-presets.md) with Lightpanda or `chrome-devtools-mcp` on Edge.
 - Known v1 differences: TUI image paste unsupported (text paste works), web server shuts down via `Ctrl+C` only.

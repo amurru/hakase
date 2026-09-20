@@ -196,14 +196,14 @@ make dev-backend    # terminal 2 - Go server with the dev tag, port 8080
 
 ## Development Platform
 
-hakase is developed and tested on **Linux** (primary platform) and builds natively on **Windows** (`make build-windows` - no WSL2 required). On Windows the `system_exec` toolset routes shell commands through `cmd /D /C` and the sandbox runs in `paths` mode (`bubblewrap`/`landlock` are Linux-only and coerce with a warning).
+hakase is developed and tested on **Linux** (primary platform) and builds natively on **Windows** (`make build-windows` - no WSL2 required). On Windows the `system_exec` toolset routes shell commands through `cmd /D /C` and the sandbox runs in `paths` mode (`bubblewrap` is Linux-only and coerces with a warning; `landlock` is refused on every platform).
 
 ## Windows Notes
 
 - **Shell semantics** - string commands run via `cmd /D /C` (`/D` suppresses per-user AutoRun registry scripts). POSIX-only constructs - globs, `$()`, backticks, `VAR=x cmd` - are NOT interpreted; use cmd syntax (`%VAR%`, `&&`, `|`, `>`). The `system_exec` tool description carries the same note so the model adapts.
 - **Executable resolution** - bare executable names resolve from PATH only, never the working directory: hakase sets `NoDefaultCurrentDirectoryInExePath=1` process-wide, rewrites bare names to absolute PATH paths before exec, and refuses to execute a file planted in the workspace under a bare command name.
 - **Python** - install Python from [python.org](https://www.python.org/downloads/) so the `py` launcher (or `python`) is on PATH; the code interpreter probes `py -3` then `python` and creates the venv under `.venv\Scripts\`.
-- **Sandbox** - `bubblewrap` and `landlock` modes are Linux-only; on Windows they coerce to `paths` mode with a warning (audit entries record the effective mode).
+- **Sandbox** - `bubblewrap` mode is Linux-only; on Windows it coerces to `paths` mode with a warning (audit entries record the effective mode). `landlock` is refused on every platform (unimplemented).
 - **Unsigned binary** - v1 Windows builds are not code-signed; SmartScreen and antivirus heuristics may flag `hakase.exe`. Verify the sha256 in `SHA256SUMS.txt` and, once installed, the binary behaves like any local tool.
 - **Browser MCP** - the browsing stack is a config swap; on Windows use the [presets](browser-mcp-presets.md) with Lightpanda (headless) or `chrome-devtools-mcp` on Edge.
 - **Known differences (v1)** - TUI image paste is unsupported on Windows (text paste works; `readImageFromClipboard` probes only the Wayland/X11 tools), and the web server shuts down via ctrl-c only (SIGTERM is not externally deliverable on Windows).
@@ -547,7 +547,7 @@ hakase confines subprocesses and file operations to approved workspaces out of t
 | ---- | ----------- |
 | `paths` (default) | Pure path confinement -- all file ops (`read_file`/`write_file`/`patch`/`search_files`), downloads, and the Python interpreter resolve paths against approved read/work/deny roots. `system_exec` commands are audited so absolute path arguments must stay under the read roots or trusted system dirs. Symlink escapes are prevented via `securejoin` + `EvalSymlinks` re-verification. |
 | `bubblewrap` | Adds kernel-level subprocess isolation -- `system_exec` and Python runs are wrapped in [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) with separate PID/IPC/UTS/user namespaces, dropped capabilities, minimal filesystems, read-only system dirs, and optional network unshare. |
-| `landlock` | Reserved for future in-process Landlock + seccomp confinement (Phase 3). |
+| `landlock` | Not implemented -- refused at config load with an actionable error (Phase 3 planned). Use `paths` or `bubblewrap`. |
 | `off` | Explicitly disables confinement (opt-in only). |
 
 Key properties:
@@ -556,7 +556,7 @@ Key properties:
 - **Roots** -- `workspace_roots` (writable, default `["."]`), `read_roots` (readable, default = workspace roots), and `deny_roots` (always rejected, highest precedence); all are symlink-evaluated and de-duplicated
 - **Secret files** -- hakase's own secret-bearing files are implicitly denied on top of any configured roots, wherever hakase is launched from: `config.json` and `.env` in the working directory, plus `config.json`, `mcp.json`, `credentials.json`, `jwt-secret`, and `cronjobs.json` under the hakase home (`~/.hakase` or `$HAKASE_HOME`). They cannot be read or written through any sandboxed tool or web file API and are hidden from directory listings; edit config via the web Settings view or a text editor. Deliberately *not* denied: `~/.hakase/AGENTS.md`, `~/.hakase/skills/`, and a user-global knowledge base
 - **Downloads** -- the filename is basename-sanitized and the output path is confined to the workspace
-- **Current sandbox** -- if `bwrap` is not installed, bubblewrap mode falls back to the safe path-confinement exec path and logs a warning
+- **Current sandbox** -- bubblewrap mode requires `bwrap` on PATH. Without it, exec is refused unless `sandbox.allow_fallback` is explicitly enabled (default false); when fallback does fire, every degraded exec is audit-logged (`decision: sandbox_fallback`) and surfaced in the web UI / TUI for that run, and a startup warning is emitted. `landlock` mode is refused at config load (unimplemented).
 
 ---
 
@@ -770,7 +770,7 @@ When `model_name` is empty, the provider's default model is used. `openai-compat
 - `vision_api_key` - Optional separate key for the vision model; empty = primary `api_key`.
 - `vision_provider` - Optional provider for the vision model: `gemini`, `openai`, or `openai-compatible`. Empty = primary provider (a `vision_base_url` alone still forces an OpenAI-compatible endpoint). Use this when the vision model lives on a different backend than the main model - e.g. a Gemini vision model while the primary provider is OpenAI-compatible.
 - `model_vision` - Override multimodal detection for the main model: `auto` | `yes` | `no` (default `auto`).
-- `sandbox` -- Optional confinement block (see [Sandboxing & Workspace Confinement](#sandboxing--workspace-confinement)). Absent -> `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `landlock` | `off`), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
+- `sandbox` -- Optional confinement block (see [Sandboxing & Workspace Confinement](#sandboxing--workspace-confinement)). Absent -> `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `off`; `landlock` is refused until implemented), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
 - `loop_guard` -- Optional anti-degeneration guardrails that abort a run stuck in a repetition loop or text-only bloat instead of burning the whole context/output window. Zero values use the defaults. Fields: `max_output_tokens` (cap on provider `maxOutputTokens`, default `8192`), `repetition_limit` (abort after this many consecutive identical non-thought chunks, default `8`), `max_text_without_tool` (abort after this many runes of text with zero tool calls, default `20000`). Set `HAKASE_MAX_OUTPUT_TOKENS` to override the cap via environment.
 - `approval` - Interactive approval gate for sensitive tool calls: `mode` (`interactive` or off) and `expiry_seconds` (auto-deny timeout, default `60`). Works in both the TUI and the web UI.
 - `clarify` - Mid-run clarify questions: `expiry_seconds` (auto-dismiss timeout).
