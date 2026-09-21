@@ -419,6 +419,9 @@ func TestSanitizeMCPServerName(t *testing.T) {
 }
 
 func TestMCPOAuthValidate(t *testing.T) {
+	t.Setenv("MCP_TEST_CIMD", "https://hakase.example.com/.well-known/oauth-client.json")
+	t.Setenv("MCP_TEST_SECRET", "s3cr3t")
+	t.Setenv("MCP_TEST_HOST", "x")
 	cases := []struct {
 		name    string
 		oauth   MCPOAuthConfig
@@ -432,6 +435,9 @@ func TestMCPOAuthValidate(t *testing.T) {
 		{"preregistered with secret", MCPOAuthConfig{ClientID: "abc", ClientSecret: "s3cr3t"}, false},
 		{"secret without id", MCPOAuthConfig{ClientSecret: "s3cr3t"}, true},
 		{"bad redirect", MCPOAuthConfig{ClientID: "abc", RedirectURL: "ftp://x/cb"}, true},
+		{"expanded cimd valid", MCPOAuthConfig{ClientIDURL: "${MCP_TEST_CIMD}"}, false},
+		{"expanded secret needs id", MCPOAuthConfig{ClientSecret: "${MCP_TEST_SECRET}"}, true},
+		{"expanded redirect refused", MCPOAuthConfig{ClientID: "abc", RedirectURL: "ftp://${MCP_TEST_HOST}/cb"}, true},
 	}
 	for _, tc := range cases {
 		err := tc.oauth.Validate()

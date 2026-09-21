@@ -174,6 +174,18 @@ func (api *MCPAPI) UpdateServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	srv := serverRequestToConfig(&req)
+
+	// The read API redacts OAuth secrets and the UI never sends the oauth
+	// block back, so an omitted oauth on update means "keep the stored
+	// OAuth" (secret included), not "remove it" - otherwise any edit of an
+	// OAuth server would drop its client registration. An explicit oauth
+	// object in the request still replaces the stored one.
+	if srv.OAuth == nil {
+		if existing, ok := mg.ServerConfig(name); ok && existing.OAuth != nil {
+			oauthCopy := *existing.OAuth
+			srv.OAuth = &oauthCopy
+		}
+	}
 	if err := mg.UpsertServer(name, srv); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

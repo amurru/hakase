@@ -149,7 +149,7 @@ func (m *MCPServerManager) reload() error {
 	oauthFingerprints := map[string]string{}
 	for name, srvCfg := range reg.Servers {
 		if srvCfg.OAuth != nil {
-			oauthFingerprints[name] = srvCfg.OAuth.ClientIDURL + "|" + srvCfg.OAuth.ClientID + "|" + srvCfg.OAuth.RedirectURL
+			oauthFingerprints[name] = oauthHandlerFingerprint(srvCfg.URL, srvCfg.OAuth)
 		}
 	}
 	dropStaleOAuthHandlers(oauthFingerprints)
@@ -406,7 +406,7 @@ func buildMCPServerToolset(name string, cfg *config.MCPServerConfig) (tool.Tools
 		}
 		transport := &mcp.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: client}
 		if cfg.OAuth != nil {
-			handler, err := oauthHandlerFor(name, cfg.OAuth, mcpHTTPTimeout(cfg.TimeoutMs))
+			handler, err := oauthHandlerFor(name, cfg.URL, cfg.OAuth, mcpHTTPTimeout(cfg.TimeoutMs))
 			if err != nil {
 				return nil, err
 			}

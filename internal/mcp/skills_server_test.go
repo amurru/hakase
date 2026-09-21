@@ -167,3 +167,81 @@ func TestSkillsServerCollisionsFirstWins(t *testing.T) {
 	}
 	_ = interfaces.LogFunc(nil)
 }
+
+// connectSkills wires an in-memory foreign client to srv and returns the
+// session, mirroring the pattern of the round-trip test.
+func connectSkills(t *testing.T, srv *mcpsdk.Server) *mcpsdk.ClientSession {
+	t.Helper()
+	serverTransport, clientTransport := mcpsdk.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := srv.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "foreign-host", Version: "0"}, nil)
+	cs, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	return cs
+}
+
+// TestSkillsServerRejectsSymlinks: a symlink inside a skill directory can
+// neither register an out-of-root file at discovery time nor redirect a
+// read after being swapped in behind a registered resource.
+func TestSkillsServerRejectsSymlinks(t *testing.T) {
+	root := skillsFixture(t)
+	skillDir := filepath.Join(root, ".agents", "skills", "deploy-check")
+
+	outside := filepath.Join(root, "outside-secret.md")
+	if err := os.WriteFile(outside, []byte("outside secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink capability probe (unprivileged Windows CI may refuse).
+	probe := filepath.Join(skillDir, "probe-link")
+	if err := os.Symlink(outside, probe); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	// Discovery time: a link to a file outside the skill root must not
+	// register as a resource.
+	if err := os.Symlink(outside, filepath.Join(skillDir, "leak.md")); err != nil {
+		t.Fatal(err)
+	}
+	cs := connectSkills(t, NewSkillsServer(root, nil, nil, "test"))
+	defer cs.Close()
+
+	listed, err := cs.ListResources(context.Background(), &mcpsdk.ListResourcesParams{})
+	if err != nil {
+		t.Fatalf("ListResources: %v", err)
+	}
+	for _, r := range listed.Resources {
+		if strings.HasSuffix(r.URI, "/leak.md") {
+			t.Fatalf("symlinked supporting file registered: %s", r.URI)
+		}
+	}
+
+	// Read time: replacing a registered regular file with a symlink after
+	// discovery must not let the read escape the skill root.
+	support := filepath.Join(skillDir, "references", "rollback.md")
+	if err := os.Remove(support); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, support); err != nil {
+		t.Fatal(err)
+	}
+	res, err := cs.ReadResource(context.Background(), &mcpsdk.ReadResourceParams{URI: "skill://deploy-check/references/rollback.md"})
+	if err == nil {
+		text := ""
+		if len(res.Contents) > 0 && res.Contents[0].Text != "" {
+			text = res.Contents[0].Text
+		}
+		t.Fatalf("read through replaced symlink must fail, got %+v (text=%q)", res, text)
+	}
+	if strings.Contains(err.Error(), "outside secret") {
+		t.Fatalf("out-of-root content leaked: %v", err)
+	}
+}

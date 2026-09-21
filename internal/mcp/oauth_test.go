@@ -21,6 +21,16 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// Fixture token material for the mock OAuth server. Synthetic values - the
+// server only checks code equality and the transport only echoes them back.
+// Fixture token material for the mock OAuth server. Synthetic values - the
+// server only checks code equality and the transport only echoes them back.
+const (
+	fixtureAccessToken = "tok123"
+	fixtureRefreshed   = "tok-refreshed-next"
+	fixtureAuthCode    = "good-code"
+)
+
 // oauthFixture is a single httptest server playing three roles: an
 // OAuth-protected stateless MCP server, the protected resource metadata
 // endpoint, and the authorization server (metadata + token endpoint). The
@@ -59,7 +69,7 @@ func newOAuthFixture(t *testing.T) *oauthFixture {
 			f.lastAuth = r.Header.Get("Authorization")
 			f.hits++
 			f.mu.Unlock()
-			if f.lastAuth != "Bearer tok123" {
+			if f.lastAuth != "Bearer "+fixtureAccessToken {
 				w.Header().Set("WWW-Authenticate",
 					`Bearer resource_metadata="`+f.ts.URL+`/.well-known/oauth-protected-resource"`)
 				w.WriteHeader(http.StatusUnauthorized)
@@ -84,7 +94,22 @@ func newOAuthFixture(t *testing.T) *oauthFixture {
 				"authorization_response_iss_parameter_supported": true,
 			})
 		case r.URL.Path == "/token":
-			if err := r.ParseForm(); err != nil || r.FormValue("code") != "good-code" {
+			if err := r.ParseForm(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if r.FormValue("grant_type") == "refresh_token" {
+				f.mu.Lock()
+				f.tokenRequests++
+				f.mu.Unlock()
+				writeJSONBytes(w, map[string]any{
+					"access_token": fixtureRefreshed,
+					"token_type":   "Bearer",
+					"expires_in":   3600,
+				})
+				return
+			}
+			if r.FormValue("code") != fixtureAuthCode {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -92,7 +117,7 @@ func newOAuthFixture(t *testing.T) *oauthFixture {
 			f.tokenRequests++
 			f.mu.Unlock()
 			writeJSONBytes(w, map[string]any{
-				"access_token": "tok123",
+				"access_token": fixtureAccessToken,
 				"token_type":   "Bearer",
 				"expires_in":   3600,
 			})
@@ -118,7 +143,7 @@ func cannedFetcher(issuer string) auth.AuthorizationCodeFetcher {
 			return nil, err
 		}
 		return &auth.AuthorizationResult{
-			Code:  "good-code",
+			Code:  fixtureAuthCode,
 			State: u.Query().Get("state"),
 			Iss:   issuer,
 		}, nil
@@ -129,7 +154,7 @@ func cannedFetcher(issuer string) auth.AuthorizationCodeFetcher {
 // AS (preregistered client, canned code fetch) and the tool call completes.
 func TestOAuthEndToEnd(t *testing.T) {
 	f := newOAuthFixture(t)
-	handler, err := newAuthorizationHandler("asrv", "", "client-1", "", "http://localhost:8931/callback", nil,
+	handler, err := newAuthorizationHandler("asrv", "", "client-1", "", "http://localhost:8931/callback", nil, nil,
 		cannedFetcher(f.ts.URL), nil,
 		func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 			return oc.TokenSource(ctx, tok), nil
@@ -177,7 +202,7 @@ func TestOAuthTokenPersistence(t *testing.T) {
 		t.Fatalf("saveStoredToken: %v", err)
 	}
 
-	handler, err := buildOAuthHandler("psrv", &config.MCPOAuthConfig{
+	handler, err := buildOAuthHandler("psrv", "", &config.MCPOAuthConfig{
 		ClientID:    "client-1",
 		RedirectURL: "http://localhost:8931/callback",
 	}, nil)
@@ -224,11 +249,11 @@ func TestOAuthTokenPersistence(t *testing.T) {
 func TestOAuthHandlerCacheInvalidation(t *testing.T) {
 	cfgA := &config.MCPOAuthConfig{ClientID: "a"}
 	cfgB := &config.MCPOAuthConfig{ClientID: "b"}
-	h1, err := oauthHandlerFor("cache", cfgA, 0)
+	h1, err := oauthHandlerFor("cache", "https://mcp.example/mcp", cfgA, 0)
 	if err != nil {
 		t.Fatalf("oauthHandlerFor: %v", err)
 	}
-	h2, err := oauthHandlerFor("cache", cfgA, 0)
+	h2, err := oauthHandlerFor("cache", "https://mcp.example/mcp", cfgA, 0)
 	if err != nil {
 		t.Fatalf("oauthHandlerFor cached: %v", err)
 	}
@@ -236,7 +261,7 @@ func TestOAuthHandlerCacheInvalidation(t *testing.T) {
 		t.Fatal("same config should reuse the cached handler")
 	}
 	dropStaleOAuthHandlers(map[string]string{"cache": "b"})
-	if _, err := oauthHandlerFor("cache", cfgB, 0); err != nil {
+	if _, err := oauthHandlerFor("cache", "https://mcp.example/mcp", cfgB, 0); err != nil {
 		t.Fatalf("oauthHandlerFor after drop: %v", err)
 	}
 	dropStaleOAuthHandlers(nil)
@@ -245,5 +270,136 @@ func TestOAuthHandlerCacheInvalidation(t *testing.T) {
 	oauthHandlers.Unlock()
 	if exists {
 		t.Fatal("handler survived full eviction")
+	}
+}
+
+// TestOAuthScopesMergedIntoAuthURL: configured scopes reach the authorization
+// URL alongside the SDK-derived ones.
+func TestOAuthScopesMergedIntoAuthURL(t *testing.T) {
+	f := newOAuthFixture(t)
+	var authURL string
+	fetcher := func(_ context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+		authURL = args.URL
+		return cannedFetcher(f.ts.URL)(context.Background(), args)
+	}
+	handler, err := newAuthorizationHandler("scopes-srv", "", "client-1", "", "http://localhost:8931/callback",
+		[]string{"custom:scope"}, nil, fetcher, nil,
+		func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
+			return oc.TokenSource(ctx, tok), nil
+		})
+	if err != nil {
+		t.Fatalf("newAuthorizationHandler: %v", err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "hakase", Version: "t"}, nil).
+		Connect(context.Background(), &mcp.StreamableClientTransport{
+			Endpoint:     f.ts.URL + "/mcp",
+			OAuthHandler: handler,
+		}, nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cs.Close()
+
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("captured auth URL %q: %v", authURL, err)
+	}
+	got := strings.Fields(u.Query().Get("scope"))
+	want := map[string]bool{"mcp:read": true, "custom:scope": true}
+	if len(got) != len(want) {
+		t.Fatalf("scope param = %v, want exactly %v", got, want)
+	}
+	for _, s := range got {
+		if !want[s] {
+			t.Fatalf("scope param = %v, want exactly %v", got, want)
+		}
+	}
+}
+
+// TestOAuthRestoreBoundToResource: a persisted token is only restored when
+// it was issued for the same MCP resource; a URL change forces fresh
+// authorization instead of sending the old bearer token to the new endpoint.
+func TestOAuthRestoreBoundToResource(t *testing.T) {
+	t.Setenv("HAKASE_HOME", t.TempDir())
+	tok := &oauth2.Token{
+		AccessToken: "persisted",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+	if err := saveStoredToken("bsrv", storedToken{
+		Resource: "https://old.example/mcp",
+		Issuer:   "https://as.example.com/token",
+		Token:    tok,
+	}); err != nil {
+		t.Fatalf("saveStoredToken: %v", err)
+	}
+	cfg := &config.MCPOAuthConfig{ClientID: "client-1"}
+
+	// Different resource: nothing restored - the SDK will authorize fresh.
+	handler, err := buildOAuthHandler("bsrv", "https://new.example/mcp", cfg, nil)
+	if err != nil {
+		t.Fatalf("buildOAuthHandler: %v", err)
+	}
+	if tsrc, err := handler.TokenSource(context.Background()); err != nil || tsrc != nil {
+		t.Fatalf("mismatched resource must restore nothing, got tsrc=%v err=%v", tsrc, err)
+	}
+
+	// Same resource: the stored token comes back.
+	handler, err = buildOAuthHandler("bsrv", "https://old.example/mcp", cfg, nil)
+	if err != nil {
+		t.Fatalf("buildOAuthHandler: %v", err)
+	}
+	tsrc, err := handler.TokenSource(context.Background())
+	if err != nil || tsrc == nil {
+		t.Fatalf("matching resource must restore the token, got tsrc=%v err=%v", tsrc, err)
+	}
+	got, err := tsrc.Token()
+	if err != nil || got.AccessToken != "persisted" {
+		t.Fatalf("restored token = %+v err=%v, want persisted", got, err)
+	}
+}
+
+// TestOAuthRestoreRefreshesAndPersists: a stored token whose access token is
+// expired refreshes through the stored token endpoint, and the refreshed
+// token lands back in the store.
+func TestOAuthRestoreRefreshesAndPersists(t *testing.T) {
+	f := newOAuthFixture(t)
+	t.Setenv("HAKASE_HOME", t.TempDir())
+	if err := saveStoredToken("rsrv", storedToken{
+		Resource: f.ts.URL + "/mcp",
+		Issuer:   f.ts.URL + "/token",
+		Token: &oauth2.Token{
+			AccessToken:  "expired",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Hour), // forces a refresh on first Token()
+			RefreshToken: "rt",
+		},
+	}); err != nil {
+		t.Fatalf("saveStoredToken: %v", err)
+	}
+
+	handler, err := buildOAuthHandler("rsrv", f.ts.URL+"/mcp", &config.MCPOAuthConfig{ClientID: "client-1"}, f.ts.Client())
+	if err != nil {
+		t.Fatalf("buildOAuthHandler: %v", err)
+	}
+	tsrc, err := handler.TokenSource(context.Background())
+	if err != nil || tsrc == nil {
+		t.Fatalf("TokenSource: %v %v", tsrc, err)
+	}
+	got, err := tsrc.Token()
+	if err != nil {
+		t.Fatalf("token after refresh: %v", err)
+	}
+	if got.AccessToken != fixtureRefreshed {
+		t.Fatalf("access token = %q, want refreshed %q", got.AccessToken, fixtureRefreshed)
+	}
+
+	// The refresh must have been persisted.
+	st, ok, err := loadStoredToken("rsrv")
+	if err != nil || !ok {
+		t.Fatalf("loadStoredToken: ok=%v err=%v", ok, err)
+	}
+	if st.Token.AccessToken != fixtureRefreshed {
+		t.Fatalf("persisted access token = %q, want refreshed %q", st.Token.AccessToken, fixtureRefreshed)
 	}
 }

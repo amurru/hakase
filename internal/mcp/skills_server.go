@@ -5,8 +5,10 @@
 // SEP: name/type/description/url; go-sdk v1.7 ships no skills helpers, so
 // this is hand-built on plain resources - D2).
 //
-// Read-only by contract: handlers only read files that discovery already
-// vetted; nothing writes to skill directories.
+// Read-only by contract: handlers only read files beneath a discovered
+// skill directory, through a root-confined open (see readSkillFile) so a
+// symlink planted after discovery cannot redirect a read outside the skill;
+// nothing writes to skill directories.
 package mcp
 
 import (
@@ -15,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"os"
 	"path/filepath"
@@ -26,6 +29,25 @@ import (
 // indexSchema is the $schema URI of the Agent Skills discovery index format
 // the SEP pins (0.2.0).
 const indexSchema = "https://schemas.agentskills.io/discovery/0.2.0/schema.json"
+
+// readSkillFile reads rel beneath the skill root dir through os.Root: the
+// open is confined to the root and refuses to traverse symlinks that escape
+// it, so neither a symlinked file registered by discovery (registering
+// symlinks is skipped anyway) nor one swapped in afterwards can redirect a
+// read outside the skill directory.
+func readSkillFile(dir, rel string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
 
 // indexEntry is one record of skill://index.json.
 type indexEntry struct {
@@ -62,9 +84,8 @@ func NewSkillsServer(cwd string, extraDirs []string, log interfaces.LogFunc, ver
 			MIMEType:    "text/markdown",
 		}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			// Read from disk so edits between discovery and read are
-			// reflected; discovery vetted the path is inside a candidate
-			// skill directory.
-			data, err := os.ReadFile(sk.Path)
+			// reflected, confined to the skill root (readSkillFile).
+			data, err := readSkillFile(sk.Dir, "SKILL.md")
 			if err != nil {
 				return nil, fmt.Errorf("skill %q: %w", name, err)
 			}
@@ -75,9 +96,11 @@ func NewSkillsServer(cwd string, extraDirs []string, log interfaces.LogFunc, ver
 
 		// Supporting files as sibling resources (SEP-2640: relative paths
 		// resolve against the skill root). scripts/ is inventoried by
-		// discovery; walk the whole directory for completeness.
+		// discovery; walk the whole directory for completeness. Only
+		// regular files register: symlinks and other non-regular entries
+		// are skipped, since a link could point outside the skill root.
 		_ = filepath.WalkDir(sk.Dir, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil || d.IsDir() || !d.Type().IsRegular() {
 				return nil // ignore unreadable subtrees; never fail discovery
 			}
 			rel, rerr := filepath.Rel(sk.Dir, path)
@@ -107,7 +130,7 @@ func NewSkillsServer(cwd string, extraDirs []string, log interfaces.LogFunc, ver
 				Description: "Supporting file of skill " + name,
 				MIMEType:    resourceMIME,
 			}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-				data, err := os.ReadFile(path)
+				data, err := readSkillFile(sk.Dir, rel)
 				if err != nil {
 					return nil, fmt.Errorf("skill %q file %s: %w", name, rel, err)
 				}

@@ -17,6 +17,8 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/util"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -26,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,12 +50,16 @@ func tokenStorePath() string {
 	return filepath.Join(home, "mcp-tokens.json")
 }
 
-// storedToken is one server's persisted credential: the issuing authorization
-// server's issuer (SEP-2352 binding) plus the oauth2 token (access, refresh,
+// storedToken is one server's persisted credential: the MCP endpoint the
+// token is bound to (a changed URL invalidates the entry - the old bearer
+// token must never be sent to a new resource first), the issuing
+// authorization server's token endpoint (SEP-2352 binding key; lets restarts
+// rebuild a refresh-capable source), plus the oauth2 token (access, refresh,
 // expiry as issued).
 type storedToken struct {
-	Issuer string        `json:"issuer,omitempty"`
-	Token  *oauth2.Token `json:"token"`
+	Resource string        `json:"resource,omitempty"`
+	Issuer   string        `json:"issuer,omitempty"`
+	Token    *oauth2.Token `json:"token"`
 }
 
 // tokenFile is the on-disk shape of mcp-tokens.json.
@@ -130,16 +137,119 @@ func saveStoredToken(server string, st storedToken) error {
 
 // staticTokenSource wraps an already-obtained token as a TokenSource. It
 // never refreshes on its own: the SDK handler re-authorizes when the server
-// answers 401 after expiry.
+// answers 401 after expiry. Only used as the fallback for legacy stored
+// entries with no recorded token endpoint.
 type staticTokenSource struct{ tok *oauth2.Token }
 
 func (s staticTokenSource) Token() (*oauth2.Token, error) { return s.tok, nil }
 
+// savingTokenSource persists refreshed tokens. x/oauth2's TokenSource swaps
+// in a new access token on refresh, so any change from the previously seen
+// token is a refresh and gets written back through save. (go-sdk ships this
+// wrapper as auth.NewSavingTokenSource only after v1.7.0; inlined here.)
+type savingTokenSource struct {
+	mu      sync.Mutex
+	wrapped oauth2.TokenSource
+	save    func(*oauth2.Token)
+	last    *oauth2.Token
+}
+
+func (s *savingTokenSource) Token() (*oauth2.Token, error) {
+	tok, err := s.wrapped.Token()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.last == nil || tok.AccessToken != s.last.AccessToken {
+		s.save(tok)
+	}
+	s.last = tok
+	s.mu.Unlock()
+	return tok, nil
+}
+
+// restoredTokenSource rebuilds a refresh-capable token source from a stored
+// token: the stored issuer is the token endpoint, so refreshes can resume
+// without re-running the browser flow, and every refreshed token is
+// persisted back to the store. Falls back to a static source for entries
+// written before the issuer was recorded.
+func restoredTokenSource(name string, st storedToken, clientID, clientSecret string, httpClient *http.Client) oauth2.TokenSource {
+	if st.Issuer == "" {
+		return staticTokenSource{tok: st.Token}
+	}
+	cfg := &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint:     oauth2.Endpoint{TokenURL: st.Issuer},
+	}
+	// Same binding as the SDK's own refresh context: background (so a
+	// finished request cannot cancel later refreshes) carrying the
+	// configured HTTP client.
+	ctx := context.Background()
+	if httpClient != nil {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	}
+	return &savingTokenSource{
+		wrapped: cfg.TokenSource(ctx, st.Token),
+		save: func(tok *oauth2.Token) {
+			if err := saveStoredToken(name, storedToken{
+				Resource: st.Resource,
+				Issuer:   st.Issuer,
+				Token:    tok,
+			}); err != nil {
+				util.DebugWarn("mcp_oauth_refresh_persist", "server", name, "error", err.Error())
+			}
+		},
+	}
+}
+
+// mergeAuthURLScopes unions extra scopes into an authorization URL's scope
+// parameter. The SDK derives scopes only from the server's challenge and
+// metadata, so configured extras must be merged at the fetcher boundary
+// (RFC 6749 §3.3: the code grant carries the union; the later token
+// exchange sending only the SDK-derived subset is explicitly legal).
+func mergeAuthURLScopes(authURL string, extra []string) string {
+	u, err := url.Parse(authURL)
+	if err != nil {
+		return authURL // unparseable: leave it for the fetcher/SDK to reject
+	}
+	q := u.Query()
+	seen := make(map[string]bool, len(extra))
+	merged := make([]string, 0, len(extra)+1)
+	for _, s := range strings.Fields(q.Get("scope")) {
+		if !seen[s] {
+			seen[s] = true
+			merged = append(merged, s)
+		}
+	}
+	for _, s := range extra {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			merged = append(merged, s)
+		}
+	}
+	if len(merged) == 0 {
+		return authURL
+	}
+	q.Set("scope", strings.Join(merged, " "))
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // newAuthorizationHandler builds the SDK handler from raw values; tests
 // inject fetcher. Registration is CIMD-first, pre-registered as fallback.
-func newAuthorizationHandler(name, cimdURL, clientID, clientSecret, redirect string, httpClient *http.Client, fetcher auth.AuthorizationCodeFetcher, initial oauth2.TokenSource, onToken func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error)) (auth.OAuthHandler, error) {
+// Configured scopes are merged into the authorization URL at the fetcher
+// boundary (see mergeAuthURLScopes).
+func newAuthorizationHandler(name, cimdURL, clientID, clientSecret, redirect string, scopes []string, httpClient *http.Client, fetcher auth.AuthorizationCodeFetcher, initial oauth2.TokenSource, onToken func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error)) (auth.OAuthHandler, error) {
 	if redirect == "" {
 		redirect = defaultOAuthRedirect
+	}
+	if len(scopes) > 0 {
+		base := fetcher
+		fetcher = func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			args.URL = mergeAuthURLScopes(args.URL, scopes)
+			return base(ctx, args)
+		}
 	}
 	handlerCfg := &auth.AuthorizationCodeHandlerConfig{
 		RedirectURL:              redirect,
@@ -163,11 +273,14 @@ func newAuthorizationHandler(name, cimdURL, clientID, clientSecret, redirect str
 }
 
 // buildOAuthHandler creates the SDK authorization handler for one server
-// from its config block. httpClient (may be nil) is reused for all OAuth
-// metadata traffic so timeouts/headers behave like the MCP transport.
-// Installed on StreamableClientTransport.OAuthHandler; the transport then
-// adds bearer tokens automatically and re-authorizes on 401/403.
-func buildOAuthHandler(name string, oauthCfg *config.MCPOAuthConfig, httpClient *http.Client) (auth.OAuthHandler, error) {
+// from its config block. resourceURL is the MCP endpoint the handler serves;
+// persisted tokens are only restored when they were issued for the same
+// resource, and every handler-shaping field is folded into the cache
+// fingerprint. httpClient (may be nil) is reused for all OAuth metadata
+// traffic so timeouts/headers behave like the MCP transport. Installed on
+// StreamableClientTransport.OAuthHandler; the transport then adds bearer
+// tokens automatically and re-authorizes on 401/403.
+func buildOAuthHandler(name, resourceURL string, oauthCfg *config.MCPOAuthConfig, httpClient *http.Client) (auth.OAuthHandler, error) {
 	if oauthCfg == nil {
 		return nil, fmt.Errorf("mcp server %q: nil oauth config", name)
 	}
@@ -180,14 +293,19 @@ func buildOAuthHandler(name string, oauthCfg *config.MCPOAuthConfig, httpClient 
 	}
 
 	// Restore a persisted token if present so restarts skip the browser.
+	// Only a token issued for THIS resource is installed: the SDK sends the
+	// initial token before any issuer/resource validation happens, so a
+	// name-keyed restore alone could leak the old bearer token to a new
+	// endpoint after a URL change. A stale entry is ignored (and replaced
+	// when the fresh authorization persists).
 	var initial oauth2.TokenSource
 	if st, ok, err := loadStoredToken(name); err != nil {
 		return nil, fmt.Errorf("loading persisted mcp token: %w", err)
-	} else if ok {
-		initial = staticTokenSource{tok: st.Token}
+	} else if ok && st.Resource == resourceURL {
+		initial = restoredTokenSource(name, st, clientID, clientSecret, httpClient)
 	}
 
-	return newAuthorizationHandler(name, cimdURL, clientID, clientSecret, redirect, httpClient,
+	return newAuthorizationHandler(name, cimdURL, clientID, clientSecret, redirect, oauthCfg.Scopes, httpClient,
 		func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 			return localhostAuthorizationFlow(ctx, args, redirect)
 		},
@@ -195,10 +313,20 @@ func buildOAuthHandler(name string, oauthCfg *config.MCPOAuthConfig, httpClient 
 		func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 			// Token issuer: the AS serving the token endpoint (SEP-2352
 			// binding key). A new issuer replaces the stored entry.
-			if err := saveStoredToken(name, storedToken{Issuer: oc.Endpoint.TokenURL, Token: tok}); err != nil {
+			if err := saveStoredToken(name, storedToken{Resource: resourceURL, Issuer: oc.Endpoint.TokenURL, Token: tok}); err != nil {
 				return nil, fmt.Errorf("persisting mcp token: %w", err)
 			}
-			return oc.TokenSource(ctx, tok), nil
+			// Wrap with a saver so later refreshes persist too - otherwise
+			// an expired access token after a restart forces a full
+			// re-authorization instead of a silent refresh.
+			return &savingTokenSource{
+				wrapped: oc.TokenSource(ctx, tok),
+				save: func(refreshed *oauth2.Token) {
+					if err := saveStoredToken(name, storedToken{Resource: resourceURL, Issuer: oc.Endpoint.TokenURL, Token: refreshed}); err != nil {
+						util.DebugWarn("mcp_oauth_refresh_persist", "server", name, "error", err.Error())
+					}
+				},
+			}, nil
 		})
 }
 
@@ -308,12 +436,27 @@ func dropStaleOAuthHandlers(want map[string]string) {
 	}
 }
 
+// oauthHandlerFingerprint covers every expanded field that shapes the cached
+// handler: the resource URL, client registration, redirect, scopes, and the
+// client secret (hashed, never stored verbatim in the fingerprint). One
+// shared definition for the cache lookup and reload invalidation - omitting
+// a field lets a rotated value keep serving through the stale handler.
+func oauthHandlerFingerprint(resourceURL string, oauthCfg *config.MCPOAuthConfig) string {
+	secretSum := sha256.Sum256([]byte(config.ExpandEnv(oauthCfg.ClientSecret)))
+	return resourceURL + "|" +
+		config.ExpandEnv(oauthCfg.ClientIDURL) + "|" +
+		config.ExpandEnv(oauthCfg.ClientID) + "|" +
+		hex.EncodeToString(secretSum[:]) + "|" +
+		config.ExpandEnv(oauthCfg.RedirectURL) + "|" +
+		strings.Join(oauthCfg.Scopes, ",")
+}
+
 // oauthHandlerFor returns the cached handler for a server, building it on
 // first use. httpTimeout bounds metadata traffic like the MCP transport.
-func oauthHandlerFor(name string, oauthCfg *config.MCPOAuthConfig, httpTimeout time.Duration) (auth.OAuthHandler, error) {
+func oauthHandlerFor(name, resourceURL string, oauthCfg *config.MCPOAuthConfig, httpTimeout time.Duration) (auth.OAuthHandler, error) {
 	oauthHandlers.Lock()
 	defer oauthHandlers.Unlock()
-	fp := oauthCfg.ClientIDURL + "|" + oauthCfg.ClientID + "|" + oauthCfg.RedirectURL
+	fp := oauthHandlerFingerprint(resourceURL, oauthCfg)
 	if h, ok := oauthHandlers.m[name]; ok && oauthHandlers.fingerprints[name] == fp {
 		return h, nil
 	}
@@ -321,7 +464,7 @@ func oauthHandlerFor(name string, oauthCfg *config.MCPOAuthConfig, httpTimeout t
 	if httpTimeout > 0 {
 		client = &http.Client{Timeout: httpTimeout}
 	}
-	h, err := buildOAuthHandler(name, oauthCfg, client)
+	h, err := buildOAuthHandler(name, resourceURL, oauthCfg, client)
 	if err != nil {
 		return nil, err
 	}
