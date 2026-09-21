@@ -283,6 +283,16 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 	dir := t.TempDir()
 	withPathsSandbox(t, dir, nil)
 
+	// On Windows a leading "/" is relative (no drive letter) and would
+	// resolve inside the workspace; the whole-filesystem scan and the
+	// filesystem-root operand map to the drive root there.
+	wholeFSScan := "find / -type d -name skills"
+	fsRootArg := "/"
+	if runtime.GOOS == "windows" {
+		wholeFSScan = `find C:\ -type d -name skills`
+		fsRootArg = `C:\`
+	}
+
 	cases := []struct {
 		name    string
 		cmd     string
@@ -290,7 +300,7 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 		wantErr bool
 	}{
 		// The exact failure that hung a live session: a whole-filesystem scan.
-		{"whole-fs find", "find / -type d -name skills", nil, true},
+		{"whole-fs find", wholeFSScan, nil, true},
 		{"relative find is fine", "find . -name '*.go'", nil, false},
 		{"system dir operand", "ls /usr/bin", nil, false},
 		{"system file operand", "cat /etc/os-release", nil, false},
@@ -299,7 +309,7 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 		{"dev/null redirect operand", "sh -c 'echo hi > /dev/null'", nil, false},
 		{"home path outside roots", "cat ~/.config/app/config.toml", nil, true},
 		{"explicit args form allowed", "cat", []string{"/etc/passwd"}, false},
-		{"explicit args form rejected", "cat", []string{"/"}, true},
+		{"explicit args form rejected", "cat", []string{fsRootArg}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,7 +388,14 @@ func TestBuildExecCommandSandboxAudit(t *testing.T) {
 	withPathsSandbox(t, dir, nil)
 	withApproval(t, true) // "find" is RiskUnknown -> ActionAsk
 
-	_, err := sandbox.BuildExecCommand("find / -type d -name skills", nil, "", nil)
+	// Windows-relative form of the whole-filesystem scan (see
+	// TestAuditSystemCommandPaths).
+	wholeFSScan := "find / -type d -name skills"
+	if runtime.GOOS == "windows" {
+		wholeFSScan = `find C:\ -type d -name skills`
+	}
+
+	_, err := sandbox.BuildExecCommand(wholeFSScan, nil, "", nil)
 	if err == nil {
 		t.Fatal("expected sandbox rejection for 'find /', got nil")
 	}
