@@ -3,6 +3,7 @@ package auth
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -72,24 +73,25 @@ func TestCredentialsFilePermissions(t *testing.T) {
 		t.Fatalf("SaveCredentials failed: %v", err)
 	}
 
-	// Check permissions with stat.
-	info, err := os.Stat(repath)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	perm := info.Mode().Perm()
-	if perm != 0600 {
-		t.Errorf("expected 0600 permissions, got %04o", perm)
-	}
+	// Check permissions with stat. Windows has no POSIX mode bits (Stat
+	// always reports 0666), so the assertions are POSIX-only.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(repath)
+		if err != nil {
+			t.Fatalf("stat failed: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("expected 0600 permissions, got %04o", perm)
+		}
 
-	// Also verify the SetPassword-created file has 0600.
-	info, err = os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	perm = info.Mode().Perm()
-	if perm != 0600 {
-		t.Errorf("SetPassword file expected 0600 permissions, got %04o", perm)
+		// Also verify the SetPassword-created file has 0600.
+		info, err = os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat failed: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("SetPassword file expected 0600 permissions, got %04o", perm)
+		}
 	}
 }
 

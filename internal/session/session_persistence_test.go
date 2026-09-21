@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,8 +26,10 @@ func TestSaveIsAtomicAndLoadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("mode = %o, want 0600", got)
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("mode = %o, want 0600", got)
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

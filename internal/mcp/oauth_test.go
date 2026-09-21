@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -204,8 +205,10 @@ func TestOAuthTokenPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token store missing: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("token store mode = %v, want 0600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("token store mode = %v, want 0600", info.Mode().Perm())
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(data), "persisted") {

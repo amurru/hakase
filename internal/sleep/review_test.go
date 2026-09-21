@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -71,8 +72,10 @@ func TestRequireReviewed_MachineGeneratedBlocksUntilReviewed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("sidecar mode = %o, want 600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("sidecar mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 
 	// Any edit after review invalidates the pin.
