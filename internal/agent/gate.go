@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/google/shlex"
@@ -538,6 +539,24 @@ func normalizeShellEvasion(s string) string {
 	return s
 }
 
+// matchForbiddenGlob reports whether a deletion target matches the
+// forbidden glob set (e.g. "/*", "/.*"). filepath.Match treats only the
+// platform separator as a boundary, so on Windows a Unix-style target like
+// "/foo/bar" would let "*" cross the "/" boundaries and match - the target
+// is normalized to backslashes there, giving the same top-level-only
+// semantics as on Unix.
+func matchForbiddenGlob(t string) bool {
+	if runtime.GOOS == "windows" {
+		t = strings.ReplaceAll(t, "/", "\\")
+	}
+	for _, glob := range forbiddenGlobs {
+		if matched, _ := filepath.Match(glob, t); matched {
+			return true
+		}
+	}
+	return false
+}
+
 // checkRmHardDeny checks argv for rm -rf targeting forbidden paths.
 func checkRmHardDeny(argv []string) string {
 	// Must have recursive flag (-r, -R, --recursive) AND force flag (-f, --force).
@@ -578,11 +597,8 @@ func checkRmHardDeny(argv []string) string {
 			return fmt.Sprintf("recursive force-deletion of %s", t)
 		}
 		// Check /* and /.* patterns.
-		for _, glob := range forbiddenGlobs {
-			matched, _ := filepath.Match(glob, t)
-			if matched {
-				return fmt.Sprintf("recursive force-deletion with glob %s", t)
-			}
+		if matchForbiddenGlob(t) {
+			return fmt.Sprintf("recursive force-deletion with glob %s", t)
 		}
 		// Check if target is a device.
 		for _, prefix := range devicePrefixes {
@@ -682,11 +698,8 @@ func checkRmInString(s string) string {
 		if systemRootSet[t] {
 			return fmt.Sprintf("recursive force-deletion of %s", t)
 		}
-		for _, glob := range forbiddenGlobs {
-			matched, _ := filepath.Match(glob, t)
-			if matched {
-				return fmt.Sprintf("recursive force-deletion with glob %s", t)
-			}
+		if matchForbiddenGlob(t) {
+			return fmt.Sprintf("recursive force-deletion with glob %s", t)
 		}
 		for _, prefix := range devicePrefixes {
 			if strings.HasPrefix(t, prefix) {

@@ -5,8 +5,10 @@ import (
 	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -1008,6 +1010,12 @@ func TestEscStaleTimeoutDoesNotClearNewArm(t *testing.T) {
 		t.Fatal("test setup: second esc should interrupt")
 	}
 	mm.runCtrl.ConsumeInterrupt() // simulate agentDoneMsg consuming the flag
+	// Windows monotonic readings have ~0.5ms granularity; spin until the
+	// clock has actually advanced past the first arm so the re-arm is a
+	// distinct timestamp.
+	for !time.Now().After(oldArm) {
+		runtime.Gosched()
+	}
 	model, _ = mm.Update(keyMsg("esc"))
 	mm = model.(*AppModel)
 	newArm := mm.escArmedAt

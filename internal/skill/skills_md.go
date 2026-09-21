@@ -135,7 +135,7 @@ func listSkillScripts(dir string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		scripts = append(scripts, rel)
+		scripts = append(scripts, filepath.ToSlash(rel))
 	}
 	return scripts, nil
 }
