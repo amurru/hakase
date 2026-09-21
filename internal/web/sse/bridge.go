@@ -311,26 +311,13 @@ func (b *EventBridge) SendSidekick(sessionID, severity, text string) {
 // SSE format helpers
 // ---------------------------------------------------------------------------
 
-// maxSSEHint bounds the capacity hint used by the format helpers. The hint
-// must stay within a constant upper bound so that the 16+hint size passed to
-// make cannot overflow a 32-bit int; append grows past the cap as needed.
-const maxSSEHint = 1 << 20
-
 // formatSSE formats an SSE message: "event: <name>\ndata: <json>\n\n".
+// The frame is grown by append/fmt rather than a computed make size: any
+// len-derived size expression trips CodeQL's allocation-size-overflow query.
 func formatSSE(event string, data []byte) []byte {
-	// Pre-allocate: len("event: \ndata: \n\n") + event + data = 16 + event + data.
-	hint := len(event) + len(data)
-	if hint < 0 || hint > maxSSEHint {
-		hint = maxSSEHint
-	}
-	buf := make([]byte, 0, 16+hint)
-	buf = append(buf, "event: "...)
-	buf = append(buf, event...)
-	buf = append(buf, '\n')
-	buf = append(buf, "data: "...)
+	buf := fmt.Appendf(nil, "event: %s\ndata: ", event)
 	buf = append(buf, data...)
-	buf = append(buf, '\n', '\n')
-	return buf
+	return append(buf, '\n', '\n')
 }
 
 // PingComment returns a keepalive SSE comment line.
@@ -347,11 +334,5 @@ func SSEError(message string) []byte {
 // formatSSEBytes is a convenience wrapper returning []byte from formatted strings.
 // Used for testing and debugging.
 func formatSSEBytes(event string, jsonStr string) []byte {
-	hint := len(event) + len(jsonStr)
-	if hint < 0 || hint > maxSSEHint {
-		hint = maxSSEHint
-	}
-	buf := make([]byte, 0, 16+hint)
-	buf = fmt.Appendf(buf, "event: %s\ndata: %s\n\n", event, jsonStr)
-	return buf
+	return fmt.Appendf(nil, "event: %s\ndata: %s\n\n", event, jsonStr)
 }
