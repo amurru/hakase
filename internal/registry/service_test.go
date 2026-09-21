@@ -3,9 +3,11 @@ package registry
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -78,6 +80,20 @@ func isolateHome(t *testing.T) string {
 }
 
 // gitCmd runs a system git command in dir with the test env.
+
+// fileURL renders p as a well-formed file:// URL. On Windows the naive
+// "file://" + path form is malformed (the drive letter parses as a
+// host:port authority) and git rejects backslash paths; the canonical
+// form is file:///C:/dir. Unix paths yield the usual three-slash form.
+func fileURL(p string) string {
+	path := filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	return u.String()
+}
+
 func gitCmd(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	g := gitBin(t)
@@ -130,7 +146,7 @@ func TestServiceRegisterSyncDeleteLifecycle(t *testing.T) {
 	}
 	svc := NewService(store, nil)
 	bare := newSeedRemote(t)
-	url := "file://" + bare
+	url := fileURL(bare)
 
 	// Register materializes a clone into the managed checkout.
 	p, err := svc.Register(context.Background(), "demo", url, "main")
@@ -212,7 +228,7 @@ func TestServiceFailedRegisterLeavesSyncError(t *testing.T) {
 
 	// file:// pointing at a nonexistent dir fails fast (no network needed).
 	missing := filepath.Join(t.TempDir(), "does-not-exist.git")
-	p, err := svc.Register(context.Background(), "broken", "file://"+missing, "")
+	p, err := svc.Register(context.Background(), "broken", fileURL(missing), "")
 	if err == nil {
 		t.Fatal("register against a missing source succeeded")
 	}

@@ -849,6 +849,15 @@ func validateCloneSource(ctx context.Context, source string) error {
 	if strings.HasPrefix(s, "-") {
 		return fmt.Errorf("invalid clone source %q: looks like a git option; use a URL or a path starting with ./", s)
 	}
+	// A Windows absolute path ("C:\\repos\\demo") would parse as a URL with
+	// scheme "c" and an opaque remainder; classify it as the local path it
+	// is before the generic parse.
+	if looksLikeWindowsDrivePath(s) {
+		if sb == nil || sb.Mode == SandboxModeOff {
+			return nil
+		}
+		return fmt.Errorf("local-path clone sources are not allowed while the sandbox is active (they bypass the sandbox read roots); clone from https://, git://, or ssh:// instead")
+	}
 	u, err := url.Parse(s)
 	if err != nil {
 		return fmt.Errorf("invalid clone source: %w", err)
@@ -876,6 +885,18 @@ func validateCloneSource(ctx context.Context, source string) error {
 	default:
 		return fmt.Errorf("unsupported clone scheme %q (allowed: https, git, ssh, and file:// or a local path when no sandbox is active)", u.Scheme)
 	}
+}
+
+// looksLikeWindowsDrivePath reports whether s starts with a Windows drive
+// root ("C:/" or "C:\\"). Such a string is a filesystem path, not a URL -
+// url.Parse would read the drive letter as a scheme.
+func looksLikeWindowsDrivePath(s string) bool {
+	if len(s) < 3 || s[1] != ':' {
+		return false
+	}
+	c := s[0]
+	isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	return isLetter && (s[2] == '/' || s[2] == '\\')
 }
 
 // gitCloneContent is the package-level handler for the git_clone tool.

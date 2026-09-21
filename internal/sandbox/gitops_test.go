@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -845,6 +847,19 @@ func TestResolveRepoDirContextRootOverridesProcess(t *testing.T) {
 // git_clone / git_push / git_pull
 // ---------------------------------------------------------------------------
 
+// fileURL renders p as a well-formed file:// URL. On Windows the naive
+// "file://" + path form is malformed (the drive letter parses as a
+// host:port authority) and git rejects backslash paths; the canonical
+// form is file:///C:/dir. Unix paths yield the usual three-slash form.
+func fileURL(p string) string {
+	path := filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	return u.String()
+}
+
 // bareCloneOf creates a bare repository from a seeded worktree (no network).
 func bareCloneOf(t *testing.T, seed string) string {
 	t.Helper()
@@ -912,7 +927,7 @@ func TestGitCloneLocal(t *testing.T) {
 	initRepo(t, seed)
 
 	target := filepath.Join(t.TempDir(), "clone-a")
-	out, err := gitCloneContent(context.Background(), GitCloneInput{URL: "file://" + seed, Dir: target}, nil)
+	out, err := gitCloneContent(context.Background(), GitCloneInput{URL: fileURL(seed), Dir: target}, nil)
 	if err != nil {
 		t.Fatalf("gitCloneContent: %v", err)
 	}
@@ -931,7 +946,7 @@ func TestGitCloneRejectsSandboxedLocalSource(t *testing.T) {
 	defer func() { CurrentSandbox = origSB }()
 
 	_, err := gitCloneContent(context.Background(), GitCloneInput{
-		URL: "file://" + t.TempDir(),
+		URL: fileURL(t.TempDir()),
 		Dir: filepath.Join(t.TempDir(), "out"),
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "sandbox") {
