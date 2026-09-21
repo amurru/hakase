@@ -313,8 +313,14 @@ func (b *EventBridge) SendSidekick(sessionID, severity, text string) {
 
 // formatSSE formats an SSE message: "event: <name>\ndata: <json>\n\n".
 func formatSSE(event string, data []byte) []byte {
-	// Pre-allocate: len("event: \ndata: \n\n") + event + data = 16 + event + data
-	buf := make([]byte, 0, 16+len(event)+len(data))
+	// Pre-allocate: len("event: \ndata: \n\n") + event + data = 16 + event + data.
+	// The hint sum is guarded: on a 32-bit int an (unreachable, but
+	// unchecked) overflow would wrap negative and poison the allocation.
+	hint := len(event) + len(data)
+	if hint < 0 {
+		hint = 0
+	}
+	buf := make([]byte, 0, 16+hint)
 	buf = append(buf, "event: "...)
 	buf = append(buf, event...)
 	buf = append(buf, '\n')

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -859,7 +860,9 @@ func LoadConfig(filePath string) (*Config, error) {
 		cfg.Debug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
 	if v := os.Getenv("HAKASE_MAX_OUTPUT_TOKENS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		// Bounded to the int32 config field: an out-of-range value keeps the
+		// default (same silent-fallback convention as the other overrides).
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= math.MaxInt32 {
 			cfg.LoopGuard.MaxOutputTokens = int32(n)
 		}
 	}

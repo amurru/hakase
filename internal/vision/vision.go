@@ -685,8 +685,30 @@ func loadLocalImage(path string) ([]byte, string, error) {
 // SSRF guards
 // ---------------------------------------------------------------------------
 
-// CheckHostPublic resolves a host (with optional port) and rejects any
-// address in a private, loopback, link-local, or unspecified range.
+// CheckIPPublic rejects an address in a private, loopback, link-local,
+// multicast, unspecified, or CGNAT (100.64.0.0/10) range — anything that is
+// not a globally routable public unicast target. IPv4-mapped IPv6 literals
+// are unmapped first so ::ffff:127.0.0.1 cannot smuggle a loopback past the
+// v6-shaped predicates.
+func CheckIPPublic(ip netip.Addr) error {
+	ip = ip.Unmap()
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsUnspecified() || ip.IsMulticast() {
+		return fmt.Errorf("blocked internal address: %s", ip.String())
+	}
+	if ip.Is4() {
+		oct := ip.As4()
+		if oct[0] == 100 && oct[1] >= 64 && oct[1] <= 127 {
+			return fmt.Errorf("blocked internal address: %s (CGNAT range)", ip.String())
+		}
+	}
+	return nil
+}
+
+// CheckHostPublic resolves a host (with optional port) and rejects it when
+// any resolved address is not a public target. Callers that then DIAL the
+// host must use GuardedDialContext: a pre-flight check alone can be defeated
+// by DNS rebinding (the check-time and dial-time resolutions happen apart).
 func CheckHostPublic(host string) error {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
@@ -697,14 +719,55 @@ func CheckHostPublic(host string) error {
 	if err != nil {
 		return fmt.Errorf("cannot resolve host %s: %w", h, err)
 	}
-	ip, err := netip.ParseAddr(addrs.IP.String())
-	if err != nil {
-		return fmt.Errorf("cannot parse resolved IP: %w", err)
+	ip, ok := netip.AddrFromSlice(addrs.IP)
+	if !ok {
+		return fmt.Errorf("cannot parse resolved IP for %s", h)
 	}
-	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-		return fmt.Errorf("blocked internal address: %s (%s)", h, ip.String())
+	if cerr := CheckIPPublic(ip); cerr != nil {
+		return fmt.Errorf("%s: %w", h, cerr)
 	}
 	return nil
+}
+
+// GuardedDialContext is a Transport DialContext that enforces the public-host
+// rule at DIAL time: every address the resolver returns for the target must
+// pass CheckIPPublic, and the connection is pinned to the first validated
+// address so the validation and the connect cannot be split by a re-binding
+// DNS answer. Literal IPs are validated directly without resolution. Pair it
+// with a CheckRedirect that re-runs CheckHostPublic so every redirect hop is
+// guarded too (see the web file proxy client).
+func GuardedDialContext(ctx gocontext.Context, network, addr string) (net.Conn, error) {
+	h, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid dial address %q: %w", addr, err)
+	}
+	if ip, perr := netip.ParseAddr(h); perr == nil {
+		if cerr := CheckIPPublic(ip); cerr != nil {
+			return nil, cerr
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	addrs, rerr := net.DefaultResolver.LookupIPAddr(ctx, h)
+	if rerr != nil {
+		return nil, fmt.Errorf("cannot resolve host %s: %w", h, rerr)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no addresses for host %s", h)
+	}
+	for _, a := range addrs {
+		ip, ok := netip.AddrFromSlice(a.IP)
+		if !ok {
+			return nil, fmt.Errorf("cannot parse resolved IP for %s", h)
+		}
+		if cerr := CheckIPPublic(ip); cerr != nil {
+			return nil, cerr
+		}
+	}
+	// Pin the dial to a validated address: the Host header and TLS SNI still
+	// come from the URL, so the remote identity is unchanged.
+	var d net.Dialer
+	return d.DialContext(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
 }
 
 // isKnownImageMime checks a server-reported Content-Type against known image
