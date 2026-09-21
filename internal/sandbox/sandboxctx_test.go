@@ -21,12 +21,18 @@ func TestPinnedToReplacesRootsAndPreservesPolicy(t *testing.T) {
 		Permissions:    map[string]string{"system_exec": "ask"},
 		RiskThreshold:  "medium",
 	}
-	pinned := PinnedTo(base, root)
-	if len(pinned.WorkspaceRoots) != 1 || pinned.WorkspaceRoots[0] != root {
-		t.Errorf("pinned workspace roots = %v, want [%s]", pinned.WorkspaceRoots, root)
+	// normalizeRoots canonicalizes roots (long path on Windows); compare
+	// against the same form.
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		wantRoot = root
 	}
-	if len(pinned.ReadRoots) != 1 || pinned.ReadRoots[0] != root {
-		t.Errorf("pinned read roots = %v, want [%s]", pinned.ReadRoots, root)
+	pinned := PinnedTo(base, root)
+	if len(pinned.WorkspaceRoots) != 1 || pinned.WorkspaceRoots[0] != wantRoot {
+		t.Errorf("pinned workspace roots = %v, want [%s]", pinned.WorkspaceRoots, wantRoot)
+	}
+	if len(pinned.ReadRoots) != 1 || pinned.ReadRoots[0] != wantRoot {
+		t.Errorf("pinned read roots = %v, want [%s]", pinned.ReadRoots, wantRoot)
 	}
 	// Policy fields survive the pin.
 	if pinned.RiskThreshold != "medium" || pinned.Permissions["system_exec"] != "ask" {
@@ -93,8 +99,12 @@ func TestResolveRepoDirPinnedOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveRepoDir with override: %v", err)
 	}
-	if dir != checkout {
-		t.Errorf("pinned dir = %q, want checkout %q", dir, checkout)
+	wantCheckout, err := filepath.EvalSymlinks(checkout)
+	if err != nil {
+		wantCheckout = checkout
+	}
+	if dir != wantCheckout {
+		t.Errorf("pinned dir = %q, want checkout %q", dir, wantCheckout)
 	}
 }
 
@@ -119,8 +129,12 @@ func TestTaskResolvePinnedOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write inside pinned checkout rejected: %v", err)
 	}
-	if !filepath.HasPrefix(inRepo, checkout) {
-		t.Errorf("resolved %q not under checkout %q", inRepo, checkout)
+	wantCheckout, err := filepath.EvalSymlinks(checkout)
+	if err != nil {
+		wantCheckout = checkout
+	}
+	if !filepath.HasPrefix(inRepo, wantCheckout) {
+		t.Errorf("resolved %q not under checkout %q", inRepo, wantCheckout)
 	}
 
 	if _, err := taskResolve(ctx, filepath.Join(procRoot, "outside.txt"), true, ""); err == nil {

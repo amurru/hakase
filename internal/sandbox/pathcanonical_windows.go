@@ -75,6 +75,7 @@ func checkPathAlias(p string) error {
 			return fmt.Errorf("path contains an extra colon (NTFS alternate data stream), which is not allowed")
 		}
 		if comp != "." && comp != ".." && len(comp) > 0 &&
+			strings.Trim(comp, ". ") != "" &&
 			(strings.HasSuffix(comp, ".") || strings.HasSuffix(comp, " ")) {
 			return fmt.Errorf("path component %q ends with a trailing dot or space, which Win32 strips before opening the file", comp)
 		}

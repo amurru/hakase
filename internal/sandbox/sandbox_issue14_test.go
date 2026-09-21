@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,9 @@ func TestBuildExecCommandRefusesLandlock(t *testing.T) {
 // exec emits an audit entry (Decision sandbox_fallback) and calls the UI
 // notice hook - never debug-logs only.
 func TestBuildExecCommandBwrapFallbackAuditsAndNotifies(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: bubblewrap mode is coerced to paths on Windows, so the fallback path cannot exist")
+	}
 	forceBwrapMissing(t)
 
 	savedGate := EvaluateCommandFunc
@@ -137,6 +141,9 @@ func TestBuildExecCommandBwrapFallbackAuditsAndNotifies(t *testing.T) {
 // TestBuildExecCommandBwrapFailClosedKeepsDefault verifies AllowFallback=false
 // (the default) refuses when bwrap is missing.
 func TestBuildExecCommandBwrapFailClosedKeepsDefault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: bubblewrap mode is coerced to paths on Windows, so the fail-closed path cannot exist")
+	}
 	forceBwrapMissing(t)
 
 	savedGate := EvaluateCommandFunc
