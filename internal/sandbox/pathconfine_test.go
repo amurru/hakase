@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -68,7 +69,15 @@ func TestResolveScopedPathModeOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("off mode: unexpected error: %v", err)
 	}
-	if want := filepath.Clean("/etc/passwd"); got != want {
+	want := filepath.Clean("/etc/passwd")
+	if runtime.GOOS == "windows" {
+		// A leading "\" is drive-relative on Windows; off mode returns the
+		// path resolved against the current working directory.
+		if abs, aerr := filepath.Abs("/etc/passwd"); aerr == nil {
+			want = filepath.Clean(abs)
+		}
+	}
+	if got != want {
 		t.Errorf("off mode: got %q, want %q", got, want)
 	}
 }
@@ -121,6 +130,14 @@ func TestResolveScopedPathTable(t *testing.T) {
 		wantUnder string // result must be under this dir when no error
 	}
 
+	// On Windows, handle-based canonicalization resolves symlinks up front,
+	// so an escaping link is caught by the plain containment check rather
+	// than the post-symlink-resolution check.
+	wantSymlinkEscape := "escapes workspace root after symlink resolution"
+	if runtime.GOOS == "windows" {
+		wantSymlinkEscape = "outside approved"
+	}
+
 	cases := []tc{
 		{
 			name:      "write inside workspace",
@@ -144,7 +161,7 @@ func TestResolveScopedPathTable(t *testing.T) {
 			name:    "symlink inside root pointing outside",
 			path:    evilLink,
 			write:   true,
-			wantErr: "escapes workspace root after symlink resolution",
+			wantErr: wantSymlinkEscape,
 		},
 		{
 			name:    "deny root blocks write",
@@ -561,7 +578,10 @@ func TestSymlinkIntoDenyRootRejected(t *testing.T) {
 		}
 
 		for _, write := range []bool{false, true} {
-			if _, err := sb.ResolveScopedPath(link, write); err == nil || !strings.Contains(err.Error(), "resolves into a denied root") {
+			// "denied root" matches both the pre-join rejection ("is in a
+			// denied root", hit when canonicalization resolves the link up
+			// front on Windows) and the post-resolution one.
+			if _, err := sb.ResolveScopedPath(link, write); err == nil || !strings.Contains(err.Error(), "denied root") {
 				t.Fatalf("ResolveScopedPath(link, write=%v) = %v, want resolves-into-deny rejection", write, err)
 			}
 		}

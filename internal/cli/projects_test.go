@@ -4,12 +4,27 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/registry"
 	"amurru/hakase/internal/sandbox"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// fileURL renders p as a well-formed file:// URL. On Windows the naive
+// "file://" + path form is malformed (the drive letter parses as a
+// host:port authority); the canonical form is file:///C:/dir. Unix paths
+// yield the usual three-slash form.
+func fileURL(p string) string {
+	path := filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	return u.String()
+}
 
 // projectsStubGate installs the sandbox gate hooks the git engine requires in
 // unit tests (they are main-wired in the real binary). Every command asks, so
@@ -112,7 +127,7 @@ func TestProjectsRegisterListSyncDeleteCLI(t *testing.T) {
 	approvals := projectsStubGate(t)
 	t.Setenv("HAKASE_HOME", t.TempDir())
 	bare := projectsSeedRemote(t)
-	url := "file://" + bare
+	url := fileURL(bare)
 
 	if code := RunProjectCLI([]string{"register", "demo", url, "--ref", "main"}); code != 0 {
 		t.Fatalf("register exited %d, want 0", code)

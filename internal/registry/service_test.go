@@ -272,7 +272,7 @@ func TestServiceSyncRematerializesWhenCheckoutMissing(t *testing.T) {
 	svc := NewService(store, nil)
 	bare := newSeedRemote(t)
 
-	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	p, err := svc.Register(context.Background(), "demo", fileURL(bare), "")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestServiceSyncDivergedFailsWithoutDeletingWork(t *testing.T) {
 	svc := NewService(store, nil)
 	bare := newSeedRemote(t)
 
-	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	p, err := svc.Register(context.Background(), "demo", fileURL(bare), "")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestServiceSyncDivergedFailsWithoutDeletingWork(t *testing.T) {
 	gitCmd(t, p.Checkout, "commit", "-m", "local commit")
 
 	work := filepath.Join(t.TempDir(), "work")
-	gitCmd(t, filepath.Dir(work), "clone", "file://"+bare, work)
+	gitCmd(t, filepath.Dir(work), "clone", fileURL(bare), work)
 	if err := os.WriteFile(filepath.Join(work, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestServiceSyncDirtyTreeGuard(t *testing.T) {
 	svc := NewService(store, nil)
 	bare := newSeedRemote(t)
 
-	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	p, err := svc.Register(context.Background(), "demo", fileURL(bare), "")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -408,14 +408,14 @@ func TestServiceStateReportsAheadBehind(t *testing.T) {
 	svc := NewService(store, nil)
 	bare := newSeedRemote(t)
 
-	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	p, err := svc.Register(context.Background(), "demo", fileURL(bare), "")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	// External push: the checkout is now one commit behind.
 	work := filepath.Join(t.TempDir(), "work")
-	gitCmd(t, filepath.Dir(work), "clone", "file://"+bare, work)
+	gitCmd(t, filepath.Dir(work), "clone", fileURL(bare), work)
 	if err := os.WriteFile(filepath.Join(work, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestServiceNotConfinedByHostSandbox(t *testing.T) {
 	svc := NewService(store, nil)
 	bare := newSeedRemote(t)
 
-	p, err := svc.Register(context.Background(), "demo", "file://"+bare, "")
+	p, err := svc.Register(context.Background(), "demo", fileURL(bare), "")
 	if err != nil {
 		t.Fatalf("Register under host sandbox: %v", err)
 	}
