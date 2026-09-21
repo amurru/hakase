@@ -49,17 +49,8 @@ func checkPathAlias(p string) error {
 	if p == "" {
 		return nil
 	}
-	// Device / Win32 namespaces bypass normalization entirely.
-	if strings.HasPrefix(p, `\\?\`) {
-		return fmt.Errorf("device-namespace path (\\\\?\\ prefix) is not allowed")
-	}
-	if strings.HasPrefix(p, `\\.\`) {
-		return fmt.Errorf("device-namespace path (\\\\.\\ prefix) is not allowed")
-	}
-	// Drive-relative form: the OS resolves C:foo against the per-drive CWD,
-	// not the base the audit assumes.
-	if driveRelativeRe.MatchString(p) {
-		return fmt.Errorf("drive-relative path (C:name) is not allowed; use an absolute path")
+	if err := checkPathAliasGlobal(p); err != nil {
+		return err
 	}
 	// Per-component checks: trailing dots/spaces and stray colons.
 	comps := splitPathComponents(p)
@@ -79,6 +70,29 @@ func checkPathAlias(p string) error {
 			(strings.HasSuffix(comp, ".") || strings.HasSuffix(comp, " ")) {
 			return fmt.Errorf("path component %q ends with a trailing dot or space, which Win32 strips before opening the file", comp)
 		}
+	}
+	return nil
+}
+
+// checkPathAliasGlobal checks the alias classes whose danger comes from how
+// the OS RESOLVES the path, independent of component content: device/Win32
+// namespaces (bypass normalization) and drive-relative forms (resolve
+// against the per-drive CWD). Quoting does not change either resolution, so
+// these apply to every command token - including quoted operands carrying
+// spaces, which the per-component text checks below must not touch (free
+// text like a commit message legitimately contains colons and dots).
+func checkPathAliasGlobal(p string) error {
+	// Device / Win32 namespaces bypass normalization entirely.
+	if strings.HasPrefix(p, `\\?\`) {
+		return fmt.Errorf("device-namespace path (\\\\?\\ prefix) is not allowed")
+	}
+	if strings.HasPrefix(p, `\\.\`) {
+		return fmt.Errorf("device-namespace path (\\\\.\\ prefix) is not allowed")
+	}
+	// Drive-relative form: the OS resolves C:foo against the per-drive CWD,
+	// not the base the audit assumes.
+	if driveRelativeRe.MatchString(p) {
+		return fmt.Errorf("drive-relative path (C:name) is not allowed; use an absolute path")
 	}
 	return nil
 }

@@ -8,6 +8,11 @@ package sandbox
 // expectations stay byte-identical.
 func checkPathAlias(string) error { return nil }
 
+// checkPathAliasGlobal rejects the resolution-relevant Win32 alias classes
+// (device namespaces, drive-relative forms). No-op on Unix, like
+// checkPathAlias.
+func checkPathAliasGlobal(string) error { return nil }
+
 // checkShellExpansionAlias rejects command tokens that a Windows shell would
 // expand (%VAR%, delayed !VAR!) after the audit ran. No-op on Unix.
 func checkShellExpansionAlias(string) error { return nil }
