@@ -352,7 +352,12 @@ func TestSaveTightensExistingPerms(t *testing.T) {
 	path := filepath.Join(dir, "notes.json")
 	// A pre-existing permissive store dir and tmp file (e.g. from an old
 	// install or a manual copy) must be tightened by the next write.
+	// MkdirAll is a no-op on the already-existing t.TempDir() dir, so the
+	// permissive mode must be applied explicitly with Chmod.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path+".tmp", []byte("stale"), 0o644); err != nil {

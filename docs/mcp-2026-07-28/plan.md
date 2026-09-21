@@ -31,12 +31,6 @@ no roots/logging migration (deprecated primitives we never used).
   well-known resource. No `skills/list` method exists to target. Recorded
   in spec.md MC-006. Governs MC-006.
 
-- [ ] **D1** ADK 2.1.0 -> 2.4.0 blast radius: read the ADK changelog for
-  non-MCP breaking changes (agent, tool, model APIs) and decide bump-vs-pin
-  strategy. Default: bump both, fix fallout in one PR. Governs MC-001.
-- [ ] **D2** Skills enumeration carrier: `skill://index.json` resource vs
-  `skills/list` method (+ `resources/directory/read`). Pin to whatever
-  go-sdk v1.7 actually exports; the SEP moved mid-flight. Governs MC-006.
 - [x] **D3** URL-mode elicitation: surface the URL as a clarify prompt,
   user opens it out-of-band, tool continues without blocking (user-confirmed
   2026-09-20). Recorded in spec.md MC-003. Governs MC-003.
