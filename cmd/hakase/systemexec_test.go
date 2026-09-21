@@ -284,13 +284,16 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 	withPathsSandbox(t, dir, nil)
 
 	// On Windows a leading "/" is relative (no drive letter) and would
-	// resolve inside the workspace; the whole-filesystem scan and the
-	// filesystem-root operand map to the drive root there.
+	// resolve inside the workspace; the whole-filesystem scan, the
+	// filesystem-root operand, and the redirect idiom map to their Windows
+	// equivalents there.
 	wholeFSScan := "find / -type d -name skills"
 	fsRootArg := "/"
+	devNullRedirect := "sh -c 'echo hi > /dev/null'"
 	if runtime.GOOS == "windows" {
 		wholeFSScan = `find C:\ -type d -name skills`
 		fsRootArg = `C:\`
+		devNullRedirect = `cmd /D /C "echo hi > NUL"`
 	}
 
 	cases := []struct {
@@ -306,7 +309,7 @@ func TestAuditSystemCommandPaths(t *testing.T) {
 		{"system file operand", "cat /etc/os-release", nil, false},
 		{"absolute command binary", "/bin/true", nil, false},
 		{"tmp scratch", "cd /tmp && make", nil, false},
-		{"dev/null redirect operand", "sh -c 'echo hi > /dev/null'", nil, false},
+		{"dev/null redirect operand", devNullRedirect, nil, false},
 		{"home path outside roots", "cat ~/.config/app/config.toml", nil, true},
 		{"explicit args form allowed", "cat", []string{"/etc/passwd"}, false},
 		{"explicit args form rejected", "cat", []string{fsRootArg}, true},
