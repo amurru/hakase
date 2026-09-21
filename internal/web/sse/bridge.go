@@ -311,14 +311,17 @@ func (b *EventBridge) SendSidekick(sessionID, severity, text string) {
 // SSE format helpers
 // ---------------------------------------------------------------------------
 
+// maxSSEHint bounds the capacity hint used by the format helpers. The hint
+// must stay within a constant upper bound so that the 16+hint size passed to
+// make cannot overflow a 32-bit int; append grows past the cap as needed.
+const maxSSEHint = 1 << 20
+
 // formatSSE formats an SSE message: "event: <name>\ndata: <json>\n\n".
 func formatSSE(event string, data []byte) []byte {
 	// Pre-allocate: len("event: \ndata: \n\n") + event + data = 16 + event + data.
-	// The hint sum is guarded: on a 32-bit int an (unreachable, but
-	// unchecked) overflow would wrap negative and poison the allocation.
 	hint := len(event) + len(data)
-	if hint < 0 {
-		hint = 0
+	if hint < 0 || hint > maxSSEHint {
+		hint = maxSSEHint
 	}
 	buf := make([]byte, 0, 16+hint)
 	buf = append(buf, "event: "...)
@@ -344,7 +347,11 @@ func SSEError(message string) []byte {
 // formatSSEBytes is a convenience wrapper returning []byte from formatted strings.
 // Used for testing and debugging.
 func formatSSEBytes(event string, jsonStr string) []byte {
-	buf := make([]byte, 0, 16+len(event)+len(jsonStr))
+	hint := len(event) + len(jsonStr)
+	if hint < 0 || hint > maxSSEHint {
+		hint = maxSSEHint
+	}
+	buf := make([]byte, 0, 16+hint)
 	buf = fmt.Appendf(buf, "event: %s\ndata: %s\n\n", event, jsonStr)
 	return buf
 }
