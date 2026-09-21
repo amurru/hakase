@@ -87,7 +87,17 @@ func NewSkillsServer(cwd string, extraDirs []string, log interfaces.LogFunc, ver
 			uri := base + "/" + filepath.ToSlash(rel)
 			mt := mime.TypeByExtension(filepath.Ext(path))
 			if mt == "" {
-				mt = "application/octet-stream"
+				// Windows resolves extension types via the registry, where
+				// text types like .md/.go are often unregistered; keep them
+				// portable so they are served as text, not base64 blobs.
+				switch strings.ToLower(filepath.Ext(path)) {
+				case ".md", ".markdown":
+					mt = "text/markdown"
+				case ".go":
+					mt = "text/x-go"
+				default:
+					mt = "application/octet-stream"
+				}
 			}
 			resourceURI, resourceMIME := uri, mt
 			srv.AddResource(&mcp.Resource{

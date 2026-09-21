@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,7 +101,8 @@ func TestCombinedOutputContextCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CombinedOutputContext: %v", err)
 	}
-	if string(out) != "hello-ctx\n" {
-		t.Errorf("output = %q, want %q", string(out), "hello-ctx\n")
+	// cmd's echo terminates lines with CRLF on Windows.
+	if got := strings.ReplaceAll(string(out), "\r\n", "\n"); got != "hello-ctx\n" {
+		t.Errorf("output = %q, want %q", got, "hello-ctx\n")
 	}
 }

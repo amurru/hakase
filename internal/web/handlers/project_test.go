@@ -156,8 +156,14 @@ func TestWithBoundSandbox(t *testing.T) {
 	if sb == nil {
 		t.Fatal("project-bound run did not install a sandbox override")
 	}
-	if len(sb.WorkspaceRoots) != 1 || sb.WorkspaceRoots[0] != checkout {
-		t.Errorf("bound workspace roots = %v, want [%s]", sb.WorkspaceRoots, checkout)
+	// normalizeRoots resolves roots to their canonical form (long path on
+	// Windows); compare against the same form.
+	wantRoot, err := filepath.EvalSymlinks(checkout)
+	if err != nil {
+		wantRoot = checkout
+	}
+	if len(sb.WorkspaceRoots) != 1 || sb.WorkspaceRoots[0] != wantRoot {
+		t.Errorf("bound workspace roots = %v, want [%s]", sb.WorkspaceRoots, wantRoot)
 	}
 }
 
