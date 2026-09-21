@@ -50,6 +50,14 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Go is a cross-compiler, so this compiles the whole module against
+      # darwin's stdlib on the Linux runner - no macOS machine needed. It
+      # would have caught #38 (a //go:build unix file using Pdeathsig, which
+      # darwin's syscall package lacks) the moment it landed. Compile-only:
+      # running darwin tests would need a real macOS runner.
+      - name: Cross-compile check (darwin)
+        run: GOOS=darwin go build ./...
+
       - name: Go tests
         run: go test ./...
 
