@@ -164,11 +164,18 @@ func TestResolveScopedPathShortNameAlias(t *testing.T) {
 // GetFinalPathNameByHandle).
 func TestCanonicalizePathFoldsCase(t *testing.T) {
 	ws := t.TempDir()
-	real := filepath.Join(ws, "Config.JSON")
+	// Expectations must be built from the canonical root form: t.TempDir
+	// may hand out an 8.3 short path (RUNNER~1) while canonicalization
+	// returns the on-disk long form (runneradmin).
+	canonWS, err := canonicalizePath(ws, false)
+	if err != nil {
+		t.Fatalf("canonicalizePath(root): %v", err)
+	}
+	real := filepath.Join(canonWS, "Config.JSON")
 	if err := writeFileForTest(real, []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
-	lower := filepath.Join(strings.ToLower(ws), "config.json")
+	lower := filepath.Join(strings.ToLower(canonWS), "config.json")
 	got, err := canonicalizePath(lower, false)
 	if err != nil {
 		t.Fatalf("canonicalizePath: %v", err)
@@ -181,7 +188,7 @@ func TestCanonicalizePathFoldsCase(t *testing.T) {
 	}
 
 	// Not-yet-existing path: canonicalizes the existing parent and appends.
-	missing := filepath.Join(strings.ToLower(ws), "sub", "new.txt")
+	missing := filepath.Join(strings.ToLower(canonWS), "sub", "new.txt")
 	got, err = canonicalizePath(missing, true)
 	if err != nil {
 		t.Fatalf("canonicalizePath(missing): %v", err)
@@ -261,6 +268,20 @@ func TestAuditRejectsShellExpansionTokens(t *testing.T) {
 		ReadRoots:      []string{ws},
 	}
 	withTestSandbox(t, sb)
+
+	// EvaluateCommandFunc is wired by cmd/hakase main and is nil in unit
+	// tests; stub it (and the audit sink) so BuildExecCommand reaches the
+	// expansion check instead of panicking on the nil hook.
+	savedGate := EvaluateCommandFunc
+	savedAudit := AuditCommandFunc
+	EvaluateCommandFunc = func(sb *SandboxConfig, command string, args []string) GateDecision {
+		return GateDecision{Action: ActionAllow, Risk: RiskLow}
+	}
+	AuditCommandFunc = func(CommandAuditEntry) {}
+	t.Cleanup(func() {
+		EvaluateCommandFunc = savedGate
+		AuditCommandFunc = savedAudit
+	})
 
 	for _, command := range []string{
 		`type %USERPROFILE%\.hakase\credentials.json`,

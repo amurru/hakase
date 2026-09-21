@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"amurru/hakase/internal/interfaces"
@@ -324,10 +325,41 @@ func expandHome(p string) string {
 	return p
 }
 
+// canonicalRootCache memoizes canonicalizePath results for sandbox config
+// roots. ResolveScopedPath and the command audit canonicalize the candidate
+// path (folding 8.3 short names, case, and junctions on Windows), so a root
+// registered in a non-canonical form - e.g. the RUNNER~1 style temp paths CI
+// runners hand out - would never contain its own canonical candidates.
+// Both sides must be in the same form. Best effort: a root that cannot be
+// canonicalized (missing, inaccessible) keeps its raw form.
+var canonicalRootCache sync.Map // string -> string
+
+// canonicalRoot returns root in on-disk canonical form, cached per raw
+// string. Identity on non-Windows platforms.
+func canonicalRoot(root string) string {
+	if runtime.GOOS != "windows" || root == "" {
+		return root
+	}
+	if v, ok := canonicalRootCache.Load(root); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	c, err := canonicalizePath(root, false)
+	if err != nil || c == "" {
+		c = root
+	}
+	canonicalRootCache.Store(root, c)
+	return c
+}
+
 // within reports whether target is contained under root. On Windows the
 // comparison is case-insensitive (NTFS/Win32 path case-insensitivity:
-// C:\Foo and c:\foo are the same path).
+// C:\Foo and c:\foo are the same path) and the root is canonicalized first
+// so short-name/case variants of the same directory match their
+// canonicalized candidates.
 func within(root, target string) bool {
+	root = canonicalRoot(root)
 	if runtime.GOOS == "windows" {
 		root = strings.ToLower(root)
 		target = strings.ToLower(target)
@@ -392,6 +424,10 @@ func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, err
 		roots = sb.ReadRoots
 	}
 	for _, root := range roots {
+		// Work against the canonical root form so SecureJoin (and the
+		// returned path) share the canonical form of the candidate; the
+		// containment checks canonicalize either way.
+		root = canonicalRoot(root)
 		if !within(root, p) {
 			continue
 		}
