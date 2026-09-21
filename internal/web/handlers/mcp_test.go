@@ -190,6 +190,52 @@ func TestMCPServerUpdate(t *testing.T) {
 	}
 }
 
+// TestMCPServerUpdatePreservesOAuth pins the edit-flow contract: the read
+// API strips OAuth secrets and the UI sends no oauth block, so an omitted
+// oauth on update must keep the stored registration (secret included);
+// an explicit oauth object still replaces it.
+func TestMCPServerUpdatePreservesOAuth(t *testing.T) {
+	setupMCPHandlerTest(t, map[string]*config.MCPServerConfig{
+		"remote": {
+			Type:  "http",
+			URL:   "http://localhost:9000/mcp",
+			OAuth: &config.MCPOAuthConfig{ClientID: "cid", ClientSecret: "sekrit"},
+		},
+	})
+
+	handler := (&MCPAPI{}).UpdateServer
+	body := `{"type": "http", "url": "http://localhost:9001/mcp"}`
+	req := httptest.NewRequest("PUT", "/mcp/servers/remote", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	got, ok := mcp.MCPManager.ServerConfig("remote")
+	if !ok || got.URL != "http://localhost:9001/mcp" {
+		t.Fatalf("expected updated URL, got %+v ok=%v", got, ok)
+	}
+	if got.OAuth == nil || got.OAuth.ClientID != "cid" || got.OAuth.ClientSecret != "sekrit" {
+		t.Fatalf("omitted oauth must preserve the stored registration, got %+v", got.OAuth)
+	}
+
+	// An explicit oauth block replaces the stored one.
+	body = `{"type": "http", "url": "http://localhost:9001/mcp", "oauth": {"client_id": "cid2"}}`
+	req = httptest.NewRequest("PUT", "/mcp/servers/remote", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ = mcp.MCPManager.ServerConfig("remote")
+	if got.OAuth == nil || got.OAuth.ClientID != "cid2" || got.OAuth.ClientSecret != "" {
+		t.Fatalf("explicit oauth must replace the stored registration, got %+v", got.OAuth)
+	}
+}
+
 func TestMCPServerDelete(t *testing.T) {
 	setupMCPHandlerTest(t, map[string]*config.MCPServerConfig{
 		"web": {Type: "http", URL: "http://localhost:9000/mcp"},

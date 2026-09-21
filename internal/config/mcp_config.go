@@ -100,16 +100,22 @@ func (s *MCPServerConfig) Validate() error {
 // Validate checks an OAuth client block: exactly one identity (CIMD URL or
 // pre-registered client id), secret only alongside a client id, https-only
 // CIMD URL with a non-root path (the go-sdk refuses root CIMD URLs), and
-// http(s) redirect.
+// http(s) redirect. Fields are validated after env expansion, matching how
+// the OAuth handler consumes them - a ${VAR}-configured URL would otherwise
+// fail here with a bogus no-scheme error while the expanded form is valid.
 func (o *MCPOAuthConfig) Validate() error {
-	if o.ClientIDURL == "" && o.ClientID == "" {
+	cimd := ExpandEnv(o.ClientIDURL)
+	clientID := ExpandEnv(o.ClientID)
+	clientSecret := ExpandEnv(o.ClientSecret)
+	redirect := ExpandEnv(o.RedirectURL)
+	if cimd == "" && clientID == "" {
 		return fmt.Errorf("mcp oauth needs client_id_url (CIMD) or client_id (pre-registered)")
 	}
-	if o.ClientSecret != "" && o.ClientID == "" {
+	if clientSecret != "" && clientID == "" {
 		return fmt.Errorf("mcp oauth client_secret requires client_id")
 	}
-	if o.ClientIDURL != "" {
-		u, err := url.Parse(o.ClientIDURL)
+	if cimd != "" {
+		u, err := url.Parse(cimd)
 		if err != nil {
 			return fmt.Errorf("invalid mcp oauth client_id_url %q: %w", o.ClientIDURL, err)
 		}
@@ -120,8 +126,8 @@ func (o *MCPOAuthConfig) Validate() error {
 			return fmt.Errorf("invalid mcp oauth client_id_url %q: must point at a metadata document, not the host root", o.ClientIDURL)
 		}
 	}
-	if o.RedirectURL != "" {
-		u, err := url.Parse(o.RedirectURL)
+	if redirect != "" {
+		u, err := url.Parse(redirect)
 		if err != nil {
 			return fmt.Errorf("invalid mcp oauth redirect_url %q: %w", o.RedirectURL, err)
 		}
