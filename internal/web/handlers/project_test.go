@@ -12,9 +12,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +184,19 @@ func doJSON(t *testing.T, h http.Handler, method, target string, body any) (*htt
 	return rec, dto
 }
 
+// fileURL renders p as a well-formed file:// URL. On Windows the naive
+// "file://" + path form is malformed (the drive letter parses as a
+// host:port authority) and git rejects backslash paths; the canonical
+// form is file:///C:/dir. Unix paths yield the usual three-slash form.
+func fileURL(p string) string {
+	path := filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	return u.String()
+}
+
 // TestProjectAPIEndpointsLifecycle covers register/list/sync/delete over HTTP
 // against a local bare remote (sandbox-off, per D9).
 func TestProjectAPIEndpointsLifecycle(t *testing.T) {
@@ -191,7 +206,7 @@ func TestProjectAPIEndpointsLifecycle(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterProjectRoutes(router)
 	bare := projectSeedRemote(t)
-	url := "file://" + bare
+	url := fileURL(bare)
 
 	// Register clones synchronously and returns a ready entry.
 	rec, dto := doJSON(t, router, http.MethodPost, "/projects", map[string]string{
@@ -301,7 +316,7 @@ func TestProjectStatusEndpointAndSyncGuards(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterProjectRoutes(router)
 	bare := projectSeedRemote(t)
-	url := "file://" + bare
+	url := fileURL(bare)
 
 	rec, dto := doJSON(t, router, http.MethodPost, "/projects", map[string]string{
 		"name": "demo", "url": url, "ref": "main",

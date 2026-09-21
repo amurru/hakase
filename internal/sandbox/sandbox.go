@@ -538,6 +538,16 @@ func (sb *SandboxConfig) DeniedPath(target string) bool {
 			return true
 		}
 	}
+	// The raw form missed: retry the canonical candidate (short-name/case
+	// variants of the same file on Windows). The syscall only runs for
+	// non-matches, keeping the common listing-filter path cheap.
+	if cp, err := canonicalizePath(p, false); err == nil && cp != p {
+		for _, d := range sb.DenyRoots {
+			if within(d, cp) {
+				return true
+			}
+		}
+	}
 	return false
 }
 

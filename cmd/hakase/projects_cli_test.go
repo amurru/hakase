@@ -2,9 +2,11 @@ package main
 
 import (
 	"amurru/hakase/internal/cli"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -49,6 +51,19 @@ func mainGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// fileURL renders p as a well-formed file:// URL. On Windows the naive
+// "file://" + path form is malformed (the drive letter parses as a
+// host:port authority) and git rejects backslash paths; the canonical
+// form is file:///C:/dir. Unix paths yield the usual three-slash form.
+func fileURL(p string) string {
+	path := filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	return u.String()
+}
+
 func TestProjectsCLIHeadlessOperator(t *testing.T) {
 	t.Setenv("HAKASE_HOME", filepath.Join(t.TempDir(), "home"))
 
@@ -67,7 +82,7 @@ func TestProjectsCLIHeadlessOperator(t *testing.T) {
 	mainGit(t, seed, "commit", "-m", "initial")
 	bare := filepath.Join(t.TempDir(), "remote.git")
 	mainGit(t, t.TempDir(), "clone", "--bare", seed, bare)
-	url := "file://" + bare
+	url := fileURL(bare)
 
 	// Headless register must succeed (clone classified MEDIUM -> would ask).
 	if code := cli.Dispatch([]string{"projects", "register", "demo", url, "--ref", "main"}); code != 0 {

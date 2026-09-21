@@ -236,6 +236,7 @@ func TestHakaseHome(t *testing.T) {
 	t.Setenv("HAKASE_HOME", "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 
 	if got := HakaseHome(); got != filepath.Join(home, ".hakase") {
 		t.Errorf("HakaseHome: expected %q, got %q", filepath.Join(home, ".hakase"), got)
@@ -265,6 +266,7 @@ func TestResolveConfigPath(t *testing.T) {
 	// User-level ~/.hakase/config.json is used when the local file is missing.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 	userCfg := filepath.Join(home, ".hakase", "config.json")
 	if err := os.MkdirAll(filepath.Dir(userCfg), 0o755); err != nil {
 		t.Fatalf("mkdir ~/.hakase: %v", err)
@@ -281,6 +283,7 @@ func TestResolveConfigPath(t *testing.T) {
 	// keeps its existing missing-file error behavior.
 	emptyHome := t.TempDir()
 	t.Setenv("HOME", emptyHome)
+	t.Setenv("USERPROFILE", emptyHome) // os.UserHomeDir reads this on Windows
 	nowhere := filepath.Join(t.TempDir(), "nope.json")
 	if got := ResolveConfigPath(nowhere); got != nowhere {
 		t.Errorf("ResolveConfigPath with nothing present: expected %q, got %q", nowhere, got)
