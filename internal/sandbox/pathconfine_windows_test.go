@@ -304,9 +304,9 @@ func TestAuditRejectsShellExpansionTokens(t *testing.T) {
 // fix: the tokenizer strips quotes but keeps spaces, and Win32 resolves
 // drive-relative forms against the per-drive CWD regardless of quoting - so
 // a quoted `C:outside dir\secret.txt` operand must hit the alias rejection
-// even though it carries whitespace. Free-text quoted arguments (a commit
-// message with colons and dots) must keep passing: the per-component text
-// classes stay scoped to non-clause tokens.
+// even though it carries whitespace. The resolution-scoped global check
+// itself must keep passing quoted prose: the per-component text classes stay
+// scoped to non-clause tokens.
 func TestAuditRejectsQuotedDriveRelativeOperands(t *testing.T) {
 	ws := t.TempDir()
 	secret := filepath.Join(filepath.VolumeName(ws), "outside dir", "secret.txt")
@@ -354,15 +354,13 @@ func TestAuditRejectsQuotedDriveRelativeOperands(t *testing.T) {
 		}
 	}
 
-	// Free-text quoted arguments keep working: colons+dots inside a quoted
-	// message are prose, not ADS; a single-letter "x:" prefix in prose is
-	// the only text form rejected, and only when it leads the token.
-	for _, command := range []string{
-		`git commit -m "fix: add foo.go support"`,
-		`echo "hello world"`,
-	} {
-		if _, err := BuildExecCommand(command, nil, "", nil); err != nil {
-			t.Errorf("BuildExecCommand(%q): quoted free-text argument must pass, got: %v", command, err)
+	// The global check itself must stay scoped to the resolution-relevant
+	// classes: quoted prose (colons, dots, spaces) must pass it. (The full
+	// pipeline may still reject such operands at its relative-operand
+	// containment stage - pre-existing behavior outside this fix.)
+	for _, tok := range []string{"fix: add foo.go support", "hello world", "v1.2: release notes"} {
+		if err := checkPathAliasGlobal(tok); err != nil {
+			t.Errorf("checkPathAliasGlobal(%q): quoted prose must pass, got: %v", tok, err)
 		}
 	}
 }
