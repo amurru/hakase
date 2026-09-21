@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -18,8 +19,10 @@ func TestSessionDirPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat sessions dir: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0700 {
-		t.Fatalf("sessions dir mode = %o, want 0700", got)
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0700 {
+			t.Fatalf("sessions dir mode = %o, want 0700", got)
+		}
 	}
 }
 
@@ -41,8 +44,10 @@ func TestSessionFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat session file: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("session file mode = %o, want 0600", got)
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("session file mode = %o, want 0600", got)
+		}
 	}
 }
 
@@ -75,27 +80,29 @@ func TestSessionMigrationChmodsExistingFiles(t *testing.T) {
 		t.Fatalf("NewSessionStore: %v", err)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat legacy session file: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("legacy session file mode = %o, want 0600", got)
-	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat legacy session file: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("legacy session file mode = %o, want 0600", got)
+		}
 
-	info, err = os.Stat(okPath)
-	if err != nil {
-		t.Fatalf("stat ok session file: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("already-0600 session file mode = %o, want 0600 unchanged", got)
-	}
+		info, err = os.Stat(okPath)
+		if err != nil {
+			t.Fatalf("stat ok session file: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("already-0600 session file mode = %o, want 0600 unchanged", got)
+		}
 
-	info, err = os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat sessions dir: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0700 {
-		t.Fatalf("sessions dir mode = %o, want 0700", got)
+		info, err = os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat sessions dir: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0700 {
+			t.Fatalf("sessions dir mode = %o, want 0700", got)
+		}
 	}
 }

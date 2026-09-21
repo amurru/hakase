@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -145,8 +146,10 @@ func TestCycle_RunStagesNightAndAutoAdoptsManaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state missing: %v", err)
 	}
-	if info, _ := os.Stat(env.statePath); info.Mode().Perm() != 0o600 {
-		t.Errorf("state mode = %o, want 600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(env.statePath); info.Mode().Perm() != 0o600 {
+			t.Errorf("state mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 	var st SleepState
 	if err := json.Unmarshal(data, &st); err != nil {

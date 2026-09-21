@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -53,15 +54,19 @@ func TestSaveFileAndDirPerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("file perms = %o, want 600", fi.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("file perms = %o, want 600", fi.Mode().Perm())
+		}
 	}
 	dirFi, err := os.Stat(filepath.Dir(s.Path()))
 	if err != nil {
 		t.Fatalf("stat dir: %v", err)
 	}
-	if dirFi.Mode().Perm() != 0o700 {
-		t.Fatalf("dir perms = %o, want 700", dirFi.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if dirFi.Mode().Perm() != 0o700 {
+			t.Fatalf("dir perms = %o, want 700", dirFi.Mode().Perm())
+		}
 	}
 	for _, leftover := range []string{s.Path() + ".tmp"} {
 		if _, err := os.Stat(leftover); err == nil {
@@ -364,8 +369,10 @@ func TestSaveTightensExistingPerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dirFi.Mode().Perm() != 0o700 {
-		t.Fatalf("dir perms = %o, want 700", dirFi.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if dirFi.Mode().Perm() != 0o700 {
+			t.Fatalf("dir perms = %o, want 700", dirFi.Mode().Perm())
+		}
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -373,8 +380,10 @@ func TestSaveTightensExistingPerms(t *testing.T) {
 	}
 	// The renamed store inherits the tmp file's mode; without the explicit
 	// re-chmod it would still be 644.
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("store perms = %o, want 600", fi.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("store perms = %o, want 600", fi.Mode().Perm())
+		}
 	}
 }
 

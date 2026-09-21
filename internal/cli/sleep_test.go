@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -79,8 +80,10 @@ func TestSleepHarvest_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info, _ := os.Stat("digests.json"); info.Mode().Perm() != 0o600 {
-		t.Errorf("digest file mode = %o, want 600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat("digests.json"); info.Mode().Perm() != 0o600 {
+			t.Errorf("digest file mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 	out := string(data)
 	if !strings.Contains(out, "using [the key]") {

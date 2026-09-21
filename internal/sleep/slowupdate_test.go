@@ -5,6 +5,7 @@ package sleep
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -80,13 +81,15 @@ func TestOptimizerMemorySidecarRoundtrip(t *testing.T) {
 	if !strings.Contains(sidecar, filepath.Join("references", "optimizer-memory.md")) {
 		t.Errorf("sidecar path = %s", sidecar)
 	}
-	if info, err := os.Stat(sidecar); err != nil {
-		t.Fatal(err)
-	} else if info.Mode().Perm() != 0o600 {
-		t.Errorf("sidecar mode = %o, want 600", info.Mode().Perm())
-	}
-	if info, err := os.Stat(filepath.Dir(sidecar)); err != nil || info.Mode().Perm() != 0o700 {
-		t.Errorf("references dir mode = %v err=%v, want 700", info, err)
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(sidecar); err != nil {
+			t.Fatal(err)
+		} else if info.Mode().Perm() != 0o600 {
+			t.Errorf("sidecar mode = %o, want 600", info.Mode().Perm())
+		}
+		if info, err := os.Stat(filepath.Dir(sidecar)); err != nil || info.Mode().Perm() != 0o700 {
+			t.Errorf("references dir mode = %v err=%v, want 700", info, err)
+		}
 	}
 	mem := ReadOptimizerMemory(live)
 	for _, want := range []string{"Optimizer memory", "improved", "Per-night outcomes"} {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -65,8 +66,10 @@ func TestStageAndAdopt_RoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("missing %s: %v", f, err)
 		}
-		if got := info.Mode().Perm(); got != 0o600 {
-			t.Errorf("%s mode = %o, want 600", f, got)
+		if runtime.GOOS != "windows" {
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Errorf("%s mode = %o, want 600", f, got)
+			}
 		}
 	}
 	report, _ := os.ReadFile(filepath.Join(dir, "report.md"))
@@ -96,7 +99,7 @@ func TestStageAndAdopt_RoundTrip(t *testing.T) {
 	}
 	if info, err := os.Stat(backup); err != nil {
 		t.Errorf("missing versioned backup: %v", err)
-	} else if info.Mode().Perm() != 0o600 {
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("backup mode = %o, want 600", info.Mode().Perm())
 	}
 	if bak, _ := os.ReadFile(backup); !strings.Contains(string(bak), "Hand-written guidance.") {

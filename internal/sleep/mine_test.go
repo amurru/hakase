@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -314,8 +315,10 @@ func TestWriteMineTasks_TripsM4Gate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("mined file mode = %o, want 600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("mined file mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 	// The machine marker is what makes real-backend consumers refuse.
 	if err := RequireReviewed(path); err == nil {
