@@ -643,9 +643,18 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 	// WIN-005: reject Win32 path aliases (trailing dots/spaces, ADS,
 	// device namespaces, drive-relative forms) before any containment
 	// math - the OS would open the base path the string checks approve.
+	// The resolution-relevant classes (device namespaces, drive-relative)
+	// apply to EVERY token: quoting does not change how the OS resolves
+	// them, so a quoted "C:secret file.txt" must not slip through just
+	// because it carries spaces.
+	if err := checkPathAliasGlobal(expanded); err != nil {
+		return fmt.Errorf("command references %q which is rejected: %w", tok, err)
+	}
 	// A token carrying shell syntax or whitespace is a command clause
-	// (e.g. "echo hi > /dev/null"), not a path operand; its components are
-	// not Win32 path components, so the alias classes do not apply.
+	// (e.g. "echo hi > /dev/null") or a quoted free-text argument (e.g. a
+	// commit message), not a plain path operand; only then are the
+	// per-component text classes (ADS colon+dot, trailing dots/spaces)
+	// skipped, since legitimate prose contains those characters.
 	if !strings.ContainsAny(p, " \t><|&;()^\r\n") {
 		if err := checkPathAlias(expanded); err != nil {
 			return fmt.Errorf("command references %q which is rejected: %w", tok, err)

@@ -300,6 +300,73 @@ func TestAuditRejectsShellExpansionTokens(t *testing.T) {
 	}
 }
 
+// TestAuditRejectsQuotedDriveRelativeOperands pins the quoted-operand bypass
+// fix: the tokenizer strips quotes but keeps spaces, and Win32 resolves
+// drive-relative forms against the per-drive CWD regardless of quoting - so
+// a quoted `C:outside dir\secret.txt` operand must hit the alias rejection
+// even though it carries whitespace. Free-text quoted arguments (a commit
+// message with colons and dots) must keep passing: the per-component text
+// classes stay scoped to non-clause tokens.
+func TestAuditRejectsQuotedDriveRelativeOperands(t *testing.T) {
+	ws := t.TempDir()
+	secret := filepath.Join(filepath.VolumeName(ws), "outside dir", "secret.txt")
+	if err := os.MkdirAll(filepath.Dir(secret), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileForTest(secret, []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	sb := &SandboxConfig{
+		Mode:           SandboxModePaths,
+		WorkspaceRoots: []string{ws},
+		ReadRoots:      []string{ws},
+	}
+	withTestSandbox(t, sb)
+
+	savedGate := EvaluateCommandFunc
+	savedAudit := AuditCommandFunc
+	EvaluateCommandFunc = func(sb *SandboxConfig, command string, args []string) GateDecision {
+		return GateDecision{Action: ActionAllow, Risk: RiskLow}
+	}
+	AuditCommandFunc = func(CommandAuditEntry) {}
+	t.Cleanup(func() {
+		EvaluateCommandFunc = savedGate
+		AuditCommandFunc = savedAudit
+	})
+
+	// drive := e.g. "C:"; the operand resolves against that drive's CWD,
+	// which the audit's relative-branch join cannot model.
+	drive := filepath.VolumeName(ws)
+	if drive == "" {
+		t.Skipf("workspace %q has no volume prefix", ws)
+	}
+	for _, command := range []string{
+		`type "` + drive + `outside dir\secret.txt"`,
+		`type ` + drive + `outside\secret file.txt`,
+	} {
+		_, err := BuildExecCommand(command, nil, "", nil)
+		if err == nil {
+			t.Errorf("BuildExecCommand(%q): expected drive-relative rejection, got nil", command)
+			continue
+		}
+		if !strings.Contains(err.Error(), "drive-relative") {
+			t.Errorf("BuildExecCommand(%q): error should name drive-relative class, got: %v", command, err)
+		}
+	}
+
+	// Free-text quoted arguments keep working: colons+dots inside a quoted
+	// message are prose, not ADS; a single-letter "x:" prefix in prose is
+	// the only text form rejected, and only when it leads the token.
+	for _, command := range []string{
+		`git commit -m "fix: add foo.go support"`,
+		`echo "hello world"`,
+	} {
+		if _, err := BuildExecCommand(command, nil, "", nil); err != nil {
+			t.Errorf("BuildExecCommand(%q): quoted free-text argument must pass, got: %v", command, err)
+		}
+	}
+}
+
 func writeFileForTest(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
