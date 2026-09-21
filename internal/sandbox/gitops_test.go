@@ -72,6 +72,11 @@ func initRepo(t *testing.T, dir string) {
 			t.Fatalf("git branch -M main: %v", err2)
 		}
 	}
+	// Checkout content comparisons assert the committed bytes verbatim;
+	// autocrlf would rewrite them to CRLF on Windows runners.
+	if err := run("config", "core.autocrlf", "false"); err != nil {
+		t.Fatalf("git config core.autocrlf: %v", err)
+	}
 	if err := run("config", "user.name", "Hakase Test"); err != nil {
 		t.Fatalf("git config user.name: %v", err)
 	}

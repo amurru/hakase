@@ -76,6 +76,14 @@ func mimeTypeFor(path string) string {
 	case ".ico":
 		return "image/x-icon"
 	}
+	// Well-known text types stay portable: the Windows registry maps .md
+	// to text/plain and often lacks .go entirely.
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown":
+		return "text/markdown"
+	case ".go":
+		return "text/x-go"
+	}
 	if t := mime.TypeByExtension(filepath.Ext(path)); t != "" {
 		// Strip any "; charset=..." parameter so imageMimes and persistence
 		// see a clean MIME type.

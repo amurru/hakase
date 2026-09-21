@@ -90,6 +90,10 @@ func TestReportNoopWhenNil(t *testing.T) {
 }
 
 func TestReportArgsAndSeq(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: executes a #!/bin/sh script")
+	}
+
 	out := filepath.Join(t.TempDir(), "calls.txt")
 	bin := writeFakeBin(t, out)
 
@@ -139,6 +143,10 @@ func TestReportArgsAndSeq(t *testing.T) {
 }
 
 func TestReportSuppressesDuplicate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: executes a #!/bin/sh script")
+	}
+
 	out := filepath.Join(t.TempDir(), "calls.txt")
 	bin := writeFakeBin(t, out)
 
@@ -169,6 +177,10 @@ func TestReportSuppressesDuplicate(t *testing.T) {
 }
 
 func TestRelease(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: executes a #!/bin/sh script")
+	}
+
 	out := filepath.Join(t.TempDir(), "calls.txt")
 	bin := writeFakeBin(t, out)
 
@@ -200,6 +212,10 @@ func writeSlowBin(t *testing.T, outPath string) string {
 }
 
 func TestReportCoalescesAndNeverBlocks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: executes a #!/bin/sh script")
+	}
+
 	out := filepath.Join(t.TempDir(), "calls.txt")
 	bin := writeSlowBin(t, out)
 
@@ -256,6 +272,10 @@ func TestReportCoalescesAndNeverBlocks(t *testing.T) {
 }
 
 func TestReleaseWaitsForCompletion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: executes a #!/bin/sh script")
+	}
+
 	out := filepath.Join(t.TempDir(), "calls.txt")
 	bin := writeSlowBin(t, out)
 
