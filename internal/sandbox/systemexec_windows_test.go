@@ -9,12 +9,29 @@ import (
 	"testing"
 )
 
+// withTestGate installs allow-all gate and audit hooks for the duration of
+// the test: EvaluateCommandFunc and AuditCommandFunc are wired by cmd/hakase
+// main and are nil inside package unit tests.
+func withTestGate(t *testing.T) {
+	t.Helper()
+	savedGate, savedAudit := EvaluateCommandFunc, AuditCommandFunc
+	EvaluateCommandFunc = func(*SandboxConfig, string, []string) GateDecision {
+		return GateDecision{Action: ActionAllow, Risk: RiskLow}
+	}
+	AuditCommandFunc = func(CommandAuditEntry) {}
+	t.Cleanup(func() {
+		EvaluateCommandFunc = savedGate
+		AuditCommandFunc = savedAudit
+	})
+}
+
 // TestBuildExecCommandWindowsShellRouting pins the cmd /D /C routing: the
 // original command string is preserved as a single argument.
 func TestBuildExecCommandWindowsShellRouting(t *testing.T) {
 	saved := CurrentSandbox
 	CurrentSandbox = nil
 	t.Cleanup(func() { CurrentSandbox = saved })
+	withTestGate(t)
 
 	cmd, err := BuildExecCommand("echo hi", nil, "", nil)
 	if err != nil {
@@ -40,6 +57,7 @@ func TestBuildExecCommandWindowsNestedQuotes(t *testing.T) {
 	saved := CurrentSandbox
 	CurrentSandbox = nil
 	t.Cleanup(func() { CurrentSandbox = saved })
+	withTestGate(t)
 
 	in := `echo "hello world" > "out file.txt"`
 	cmd, err := BuildExecCommand(in, nil, "", nil)
@@ -58,6 +76,7 @@ func TestSystemExecCmdShellSemantics(t *testing.T) {
 	saved := CurrentSandbox
 	CurrentSandbox = nil
 	t.Cleanup(func() { CurrentSandbox = saved })
+	withTestGate(t)
 
 	dir := t.TempDir()
 
@@ -114,6 +133,7 @@ func TestWindowsExecutableHijackRejected(t *testing.T) {
 	saved := CurrentSandbox
 	CurrentSandbox = nil
 	t.Cleanup(func() { CurrentSandbox = saved })
+	withTestGate(t)
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "hijacked.txt")
@@ -153,6 +173,7 @@ func TestWindowsPATHResolutionStillWorks(t *testing.T) {
 	saved := CurrentSandbox
 	CurrentSandbox = nil
 	t.Cleanup(func() { CurrentSandbox = saved })
+	withTestGate(t)
 
 	dir := t.TempDir()
 

@@ -309,7 +309,9 @@ func normalizeRoots(roots []string) []string {
 	return out
 }
 
-// expandHome replaces a leading "~" with the user's home directory.
+// expandHome replaces a leading "~" with the user's home directory. Both
+// "~/" and "~\" are expanded: Unix-flavored commands commonly emit "~/..."
+// even on Windows, where filepath.Separator would otherwise miss it.
 func expandHome(p string) string {
 	if p == "~" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -317,7 +319,7 @@ func expandHome(p string) string {
 		}
 		return p
 	}
-	if strings.HasPrefix(p, "~"+string(filepath.Separator)) {
+	if strings.HasPrefix(p, "~"+string(filepath.Separator)) || strings.HasPrefix(p, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, p[2:])
 		}

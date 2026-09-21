@@ -5,9 +5,9 @@ import (
 	"amurru/hakase/internal/util"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 
 	"github.com/google/shlex"
@@ -540,17 +540,17 @@ func normalizeShellEvasion(s string) string {
 }
 
 // matchForbiddenGlob reports whether a deletion target matches the
-// forbidden glob set (e.g. "/*", "/.*"). filepath.Match treats only the
-// platform separator as a boundary, so on Windows a Unix-style target like
-// "/foo/bar" would let "*" cross the "/" boundaries and match - the target
-// is normalized to backslashes there, giving the same top-level-only
-// semantics as on Unix.
+// forbidden glob set ("/*", "/.*"). The globs are Unix-rooted and match a
+// single top-level entry, so matching uses path.Match, which always treats
+// "/" as the only "*" boundary: filepath.Match would use "\" on Windows and
+// let "*" cross "/" (making "/foo/bar" match "/*"), while "/*" itself
+// ("rm -rf /*") must still be denied.
 func matchForbiddenGlob(t string) bool {
-	if runtime.GOOS == "windows" {
-		t = strings.ReplaceAll(t, "/", "\\")
-	}
 	for _, glob := range forbiddenGlobs {
-		if matched, _ := filepath.Match(glob, t); matched {
+		if t == glob {
+			return true
+		}
+		if matched, _ := path.Match(glob, t); matched {
 			return true
 		}
 	}

@@ -605,6 +605,12 @@ func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, w
 	} else if len(sb.WorkspaceRoots) > 0 {
 		base = sb.WorkspaceRoots[0]
 	}
+	// WIN-005: expansion tokens whose variable name contains a space
+	// ("%X Y%") split across tokenizer words, so the per-token check below
+	// never sees the joined form; run it on the whole command line too.
+	if err := checkShellExpansionAlias(command); err != nil {
+		return err
+	}
 	var tokens []string
 	if len(args) == 0 {
 		tokens = SplitCommandTokens(command)
@@ -637,8 +643,13 @@ func auditPathToken(sb *SandboxConfig, tok, relativeBase string) error {
 	// WIN-005: reject Win32 path aliases (trailing dots/spaces, ADS,
 	// device namespaces, drive-relative forms) before any containment
 	// math - the OS would open the base path the string checks approve.
-	if err := checkPathAlias(expanded); err != nil {
-		return fmt.Errorf("command references %q which is rejected: %w", tok, err)
+	// A token carrying shell syntax or whitespace is a command clause
+	// (e.g. "echo hi > /dev/null"), not a path operand; its components are
+	// not Win32 path components, so the alias classes do not apply.
+	if !strings.ContainsAny(p, " \t><|&;()^\r\n") {
+		if err := checkPathAlias(expanded); err != nil {
+			return fmt.Errorf("command references %q which is rejected: %w", tok, err)
+		}
 	}
 	// WIN-005 (Windows): reject cmd.exe expansion tokens - the audit sees
 	// the literal while cmd expands %VAR% to the OS path just before exec.
