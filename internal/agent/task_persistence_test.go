@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -34,8 +35,10 @@ func TestTaskSaveIs0600AndAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat tasks.json: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("tasks.json mode = %o, want 0600", got)
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("tasks.json mode = %o, want 0600", got)
+		}
 	}
 	reg, err := LoadTaskRegistry()
 	if err != nil {
