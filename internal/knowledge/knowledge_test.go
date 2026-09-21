@@ -216,6 +216,7 @@ func TestKnowledgeDirDefault(t *testing.T) {
 func TestKnowledgeDirTildeExpansion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 
 	if got := KnowledgeDir("~/notes"); got != filepath.Join(home, "notes") {
 		t.Errorf("KnowledgeDir(~): expected %q, got %q", filepath.Join(home, "notes"), got)
