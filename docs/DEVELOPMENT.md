@@ -753,6 +753,8 @@ When `model_name` is empty, the provider's default model is used. `openai-compat
 
 ### Provider configuration fields
 
+**Environment overrides**: `HAKASE_*` environment variables win over `config.json` values. Boolean overrides (`HAKASE_DEBUG`, `HAKASE_SEARCH_EXPANSION`, `HAKASE_SIDEKICK_ENABLED`, `HAKASE_TELEGRAM_ENABLED`, `HAKASE_MEMORY_ENABLED`) accept `1`/`0`, `true`/`false`, or `yes`/`no`, case-insensitive. Numeric overrides (`HAKASE_MAX_OUTPUT_TOKENS`, `HAKASE_MEMORY_MAX_PROMPT_CHARS`, `HAKASE_MEMORY_MAX_NOTES`) accept positive integers (`HAKASE_MAX_OUTPUT_TOKENS` is capped at `2147483647` — the config field is int32). Anything else fails config load with an error naming the variable — invalid values are never silently coerced to a default. A *set but empty* variable (`HAKASE_DEBUG=`) counts as unset, matching POSIX convention: profiles and service units routinely export variables empty, and an empty string is not an attempted value for any override.
+
 - `base_url` -- Base URL for OpenAI-compatible endpoints (e.g. `http://localhost:11434/v1` for Ollama). Ignored when empty; used only by the `openai` / `openai-compatible` providers.
 - `fallback_providers` -- Optional ordered list of provider names to try if the primary provider fails (e.g. `["openai"]`). Empty by default.
 - `provider_options` -- Optional map of provider-specific settings. Reserved for future use.

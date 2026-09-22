@@ -393,8 +393,13 @@ func localhostAuthorizationFlow(ctx context.Context, args *auth.AuthorizationArg
 }
 
 // openBrowser tries the platform opener; failures are non-fatal (the URL is
-// printed for manual opening).
+// printed for manual opening). The target is handed to the opener as a raw
+// argv element (no shell involved), but the scheme check keeps non-web
+// schemes (file:, custom protocol handlers) from reaching the OS opener.
 func openBrowser(target string) {
+	if u, err := url.Parse(target); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return
+	}
 	var argv []string
 	switch runtime.GOOS {
 	case "darwin":

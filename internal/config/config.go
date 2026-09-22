@@ -802,10 +802,43 @@ func rejectRemovedKeys(filePath string, data []byte) error {
 	return nil
 }
 
+// parseEnvBool parses a boolean HAKASE_* environment override. Accepted
+// forms are 1/0, true/false, and yes/no, case-insensitive; anything else is
+// a configuration error. The old per-site coercion (anything unrecognized
+// meant false) silently ignored typos like "ture" and disabled the very
+// feature the variable was meant to enable.
+func parseEnvBool(name, v string) (bool, error) {
+	switch {
+	case v == "1", strings.EqualFold(v, "true"), strings.EqualFold(v, "yes"):
+		return true, nil
+	case v == "0", strings.EqualFold(v, "false"), strings.EqualFold(v, "no"):
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s: invalid boolean value %q (accepted: 1/0, true/false, yes/no)", name, v)
+	}
+}
+
+// parseEnvPositiveInt parses a numeric HAKASE_* environment override. The
+// value must be a positive integer; anything else is a configuration error
+// instead of a silent fall-back to the config-file or default value.
+func parseEnvPositiveInt(name, v string) (int, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid integer value %q", name, v)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s: must be a positive integer, got %d", name, n)
+	}
+	return n, nil
+}
+
 // LoadConfig reads the JSON config file and applies HAKASE_* environment
-// overrides on top. Environment variables win over file values. When the file
-// is missing, config can still come entirely from the environment; only when
-// neither a file nor any env var is present is the file error returned.
+// overrides on top. Environment variables win over file values. Boolean and
+// numeric overrides share one strict parsing policy (parseEnvBool and
+// parseEnvPositiveInt): an invalid value is a load error that names the
+// variable, never a silent fallback. When the file is missing, config can
+// still come entirely from the environment; only when neither a file nor any
+// env var is present is the file error returned.
 func LoadConfig(filePath string) (*Config, error) {
 	var cfg Config
 
@@ -854,17 +887,28 @@ func LoadConfig(filePath string) (*Config, error) {
 		cfg.ModelVision = v
 	}
 	if v := os.Getenv("HAKASE_SEARCH_EXPANSION"); v != "" {
-		cfg.SearchExpansion = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		b, err := parseEnvBool("HAKASE_SEARCH_EXPANSION", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.SearchExpansion = b
 	}
 	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
-		cfg.Debug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		b, err := parseEnvBool("HAKASE_DEBUG", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Debug = b
 	}
 	if v := os.Getenv("HAKASE_MAX_OUTPUT_TOKENS"); v != "" {
-		// Bounded to the int32 config field: an out-of-range value keeps the
-		// default (same silent-fallback convention as the other overrides).
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= math.MaxInt32 {
-			cfg.LoopGuard.MaxOutputTokens = int32(n)
+		n, err := parseEnvPositiveInt("HAKASE_MAX_OUTPUT_TOKENS", v)
+		if err != nil {
+			return nil, err
 		}
+		if n > math.MaxInt32 {
+			return nil, fmt.Errorf("HAKASE_MAX_OUTPUT_TOKENS: %d exceeds the field maximum (%d)", n, int64(math.MaxInt32))
+		}
+		cfg.LoopGuard.MaxOutputTokens = int32(n)
 	}
 	if v := os.Getenv("HAKASE_MEDIA_IMAGE_PROVIDER"); v != "" {
 		cfg.Media.ImageProvider = v
@@ -884,7 +928,10 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	// Sidekick env overrides (mirrors the vision pattern).
 	if v := os.Getenv("HAKASE_SIDEKICK_ENABLED"); v != "" {
-		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		b, err := parseEnvBool("HAKASE_SIDEKICK_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
 		cfg.Sidekick.Enabled = &b
 	}
 	if v := os.Getenv("HAKASE_SIDEKICK_MODE"); v != "" {
@@ -909,7 +956,10 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	// Telegram channel env overrides (mirrors the sidekick pattern).
 	if v := os.Getenv("HAKASE_TELEGRAM_ENABLED"); v != "" {
-		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		b, err := parseEnvBool("HAKASE_TELEGRAM_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
 		cfg.Channels.Telegram.Enabled = &b
 	}
 	if v := os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN"); v != "" {
@@ -922,18 +972,25 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	// Memory env overrides (mirrors the sidekick pattern).
 	if v := os.Getenv("HAKASE_MEMORY_ENABLED"); v != "" {
-		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		b, err := parseEnvBool("HAKASE_MEMORY_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
 		cfg.Memory.Enabled = &b
 	}
 	if v := os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Memory.MaxPromptChars = n
+		n, err := parseEnvPositiveInt("HAKASE_MEMORY_MAX_PROMPT_CHARS", v)
+		if err != nil {
+			return nil, err
 		}
+		cfg.Memory.MaxPromptChars = n
 	}
 	if v := os.Getenv("HAKASE_MEMORY_MAX_NOTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Memory.MaxNotes = n
+		n, err := parseEnvPositiveInt("HAKASE_MEMORY_MAX_NOTES", v)
+		if err != nil {
+			return nil, err
 		}
+		cfg.Memory.MaxNotes = n
 	}
 	cfg.Memory.ApplyDefaults()
 	if err := cfg.Memory.Validate(); err != nil {
