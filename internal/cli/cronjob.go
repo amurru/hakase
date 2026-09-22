@@ -15,6 +15,7 @@ import (
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/tracing"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
 	"context"
@@ -972,6 +973,15 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 	attempt := 0
 	taskID := job.ID
 
+	// Tracing run span: the trace root for this scheduled run; the watchdog
+	// ctx (and everything the ADK runner does) nests inside it. No-op when
+	// tracing is disabled.
+	runCtx, runSpan := tracing.RunSpan(runCtx, tracing.RunParams{
+		Transport: "cron",
+		TaskID:    taskID,
+		Extra:     map[string]string{"hakase.cron.job": job.Name},
+	})
+
 	for {
 		repaired := false
 		for ev, runErr := range subRunner.Run(guardCtx, "cron_scheduler", taskID, msg, agent.RunConfig{}) {
@@ -1032,6 +1042,18 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 		status = "failed"
 	} else if silent {
 		status = "silent"
+	}
+
+	// Close the tracing run span with the job outcome ("silent" is a healthy
+	// run, not a failure).
+	if status == "failed" {
+		errMsg := ""
+		if finalErr != nil {
+			errMsg = finalErr.Error()
+		}
+		runSpan.End(tracing.StatusFailed, errMsg)
+	} else {
+		runSpan.End(tracing.StatusCompleted, "")
 	}
 
 	updateCronJobAfterRun(job, status, summaryText, outputPath)

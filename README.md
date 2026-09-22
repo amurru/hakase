@@ -172,6 +172,25 @@ Manage everything from the web UI's **Channels** page (status, pairing code, rev
 
 ---
 
+## Tracing (OpenTelemetry)
+
+Set `tracing.enabled` (or `HAKASE_TRACING_ENABLED`) to export one waterfall trace per agent run over OTLP/HTTP — LLM calls with token usage, tool calls with durations, delegated sub-agents nested — ingestible by Jaeger, Grafana Tempo, Langfuse, or Datadog:
+
+```json
+{
+  "tracing": {
+    "enabled": true,
+    "endpoint": "http://localhost:4318",
+    "headers": { "authorization": "Basic ..." },
+    "sample_ratio": 1.0
+  }
+}
+```
+
+Spans follow the GenAI semantic conventions: `hakase.run` (session, project, transport, status) → `invoke_agent` → `generate_content` (model, finish reason, input/output/reasoning/cache tokens) and `execute_tool`, plus `retrieval` spans for knowledge recall. MCP tool calls propagate W3C `traceparent` via `_meta`, so tracing servers can join the same trace. A pathless `endpoint` targets the collector at `/v1/traces`; a URL with a path (e.g. Langfuse's `.../api/public/otel`) is used verbatim. Env overrides: `HAKASE_TRACING_ENABLED`, `HAKASE_TRACING_ENDPOINT`, `HAKASE_TRACING_SAMPLE_RATIO`, `HAKASE_TRACING_HEADERS` (`K=V,K2=V2`). Off by default — disabled tracing installs nothing: no exporter, no network traffic. See [docs/otel-tracing/](docs/otel-tracing/).
+
+---
+
 ## CLI Reference
 
 Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server. Other subcommands are file-only (no model needed unless noted):
@@ -246,6 +265,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `sidekick` -- second model (on-demand/watch). See [Sidekick](docs/DEVELOPMENT.md#sidekick-second-model) and [docs/sidekick-agent/](docs/sidekick-agent/).
 - `channels` -- communication channels (Telegram bot today): remote prompting, live progress, in-chat approvals, task/cron control. See [Channels (Telegram)](#channels-telegram).
 - `media` -- image/video generation (`openai`, `fal`, `pil` fallback). See [Media Generation](docs/DEVELOPMENT.md#media-generation) and [docs/media-generation/support.md](docs/media-generation/support.md).
+- `tracing` -- OpenTelemetry GenAI tracing over OTLP/HTTP (`enabled`, `endpoint`, `headers`, `sample_ratio`). See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
 - `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 

@@ -21,6 +21,7 @@ import (
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/tracing"
 	"amurru/hakase/internal/tui"
 	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
@@ -58,6 +59,20 @@ func runTUI() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+
+	// Tracing (issue #18): install the OTLP provider before anything runs;
+	// no-op unless tracing.enabled. Span export flushes on shutdown.
+	shutdownTracing, err := tracing.Install(tracing.Options{
+		Enabled:     cfg.Tracing.Enabled,
+		Endpoint:    cfg.Tracing.Endpoint,
+		Headers:     cfg.Tracing.Headers,
+		SampleRatio: cfg.Tracing.SampleRatio,
+		Version:     cli.Version,
+	})
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
+	defer shutdownTracing()
 
 	// Init sandbox before any file or exec operations.
 	// LoadConfig already refused landlock mode (issue #14); re-validate here

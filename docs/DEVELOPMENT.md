@@ -815,6 +815,17 @@ Behavior notes: inbound text and photo captions are supported (albums buffer ~1.
 
 **Token sharing / webhook conflicts (troubleshooting):** hakase is polling-only and never registers a webhook. But Telegram keeps one delivery mode per bot token: if any webhook-based integration (another framework, a hosted bot platform, an old project) set a webhook on the same token, every `getUpdates` is rejected with `409 Conflict: can't use getUpdates method while webhook is active` and the bot appears completely silent - pairing included. `Bot.Run` heals this at startup (getWebhookInfo -> deleteWebhook, verified, retried, and re-run with a cooldown when a conflict surfaces mid-poll; deleteWebhook goes through a plain-HTTP GET bypassing the library client, whose POST returned empty bodies in the field). If the webhook re-appears, another platform is actively holding the token - the durable fix is a dedicated token (`/newbot`, or `/revoke` to kill the other integration).
 
+### Tracing configuration
+
+The `tracing` block exports one waterfall trace per agent run over OTLP/HTTP, ingestible by Jaeger, Grafana Tempo, Langfuse, or Datadog (issue #18; see [docs/otel-tracing/](otel-tracing/spec.md)). Off by default: with `enabled: false` nothing is installed - no tracer provider, no exporter goroutine, no network traffic.
+
+- `tracing.enabled` - turn export on. Applied in the `web`/`serve` bootstrap (covering channel and cron runs in that process) and in the TUI.
+- `tracing.endpoint` - OTLP/HTTP base URL, default `http://localhost:4318` (the collector convention; scheme decides TLS). A pathless URL targets `/v1/traces`; a URL with a path (Langfuse's `.../api/public/otel`, for example) is used verbatim. A malformed endpoint is a startup error, not a silent trace-nowhere.
+- `tracing.headers` - key/value map sent verbatim on every export request (vendor auth such as Langfuse basic-auth pairs).
+- `tracing.sample_ratio` - root-sampling probability in [0,1] (default 1); child spans follow their parent.
+
+Span shape (GenAI semantic conventions, Development status - hakase pins its own attribute keys in `internal/tracing` rather than binding to a semconv package version): `hakase.run` per transport run (`hakase.session.id`, `hakase.task.id`, `hakase.project`, `hakase.transport`, canvas-status outcome) nesting ADK's `invoke_agent` / `generate_content` (model, finish reason, input/output/reasoning/cache token usage) / `execute_tool` spans, plus `retrieval knowledge` spans on the knowledge recall tools. MCP tool calls carry W3C `traceparent` via `_meta` (SEP-414) so tracing servers join the same trace. Env overrides: `HAKASE_TRACING_ENABLED`, `HAKASE_TRACING_ENDPOINT`, `HAKASE_TRACING_SAMPLE_RATIO`, `HAKASE_TRACING_HEADERS` (`K=V,K2=V2`).
+
 ### Environment variables
 
 Environment variables override the matching `config.json` fields, with environment variables taking precedence over the file. If `config.json` is missing but at least one of these is set, the config is built entirely from the environment:
@@ -835,6 +846,13 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
 | `HAKASE_TELEGRAM_ENABLED` | `channels.telegram.enabled` |
 | `HAKASE_TELEGRAM_BOT_TOKEN` | `channels.telegram.bot_token` |
+| `HAKASE_MEMORY_ENABLED` | `memory.enabled` |
+| `HAKASE_MEMORY_MAX_PROMPT_CHARS` | `memory.max_prompt_chars` |
+| `HAKASE_MEMORY_MAX_NOTES` | `memory.max_notes` |
+| `HAKASE_TRACING_ENABLED` | `tracing.enabled` |
+| `HAKASE_TRACING_ENDPOINT` | `tracing.endpoint` |
+| `HAKASE_TRACING_SAMPLE_RATIO` | `tracing.sample_ratio` |
+| `HAKASE_TRACING_HEADERS` | `tracing.headers` (`K=V,K2=V2`) |
 | `HAKASE_HOME` | user home directory (default `~/.hakase`) |
 
 Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.

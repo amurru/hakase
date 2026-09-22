@@ -72,7 +72,7 @@ func elicitationClarifyGate() interfaces.ClarifyGate {
 // ElicitationHandler routes server input requests into hakase's gates;
 // setting it also advertises the elicitation capability to the server.
 func newElicitingClient(server string) *mcp.Client {
-	return mcp.NewClient(
+	client := mcp.NewClient(
 		&mcp.Implementation{Name: "hakase", Version: "dev"},
 		&mcp.ClientOptions{
 			ElicitationHandler: func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
@@ -80,6 +80,10 @@ func newElicitingClient(server string) *mcp.Client {
 			},
 		},
 	)
+	// SEP-414: propagate the active trace into every outbound request via
+	// _meta (no-op when tracing is off — see traceparent.go).
+	client.AddSendingMiddleware(traceparentMiddleware())
+	return client
 }
 
 // handleElicitation fulfills one server input request by routing it into

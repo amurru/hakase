@@ -224,6 +224,60 @@ type Config struct {
 	// start. On by default; enabled:false removes the tools and the
 	// session-start injection. See MemoryConfig for the per-field meaning.
 	Memory MemoryConfig `json:"memory,omitempty"`
+	// Tracing configures OpenTelemetry GenAI tracing over OTLP/HTTP
+	// (docs/otel-tracing/spec.md, issue #18): one waterfall trace per agent
+	// run — LLM calls with token usage, tool calls with durations, delegated
+	// sub-agents nested. Off unless explicitly enabled; disabled tracing
+	// installs nothing (no exporter, no network traffic).
+	Tracing TracingConfig `json:"tracing,omitempty"`
+}
+
+// Tracing default constants.
+const (
+	// DefaultTracingEndpoint is the OTLP/HTTP convention (collector default
+	// port 4318). Scheme decides TLS: https upgrades, http stays plaintext.
+	DefaultTracingEndpoint = "http://localhost:4318"
+	// DefaultTracingSampleRatio samples every root span when tracing is on.
+	DefaultTracingSampleRatio = 1.0
+)
+
+// TracingConfig configures OpenTelemetry tracing export (issue #18).
+type TracingConfig struct {
+	// Enabled turns tracing on. The zero value is the feature default
+	// (off) — no tri-state pointer needed, unlike sections that default on.
+	Enabled bool `json:"enabled,omitempty"`
+	// Endpoint is the OTLP/HTTP base URL receiving the spans. Default
+	// http://localhost:4318.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Headers are sent verbatim on every OTLP export request (vendor auth
+	// like Langfuse basic-auth pairs).
+	Headers map[string]string `json:"headers,omitempty"`
+	// SampleRatio is the root-sampling probability in [0,1]; children
+	// follow their parent. Default 1.
+	SampleRatio float64 `json:"sample_ratio,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after loading config.
+func (c *TracingConfig) ApplyDefaults() {
+	if c.Endpoint == "" {
+		c.Endpoint = DefaultTracingEndpoint
+	}
+	if c.SampleRatio == 0 {
+		c.SampleRatio = DefaultTracingSampleRatio
+	}
+}
+
+// Validate checks TracingConfig for sane values.
+func (c *TracingConfig) Validate() error {
+	if math.IsNaN(c.SampleRatio) || c.SampleRatio < 0 || c.SampleRatio > 1 {
+		return fmt.Errorf("invalid tracing.sample_ratio %v: must be within [0,1]", c.SampleRatio)
+	}
+	for k := range c.Headers {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("invalid tracing.headers: header keys must be non-empty")
+		}
+	}
+	return nil
 }
 
 // Memory default constants. The block caps keep prompts lean; the note cap
@@ -744,7 +798,11 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != "" ||
 		os.Getenv("HAKASE_MEMORY_ENABLED") != "" ||
 		os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS") != "" ||
-		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != ""
+		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != "" ||
+		os.Getenv("HAKASE_TRACING_ENABLED") != "" ||
+		os.Getenv("HAKASE_TRACING_ENDPOINT") != "" ||
+		os.Getenv("HAKASE_TRACING_SAMPLE_RATIO") != "" ||
+		os.Getenv("HAKASE_TRACING_HEADERS") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -830,6 +888,35 @@ func parseEnvPositiveInt(name, v string) (int, error) {
 		return 0, fmt.Errorf("%s: must be a positive integer, got %d", name, n)
 	}
 	return n, nil
+}
+
+// parseEnvRatio parses a float HAKASE_* override that must land in [0,1]
+// (sampling ratios). NaN and out-of-range values are configuration errors,
+// same strict policy as the other numeric parsers.
+func parseEnvRatio(name, v string) (float64, error) {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid float value %q", name, v)
+	}
+	if math.IsNaN(f) || f < 0 || f > 1 {
+		return 0, fmt.Errorf("%s: must be within [0,1], got %v", name, f)
+	}
+	return f, nil
+}
+
+// parseEnvHeaders parses a comma-separated K=V header list for
+// HAKASE_TRACING_HEADERS. Entries without "=" are load errors; an empty
+// value is allowed (some vendors use bare keys).
+func parseEnvHeaders(name, v string) (map[string]string, error) {
+	headers := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		k, val, found := strings.Cut(pair, "=")
+		if !found || strings.TrimSpace(k) == "" {
+			return nil, fmt.Errorf("%s: invalid header entry %q (expected K=V)", name, pair)
+		}
+		headers[strings.TrimSpace(k)] = val
+	}
+	return headers, nil
 }
 
 // LoadConfig reads the JSON config file and applies HAKASE_* environment
@@ -994,6 +1081,36 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Memory.ApplyDefaults()
 	if err := cfg.Memory.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Tracing env overrides (mirrors the sidekick pattern).
+	if v := os.Getenv("HAKASE_TRACING_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_TRACING_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tracing.Enabled = b
+	}
+	if v := os.Getenv("HAKASE_TRACING_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = v
+	}
+	if v := os.Getenv("HAKASE_TRACING_SAMPLE_RATIO"); v != "" {
+		f, err := parseEnvRatio("HAKASE_TRACING_SAMPLE_RATIO", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tracing.SampleRatio = f
+	}
+	if v := os.Getenv("HAKASE_TRACING_HEADERS"); v != "" {
+		h, err := parseEnvHeaders("HAKASE_TRACING_HEADERS", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tracing.Headers = h
+	}
+	cfg.Tracing.ApplyDefaults()
+	if err := cfg.Tracing.Validate(); err != nil {
 		return nil, err
 	}
 

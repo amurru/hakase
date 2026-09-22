@@ -158,5 +158,11 @@
     "enabled": true,
     "max_prompt_chars": 4000,
     "max_notes": 200
+  },
+  "tracing": {
+    "enabled": false,
+    "endpoint": "http://localhost:4318",
+    "headers": {},
+    "sample_ratio": 1.0
   }
 }

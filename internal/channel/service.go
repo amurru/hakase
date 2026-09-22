@@ -75,7 +75,7 @@ func NewService(d Deps) (*Service, error) {
 		log:    logFn,
 		store:  store,
 		runs:   NewRunManager(),
-		driver: agentrun.New(d.Runner, d.Sessions),
+		driver: agentrun.NewForTransport(d.Runner, d.Sessions, "telegram"),
 	}, nil
 }
 

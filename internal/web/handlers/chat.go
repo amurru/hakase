@@ -221,7 +221,7 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 		runner:        runner,
 		runtime:       runtime,
 		history:       history,
-		driver:        agentrun.New(runner, sessionSvc),
+		driver:        agentrun.NewForTransport(runner, sessionSvc, "web"),
 		runSemaphores: make(map[string]*sessionSem),
 	}
 

@@ -4,6 +4,7 @@ package knowledge
 
 import (
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/tracing"
 	"amurru/hakase/internal/util"
 	"fmt"
 	"os"
@@ -408,7 +409,15 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	recallTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "recall_knowledge",
 		Description: "Recall a knowledge note by slug, basename, or alias. Returns full body, backlinks, related notes, and any dangling [[wikilinks]] in the note body.",
-	}, func(ctx agent.Context, input RecallKnowledgeInput) (RecallKnowledgeOutput, error) {
+	}, func(ctx agent.Context, input RecallKnowledgeInput) (out RecallKnowledgeOutput, err error) {
+		_, span := tracing.StartRetrieval(ctx)
+		defer func() {
+			n := 0
+			if err == nil {
+				n = 1
+			}
+			tracing.EndRetrieval(span, err, n)
+		}()
 		if input.Name == "" {
 			return RecallKnowledgeOutput{}, fmt.Errorf("name is required")
 		}
@@ -464,7 +473,9 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	searchTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "search_knowledge",
 		Description: "Search knowledge notes by case-insensitive substring over title, aliases, tags, summary, and body, ranked by relevance (BM25; title matches outrank body matches). Optional tag filter requires ALL tags to match. When search_expansion is enabled in config, the query is expanded via the summarization model into alternative phrasings (HyDE-lite) and results are fused.",
-	}, func(ctx agent.Context, input SearchKnowledgeInput) (SearchKnowledgeOutput, error) {
+	}, func(ctx agent.Context, input SearchKnowledgeInput) (out SearchKnowledgeOutput, err error) {
+		_, span := tracing.StartRetrieval(ctx)
+		defer func() { tracing.EndRetrieval(span, err, len(out.Results)) }()
 		if input.Query == "" {
 			return SearchKnowledgeOutput{}, fmt.Errorf("query is required")
 		}

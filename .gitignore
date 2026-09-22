@@ -74,8 +74,9 @@ sessions/
 .zcode/
 .v2c/
 
-# local agent sessions/tooling state
-knowledge/
+# local agent sessions/tooling state (anchored: knowledge/ must not shadow
+# the internal/knowledge Go package for new files)
+/knowledge/
 
 # dev-mode structured debug logs
 logs/
