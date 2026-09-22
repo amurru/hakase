@@ -19,13 +19,22 @@ import (
 func TestInsecureCookieFlag(t *testing.T) {
 	// (a) go.mod must carry x/time as a direct dependency (promoted from
 	// go.sum-only). Tests run with the package dir as the working directory,
-	// so go.mod lives two levels up.
+	// so go.mod lives two levels up. Any version passes: dependabot bumps
+	// x/time regularly, and the thing worth catching is a demotion back to
+	// go.sum-only, not a version change.
 	mod, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	if !strings.Contains(string(mod), "\tgolang.org/x/time v0.15.0") {
-		t.Errorf("go.mod must contain direct require line %q", "\tgolang.org/x/time v0.15.0")
+	direct := false
+	for _, line := range strings.Split(string(mod), "\n") {
+		if strings.HasPrefix(line, "\tgolang.org/x/time v") && !strings.Contains(line, "// indirect") {
+			direct = true
+			break
+		}
+	}
+	if !direct {
+		t.Error(`go.mod must list golang.org/x/time as a direct require (tab-indented line without "// indirect")`)
 	}
 
 	// (b) the flag parses to a boolean. Bare --insecure-cookie means true.
