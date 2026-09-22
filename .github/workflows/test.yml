@@ -21,7 +21,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: webui/pnpm-lock.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -82,7 +82,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: webui/pnpm-lock.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
