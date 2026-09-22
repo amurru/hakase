@@ -172,10 +172,33 @@ func quarantineCorruptFile(path string) (string, error) {
 	return aside, nil
 }
 
+// validSessionID reports whether id is a well-formed session identifier:
+// only characters that cannot carry path semantics (alphanumerics, '_', '-',
+// '.'), so joining it into the sessions directory can never escape the store.
+// IDs arrive from request path values and tool callers, not just from
+// NewSession; legitimate ids are "task_" + UUID.
+func validSessionID(id string) bool {
+	if id == "" || id == "." || id == ".." || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Save writes a session to disk as a JSON file, atomically and under the
 // cross-process dir lock. The summary index is updated in the same critical
 // section so List never falls behind a successful Save.
 func (s *SessionStore) Save(session *Session) error {
+	if !validSessionID(session.ID) {
+		return fmt.Errorf("invalid session id %q", session.ID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -262,6 +285,9 @@ func (s *SessionStore) listFiltered(archived bool) ([]SessionSummary, error) {
 
 // Delete removes a session file from disk and drops its index entry.
 func (s *SessionStore) Delete(id string) error {
+	if !validSessionID(id) {
+		return fmt.Errorf("invalid session id %q", id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -328,6 +354,9 @@ func (s *SessionStore) Unarchive(id string) error {
 // The caller must hold the appropriate lock (RLock for read, Lock for write).
 // Torn files are quarantined aside so one bad write never wedges the store.
 func (s *SessionStore) loadUnlocked(id string) (*Session, error) {
+	if !validSessionID(id) {
+		return nil, fmt.Errorf("invalid session id %q", id)
+	}
 	path := filepath.Join(s.sessionsDir, id+FileExt)
 	data, err := os.ReadFile(path)
 	if err != nil {

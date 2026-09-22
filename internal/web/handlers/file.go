@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -335,11 +334,14 @@ const maxProxyImageBytes = 10 << 20
 
 // proxyHTTPClient is the shared client for fetching remote images through
 // /api/files/proxy. Redirect targets are re-checked against the SSRF guard at
-// every hop so a public URL can never redirect to an internal address.
+// every hop so a public URL can never redirect to an internal address, and
+// the dialer re-validates every resolved address at dial time (pinning the
+// connection to a validated IP) so DNS rebinding cannot split the check from
+// the connect.
 var proxyHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		DialContext:           vision.GuardedDialContext,
 		MaxIdleConns:          8,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
