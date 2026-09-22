@@ -409,10 +409,16 @@ func TestOAuthRestoreRefreshesAndPersists(t *testing.T) {
 // non-web schemes (file:, custom handlers) never reach the OS opener while
 // an https URL is dispatched exactly once. No production seam needed.
 func TestOpenBrowserSchemeGuard(t *testing.T) {
+	// The stub must match the opener openBrowser picks for this GOOS, or the
+	// https case launches the real system opener (darwin: open, windows:
+	// rundll32, everything else: xdg-open).
 	bin, script := "xdg-open", "#!/bin/sh\necho \"$@\" >> %s\n"
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		// exec.Command("rundll32", ...) resolves rundll32.bat via PATHEXT.
 		bin, script = "rundll32.bat", "@echo %* >> %s\r\n"
+	case "darwin":
+		bin = "open"
 	}
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls.txt")
