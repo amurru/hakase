@@ -70,6 +70,28 @@ func TestEnvBoolPolicy(t *testing.T) {
 	}
 }
 
+// TestEnvEmptyValueMeansUnset pins the presence convention: a set-but-empty
+// variable counts as unset (POSIX semantics - profiles and service units
+// export variables empty), so it skips the strict parser instead of failing
+// the load, and the field keeps its file/default value.
+func TestEnvEmptyValueMeansUnset(t *testing.T) {
+	cfg, err := loadWithEnv(t, map[string]string{
+		"HAKASE_DEBUG":             "",
+		"HAKASE_MEMORY_MAX_NOTES":  "",
+		"HAKASE_MAX_OUTPUT_TOKENS": "",
+		"HAKASE_TELEGRAM_ENABLED":  "",
+	})
+	if err != nil {
+		t.Fatalf("explicitly empty overrides must read as unset, got: %v", err)
+	}
+	if cfg.Debug {
+		t.Fatal("empty HAKASE_DEBUG must leave debug off")
+	}
+	if cfg.Memory.MaxNotes != DefaultMemoryMaxNotes {
+		t.Fatalf("empty HAKASE_MEMORY_MAX_NOTES must keep the default, got %d", cfg.Memory.MaxNotes)
+	}
+}
+
 // TestEnvBoolOverridesWired checks that every boolean override goes through
 // the shared policy and lands in its own config field (one valid true, one
 // valid false, one policy violation each).

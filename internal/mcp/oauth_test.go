@@ -403,3 +403,50 @@ func TestOAuthRestoreRefreshesAndPersists(t *testing.T) {
 		t.Fatalf("persisted access token = %q, want refreshed %q", st.Token.AccessToken, fixtureRefreshed)
 	}
 }
+
+// TestOpenBrowserSchemeGuard pins openBrowser's contract end to end: a fake
+// opener binary on PATH records every dispatch, so the test asserts that
+// non-web schemes (file:, custom handlers) never reach the OS opener while
+// an https URL is dispatched exactly once. No production seam needed.
+func TestOpenBrowserSchemeGuard(t *testing.T) {
+	bin, script := "xdg-open", "#!/bin/sh\necho \"$@\" >> %s\n"
+	if runtime.GOOS == "windows" {
+		// exec.Command("rundll32", ...) resolves rundll32.bat via PATHEXT.
+		bin, script = "rundll32.bat", "@echo %* >> %s\r\n"
+	}
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls.txt")
+	stub := filepath.Join(dir, bin)
+	script = strings.ReplaceAll(script, "%s", calls)
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write opener stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	openBrowser("file:///etc/passwd")
+	openBrowser("custom://handler")
+	// The opener is async (Start returns before the stub writes), so give a
+	// broken guard time to (wrongly) dispatch before asserting absence.
+	time.Sleep(250 * time.Millisecond)
+	if _, err := os.Stat(calls); !os.IsNotExist(err) {
+		t.Fatalf("non-web schemes reached the OS opener (calls file: %v)", err)
+	}
+
+	openBrowser("https://example.com/auth")
+	var data []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d, err := os.ReadFile(calls)
+		if err == nil {
+			data = d
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("https dispatch not recorded within 2s: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(string(data), "https://example.com/auth") {
+		t.Fatalf("opener argv = %q, want it to carry the URL", string(data))
+	}
+}
