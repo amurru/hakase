@@ -808,6 +808,17 @@ The `channels` block configures communication channels - chat transports that pr
 - `channels.telegram.allowed_user_ids` - static allowlist of Telegram numeric user IDs (deny-by-default). Empty = runtime pairing via `/start <code>`.
 - `channels.telegram.pairing_code` - optional static pairing code for scripted setups instead of the generated rotating code. Also write-only through the web config API.
 - `channels.telegram.pins` - pin the user's prompt message for the duration of each run and unpin at completion (Hermes-style turn marker). Default off.
+- `channels.telegram.speech_to_text` - local voice-note transcription via whisper.cpp, fully local (no cloud STT; issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; disabled voice notes get an actionable setup hint instead of a run.
+  - `enabled` - `*bool`; transcription runs only when explicitly `true`.
+  - `model` - whisper.cpp ggml model name (without the `ggml-` prefix/`.bin` suffix). Default `base-q5_1` (quantized, multilingual, ~58 MiB). The model file **auto-downloads on first transcription** from HuggingFace into `models_dir`; set `model_url_base` to a mirror for offline setups, or drop the `ggml-<model>.bin` file in manually.
+  - `language` - `auto` (detect) or an ISO code like `en`/`de`/`zh` (passed to `whisper-cli -l`; `auto` is the binary's native default). Default `auto`.
+  - `binary_path` - the `whisper-cli` binary (build from [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp): `cmake -B build && cmake --build build`). Default `whisper-cli` on PATH.
+  - `ffmpeg_path` - ffmpeg (OGG/Opus → 16 kHz mono WAV decode). Default `ffmpeg` on PATH.
+  - `models_dir` - ggml model storage. Default `~/.hakase/models/whisper`.
+  - `max_seconds` - refuse voice notes longer than this. Default 120.
+  - `timeout_seconds` - bound one transcription. Default 180.
+  - Behavior: the transcript is echoed (`🎙 Heard: …`) **before** the run starts so a mis-transcription can be stopped with `/stop`; transcriptions serialize (one at a time, queue depth 3, "queue is full" reply on overflow); audio bytes never leave the machine and are never persisted — the transcript is the only trace. Missing ffmpeg/whisper degrades to an actionable hint, never a run failure. Env: `HAKASE_TELEGRAM_STT_ENABLED`.
+- `channels.telegram.text_to_speech` - local Piper voice-note replies. **Accepted for forward stability but not wired yet** (the `internal/speech` `Synthesizer` seam ships; the `/voice off|auto|on` transport wiring is the follow-up PR) — setting this block today changes nothing. Planned shape: `enabled`, `binary_path` (the maintained `piper-tts` CLI; the original C++ rhasspy/piper was archived 2025-10), `voice_path` (a `.onnx` voice from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices)), `ffmpeg_path` (WAV → OGG/Opus), `max_chars` (default 1200). Env: `HAKASE_TELEGRAM_TTS_ENABLED`.
 
 Pairing codes generated at runtime are 6 digits, valid 15 minutes, and surfaced three ways: the server console at boot, `hakase channels pair-code`, or `POST /api/channels/pairing-code` (the Channels page in the web UI). The pending code is never returned by `GET /api/channels` - only its expiry. Pairings, per-chat bindings (session, notify flag, topics mode), and per-topic bindings (`telegram:<chatID>:<threadID>` -> session + title) persist in `~/.hakase/channels.json` (0600, flock-protected, sandbox-denied); revoke via the web UI, `hakase channels revoke <user-id>`, or by deleting the entry from the file while the server is stopped.
 
@@ -846,6 +857,8 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
 | `HAKASE_TELEGRAM_ENABLED` | `channels.telegram.enabled` |
 | `HAKASE_TELEGRAM_BOT_TOKEN` | `channels.telegram.bot_token` |
+| `HAKASE_TELEGRAM_STT_ENABLED` | `channels.telegram.speech_to_text.enabled` |
+| `HAKASE_TELEGRAM_TTS_ENABLED` | `channels.telegram.text_to_speech.enabled` |
 | `HAKASE_MEMORY_ENABLED` | `memory.enabled` |
 | `HAKASE_MEMORY_MAX_PROMPT_CHARS` | `memory.max_prompt_chars` |
 | `HAKASE_MEMORY_MAX_NOTES` | `memory.max_notes` |
