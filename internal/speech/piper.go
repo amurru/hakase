@@ -24,6 +24,39 @@ type PiperTTS struct {
 	cfg TTSConfig
 }
 
+// resolvePiperBin finds the Piper CLI: the configured path/name first, then
+// the alternative package names — distros ship it as `piper` (upstream,
+// rhasspy/piper) or `piper-tts` (e.g. Arch's piper-tts-bin). An explicitly
+// configured absolute path is used as-is (no silent fallback); a lookup
+// failure of the default name falls through to the alternatives.
+func resolvePiperBin(configured string) string {
+	var candidates []string
+	if configured != "" && configured != "piper" && configured != "piper-tts" {
+		// Explicit custom path: honor it exactly.
+		if p, err := exec.LookPath(configured); err == nil {
+			return p
+		}
+		return ""
+	}
+	for _, name := range []string{"piper", "piper-tts"} {
+		candidates = append(candidates, name)
+	}
+	for _, name := range candidates {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// piperBin resolves the CLI or reports an actionable error.
+func (p *PiperTTS) piperBin() (string, error) {
+	if bin := resolvePiperBin(p.cfg.BinaryPath); bin != "" {
+		return bin, nil
+	}
+	return "", fmt.Errorf("speech: piper not found (pip install piper-tts, pacman -S piper-tts-bin, or set channels.telegram.text_to_speech.binary_path)")
+}
+
 // NewPiperTTS builds a synthesizer from the config (defaults applied).
 func NewPiperTTS(cfg TTSConfig) *PiperTTS {
 	return &PiperTTS{cfg: cfg.resolved()}
@@ -41,8 +74,8 @@ func (p *PiperTTS) Availability() error {
 	if _, err := exec.LookPath(p.cfg.FFMpegPath); err != nil {
 		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.text_to_speech.ffmpeg_path)")
 	}
-	if _, err := exec.LookPath(p.cfg.BinaryPath); err != nil {
-		return fmt.Errorf("speech: piper not found (pip install piper-tts, or set channels.telegram.text_to_speech.binary_path)")
+	if _, err := p.piperBin(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -65,9 +98,9 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text string) ([]byte, error) 
 	defer os.RemoveAll(dir)
 
 	// piper: text on stdin → WAV on disk.
-	pipbin, err := exec.LookPath(p.cfg.BinaryPath)
+	pipbin, err := p.piperBin()
 	if err != nil {
-		return nil, fmt.Errorf("speech: piper not found (pip install piper-tts, or set channels.telegram.text_to_speech.binary_path)")
+		return nil, err
 	}
 	wavPath := filepath.Join(dir, "speech.wav")
 	pipcmd := &exec.Cmd{Path: pipbin, Args: []string{pipbin,

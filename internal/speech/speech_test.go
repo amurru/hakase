@@ -266,6 +266,36 @@ func TestQueueSerializesAndRefusesWhenFull(t *testing.T) {
 	}
 }
 
+func TestPiperBinaryNameFallback(t *testing.T) {
+	skipWindows(t)
+	// The default CLI name "piper" is missing; distros shipping the binary
+	// as "piper-tts" (e.g. Arch piper-tts-bin) must still resolve.
+	binDir := t.TempDir()
+	voice := filepath.Join(t.TempDir(), "voice.onnx")
+	if err := os.WriteFile(voice, []byte("onnx"), 0o600); err != nil {
+		t.Fatalf("voice: %v", err)
+	}
+	piperTTS := writeFakeBin(t, binDir, "piper-tts", `out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-f" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'RIFFfake-wav' > "$out"
+`)
+	ffmpeg := writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter)
+	t.Setenv("PATH", binDir) // only binDir is searchable
+
+	p := NewPiperTTS(TTSConfig{BinaryPath: "", VoicePath: voice, FFMpegPath: ffmpeg})
+	if err := p.Availability(); err != nil {
+		t.Fatalf("availability should fall back to piper-tts, got: %v", err)
+	}
+	if _, err := p.Synthesize(context.Background(), "hello"); err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	_ = piperTTS
+}
+
 func TestPiperSeamWithFakes(t *testing.T) {
 	skipWindows(t)
 	binDir := t.TempDir()
