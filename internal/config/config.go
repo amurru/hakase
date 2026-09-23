@@ -624,14 +624,12 @@ type TelegramTTSConfig struct {
 	// BinaryPath is the piper CLI. Default "piper" on PATH, with "piper-tts"
 	// (e.g. Arch piper-tts-bin) resolved as a fallback name.
 	BinaryPath string `json:"binary_path,omitempty"`
-	// VoicePath is the DEFAULT Piper .onnx voice model file (required when
-	// enabled) — used when no per-language voice matches.
-	VoicePath string `json:"voice_path,omitempty"`
-	// Voices maps an ISO language code to that language's .onnx voice, so
-	// replies mirror the language whisper detected on the inbound voice
-	// note (e.g. {"de": ".../de_DE-thorsten-medium.onnx"}). Languages
-	// without an entry (or whose file is missing on disk) fall back to
-	// voice_path.
+	// Voices maps language codes to .onnx voice files, plus the RESERVED
+	// "default" key: the voice for typed prompts (no language known) and
+	// the fallback for languages without an entry or with a missing file.
+	// Example: {"default": ".../en_US-amy-medium.onnx", "de":
+	// ".../de_DE-thorsten-medium.onnx"} — a German voice note is then
+	// answered with German speech. Required when enabled.
 	Voices map[string]string `json:"voices,omitempty"`
 	// FFMpegPath is the ffmpeg binary (WAV → OGG/Opus). Default "ffmpeg".
 	FFMpegPath string `json:"ffmpeg_path,omitempty"`
@@ -639,8 +637,9 @@ type TelegramTTSConfig struct {
 	MaxChars int `json:"max_chars,omitempty"`
 }
 
-// validLangKey guards the voices-map keys (ISO-ish language codes).
-var validLangKey = regexp.MustCompile(`^[a-z]{2,3}(-[a-z0-9]{1,16})?$`)
+// validLangKey guards the voices-map keys: language codes plus the
+// reserved "default".
+var validLangKey = regexp.MustCompile(`^(default|[a-z]{2,3}(-[a-z0-9]{1,16})?)$`)
 
 // ApplyDefaults fills zero values with defaults. Call after load.
 func (c *TelegramTTSConfig) ApplyDefaults() {
@@ -649,17 +648,24 @@ func (c *TelegramTTSConfig) ApplyDefaults() {
 	}
 }
 
-// Validate checks the TTS block for sane values.
+// Validate checks the TTS block for sane values. Like the channel gate, it
+// only fails when explicitly enabled but unusable: an enabled TTS without
+// a default voice would silently swallow every voice reply otherwise.
 func (c *TelegramTTSConfig) Validate() error {
 	if c.MaxChars < 0 {
 		return fmt.Errorf("channels.telegram.text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
 	}
 	for lang, path := range c.Voices {
 		if !validLangKey.MatchString(lang) {
-			return fmt.Errorf("channels.telegram.text_to_speech.voices: invalid language key %q (want an ISO code like en/de/ar)", lang)
+			return fmt.Errorf("channels.telegram.text_to_speech.voices: invalid key %q (want a language code like en/de/ar, or \"default\")", lang)
 		}
 		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("channels.telegram.text_to_speech.voices: language %q has an empty path", lang)
+			return fmt.Errorf("channels.telegram.text_to_speech.voices: key %q has an empty path", lang)
+		}
+	}
+	if c.Enabled != nil && *c.Enabled {
+		if c.Voices["default"] == "" {
+			return fmt.Errorf("channels.telegram.text_to_speech: enabled but voices has no \"default\" entry (set voices: {\"default\": \"/path/voice.onnx\"}, plus per-language entries to mirror spoken languages)")
 		}
 	}
 	return nil

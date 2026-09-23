@@ -74,7 +74,7 @@ New leaf package mirroring `internal/vision`'s optional-binary posture
     "language": "auto", "binary_path": "whisper-cli", "ffmpeg_path": "ffmpeg",
     "models_dir": "", "max_seconds": 120, "timeout_seconds": 180 },
   "text_to_speech": { "enabled": false, "binary_path": "piper",
-    "voice_path": "", "ffmpeg_path": "ffmpeg", "max_chars": 1200 }
+    "voices": { "default": "", "de": "" }, "ffmpeg_path": "ffmpeg", "max_chars": 1200 }
 }}
 ```
 

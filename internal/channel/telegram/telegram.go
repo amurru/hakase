@@ -178,7 +178,6 @@ func New(d Deps) (*Bot, error) {
 	if d.Config.TextToSpeech.Enabled != nil && *d.Config.TextToSpeech.Enabled {
 		b.synthesizer = speech.NewPiperTTS(speech.TTSConfig{
 			BinaryPath: d.Config.TextToSpeech.BinaryPath,
-			VoicePath:  d.Config.TextToSpeech.VoicePath,
 			Voices:     d.Config.TextToSpeech.Voices,
 			FFMpegPath: d.Config.TextToSpeech.FFMpegPath,
 		})

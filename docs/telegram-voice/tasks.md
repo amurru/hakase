@@ -49,9 +49,10 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 - [x] **T3.3 [QA]** /voice persistence + mode semantics + fallback tests
       (fakeSynthesizer/streamingDriver). Spec: TV-005.
 - [x] **T3.4 [BE/QA]** Multilingual mirroring: whisper's detected language
-      (`-oj` JSON) rides through the turn; `text_to_speech.voices` map
-      selects the per-language voice, unconfigured/missing/empty languages
-      fall back to `voice_path` (tested at both layers).
+      (`-oj` JSON) rides through the turn; `text_to_speech.voices` (reserved
+      `"default"` + per-language entries) selects the voice; unconfigured
+      languages, typed prompts, and missing voice files all fall back to
+      `"default"` (tested at both layers).
 
 ## Phase 4 — Docs
 

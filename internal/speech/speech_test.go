@@ -302,7 +302,7 @@ printf 'RIFFfake-wav' > "$out"
 	ffmpeg := writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter)
 	t.Setenv("PATH", binDir) // only binDir is searchable
 
-	p := NewPiperTTS(TTSConfig{BinaryPath: "", VoicePath: voice, FFMpegPath: ffmpeg})
+	p := NewPiperTTS(TTSConfig{BinaryPath: "", Voices: map[string]string{"default": voice}, FFMpegPath: ffmpeg})
 	if err := p.Availability(); err != nil {
 		t.Fatalf("availability should fall back to piper-tts, got: %v", err)
 	}
@@ -353,8 +353,10 @@ func TestPiperVoiceLanguageSelection(t *testing.T) {
 	}
 	p := NewPiperTTS(TTSConfig{
 		BinaryPath: writeFakeBin(t, binDir, "piper", fakePiperMarker),
-		VoicePath:  voiceEn,
-		Voices:     map[string]string{"de": voiceDe},
+		Voices: map[string]string{
+			"default": voiceEn,
+			"de":      voiceDe,
+		},
 		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeFFMpegCopy),
 	})
 
@@ -385,8 +387,10 @@ func TestPiperVoiceLanguageSelection(t *testing.T) {
 	// A configured language whose file is missing on disk also falls back.
 	p2 := NewPiperTTS(TTSConfig{
 		BinaryPath: writeFakeBin(t, binDir, "piper", fakePiperMarker),
-		VoicePath:  voiceEn,
-		Voices:     map[string]string{"ja": filepath.Join(t.TempDir(), "ja_JP-missing.onnx")},
+		Voices: map[string]string{
+			"default": voiceEn,
+			"ja":      filepath.Join(t.TempDir(), "ja_JP-missing.onnx"),
+		},
 		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeFFMpegCopy),
 	})
 	jpOGG, err := p2.Synthesize(context.Background(), "hello", "ja")
@@ -415,7 +419,7 @@ printf 'RIFFfake-wav' > "$out"
 `)
 	p := NewPiperTTS(TTSConfig{
 		BinaryPath: piper,
-		VoicePath:  voice,
+		Voices:     map[string]string{"default": voice},
 		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter),
 	})
 	ogg, err := p.Synthesize(context.Background(), "hello there", "")
@@ -430,7 +434,7 @@ printf 'RIFFfake-wav' > "$out"
 	}
 
 	// Missing voice file → actionable availability error.
-	missing := NewPiperTTS(TTSConfig{BinaryPath: piper, VoicePath: filepath.Join(t.TempDir(), "nope.onnx"), FFMpegPath: "ffmpeg"})
+	missing := NewPiperTTS(TTSConfig{BinaryPath: piper, Voices: map[string]string{"default": filepath.Join(t.TempDir(), "nope.onnx")}, FFMpegPath: "ffmpeg"})
 	if err := missing.Availability(); err == nil || !strings.Contains(err.Error(), "voice model") {
 		t.Fatalf("expected voice-model error, got: %v", err)
 	}

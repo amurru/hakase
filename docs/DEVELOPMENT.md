@@ -821,15 +821,15 @@ The `channels` block configures communication channels - chat transports that pr
 - `channels.telegram.text_to_speech` - local Piper voice-note replies (issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; per-chat behavior is chosen with the `/voice off|auto|on` command (`off` default = text answers, `auto` = the answer is spoken when your prompt was a voice note, `on` = always spoken; the preference persists per chat in `channels.json`).
   - `enabled` - `*bool`; synthesis runs only when explicitly `true`.
   - `binary_path` - the Piper CLI. Default `piper` on PATH; the name `piper-tts` (e.g. Arch's piper-tts-bin) resolves automatically as a fallback — explicit absolute paths are honored as-is.
-  - `voice_path` - a Piper `.onnx` voice model from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices). Required, downloaded externally (unlike the whisper model, voices are NOT auto-downloaded — the repo nests voices per language/speaker/quality, so there is no single predictable URL). Setup:
+  - `voices` - map of voice models, REQUIRED when enabled. The reserved `"default"` key is the voice for typed prompts and the fallback for anything unmatched; every other key is a language code whose voice is used when whisper detects that language on an inbound voice note, so replies **mirror the caller's language**. Voices are downloaded externally from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) (unlike the whisper model they are NOT auto-downloaded — the repo nests voices per language/speaker/quality, so there is no single predictable URL):
     ```
     mkdir -p ~/.hakase/models/piper
     cd ~/.hakase/models/piper
     wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx
     wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json
+    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx
     ```
-    then set `voice_path` to the `.onnx` file's absolute path (no `~` expansion).
-  - `voices` - per-language voice models so voice replies **mirror the language whisper detected** on the inbound voice note (e.g. `{"de": "~models/piper/de_DE-thorsten-medium.onnx", "ar": ".../ar_JO-kareem-medium.onnx"}`): a German voice note is answered with German speech. Languages without an entry, typed prompts (whose language is not detected), and configured-but-missing voice files all fall back to `voice_path` (logged, never an error).
+    then reference the `.onnx` files by absolute path (no `~` expansion). A configured language whose file is missing on disk falls back to `default` (logged, never an error). Validation fails fast at load: `enabled: true` without a `"default"` entry is a config error.
   - `binary_path` naming: distros package the CLI as `piper` or `piper-tts` — hakase tries the configured name, then `piper`, then `piper-tts` (explicit absolute paths are used as-is with no fallback). On Arch (`piper-tts-bin`) set nothing: the fallback finds `/usr/bin/piper-tts`.
   - `ffmpeg_path` - WAV → OGG/Opus encode (Telegram voice-note container). Default `ffmpeg` on PATH.
   - `max_chars` - cap the spoken text length, with an explicit "[truncated for voice]" marker. Default 1200.

@@ -169,13 +169,10 @@ type TTSConfig struct {
 	// BinaryPath is the piper CLI (default "piper", with "piper-tts" as a
 	// fallback name).
 	BinaryPath string
-	// VoicePath is the DEFAULT .onnx voice model file (required) — used
-	// whenever no per-language voice matches.
-	VoicePath string
-	// Voices maps an ISO language code to that language's .onnx voice, so
-	// replies can mirror the language whisper detected on the inbound voice
-	// note. Languages without an entry (or whose file is missing) fall back
-	// to VoicePath.
+	// Voices maps language codes to .onnx voice files, plus the reserved
+	// "default" key: the voice used for typed prompts (no language known)
+	// and as the fallback for languages without an entry or whose file is
+	// missing. Required.
 	Voices map[string]string
 	// FFMpegPath is the ffmpeg binary (default "ffmpeg") for WAV→OGG.
 	FFMpegPath string
@@ -190,9 +187,4 @@ func (c TTSConfig) resolved() TTSConfig {
 		c.FFMpegPath = "ffmpeg"
 	}
 	return c
-}
-
-// voiceIsConfigured reports whether a usable voice model path is set.
-func (c TTSConfig) voiceIsConfigured() bool {
-	return strings.HasSuffix(c.VoicePath, ".onnx")
 }

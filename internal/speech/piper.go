@@ -63,14 +63,15 @@ func NewPiperTTS(cfg TTSConfig) *PiperTTS {
 	return &PiperTTS{cfg: cfg.resolved()}
 }
 
-// Availability names exactly what is missing: piper binary, ffmpeg, or the
-// voice model file.
+// Availability names exactly what is missing: the default voice, piper
+// binary, or ffmpeg.
 func (p *PiperTTS) Availability() error {
-	if !p.cfg.voiceIsConfigured() {
-		return fmt.Errorf("speech: text_to_speech.voice_path must point to a Piper .onnx voice model (download from huggingface.co/rhasspy/piper-voices)")
+	dv := p.defaultVoice()
+	if dv == "" {
+		return fmt.Errorf("speech: text_to_speech.voices must define a \"default\" voice (a .onnx path)")
 	}
-	if _, err := os.Stat(p.cfg.VoicePath); err != nil {
-		return fmt.Errorf("speech: piper voice model %s not found: %w", p.cfg.VoicePath, err)
+	if _, err := os.Stat(dv); err != nil {
+		return fmt.Errorf("speech: default piper voice model %s not found: %w", dv, err)
 	}
 	if _, err := exec.LookPath(p.cfg.FFMpegPath); err != nil {
 		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.text_to_speech.ffmpeg_path)")
@@ -84,7 +85,7 @@ func (p *PiperTTS) Availability() error {
 // Synthesize renders text to OGG/Opus: piper → WAV → ffmpeg → OGG
 // (Telegram voice-note container). lang picks the per-language voice when
 // one is configured (see TTSConfig.Voices); "" or an unconfigured/missing
-// language falls back to the default VoicePath. All intermediate files live
+// language falls back to the default voice. All intermediate files live
 // in a temp directory removed on return.
 func (p *PiperTTS) Synthesize(ctx context.Context, text, lang string) ([]byte, error) {
 	if err := p.Availability(); err != nil {
@@ -155,4 +156,4 @@ func (p *PiperTTS) voiceFor(lang string) string {
 
 // defaultVoice returns the fallback voice path ("" when unconfigured —
 // Availability reports that).
-func (p *PiperTTS) defaultVoice() string { return p.cfg.VoicePath }
+func (p *PiperTTS) defaultVoice() string { return p.cfg.Voices["default"] }
