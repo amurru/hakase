@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,11 @@ func TestSaveSnapshotRingAndOrder(t *testing.T) {
 }
 
 func TestSnapshotPerms0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX permission bits; os.Chmod only toggles the
+		// read-only flag, so a 0600 assertion is meaningless there.
+		t.Skip("POSIX perms not applicable on windows")
+	}
 	st, _ := newSnapshotTestStore(t, 5)
 	sess := &Session{ID: "task_perm"}
 	sess.AddMessage("user", "hello", "")
