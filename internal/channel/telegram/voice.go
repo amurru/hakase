@@ -33,7 +33,7 @@ const voiceSetupHint = "🎙 Voice notes are not transcribed yet.\n\nEnable voic
 // transcriber is the speech seam (satisfied by *speech.WhisperCLI; tests
 // substitute a fake).
 type transcriber interface {
-	Transcribe(ctx context.Context, audio []byte, mime string, durationSec int) (string, error)
+	Transcribe(ctx context.Context, audio []byte, mime string, durationSec int) (speech.Transcript, error)
 	Availability() error
 }
 
@@ -65,12 +65,12 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 
 	// Serialized transcription: one at a time (CPU-bound), bounded queue,
 	// bounded duration (speech_to_text.timeout_seconds).
-	var transcript string
+	var tr speech.Transcript
 	var terr error
 	err = b.voiceQueue.Run(ctx, func(ctx context.Context) error {
 		tctx, cancel := speech.WithTimeout(ctx, b.stt.TimeoutSeconds)
 		defer cancel()
-		transcript, terr = b.transcriber.Transcribe(tctx, audio, v.MimeType, v.Duration)
+		tr, terr = b.transcriber.Transcribe(tctx, audio, v.MimeType, v.Duration)
 		return terr
 	})
 	switch {
@@ -82,21 +82,23 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 		b.sendText(ctx, c, "⚠️ Transcription failed: "+esc(err.Error()), nil, false)
 		return
 	}
-	transcript = strings.TrimSpace(transcript)
-	if transcript == "" {
+	tr.Text = strings.TrimSpace(tr.Text)
+	if tr.Text == "" {
 		b.sendText(ctx, c, "🎙 I couldn't hear anything intelligible in that voice note.", nil, false)
 		return
 	}
 
 	// Echo-verification BEFORE the run: a mis-transcription can be stopped
 	// with /stop (issue step 4 — no confirmation gate).
-	echo := transcript
+	echo := tr.Text
 	if len(echo) > 800 {
 		echo = echo[:800] + "…"
 	}
 	b.sendText(ctx, c, "🎙 Heard:\n"+esc(echo), nil, false)
 
-	b.startRun(ctx, c, m.ID, transcript, nil, nil, nil, true)
+	// tr.Language is whisper's detection — carried so a voice reply (TTS)
+	// can mirror the caller's language when a matching voice is configured.
+	b.startRun(ctx, c, m.ID, tr.Text, nil, nil, nil, tr.Language)
 }
 
 // Voice-reply mode preferences (per chat, persisted in channels.json).
@@ -135,10 +137,13 @@ func stripMarkdownForTTS(s string) string {
 }
 
 // trySendVoiceReply synthesizes the final answer and delivers it as a voice
-// note. Returns false when nothing was sent (empty speakable text or
-// synthesis failure) so finalize falls back to the text render — the answer
-// must never be lost to a TTS hiccup.
-func (rv *runView) trySendVoiceReply(ctx context.Context, full string) bool {
+// note. lang is whisper's detection from the inbound voice note ("" for
+// typed turns): a configured per-language voice mirrors the caller's
+// language, anything else falls back to the default voice. Returns false
+// when nothing was sent (empty speakable text or synthesis failure) so
+// finalize falls back to the text render — the answer must never be lost to
+// a TTS hiccup.
+func (rv *runView) trySendVoiceReply(ctx context.Context, full, lang string) bool {
 	spoken := strings.TrimSpace(stripMarkdownForTTS(full))
 	if spoken == "" {
 		return false
@@ -150,7 +155,7 @@ func (rv *runView) trySendVoiceReply(ctx context.Context, full string) bool {
 	if r := []rune(spoken); len(r) > max {
 		spoken = string(r[:max]) + " … [truncated for voice]"
 	}
-	ogg, err := rv.b.synthesizer.Synthesize(ctx, spoken)
+	ogg, err := rv.b.synthesizer.Synthesize(ctx, spoken, lang)
 	if err != nil {
 		rv.b.log("voice reply synthesis failed: %v", err)
 		return false

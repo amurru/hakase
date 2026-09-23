@@ -19,17 +19,20 @@ import (
 	"google.golang.org/genai"
 )
 
-// fakeSynthesizer scripts synthesis outcomes and records what was spoken.
+// fakeSynthesizer scripts synthesis outcomes and records what was spoken
+// and in which language.
 type fakeSynthesizer struct {
 	mu       sync.Mutex
 	lastText string
+	lastLang string
 	calls    int
 	err      error
 }
 
-func (f *fakeSynthesizer) Synthesize(_ context.Context, text string) ([]byte, error) {
+func (f *fakeSynthesizer) Synthesize(_ context.Context, text, lang string) ([]byte, error) {
 	f.mu.Lock()
 	f.lastText = text
+	f.lastLang = lang
 	f.calls++
 	f.mu.Unlock()
 	if f.err != nil {
@@ -44,6 +47,12 @@ func (f *fakeSynthesizer) spoken() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastText
+}
+
+func (f *fakeSynthesizer) spokenLang() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastLang
 }
 
 func (f *fakeSynthesizer) callCount() int {
@@ -140,7 +149,7 @@ func TestTTSAutoSpeaksOnlyVoiceTurns(t *testing.T) {
 		_, _ = w.Write([]byte("fake-ogg-bytes"))
 	}))
 	defer ts.Close()
-	b.transcriber = &fakeTranscriber{transcript: "spoken question"}
+	b.transcriber = &fakeTranscriber{transcript: "spoken question", lang: "en"}
 	b.voiceQueue = speech.NewQueue(3)
 	b.stt = config.TelegramSTTConfig{MaxSeconds: 120, TimeoutSeconds: 5}
 	b.fileBaseURL = ts.URL
@@ -149,6 +158,34 @@ func TestTTSAutoSpeaksOnlyVoiceTurns(t *testing.T) {
 	waitRunDone(t, b, rootConv(200))
 	if got := len(api.voiceSends()); got != 1 {
 		t.Fatalf("auto mode did not speak the voice turn: %d voice sends", got)
+	}
+}
+
+// TestTTSVoiceLanguageMirrors pins the multilingual loop: whisper's
+// detected language rides through the turn and reaches the synthesizer, so
+// the reply can be spoken with a matching voice.
+func TestTTSVoiceLanguageMirrors(t *testing.T) {
+	synth := &fakeSynthesizer{}
+	b, api, _ := newTTSTestBot(t, synth)
+	setVoiceMode(t, b, "auto")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("fake-ogg-bytes"))
+	}))
+	defer ts.Close()
+	b.transcriber = &fakeTranscriber{transcript: "wo ist der Bahnhof?", lang: "de"}
+	b.voiceQueue = speech.NewQueue(3)
+	b.stt = config.TelegramSTTConfig{MaxSeconds: 120, TimeoutSeconds: 5}
+	b.fileBaseURL = ts.URL
+
+	b.handleMessage(context.Background(), voiceMessage(200, 3))
+	waitRunDone(t, b, rootConv(200))
+
+	if got := len(api.voiceSends()); got != 1 {
+		t.Fatalf("expected the German voice turn to be spoken, got %d voice sends", got)
+	}
+	if got := synth.spokenLang(); got != "de" {
+		t.Fatalf("synthesizer language = %q, want de (mirrored)", got)
 	}
 }
 

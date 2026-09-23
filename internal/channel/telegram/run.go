@@ -34,10 +34,12 @@ const maxStatusErrLen = 200
 // session, persists the user turn, and launches the shared driver with a
 // Telegram run view. parts/refs/manifest carry photos (genai inline data,
 // session attachment refs, and the manifest lines appended to the prompt).
-// promptID is the user's prompt message (reaction receipts and the turn pin).
-// voiceIn marks a turn that arrived as a voice note — under /voice auto it
-// makes the reply a voice note too.
-func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string, voiceIn bool) {
+// promptID is the user's prompt message (reaction receipts and the turn
+// pin). voiceLang is whisper's detected language when the prompt arrived as
+// a voice note ("" for typed/photo turns) — under /voice auto it makes the
+// reply a voice note, and it lets the voice reply mirror the caller's
+// language.
+func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string, voiceLang string) {
 	rk := threadKey(c)
 	if _, running := b.runs.Running(rk); running {
 		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
@@ -85,7 +87,7 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 	}
 	content := genai.NewContentFromParts(parts, genai.RoleUser)
 
-	rv := newRunView(b, c, promptID, runCtx, voiceIn)
+	rv := newRunView(b, c, promptID, runCtx, voiceLang)
 	go func() {
 		defer b.runs.Finish(rk)
 		rv.begin() // 👀 receipt and the optional turn pin
@@ -175,8 +177,11 @@ type runView struct {
 	// voiceReply (issue #19 TTS phase): the answer is spoken as a voice
 	// note at finalize instead of streamed as text — the status line keeps
 	// ticking meanwhile, and a synthesis failure falls back to the text
-	// render. full accumulates the raw answer for that synthesis.
+	// render. full accumulates the raw answer for that synthesis;
+	// voiceLang is whisper's detected language for voice turns, so the
+	// reply can mirror the caller's language (per-language voices map).
 	voiceReply bool
+	voiceLang  string
 	full       strings.Builder
 
 	// renderMu serializes every Telegram render (pump ticks vs finalize) so a
@@ -206,17 +211,17 @@ func (rv *runView) fullText() string {
 	return rv.full.String()
 }
 
-func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceIn bool) *runView {
+func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceLang string) *runView {
 	voiceReply := false
 	if b.synthesizer != nil {
 		switch b.voiceModeFor(c) {
 		case voiceModeOn:
 			voiceReply = true
 		case voiceModeAuto:
-			voiceReply = voiceIn
+			voiceReply = voiceLang != ""
 		}
 	}
-	return &runView{b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx, voiceReply: voiceReply}
+	return &runView{b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx, voiceReply: voiceReply, voiceLang: voiceLang}
 }
 
 // begin marks the turn start: 👀 receipt on the prompt and the optional
@@ -433,7 +438,7 @@ func (rv *runView) finalize() {
 		// normal text render below still delivers it (never a lost answer).
 		delivered := false
 		if rv.voiceReply && rv.b.synthesizer != nil {
-			delivered = rv.trySendVoiceReply(ctx, rv.fullText())
+			delivered = rv.trySendVoiceReply(ctx, rv.fullText(), rv.voiceLang)
 		}
 		if !delivered {
 			// Final render (finalized continuations already carry their complete

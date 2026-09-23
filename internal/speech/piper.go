@@ -10,6 +10,7 @@ package speech
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,15 +82,18 @@ func (p *PiperTTS) Availability() error {
 }
 
 // Synthesize renders text to OGG/Opus: piper → WAV → ffmpeg → OGG
-// (Telegram voice notes require OGG/Opus). All intermediate files live in a
-// temp directory removed on return.
-func (p *PiperTTS) Synthesize(ctx context.Context, text string) ([]byte, error) {
+// (Telegram voice-note container). lang picks the per-language voice when
+// one is configured (see TTSConfig.Voices); "" or an unconfigured/missing
+// language falls back to the default VoicePath. All intermediate files live
+// in a temp directory removed on return.
+func (p *PiperTTS) Synthesize(ctx context.Context, text, lang string) ([]byte, error) {
 	if err := p.Availability(); err != nil {
 		return nil, err
 	}
 	if text == "" {
 		return nil, fmt.Errorf("speech: nothing to synthesize")
 	}
+	voicePath := p.voiceFor(lang)
 
 	dir, err := os.MkdirTemp("", "hakase-tts-")
 	if err != nil {
@@ -104,7 +108,7 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text string) ([]byte, error) 
 	}
 	wavPath := filepath.Join(dir, "speech.wav")
 	pipcmd := &exec.Cmd{Path: pipbin, Args: []string{pipbin,
-		"-m", p.cfg.VoicePath, "-f", wavPath,
+		"-m", voicePath, "-f", wavPath,
 	}}
 	pipcmd.Stdin = strings.NewReader(text)
 	if out, err := util.CombinedOutputContext(ctx, pipcmd); err != nil {
@@ -130,3 +134,25 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text string) ([]byte, error) 
 	}
 	return ogg, nil
 }
+
+// voiceFor resolves the voice for a language: the per-language entry when
+// configured and present on disk, else the default VoicePath. A requested
+// language whose voice file is missing falls back loudly (logged), never
+// erroring the reply.
+func (p *PiperTTS) voiceFor(lang string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if lang != "" {
+		if path, ok := p.cfg.Voices[lang]; ok && path != "" {
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+			log.Printf("speech: no voice file for %q at %s — falling back to the default voice", lang, path)
+			return p.defaultVoice()
+		}
+	}
+	return p.defaultVoice()
+}
+
+// defaultVoice returns the fallback voice path ("" when unconfigured —
+// Availability reports that).
+func (p *PiperTTS) defaultVoice() string { return p.cfg.VoicePath }

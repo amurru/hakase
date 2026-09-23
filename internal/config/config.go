@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -620,15 +621,26 @@ type TelegramTTSConfig struct {
 	// Enabled turns voice-reply synthesis on (the transport wiring is the
 	// stretch phase — the config is accepted now for forward stability).
 	Enabled *bool `json:"enabled,omitempty"`
-	// BinaryPath is the piper CLI. Default "piper" on PATH.
+	// BinaryPath is the piper CLI. Default "piper" on PATH, with "piper-tts"
+	// (e.g. Arch piper-tts-bin) resolved as a fallback name.
 	BinaryPath string `json:"binary_path,omitempty"`
-	// VoicePath is the Piper .onnx voice model file (required when enabled).
+	// VoicePath is the DEFAULT Piper .onnx voice model file (required when
+	// enabled) — used when no per-language voice matches.
 	VoicePath string `json:"voice_path,omitempty"`
+	// Voices maps an ISO language code to that language's .onnx voice, so
+	// replies mirror the language whisper detected on the inbound voice
+	// note (e.g. {"de": ".../de_DE-thorsten-medium.onnx"}). Languages
+	// without an entry (or whose file is missing on disk) fall back to
+	// voice_path.
+	Voices map[string]string `json:"voices,omitempty"`
 	// FFMpegPath is the ffmpeg binary (WAV → OGG/Opus). Default "ffmpeg".
 	FFMpegPath string `json:"ffmpeg_path,omitempty"`
 	// MaxChars caps voice-note reply text length. Default 1200.
 	MaxChars int `json:"max_chars,omitempty"`
 }
+
+// validLangKey guards the voices-map keys (ISO-ish language codes).
+var validLangKey = regexp.MustCompile(`^[a-z]{2,3}(-[a-z0-9]{1,16})?$`)
 
 // ApplyDefaults fills zero values with defaults. Call after load.
 func (c *TelegramTTSConfig) ApplyDefaults() {
@@ -641,6 +653,14 @@ func (c *TelegramTTSConfig) ApplyDefaults() {
 func (c *TelegramTTSConfig) Validate() error {
 	if c.MaxChars < 0 {
 		return fmt.Errorf("channels.telegram.text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
+	}
+	for lang, path := range c.Voices {
+		if !validLangKey.MatchString(lang) {
+			return fmt.Errorf("channels.telegram.text_to_speech.voices: invalid language key %q (want an ISO code like en/de/ar)", lang)
+		}
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("channels.telegram.text_to_speech.voices: language %q has an empty path", lang)
+		}
 	}
 	return nil
 }

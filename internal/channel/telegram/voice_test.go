@@ -22,11 +22,12 @@ import (
 // fakeTranscriber scripts transcription outcomes.
 type fakeTranscriber struct {
 	transcript string
+	lang       string
 	err        error
 }
 
-func (f *fakeTranscriber) Transcribe(_ context.Context, _ []byte, _ string, _ int) (string, error) {
-	return f.transcript, f.err
+func (f *fakeTranscriber) Transcribe(_ context.Context, _ []byte, _ string, _ int) (speech.Transcript, error) {
+	return speech.Transcript{Text: f.transcript, Language: f.lang}, f.err
 }
 
 func (f *fakeTranscriber) Availability() error { return nil }

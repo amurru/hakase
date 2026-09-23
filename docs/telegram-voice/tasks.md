@@ -48,6 +48,10 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
       synthesis failure; rebinds preserve per-chat prefs). Spec: TV-004.
 - [x] **T3.3 [QA]** /voice persistence + mode semantics + fallback tests
       (fakeSynthesizer/streamingDriver). Spec: TV-005.
+- [x] **T3.4 [BE/QA]** Multilingual mirroring: whisper's detected language
+      (`-oj` JSON) rides through the turn; `text_to_speech.voices` map
+      selects the per-language voice, unconfigured/missing/empty languages
+      fall back to `voice_path` (tested at both layers).
 
 ## Phase 4 — Docs
 

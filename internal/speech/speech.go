@@ -26,12 +26,21 @@ var ErrBusy = errors.New("speech: transcription queue is full")
 // ErrTooLong reports a voice note longer than the configured cap.
 var ErrTooLong = errors.New("speech: voice note longer than the configured cap")
 
+// Transcript is one transcription result: the spoken text plus the language
+// whisper detected for it (ISO code like "de"; empty when unknown). The
+// language lets a voice reply MIRROR the caller's language when the
+// synthesizer has a matching voice configured.
+type Transcript struct {
+	Text     string
+	Language string
+}
+
 // Transcriber turns audio bytes into text, fully local.
 type Transcriber interface {
 	// Transcribe converts the audio payload (Telegram voice notes are
-	// OGG/Opus; mime drives the temp-file extension) into text. An empty
-	// string with nil error means nothing intelligible was heard.
-	Transcribe(ctx context.Context, audio []byte, mime string, durationSec int) (string, error)
+	// OGG/Opus; mime drives the temp-file extension) into a Transcript. An
+	// empty Text with nil error means nothing intelligible was heard.
+	Transcribe(ctx context.Context, audio []byte, mime string, durationSec int) (Transcript, error)
 	// Availability returns nil when the pipeline could run right now;
 	// otherwise an error naming what to install or configure.
 	Availability() error
@@ -144,23 +153,30 @@ var HakaseHome = func() string {
 	return filepath.Join(home, ".hakase")
 }
 
-// Synthesizer turns text into OGG/Opus audio bytes, fully local. The seam
-// is implemented (PiperTTS) but intentionally not wired into any transport
-// yet (docs/telegram-voice spec [D1]: STT ships first, TTS is the stretch
-// phase).
+// Synthesizer turns text into OGG/Opus audio bytes, fully local. lang is
+// the target language (ISO code from the transcriber, or "" for the
+// default voice); when no voice is configured for it the default voice
+// speaks instead.
 type Synthesizer interface {
 	// Synthesize renders the text to OGG/Opus for Telegram voice notes.
-	Synthesize(ctx context.Context, text string) ([]byte, error)
+	Synthesize(ctx context.Context, text, lang string) ([]byte, error)
 	// Availability returns nil when synthesis could run right now.
 	Availability() error
 }
 
 // TTSConfig configures the Piper synthesizer.
 type TTSConfig struct {
-	// BinaryPath is the piper CLI (default "piper").
+	// BinaryPath is the piper CLI (default "piper", with "piper-tts" as a
+	// fallback name).
 	BinaryPath string
-	// VoicePath is the .onnx voice model file (required).
+	// VoicePath is the DEFAULT .onnx voice model file (required) — used
+	// whenever no per-language voice matches.
 	VoicePath string
+	// Voices maps an ISO language code to that language's .onnx voice, so
+	// replies can mirror the language whisper detected on the inbound voice
+	// note. Languages without an entry (or whose file is missing) fall back
+	// to VoicePath.
+	Voices map[string]string
 	// FFMpegPath is the ffmpeg binary (default "ffmpeg") for WAV→OGG.
 	FFMpegPath string
 }

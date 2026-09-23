@@ -179,6 +179,7 @@ func New(d Deps) (*Bot, error) {
 		b.synthesizer = speech.NewPiperTTS(speech.TTSConfig{
 			BinaryPath: d.Config.TextToSpeech.BinaryPath,
 			VoicePath:  d.Config.TextToSpeech.VoicePath,
+			Voices:     d.Config.TextToSpeech.Voices,
 			FFMpegPath: d.Config.TextToSpeech.FFMpegPath,
 		})
 		b.ttsMaxChars = d.Config.TextToSpeech.MaxChars
@@ -438,7 +439,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 
-	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil, false)
+	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil, "")
 }
 
 // lobbyHint points at the ✚ composer button; commands keep working in the root.

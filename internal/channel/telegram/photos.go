@@ -58,7 +58,7 @@ func (b *Bot) handlePhoto(ctx context.Context, m *models.Message) {
 		return
 	}
 	parts, refs, manifest := photoContent([]photoAttach{photo})
-	b.startRun(ctx, c, m.ID, strings.TrimSpace(m.Caption), parts, refs, manifest, false)
+	b.startRun(ctx, c, m.ID, strings.TrimSpace(m.Caption), parts, refs, manifest, "")
 }
 
 // bufferAlbumPhoto accumulates an album's photos, flushing the whole group as
@@ -104,7 +104,7 @@ func (b *Bot) flushMediaGroup(groupID string) {
 		return
 	}
 	parts, refs, manifest := photoContent(group.photos)
-	b.startRun(context.Background(), group.c, group.promptID, group.caption, parts, refs, manifest, false)
+	b.startRun(context.Background(), group.c, group.promptID, group.caption, parts, refs, manifest, "")
 }
 
 // photoContent converts downloaded photos into genai parts, session

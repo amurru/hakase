@@ -38,8 +38,21 @@ const fakeLastArgWriter = `for last do :; done
 printf 'fake-bytes' > "$last"
 `
 
-// fakeWhisperOf parses "-of <base>" and writes "<base>.txt" with fixed text.
+// fakeWhisperOf parses "-of <base>" and writes "<base>.txt" with fixed text
+// plus "<base>.json" with a detected language (exercising the -oj parse).
 const fakeWhisperOf = `base=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-of" ]; then base="$a"; fi
+  prev="$a"
+done
+printf 'hello transcript' > "$base.txt"
+printf '{"result":{"language":"de"}}' > "$base.json"
+`
+
+// fakeWhisperPlain is the language-less variant (no JSON emitted): the
+// pipeline must degrade to an empty detected language.
+const fakeWhisperPlain = `base=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "-of" ]; then base="$a"; fi
@@ -86,8 +99,11 @@ func TestTranscribePipelineWithFakes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Transcribe: %v", err)
 	}
-	if text != "hello transcript" {
-		t.Fatalf("transcript %q, want %q", text, "hello transcript")
+	if text.Text != "hello transcript" {
+		t.Fatalf("transcript %q, want %q", text.Text, "hello transcript")
+	}
+	if text.Language != "de" {
+		t.Fatalf("detected language %q, want de (from the -oj JSON)", text.Language)
 	}
 }
 
@@ -170,8 +186,8 @@ func TestModelAutoDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Transcribe with download: %v", err)
 	}
-	if text != "hello transcript" {
-		t.Fatalf("transcript %q", text)
+	if text.Text != "hello transcript" {
+		t.Fatalf("transcript %q", text.Text)
 	}
 	mu.Lock()
 	got := hits
@@ -290,10 +306,96 @@ printf 'RIFFfake-wav' > "$out"
 	if err := p.Availability(); err != nil {
 		t.Fatalf("availability should fall back to piper-tts, got: %v", err)
 	}
-	if _, err := p.Synthesize(context.Background(), "hello"); err != nil {
+	if _, err := p.Synthesize(context.Background(), "hello", ""); err != nil {
 		t.Fatalf("Synthesize: %v", err)
 	}
 	_ = piperTTS
+}
+
+// fakePiperMarker writes "voice:<model arg>" into its -f output, so a test
+// can tell WHICH voice model the synthesizer selected.
+const fakePiperMarker = `m=""
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-m" ]; then m="$a"; fi
+  if [ "$prev" = "-f" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'voice:%s' "$m" > "$out"
+`
+
+// fakeFFMpegCopy copies the -i input to the last argument, passing the
+// piper marker through to the "ogg" so tests can read it back.
+const fakeFFMpegCopy = `in=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-i" ]; then in="$a"; fi
+  prev="$a"
+done
+for last do :; done
+cp "$in" "$last"
+`
+
+// TestPiperVoiceLanguageSelection pins the multilingual behavior: a
+// configured per-language voice is used when the language matches; an
+// unconfigured language, an empty language, and a configured language with
+// a missing file all fall back to the default voice.
+func TestPiperVoiceLanguageSelection(t *testing.T) {
+	skipWindows(t)
+	binDir := t.TempDir()
+	voiceEn := filepath.Join(t.TempDir(), "en_US-amy-medium.onnx")
+	voiceDe := filepath.Join(t.TempDir(), "de_DE-thorsten-medium.onnx")
+	for _, v := range []string{voiceEn, voiceDe} {
+		if err := os.WriteFile(v, []byte("onnx"), 0o600); err != nil {
+			t.Fatalf("voice seed: %v", err)
+		}
+	}
+	p := NewPiperTTS(TTSConfig{
+		BinaryPath: writeFakeBin(t, binDir, "piper", fakePiperMarker),
+		VoicePath:  voiceEn,
+		Voices:     map[string]string{"de": voiceDe},
+		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeFFMpegCopy),
+	})
+
+	deOGG, err := p.Synthesize(context.Background(), "hallo", "de")
+	if err != nil {
+		t.Fatalf("synthesize de: %v", err)
+	}
+	if !strings.Contains(string(deOGG), "de_DE-thorsten-medium.onnx") {
+		t.Fatalf("de request used the wrong voice: %q", deOGG)
+	}
+
+	frOGG, err := p.Synthesize(context.Background(), "bonjour", "fr")
+	if err != nil {
+		t.Fatalf("synthesize fr: %v", err)
+	}
+	if !strings.Contains(string(frOGG), "en_US-amy-medium.onnx") {
+		t.Fatalf("fr request did not fall back to the default voice: %q", frOGG)
+	}
+
+	defOGG, err := p.Synthesize(context.Background(), "hello", "")
+	if err != nil {
+		t.Fatalf("synthesize default: %v", err)
+	}
+	if !strings.Contains(string(defOGG), "en_US-amy-medium.onnx") {
+		t.Fatalf("default request did not use the default voice: %q", defOGG)
+	}
+
+	// A configured language whose file is missing on disk also falls back.
+	p2 := NewPiperTTS(TTSConfig{
+		BinaryPath: writeFakeBin(t, binDir, "piper", fakePiperMarker),
+		VoicePath:  voiceEn,
+		Voices:     map[string]string{"ja": filepath.Join(t.TempDir(), "ja_JP-missing.onnx")},
+		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeFFMpegCopy),
+	})
+	jpOGG, err := p2.Synthesize(context.Background(), "hello", "ja")
+	if err != nil {
+		t.Fatalf("synthesize ja: %v", err)
+	}
+	if !strings.Contains(string(jpOGG), "en_US-amy-medium.onnx") {
+		t.Fatalf("missing voice file did not fall back: %q", jpOGG)
+	}
 }
 
 func TestPiperSeamWithFakes(t *testing.T) {
@@ -316,7 +418,7 @@ printf 'RIFFfake-wav' > "$out"
 		VoicePath:  voice,
 		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter),
 	})
-	ogg, err := p.Synthesize(context.Background(), "hello there")
+	ogg, err := p.Synthesize(context.Background(), "hello there", "")
 	if err != nil {
 		t.Fatalf("Synthesize: %v", err)
 	}
