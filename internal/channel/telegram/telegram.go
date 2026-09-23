@@ -49,6 +49,7 @@ type api interface {
 	UnpinChatMessage(ctx context.Context, params *tgbot.UnpinChatMessageParams) (bool, error)
 	DeleteMessage(ctx context.Context, params *tgbot.DeleteMessageParams) (bool, error)
 	EditForumTopic(ctx context.Context, params *tgbot.EditForumTopicParams) (bool, error)
+	SendVoice(ctx context.Context, params *tgbot.SendVoiceParams) (*models.Message, error)
 }
 
 // Bot is the Telegram transport. It satisfies channel.Channel (lifecycle) and
@@ -95,6 +96,10 @@ type Bot struct {
 	transcriber transcriber
 	voiceQueue  *speech.Queue
 	stt         config.TelegramSTTConfig
+	// Voice-note replies (issue #19 TTS phase): nil unless text_to_speech
+	// is enabled in config.
+	synthesizer speech.Synthesizer
+	ttsMaxChars int
 	// fileBaseURL is the Bot API file origin; a seam for download tests.
 	fileBaseURL string
 }
@@ -167,6 +172,16 @@ func New(d Deps) (*Bot, error) {
 			ModelURLBase:   b.stt.ModelURLBase,
 		})
 		b.voiceQueue = speech.NewQueue(3)
+	}
+	// Voice-note replies (issue #19 TTS phase): the per-chat /voice mode
+	// gates whether they are actually spoken.
+	if d.Config.TextToSpeech.Enabled != nil && *d.Config.TextToSpeech.Enabled {
+		b.synthesizer = speech.NewPiperTTS(speech.TTSConfig{
+			BinaryPath: d.Config.TextToSpeech.BinaryPath,
+			VoicePath:  d.Config.TextToSpeech.VoicePath,
+			FFMpegPath: d.Config.TextToSpeech.FFMpegPath,
+		})
+		b.ttsMaxChars = d.Config.TextToSpeech.MaxChars
 	}
 
 	api, err := tgbot.New(b.token,
@@ -326,6 +341,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{Command: "tasks", Description: "Show the task board"},
 			{Command: "cron", Description: "List cron jobs (/cron run <name> to trigger)"},
 			{Command: "stop", Description: "Cancel the running agent turn"},
+			{Command: "voice", Description: "Voice-note replies (/voice off|auto|on)"},
 			{Command: "notify", Description: "Toggle completion notifications (/notify on|off)"},
 			{Command: "id", Description: "Show your Telegram user/chat id"},
 			{Command: "help", Description: "Show help"},
@@ -422,7 +438,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 
-	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil)
+	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil, false)
 }
 
 // lobbyHint points at the ✚ composer button; commands keep working in the root.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,7 @@ type fakeAPI struct {
 	webhookURL     string
 	nextMsgID      int
 	sendHook       func(params *tgbot.SendMessageParams) // optional, blocks inside SendMessage
+	voices         []fakeVoice
 }
 
 type fakeSend struct {
@@ -94,6 +96,37 @@ func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessagePara
 	if hook != nil {
 		hook(params) // called without f.mu: may block
 	}
+	return &models.Message{ID: f.nextMsgID}, nil
+}
+
+// fakeVoice records one SendVoice call.
+type fakeVoice struct {
+	chatID   int64
+	threadID int
+	bytes    int
+}
+
+// voiceSends returns the recorded voice notes (lock-held copy).
+func (f *fakeAPI) voiceSends() []fakeVoice {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeVoice(nil), f.voices...)
+}
+
+func (f *fakeAPI) SendVoice(ctx context.Context, params *tgbot.SendVoiceParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	if up, ok := params.Voice.(*models.InputFileUpload); ok && up.Data != nil {
+		if b, err := io.ReadAll(up.Data); err == nil {
+			n = len(b)
+		}
+	}
+	f.voices = append(f.voices, fakeVoice{
+		chatID:   params.ChatID.(int64),
+		threadID: params.MessageThreadID,
+		bytes:    n,
+	})
 	return &models.Message{ID: f.nextMsgID}, nil
 }
 

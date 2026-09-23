@@ -38,21 +38,21 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
       prompt, disabled hint, duration refuse, busy/failure/empty). Spec:
       TV-005.
 
-## Phase 3 — Outbound TTS (stretch per [D1])
+## Phase 3 — Outbound TTS
 
 - [x] **T3.1 [BE]** Synthesizer seam (PiperTTS: piper → WAV → OGG) with
-      fake-binary tests — implemented, transport wiring deferred. Spec:
-      TV-001/004.
-- [ ] **T3.2 [BE]** `state.Chat.VoiceMode` + `/voice off|auto|on` command +
-      finalizer wiring (strip markdown, cap, synthesize, SendVoice, text
-      fallback). Spec: TV-004. **Deferred — the follow-up PR.**
-- [ ] **T3.3 [QA]** /voice persistence + voice-reply path tests. Spec:
-      TV-005. **Deferred with T3.2.**
+      fake-binary tests. Spec: TV-001/004.
+- [x] **T3.2 [BE]** `state.Chat.VoiceMode` + `/voice off|auto|on` command +
+      menu/help + finalizer wiring (stream suppression in voice mode,
+      markdown strip, max_chars truncate, SendVoice, text fallback on any
+      synthesis failure; rebinds preserve per-chat prefs). Spec: TV-004.
+- [x] **T3.3 [QA]** /voice persistence + mode semantics + fallback tests
+      (fakeSynthesizer/streamingDriver). Spec: TV-005.
 
 ## Phase 4 — Docs
 
-- [x] **T4.1 [DOCS]** README channels section + CHANGELOG entry.
+- [x] **T4.1 [DOCS]** README channels section + DEVELOPMENT.md + CHANGELOG.
 - [x] **T4.2 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
       `go test ./...` (fake binaries only — CI needs no real whisper/piper).
       Owner live acceptance on Telegram remains (echo/stop path, degraded
-      hint) before issue #19 closes.
+      hint, voice reply) before issue #19 closes.

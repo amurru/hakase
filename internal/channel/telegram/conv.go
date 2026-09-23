@@ -77,7 +77,12 @@ func (b *Bot) bindThread(c conv, sessionID, title string) error {
 				delete(s.Threads, key)
 			}
 		}
-		s.Threads[tk] = state.Thread{SessionID: sessionID, Title: title}
+		// Preserve any future per-thread fields: a rebind only moves the
+		// session and title.
+		th := s.Threads[tk]
+		th.SessionID = sessionID
+		th.Title = title
+		s.Threads[tk] = th
 		return nil
 	})
 }

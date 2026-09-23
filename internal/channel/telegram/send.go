@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,26 @@ const (
 	callbackApprove = "a:" // a:<gateID>:<0|1>
 	callbackClarify = "c:" // c:<gateID>:<choiceIndex|x for free text>
 )
+
+// sendVoice delivers a synthesized OGG/Opus voice note through the pacing
+// limiter. Voice notes are the turn's answer, so they notify (not silent).
+// Returns false on failure — the caller falls back to the text answer.
+func (b *Bot) sendVoice(ctx context.Context, c conv, ogg []byte) bool {
+	if ctx.Err() != nil || len(ogg) == 0 {
+		return false
+	}
+	b.waitTurn(ctx, c)
+	_, err := b.api.SendVoice(ctx, &tgbot.SendVoiceParams{
+		ChatID:          c.chatID,
+		MessageThreadID: c.threadID,
+		Voice:           &models.InputFileUpload{Filename: "reply.ogg", Data: bytes.NewReader(ogg)},
+	})
+	if err != nil {
+		b.log("voice send to %d/%d failed: %v", c.chatID, c.threadID, err)
+		return false
+	}
+	return true
+}
 
 // sendText sends a text message through the pacing limiter and returns the
 // sent message (nil on failure). markup may be nil. silent maps to

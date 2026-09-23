@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
+	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/speech"
 
 	tgbot "github.com/go-telegram/bot"
@@ -94,7 +96,66 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 	}
 	b.sendText(ctx, c, "🎙 Heard:\n"+esc(echo), nil, false)
 
-	b.startRun(ctx, c, m.ID, transcript, nil, nil, nil)
+	b.startRun(ctx, c, m.ID, transcript, nil, nil, nil, true)
+}
+
+// Voice-reply mode preferences (per chat, persisted in channels.json).
+const (
+	voiceModeOff  = "off"
+	voiceModeAuto = "auto"
+	voiceModeOn   = "on"
+)
+
+// voiceModeFor resolves the chat's voice-reply preference (default off).
+// The preference is chat-level: root and topics share it.
+func (b *Bot) voiceModeFor(c conv) string {
+	mode := b.store.Get().Chats[chatKey(c.chatID)].VoiceMode
+	switch mode {
+	case voiceModeOn, voiceModeAuto:
+		return mode
+	default:
+		return voiceModeOff
+	}
+}
+
+// Markdown constructs that must not be spoken.
+var (
+	mdLinkRe     = regexp.MustCompile(`!?\[([^\]]*)\]\(([^)]*)\)`)
+	mdHeadingRe  = regexp.MustCompile(`(?m)^\s{0,3}#{1,6}\s*`)
+	mdEmphasisRe = regexp.MustCompile(`(\*\*|__|~~|[*_` + "`" + `])`)
+)
+
+// stripMarkdownForTTS reduces an answer's markdown to speakable plain text:
+// links keep their text, headings and emphasis/backtick markers go away.
+func stripMarkdownForTTS(s string) string {
+	s = mdLinkRe.ReplaceAllString(s, "$1")
+	s = mdHeadingRe.ReplaceAllString(s, "")
+	s = mdEmphasisRe.ReplaceAllString(s, "")
+	return s
+}
+
+// trySendVoiceReply synthesizes the final answer and delivers it as a voice
+// note. Returns false when nothing was sent (empty speakable text or
+// synthesis failure) so finalize falls back to the text render — the answer
+// must never be lost to a TTS hiccup.
+func (rv *runView) trySendVoiceReply(ctx context.Context, full string) bool {
+	spoken := strings.TrimSpace(stripMarkdownForTTS(full))
+	if spoken == "" {
+		return false
+	}
+	max := rv.b.ttsMaxChars
+	if max <= 0 {
+		max = config.DefaultTelegramTTSMaxChars
+	}
+	if r := []rune(spoken); len(r) > max {
+		spoken = string(r[:max]) + " … [truncated for voice]"
+	}
+	ogg, err := rv.b.synthesizer.Synthesize(ctx, spoken)
+	if err != nil {
+		rv.b.log("voice reply synthesis failed: %v", err)
+		return false
+	}
+	return rv.b.sendVoice(ctx, rv.c, ogg)
 }
 
 // downloadVoice fetches the voice file via getFile + the bot file URL,

@@ -35,7 +35,9 @@ const maxStatusErrLen = 200
 // Telegram run view. parts/refs/manifest carry photos (genai inline data,
 // session attachment refs, and the manifest lines appended to the prompt).
 // promptID is the user's prompt message (reaction receipts and the turn pin).
-func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string) {
+// voiceIn marks a turn that arrived as a voice note — under /voice auto it
+// makes the reply a voice note too.
+func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string, voiceIn bool) {
 	rk := threadKey(c)
 	if _, running := b.runs.Running(rk); running {
 		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
@@ -83,7 +85,7 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 	}
 	content := genai.NewContentFromParts(parts, genai.RoleUser)
 
-	rv := newRunView(b, c, promptID, runCtx)
+	rv := newRunView(b, c, promptID, runCtx, voiceIn)
 	go func() {
 		defer b.runs.Finish(rk)
 		rv.begin() // 👀 receipt and the optional turn pin
@@ -128,7 +130,12 @@ func (b *Bot) resolveSession(c conv, prompt string) (string, error) {
 			if s.Chats == nil {
 				s.Chats = map[string]state.Chat{}
 			}
-			s.Chats[chatKey(c.chatID)] = state.Chat{SessionID: sess.ID}
+			// Preserve existing chat preferences (Notify, TopicsMode,
+			// VoiceMode): a rebind must only move the session, never wipe
+			// per-chat settings set before the first prompt.
+			chat := s.Chats[chatKey(c.chatID)]
+			chat.SessionID = sess.ID
+			s.Chats[chatKey(c.chatID)] = chat
 			return nil
 		}); err != nil {
 			b.log("cannot persist chat binding: %v", err)
@@ -165,6 +172,13 @@ type runView struct {
 	started  time.Time
 	ctx      context.Context
 
+	// voiceReply (issue #19 TTS phase): the answer is spoken as a voice
+	// note at finalize instead of streamed as text — the status line keeps
+	// ticking meanwhile, and a synthesis failure falls back to the text
+	// render. full accumulates the raw answer for that synthesis.
+	voiceReply bool
+	full       strings.Builder
+
 	// renderMu serializes every Telegram render (pump ticks vs finalize) so a
 	// late tick can never overwrite the final render.
 	renderMu sync.Mutex
@@ -184,8 +198,25 @@ type runView struct {
 	finished        bool   // finalize has run; pump must not edit anymore
 }
 
-func newRunView(b *Bot, c conv, promptID int, ctx context.Context) *runView {
-	return &runView{b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx}
+// fullText returns the accumulated raw answer text (thread-safe: writes
+// happen under rv.mu in OnStream).
+func (rv *runView) fullText() string {
+	rv.mu.Lock()
+	defer rv.mu.Unlock()
+	return rv.full.String()
+}
+
+func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceIn bool) *runView {
+	voiceReply := false
+	if b.synthesizer != nil {
+		switch b.voiceModeFor(c) {
+		case voiceModeOn:
+			voiceReply = true
+		case voiceModeAuto:
+			voiceReply = voiceIn
+		}
+	}
+	return &runView{b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx, voiceReply: voiceReply}
 }
 
 // begin marks the turn start: 👀 receipt on the prompt and the optional
@@ -245,6 +276,14 @@ func (rv *runView) pump() {
 		return
 	}
 	if !streaming {
+		rv.b.editText(rv.ctx, rv.c, statusID, statusWorking(lastTool, time.Since(rv.started)), nil)
+		return
+	}
+
+	// Voice replies keep the phone quiet while streaming: the status line
+	// keeps ticking (last tool included) and the full answer is spoken at
+	// finalize — a synthesis failure there falls back to the text render.
+	if rv.voiceReply {
 		rv.b.editText(rv.ctx, rv.c, statusID, statusWorking(lastTool, time.Since(rv.started)), nil)
 		return
 	}
@@ -390,40 +429,48 @@ func (rv *runView) finalize() {
 		rv.editStatus(ctx, statusID, statusFailed(elapsed, lastError, hasError))
 		rv.b.react(ctx, rv.c, rv.promptID, reactionFailed)
 	default:
-		// Final render (finalized continuations already carry their complete
-		// segment from their last edit). The tail may still exceed the flush
-		// length if the run ended between pump ticks: drain it the same way.
-		// Only the very first answer creation notifies; if earlier content
-		// was already delivered (a live message or an overflow split), the
-		// drain's creations are silent continuations.
-		loudNext := answerID == 0 && !rv.answerContinued
-		for {
-			rest, done, tooLong := splitOverflow(seg)
-			if !tooLong {
-				break
-			}
-			if answerID == 0 {
-				html, commit := rv.renderSegment(done)
-				rv.b.sendText(ctx, rv.c, html, nil, !loudNext)
-				commit()
-				loudNext = false
-			} else {
-				html, commit := rv.renderSegment(done)
-				rv.b.editText(ctx, rv.c, answerID, html, nil)
-				commit()
-			}
-			answerID, seg = 0, rest
+		// Voice replies speak the whole answer; on any synthesis failure the
+		// normal text render below still delivers it (never a lost answer).
+		delivered := false
+		if rv.voiceReply && rv.b.synthesizer != nil {
+			delivered = rv.trySendVoiceReply(ctx, rv.fullText())
 		}
-		if len(seg) > 0 {
-			html, commit := rv.renderSegment(seg)
-			if answerID == 0 {
-				// Streaming edits never landed (API hiccup): one last-ditch
-				// creation, otherwise the answer would vanish.
-				rv.b.sendText(ctx, rv.c, html, nil, !loudNext)
-			} else {
-				rv.b.editText(ctx, rv.c, answerID, html, nil)
+		if !delivered {
+			// Final render (finalized continuations already carry their complete
+			// segment from their last edit). The tail may still exceed the flush
+			// length if the run ended between pump ticks: drain it the same way.
+			// Only the very first answer creation notifies; if earlier content
+			// was already delivered (a live message or an overflow split), the
+			// drain's creations are silent continuations.
+			loudNext := answerID == 0 && !rv.answerContinued
+			for {
+				rest, done, tooLong := splitOverflow(seg)
+				if !tooLong {
+					break
+				}
+				if answerID == 0 {
+					html, commit := rv.renderSegment(done)
+					rv.b.sendText(ctx, rv.c, html, nil, !loudNext)
+					commit()
+					loudNext = false
+				} else {
+					html, commit := rv.renderSegment(done)
+					rv.b.editText(ctx, rv.c, answerID, html, nil)
+					commit()
+				}
+				answerID, seg = 0, rest
 			}
-			commit()
+			if len(seg) > 0 {
+				html, commit := rv.renderSegment(seg)
+				if answerID == 0 {
+					// Streaming edits never landed (API hiccup): one last-ditch
+					// creation, otherwise the answer would vanish.
+					rv.b.sendText(ctx, rv.c, html, nil, !loudNext)
+				} else {
+					rv.b.editText(ctx, rv.c, answerID, html, nil)
+				}
+				commit()
+			}
 		}
 		rv.editStatus(ctx, statusID, statusDone(elapsed, tokens, lastError, hasError))
 		rv.b.react(ctx, rv.c, rv.promptID, reactionDone)
@@ -495,6 +542,7 @@ func (rv *runView) OnStream(sessionID, content, thinking string) {
 	rv.mu.Lock()
 	if content != "" {
 		rv.seg = append(rv.seg, []rune(content)...)
+		rv.full.WriteString(content)
 		rv.streamedAny = rv.streamedAny || strings.TrimSpace(content) != ""
 		rv.dirty = true
 	}

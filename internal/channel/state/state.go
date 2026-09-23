@@ -41,6 +41,11 @@ type Chat struct {
 	SessionID  string `json:"session_id,omitempty"`
 	Notify     bool   `json:"notify,omitempty"`
 	TopicsMode bool   `json:"topics_mode,omitempty"`
+	// VoiceMode is the voice-reply preference (issue #19): "" / "off" =
+	// text answers only, "auto" = voice reply when the prompt was a voice
+	// note, "on" = voice replies always. Requires text_to_speech in config
+	// to have an effect.
+	VoiceMode string `json:"voice_mode,omitempty"`
 }
 
 // Thread is the per-thread binding for one conversation inside a topics-mode

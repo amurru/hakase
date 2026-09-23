@@ -1,10 +1,12 @@
 # Spec: Telegram voice messages (in: whisper.cpp, out: optional Piper) (#19)
 
 > Decisions [D1]–[D5] settled 2026-09-23, taking the recommendations:
-> STT ships first with the `Synthesizer` seam implemented but unwired
-> ([D1]), default model `base-q5_1` ([D2]), models auto-download on first
-> use ([D3]), `/voice off|auto|on` semantics reserved for the TTS phase
-> ([D4]), audio never persisted ([D5]).
+> STT shipped first with the `Synthesizer` seam ([D1]); default model
+> `base-q5_1` ([D2]), models auto-download on first use ([D3]),
+> `/voice off|auto|on` semantics ([D4]), audio never persisted ([D5]).
+> The TTS transport wiring (TV-004) landed in the same feature arc —
+> voice replies stream-suppressed + spoken at finalize with a text
+> fallback.
 
 Voice notes in, voice notes out — fully local, no cloud STT/TTS. Inbound:
 OGG/Opus → ffmpeg → whisper.cpp (`whisper-cli`) → transcript → ordinary
