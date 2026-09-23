@@ -112,7 +112,9 @@ func (f *fakeAPI) AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerC
 }
 
 func (f *fakeAPI) GetFile(ctx context.Context, params *tgbot.GetFileParams) (*models.File, error) {
-	return nil, fmt.Errorf("not implemented in fake")
+	// Generic stub: the file path mirrors the file id; the bytes themselves
+	// are served by the test's fileBaseURL server.
+	return &models.File{FileID: params.FileID, FilePath: "voice/" + params.FileID}, nil
 }
 
 func (f *fakeAPI) SetMyCommands(ctx context.Context, params *tgbot.SetMyCommandsParams) (bool, error) {

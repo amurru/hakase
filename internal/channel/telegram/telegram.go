@@ -23,6 +23,7 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/speech"
 	"amurru/hakase/internal/web/sse"
 
 	"google.golang.org/genai"
@@ -88,6 +89,14 @@ type Bot struct {
 
 	mediaMu    sync.Mutex
 	mediaGroup map[string]*mediaGroupBuf // media_group_id -> buffered photos
+
+	// Voice-note transcription (issue #19): nil unless speech_to_text is
+	// enabled in config; queue serializes the CPU-bound pipeline.
+	transcriber transcriber
+	voiceQueue  *speech.Queue
+	stt         config.TelegramSTTConfig
+	// fileBaseURL is the Bot API file origin; a seam for download tests.
+	fileBaseURL string
 }
 
 // pendingClarify is a clarify prompt waiting for the user's free-text answer.
@@ -139,6 +148,25 @@ func New(d Deps) (*Bot, error) {
 		pendingOther: map[conv]pendingClarify{},
 		clarifyCtx:   map[string]clarifyChoice{},
 		mediaGroup:   map[string]*mediaGroupBuf{},
+		fileBaseURL:  "https://api.telegram.org",
+	}
+
+	// Voice-note transcription (issue #19): built only when explicitly
+	// enabled; the whisper model auto-downloads on first use, and missing
+	// binaries degrade to an actionable hint per message.
+	if d.Config.SpeechToText.Enabled != nil && *d.Config.SpeechToText.Enabled {
+		b.stt = d.Config.SpeechToText
+		b.transcriber = speech.NewWhisperCLI(speech.STTConfig{
+			Model:          b.stt.Model,
+			Language:       b.stt.Language,
+			BinaryPath:     b.stt.BinaryPath,
+			FFMpegPath:     b.stt.FFMpegPath,
+			ModelsDir:      b.stt.ModelsDir,
+			MaxSeconds:     b.stt.MaxSeconds,
+			TimeoutSeconds: b.stt.TimeoutSeconds,
+			ModelURLBase:   b.stt.ModelURLBase,
+		})
+		b.voiceQueue = speech.NewQueue(3)
 	}
 
 	api, err := tgbot.New(b.token,
@@ -344,8 +372,9 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 	// Service messages (topic created/renamed/closed, pins, joins) carry no
-	// text, caption, or photo: not conversation input, stay silent.
-	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 {
+	// text, caption, or photo: not conversation input, stay silent. Voice
+	// notes pass through (issue #19) and are handled after auth below.
+	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 && m.Voice == nil {
 		return
 	}
 
@@ -385,6 +414,11 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 
 	if len(m.Photo) > 0 {
 		b.handlePhoto(ctx, m)
+		return
+	}
+
+	if m.Voice != nil {
+		b.handleVoice(ctx, c, m)
 		return
 	}
 
