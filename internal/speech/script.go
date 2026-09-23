@@ -23,8 +23,8 @@ var scriptBuckets = []struct {
 	{"thai", 0x0E00, 0x0E7F},
 	{"hangul", 0xAC00, 0xD7AF},
 	{"hangul", 0x1100, 0x11FF},
-	{"kana", 0x3040, 0x30FF},  // hiragana + katakana → Japanese
-	{"han", 0x4E00, 0x9FFF},   // CJK ideographs → Chinese (kana checked first)
+	{"kana", 0x3040, 0x30FF}, // hiragana + katakana → Japanese
+	{"han", 0x4E00, 0x9FFF},  // CJK ideographs → Chinese (kana checked first)
 }
 
 // scriptByLang maps a configured voice language code to its dominant

@@ -143,6 +143,7 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text, lang string) ([]byte, e
 //     voice even when the request arrived in English);
 //  2. the whisper-detected language of a voice-note prompt;
 //  3. the "default" voice.
+//
 // Candidates whose file is missing on disk are skipped (logged).
 func (p *PiperTTS) voiceFor(lang, text string) string {
 	if script := DetectScript(text); script != scriptLatin {
