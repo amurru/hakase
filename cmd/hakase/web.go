@@ -214,10 +214,11 @@ func runServer(args []string, serveSPA bool) int {
 		log.Printf("web: %s", msg)
 	}
 
-	// Create session service.
+	// Create session service (snapshot ring from config, issue #21).
 	var sessionSvc *hakasesession.SessionService
-	if store, err := hakasesession.NewSessionStore(hakasesession.Dir); err == nil {
+	if store, err := hakasesession.NewSessionStoreWithSnapshotLimit(hakasesession.Dir, config.SessionSnapshotsMax(cfg)); err == nil {
 		if svc, err := hakasesession.NewSessionService(store); err == nil {
+			svc.SetSnapshotsEnabled(config.SessionSnapshotsEnabled(cfg))
 			sessionSvc = svc
 		}
 	}

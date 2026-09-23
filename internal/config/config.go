@@ -230,6 +230,9 @@ type Config struct {
 	// sub-agents nested. Off unless explicitly enabled; disabled tracing
 	// installs nothing (no exporter, no network traffic).
 	Tracing TracingConfig `json:"tracing,omitempty"`
+	// Session tunes per-session persistence behavior (docs/session-rewind/
+	// spec.md, issue #21). See SessionConfig for the per-field meaning.
+	Session SessionConfig `json:"session,omitempty"`
 }
 
 // Tracing default constants.
@@ -278,6 +281,64 @@ func (c *TracingConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Session default constants.
+const (
+	// DefaultSessionSnapshotsMax bounds the pre-turn snapshot ring per
+	// session (issue #21). Oldest snapshots are pruned beyond it.
+	DefaultSessionSnapshotsMax = 50
+)
+
+// SessionConfig tunes per-session persistence behavior.
+type SessionConfig struct {
+	// Snapshots configures restore-to-message checkpoints
+	// (docs/session-rewind/spec.md). On by default; see SnapshotsConfig.
+	Snapshots SnapshotsConfig `json:"snapshots,omitempty"`
+}
+
+// SnapshotsConfig configures pre-turn session snapshots (issue #21).
+type SnapshotsConfig struct {
+	// Enabled tri-state: nil (default) = on; an explicit false stops taking
+	// pre-turn snapshots entirely (existing snapshots stay restorable). The
+	// pointer keeps "absent" distinguishable from "false" (memory pattern).
+	Enabled *bool `json:"enabled,omitempty"`
+	// Max bounds the per-session snapshot ring; the oldest snapshots are
+	// pruned beyond it. Default 50.
+	Max int `json:"max,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after loading config.
+// Explicitly negative values are NOT defaulted here - Validate rejects them.
+func (c *SnapshotsConfig) ApplyDefaults() {
+	if c.Max == 0 {
+		c.Max = DefaultSessionSnapshotsMax
+	}
+}
+
+// Validate checks SnapshotsConfig for sane values.
+func (c *SnapshotsConfig) Validate() error {
+	if c.Max < 0 {
+		return fmt.Errorf("invalid session.snapshots.max %d: must be >= 0", c.Max)
+	}
+	return nil
+}
+
+// SessionSnapshotsEnabled reports whether pre-turn snapshots are on: only an
+// explicit enabled=false disables them.
+func SessionSnapshotsEnabled(c *Config) bool {
+	if c == nil || c.Session.Snapshots.Enabled == nil {
+		return true
+	}
+	return *c.Session.Snapshots.Enabled
+}
+
+// SessionSnapshotsMax returns the effective per-session snapshot ring size.
+func SessionSnapshotsMax(c *Config) int {
+	if c == nil || c.Session.Snapshots.Max <= 0 {
+		return DefaultSessionSnapshotsMax
+	}
+	return c.Session.Snapshots.Max
 }
 
 // Memory default constants. The block caps keep prompts lean; the note cap
@@ -802,7 +863,9 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_TRACING_ENABLED") != "" ||
 		os.Getenv("HAKASE_TRACING_ENDPOINT") != "" ||
 		os.Getenv("HAKASE_TRACING_SAMPLE_RATIO") != "" ||
-		os.Getenv("HAKASE_TRACING_HEADERS") != ""
+		os.Getenv("HAKASE_TRACING_HEADERS") != "" ||
+		os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED") != "" ||
+		os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -1111,6 +1174,26 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Tracing.ApplyDefaults()
 	if err := cfg.Tracing.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Session snapshot env overrides (mirrors the memory pattern).
+	if v := os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_SESSION_SNAPSHOTS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Session.Snapshots.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX"); v != "" {
+		n, err := parseEnvPositiveInt("HAKASE_SESSION_SNAPSHOTS_MAX", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Session.Snapshots.Max = n
+	}
+	cfg.Session.Snapshots.ApplyDefaults()
+	if err := cfg.Session.Snapshots.Validate(); err != nil {
 		return nil, err
 	}
 

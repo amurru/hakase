@@ -230,6 +230,8 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 	r.Get("/sessions/{id}/graph", api.GetGraph)
 	r.Post("/sessions/{id}/sidekick", api.PostSidekick)
 	r.Post("/sessions/{id}/compact", api.PostCompact)
+	r.Get("/sessions/{id}/snapshots", api.GetSnapshots)
+	r.Post("/sessions/{id}/restore", api.PostRestore)
 }
 
 // PostSidekick handles POST /api/sessions/{id}/sidekick.
@@ -389,6 +391,101 @@ func (api *ChatAPI) PostCompact(w http.ResponseWriter, r *http.Request) {
 // chatSessionID extracts the {id} URL parameter from the request.
 func chatSessionID(r *http.Request) string {
 	return chi.URLParam(r, "id")
+}
+
+// GetSnapshots lists a session's restore points (pre-turn snapshots and
+// pre-restore undo points), newest first (docs/session-rewind/spec.md).
+func (api *ChatAPI) GetSnapshots(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	if api.sessionSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "snapshots unavailable"})
+		return
+	}
+	store := api.sessionSvc.Store()
+	if _, err := store.Load(sessionID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	snaps, err := store.ListSnapshots(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list snapshots"})
+		return
+	}
+	if snaps == nil {
+		snaps = []hakasesession.SnapshotInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snaps})
+}
+
+// PostRestore rewinds the session to a snapshot: the current state is first
+// captured as a pre-restore undo snapshot, then the session file is replaced
+// with the snapshot's content (same session id, so project binding and the
+// UI stay put) and saved through the store's atomic+flocked path. Refuses
+// mid-run like compact.
+func (api *ChatAPI) PostRestore(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	if api.sessionSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "restore unavailable"})
+		return
+	}
+
+	var req struct {
+		Snapshot string `json:"snapshot"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Snapshot) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "snapshot name required"})
+		return
+	}
+
+	// Refuse mid-run restore: replacing the session file while the history
+	// builder iterates the same session would race with the live agent.
+	api.semMu.Lock()
+	sem := api.runSemaphores[sessionID]
+	api.semMu.Unlock()
+	if sem != nil {
+		sem.mu.Lock()
+		busy := sem.counter > 0
+		sem.mu.Unlock()
+		if busy {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "cannot restore while the agent is working"})
+			return
+		}
+	}
+
+	store := api.sessionSvc.Store()
+	sess, err := store.Load(sessionID)
+	if err != nil || sess == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	// Undo point FIRST: a failed restore must never lose the current state.
+	if _, err := store.SaveSnapshot(sess, hakasesession.SnapshotTriggerPreRestore); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to snapshot current state"})
+		return
+	}
+	restored, err := store.LoadSnapshot(sessionID, strings.TrimSpace(req.Snapshot))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid snapshot: %v", err)})
+		return
+	}
+	restored.UpdatedAt = time.Now().UTC()
+	if err := store.Save(restored); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save restored session"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "restored",
+		"messages": len(restored.Messages),
+	})
 }
 
 // getOrCreateSem returns the sessionSem for sessionID, creating one if needed.

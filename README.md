@@ -266,6 +266,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `channels` -- communication channels (Telegram bot today): remote prompting, live progress, in-chat approvals, task/cron control. See [Channels (Telegram)](#channels-telegram).
 - `media` -- image/video generation (`openai`, `fal`, `pil` fallback). See [Media Generation](docs/DEVELOPMENT.md#media-generation) and [docs/media-generation/support.md](docs/media-generation/support.md).
 - `tracing` -- OpenTelemetry GenAI tracing over OTLP/HTTP (`enabled`, `endpoint`, `headers`, `sample_ratio`). See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
+- `session.snapshots` -- restore-to-message checkpoints (`enabled`, `max` per session, default 50): "Restore to before this message" on any user prompt in the chat UI rewinds the conversation; the pre-restore state is kept as an undo snapshot. See [docs/session-rewind/](docs/session-rewind/).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
 - `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 

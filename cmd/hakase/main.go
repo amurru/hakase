@@ -122,9 +122,11 @@ func runTUI() {
 
 	// Create the session service up front so the same instance backs both the
 	// TUI (persistence) and the runner's HistoryBuilder (history injection).
+	// Snapshot ring from config (issue #21).
 	var sessionSvc *hakasesession.SessionService
-	if store, err := hakasesession.NewSessionStore(hakasesession.Dir); err == nil {
+	if store, err := hakasesession.NewSessionStoreWithSnapshotLimit(hakasesession.Dir, config.SessionSnapshotsMax(cfg)); err == nil {
 		if svc, err := hakasesession.NewSessionService(store); err == nil {
+			svc.SetSnapshotsEnabled(config.SessionSnapshotsEnabled(cfg))
 			sessionSvc = svc
 		}
 	}

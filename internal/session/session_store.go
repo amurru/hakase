@@ -26,6 +26,9 @@ import (
 type SessionStore struct {
 	mu          sync.RWMutex
 	sessionsDir string
+	// snapshotMax bounds the per-session snapshot ring (issue #21);
+	// <= 0 disables snapshot writes. See snapshot.go.
+	snapshotMax int
 }
 
 // Index file and lock file names inside the sessions dir.
@@ -46,12 +49,21 @@ const sessionIndexVersion = 1
 // NewSessionStore creates a SessionStore backed by the given directory.
 // The directory is created if it does not exist. Existing session files
 // written before the 0600/0700 hardening are chmod'd on startup (best-effort).
+// Snapshots use the default retention ring (DefaultSnapshotMax); use
+// NewSessionStoreWithSnapshotLimit to bound it from config.
 func NewSessionStore(sessionsDir string) (*SessionStore, error) {
+	return NewSessionStoreWithSnapshotLimit(sessionsDir, DefaultSnapshotMax)
+}
+
+// NewSessionStoreWithSnapshotLimit is NewSessionStore with an explicit
+// per-session snapshot ring size; max <= 0 disables snapshot writes.
+func NewSessionStoreWithSnapshotLimit(sessionsDir string, snapshotMax int) (*SessionStore, error) {
 	if err := os.MkdirAll(sessionsDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
 	store := &SessionStore{
 		sessionsDir: sessionsDir,
+		snapshotMax: snapshotMax,
 	}
 	store.migrateSessionPermissions()
 	// Best-effort index rebuild so a fresh process gets fast listings even

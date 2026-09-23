@@ -85,3 +85,25 @@ export function getMediaStatus(): Promise<MediaStatusResponse> {
 export function getMediaManifest(): Promise<unknown[]> {
   return apiGet<unknown[]>('/media/manifest')
 }
+
+// ---------------------------------------------------------------------------
+// Session snapshots / restore (docs/session-rewind/spec.md, issue #21)
+
+export interface SessionSnapshot {
+  name: string
+  created_at: string
+  messages: number
+  trigger: 'pre' | 'pre-restore'
+  preview: string
+}
+
+export function listSnapshots(sessionId: string): Promise<{ snapshots: SessionSnapshot[] }> {
+  return apiGet<{ snapshots: SessionSnapshot[] }>(`/sessions/${sessionId}/snapshots`)
+}
+
+export function restoreSession(
+  sessionId: string,
+  snapshot: string,
+): Promise<{ status: string; messages: number }> {
+  return apiPost<{ status: string; messages: number }>(`/sessions/${sessionId}/restore`, { snapshot })
+}
