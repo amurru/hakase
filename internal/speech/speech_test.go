@@ -31,9 +31,11 @@ func writeFakeBin(t *testing.T, dir, name, script string) string {
 }
 
 // fakeLastArgWriter writes content to the LAST argument path (the output
-// file for both ffmpeg invocations).
-const fakeLastArgWriter = `out="${*: -1}"
-printf 'fake-bytes' > "$out"
+// file for both ffmpeg invocations). POSIX sh only: `for last do` iterates
+// positional params, leaving `last` on the final one — CI's /bin/sh is dash
+// and rejects bash-isms like ${*: -1}.
+const fakeLastArgWriter = `for last do :; done
+printf 'fake-bytes' > "$last"
 `
 
 // fakeWhisperOf parses "-of <base>" and writes "<base>.txt" with fixed text.
