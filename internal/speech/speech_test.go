@@ -46,7 +46,19 @@ done
 printf 'hello transcript' > "$base.txt"
 `
 
+// skipWindows skips tests that execute shell-script fake binaries: windows
+// CI has no /bin/sh and LookPath requires .exe/.bat extensions there, so
+// the fake-binary pipeline mechanics only translate to POSIX (mirrors the
+// #22 windows-suite convention).
+func skipWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binaries are POSIX-only")
+	}
+}
+
 func TestTranscribePipelineWithFakes(t *testing.T) {
+	skipWindows(t)
 	binDir := t.TempDir()
 	modelsDir := t.TempDir()
 	ffmpeg := writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter)
@@ -78,6 +90,7 @@ func TestTranscribePipelineWithFakes(t *testing.T) {
 }
 
 func TestAvailabilityNamesMissingBinary(t *testing.T) {
+	skipWindows(t)
 	binDir := t.TempDir()
 	ffmpeg := writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter)
 	w := NewWhisperCLI(STTConfig{
@@ -107,6 +120,7 @@ func TestAvailabilityNamesMissingBinary(t *testing.T) {
 }
 
 func TestTranscribeDurationCap(t *testing.T) {
+	skipWindows(t)
 	binDir := t.TempDir()
 	w := NewWhisperCLI(STTConfig{
 		Model:      "basemodel",
@@ -122,6 +136,7 @@ func TestTranscribeDurationCap(t *testing.T) {
 }
 
 func TestModelAutoDownload(t *testing.T) {
+	skipWindows(t)
 	oldFloor := modelMinBytes
 	modelMinBytes = 8
 	t.Cleanup(func() { modelMinBytes = oldFloor })
@@ -184,6 +199,7 @@ func TestModelAutoDownload(t *testing.T) {
 }
 
 func TestModelDownloadRejectsTinyPayload(t *testing.T) {
+	skipWindows(t)
 	oldFloor := modelMinBytes
 	modelMinBytes = 1 << 20
 	t.Cleanup(func() { modelMinBytes = oldFloor })
@@ -249,6 +265,7 @@ func TestQueueSerializesAndRefusesWhenFull(t *testing.T) {
 }
 
 func TestPiperSeamWithFakes(t *testing.T) {
+	skipWindows(t)
 	binDir := t.TempDir()
 	voice := filepath.Join(t.TempDir(), "voice.onnx")
 	if err := os.WriteFile(voice, []byte("onnx"), 0o600); err != nil {
