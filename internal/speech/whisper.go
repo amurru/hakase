@@ -127,11 +127,24 @@ func (w *WhisperCLI) Transcribe(ctx context.Context, audio []byte, mime string, 
 	if err != nil {
 		return Transcript{}, fmt.Errorf("speech: whisper transcript missing: %w", err)
 	}
+	text := strings.TrimSpace(string(raw))
+	// whisper annotates non-speech audio with bracketed tags or bare
+	// ellipses ("[ Inaudible ]", "[BLANK_AUDIO]", "[music]", "…"). Those are
+	// not words: report an empty transcript so the transport tells the user
+	// to try again instead of prompting the LLM with garbage.
+	if nonSpeechRe.MatchString(text) {
+		return Transcript{Language: detectedLanguage(base + ".json")}, nil
+	}
 	return Transcript{
-		Text:     strings.TrimSpace(string(raw)),
+		Text:     text,
 		Language: detectedLanguage(base + ".json"),
 	}, nil
 }
+
+// nonSpeechRe matches a transcript that is ENTIRELY a whisper non-speech
+// annotation (bracketed tag or bare ellipsis). Whole-transcript only: a
+// bracketed tag inside real speech stays.
+var nonSpeechRe = regexp.MustCompile(`(?i)^\s*(\[[^\]]{0,40}\]|\.\.+|…+)\s*$`)
 
 // whisperResultJSON is the slice of whisper-cli's -oj output the pipeline
 // needs: the detected language.

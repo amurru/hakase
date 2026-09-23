@@ -84,7 +84,7 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 	}
 	tr.Text = strings.TrimSpace(tr.Text)
 	if tr.Text == "" {
-		b.sendText(ctx, c, "🎙 I couldn't hear anything intelligible in that voice note.", nil, false)
+		b.sendText(ctx, c, "🎙 I couldn't hear anything intelligible in that voice note — try again (closer to the mic, quieter surroundings).", nil, false)
 		return
 	}
 

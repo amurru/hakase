@@ -38,28 +38,23 @@ const fakeLastArgWriter = `for last do :; done
 printf 'fake-bytes' > "$last"
 `
 
-// fakeWhisperOf parses "-of <base>" and writes "<base>.txt" with fixed text
-// plus "<base>.json" with a detected language (exercising the -oj parse).
-const fakeWhisperOf = `base=""
+// fakeWhisperScript builds a fake whisper-cli that emits the given text as
+// the transcript plus a result JSON detecting "de".
+func fakeWhisperScript(text string) string {
+	q := strings.ReplaceAll(text, "'", `'\''`)
+	return `base=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "-of" ]; then base="$a"; fi
   prev="$a"
 done
-printf 'hello transcript' > "$base.txt"
+printf '` + q + `' > "$base.txt"
 printf '{"result":{"language":"de"}}' > "$base.json"
 `
+}
 
-// fakeWhisperPlain is the language-less variant (no JSON emitted): the
-// pipeline must degrade to an empty detected language.
-const fakeWhisperPlain = `base=""
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "-of" ]; then base="$a"; fi
-  prev="$a"
-done
-printf 'hello transcript' > "$base.txt"
-`
+// fakeWhisperOf is the standard transcript used by the pipeline tests.
+func fakeWhisperOf() string { return fakeWhisperScript("hello transcript") }
 
 // skipWindows skips tests that execute shell-script fake binaries: windows
 // CI has no /bin/sh and LookPath requires .exe/.bat extensions there, so
@@ -77,7 +72,7 @@ func TestTranscribePipelineWithFakes(t *testing.T) {
 	binDir := t.TempDir()
 	modelsDir := t.TempDir()
 	ffmpeg := writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter)
-	whisper := writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf)
+	whisper := writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf())
 
 	// Pre-seed the model so the download path is not exercised here.
 	modelPath := filepath.Join(modelsDir, "ggml-basemodel.bin")
@@ -142,7 +137,7 @@ func TestTranscribeDurationCap(t *testing.T) {
 	binDir := t.TempDir()
 	w := NewWhisperCLI(STTConfig{
 		Model:      "basemodel",
-		BinaryPath: writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf),
+		BinaryPath: writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf()),
 		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter),
 		ModelsDir:  t.TempDir(),
 		MaxSeconds: 5,
@@ -176,7 +171,7 @@ func TestModelAutoDownload(t *testing.T) {
 	binDir := t.TempDir()
 	w := NewWhisperCLI(STTConfig{
 		Model:        "basemodel",
-		BinaryPath:   writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf),
+		BinaryPath:   writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf()),
 		FFMpegPath:   writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter),
 		ModelsDir:    modelsDir,
 		ModelURLBase: ts.URL,
@@ -230,7 +225,7 @@ func TestModelDownloadRejectsTinyPayload(t *testing.T) {
 	binDir := t.TempDir()
 	w := NewWhisperCLI(STTConfig{
 		Model:        "basemodel",
-		BinaryPath:   writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf),
+		BinaryPath:   writeFakeBin(t, binDir, "whisper-cli", fakeWhisperOf()),
 		FFMpegPath:   writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter),
 		ModelsDir:    t.TempDir(),
 		ModelURLBase: ts.URL,
@@ -280,6 +275,86 @@ func TestQueueSerializesAndRefusesWhenFull(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("queued caller never ran")
 	}
+}
+
+// TestTranscribeFiltersNonSpeech pins the inaudible-note handling: whisper
+// tags like "[ Inaudible ]" / "[BLANK_AUDIO]" / bare ellipses become an
+// EMPTY transcript (the transport then tells the user to retry instead of
+// prompting the LLM with garbage), while real speech containing a bracketed
+// tag inline is kept whole.
+func TestTranscribeFiltersNonSpeech(t *testing.T) {
+	skipWindows(t)
+	binDir := t.TempDir()
+	modelsDir := t.TempDir()
+	modelPath := filepath.Join(modelsDir, "ggml-basemodel.bin")
+	if err := os.WriteFile(modelPath, []byte("ggml-fake"), 0o600); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	ffmpeg := writeFakeBin(t, binDir, "ffmpeg", fakeLastArgWriter)
+
+	t.Run("bracketed inaudible tag", func(t *testing.T) {
+		w := NewWhisperCLI(STTConfig{
+			Model:      "basemodel",
+			BinaryPath: writeFakeBin(t, binDir, "whisper-cli", fakeWhisperScript("[ Inaudible ]")),
+			FFMpegPath: ffmpeg,
+			ModelsDir:  modelsDir,
+		})
+		tr, err := w.Transcribe(context.Background(), []byte("x"), "audio/ogg", 2)
+		if err != nil {
+			t.Fatalf("Transcribe: %v", err)
+		}
+		if tr.Text != "" {
+			t.Fatalf("non-speech tag passed through as text: %q", tr.Text)
+		}
+	})
+
+	t.Run("blank audio tag", func(t *testing.T) {
+		w := NewWhisperCLI(STTConfig{
+			Model:      "basemodel",
+			BinaryPath: writeFakeBin(t, binDir, "whisper-cli", fakeWhisperScript("[BLANK_AUDIO]")),
+			FFMpegPath: ffmpeg,
+			ModelsDir:  modelsDir,
+		})
+		tr, err := w.Transcribe(context.Background(), []byte("x"), "audio/ogg", 2)
+		if err != nil {
+			t.Fatalf("Transcribe: %v", err)
+		}
+		if tr.Text != "" {
+			t.Fatalf("non-speech tag passed through as text: %q", tr.Text)
+		}
+	})
+
+	t.Run("bare ellipsis", func(t *testing.T) {
+		w := NewWhisperCLI(STTConfig{
+			Model:      "basemodel",
+			BinaryPath: writeFakeBin(t, binDir, "whisper-cli", fakeWhisperScript("…")),
+			FFMpegPath: ffmpeg,
+			ModelsDir:  modelsDir,
+		})
+		tr, err := w.Transcribe(context.Background(), []byte("x"), "audio/ogg", 2)
+		if err != nil {
+			t.Fatalf("Transcribe: %v", err)
+		}
+		if tr.Text != "" {
+			t.Fatalf("ellipsis passed through as text: %q", tr.Text)
+		}
+	})
+
+	t.Run("inline tag inside real speech is kept", func(t *testing.T) {
+		w := NewWhisperCLI(STTConfig{
+			Model:      "basemodel",
+			BinaryPath: writeFakeBin(t, binDir, "whisper-cli", fakeWhisperScript("[music] play something loud")),
+			FFMpegPath: ffmpeg,
+			ModelsDir:  modelsDir,
+		})
+		tr, err := w.Transcribe(context.Background(), []byte("x"), "audio/ogg", 4)
+		if err != nil {
+			t.Fatalf("Transcribe: %v", err)
+		}
+		if !strings.Contains(tr.Text, "play something loud") {
+			t.Fatalf("real speech lost: %q", tr.Text)
+		}
+	})
 }
 
 func TestPiperBinaryNameFallback(t *testing.T) {
