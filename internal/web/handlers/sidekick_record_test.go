@@ -229,7 +229,11 @@ func TestPostSidekickIncludesSessionHistory(t *testing.T) {
 		t.Fatalf("status = %d, want 202", rec.Code)
 	}
 
-	waitForMessages(t, svc.Store(), sess.ID, 3)
+	// Wait for 4, not 3: seeded 2 + question is message 3, and the async
+	// answer is message 4. Waiting only for the question raced the answer's
+	// store write against t.TempDir cleanup on windows ("directory is not
+	// empty" during RemoveAll).
+	waitForMessages(t, svc.Store(), sess.ID, 4)
 
 	prompt := reqText(t, llm.lastReq)
 	for _, want := range []string{"[CONVERSATION SO FAR]", "X is 42 and quite reliable", "[YOUR TASK]", "what's your take?"} {
