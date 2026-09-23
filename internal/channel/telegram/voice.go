@@ -125,11 +125,24 @@ var (
 	mdLinkRe     = regexp.MustCompile(`!?\[([^\]]*)\]\(([^)]*)\)`)
 	mdHeadingRe  = regexp.MustCompile(`(?m)^\s{0,3}#{1,6}\s*`)
 	mdEmphasisRe = regexp.MustCompile(`(\*\*|__|~~|[*_` + "`" + `])`)
+	// Reasoning blocks some providers emit as plain content deltas (often
+	// inside <think>/<thinking> tags). Never spoken.
+	thinkBlockRe  = regexp.MustCompile(`(?s)<think(?:ing)?>\s*.*?</think(?:ing)?>\s*`)
+	thinkUnclosed = regexp.MustCompile(`(?s)\s*<think(?:ing)?>.*`)
 )
 
-// stripMarkdownForTTS reduces an answer's markdown to speakable plain text:
-// links keep their text, headings and emphasis/backtick markers go away.
+// stripMarkdownForTTS reduces an answer to speakable plain text: reasoning
+// blocks (<think>/<thinking>) are removed wholesale, links keep their text,
+// headings and emphasis/backtick markers go away.
 func stripMarkdownForTTS(s string) string {
+	s = thinkBlockRe.ReplaceAllString(s, "")
+	// An unterminated reasoning block (stream cut mid-think) swallows the
+	// rest — but never the whole answer: if stripping left nothing, keep
+	// the original and let the emphasis pass tidy it.
+	stripped := thinkUnclosed.ReplaceAllString(s, "")
+	if strings.TrimSpace(stripped) != "" {
+		s = stripped
+	}
 	s = mdLinkRe.ReplaceAllString(s, "$1")
 	s = mdHeadingRe.ReplaceAllString(s, "")
 	s = mdEmphasisRe.ReplaceAllString(s, "")

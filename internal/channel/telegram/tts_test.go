@@ -268,6 +268,29 @@ func TestVoiceCommandPersistsAndValidates(t *testing.T) {
 	}
 }
 
+// TestTTSStripsThinkBlocks pins that reasoning blocks emitted as plain
+// content (<think>/<thinking> tags) are never spoken.
+func TestTTSStripsThinkBlocks(t *testing.T) {
+	synth := &fakeSynthesizer{}
+	b, api, d := newTTSTestBot(t, synth)
+	setVoiceMode(t, b, "on")
+	d.text = "<think>Let me weigh the options carefully here.</think>The capital of France is **Paris**."
+
+	b.handleMessage(context.Background(), privateMessage(200, "question"))
+	waitRunDone(t, b, rootConv(200))
+
+	spoken := synth.spoken()
+	if strings.Contains(spoken, "think") || strings.Contains(spoken, "weigh the options") {
+		t.Fatalf("reasoning block leaked into the voice reply: %q", spoken)
+	}
+	if !strings.Contains(spoken, "The capital of France is Paris.") {
+		t.Fatalf("answer text lost during think-strip: %q", spoken)
+	}
+	if got := len(api.voiceSends()); got != 1 {
+		t.Fatalf("voice sends = %d, want 1", got)
+	}
+}
+
 func TestTTSMaxCharsTruncates(t *testing.T) {
 	synth := &fakeSynthesizer{}
 	b, _, _ := newTTSTestBot(t, synth)
