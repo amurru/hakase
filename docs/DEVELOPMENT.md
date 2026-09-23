@@ -829,7 +829,7 @@ The `channels` block configures communication channels - chat transports that pr
     wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json
     wget https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx
     ```
-    then reference the `.onnx` files by absolute path (no `~` expansion). A configured language whose file is missing on disk falls back to `default` (logged, never an error). Validation fails fast at load: `enabled: true` without a `"default"` entry is a config error.
+    then reference the `.onnx` files by absolute path (no `~` expansion). A configured language whose file is missing on disk falls back to `default` (logged, never an error). `enabled: true` without a `"default"` entry loads fine but degrades at runtime: voice replies answer with the actionable setup hint instead of speech.
   - `binary_path` naming: distros package the CLI as `piper` or `piper-tts` — hakase tries the configured name, then `piper`, then `piper-tts` (explicit absolute paths are used as-is with no fallback). On Arch (`piper-tts-bin`) set nothing: the fallback finds `/usr/bin/piper-tts`.
   - `ffmpeg_path` - WAV → OGG/Opus encode (Telegram voice-note container). Default `ffmpeg` on PATH.
   - `max_chars` - cap the spoken text length, with an explicit "[truncated for voice]" marker. Default 1200.

@@ -23,12 +23,18 @@ func writeTTSConfig(t *testing.T, tts string) (*Config, error) {
 }
 
 func TestTTSVoicesDefaultRequiredWhenEnabled(t *testing.T) {
-	_, err := writeTTSConfig(t, `{"enabled":true}`)
-	if err == nil || !strings.Contains(err.Error(), "voices") || !strings.Contains(err.Error(), "default") {
-		t.Fatalf("enabled without voices.default must fail loudly, got: %v", err)
+	// enabled without a "default" voice is NOT a load error: it degrades at
+	// runtime (Availability hint per message), matching the STT posture
+	// where missing binaries degrade instead of failing the server.
+	cfg, err := writeTTSConfig(t, `{"enabled":true}`)
+	if err != nil {
+		t.Fatalf("enabled without voices must load, got: %v", err)
+	}
+	if cfg.Channels.Telegram.TextToSpeech.Voices["default"] != "" {
+		t.Fatalf("unexpected default voice: %+v", cfg.Channels.Telegram.TextToSpeech.Voices)
 	}
 
-	cfg, err := writeTTSConfig(t, `{"enabled":true,"voices":{"default":"/v/en.onnx","de":"/v/de.onnx"}}`)
+	cfg, err = writeTTSConfig(t, `{"enabled":true,"voices":{"default":"/v/en.onnx","de":"/v/de.onnx"}}`)
 	if err != nil {
 		t.Fatalf("valid voices rejected: %v", err)
 	}

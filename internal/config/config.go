@@ -648,9 +648,11 @@ func (c *TelegramTTSConfig) ApplyDefaults() {
 	}
 }
 
-// Validate checks the TTS block for sane values. Like the channel gate, it
-// only fails when explicitly enabled but unusable: an enabled TTS without
-// a default voice would silently swallow every voice reply otherwise.
+// Validate checks the TTS block for sane values: map keys must be language
+// codes or the reserved "default", and paths must be non-empty. A missing
+// "default" entry with enabled:true is NOT a load error — it degrades at
+// runtime like any other missing tooling (voice replies answer with an
+// actionable hint), matching the speech_to_text posture.
 func (c *TelegramTTSConfig) Validate() error {
 	if c.MaxChars < 0 {
 		return fmt.Errorf("channels.telegram.text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
@@ -661,11 +663,6 @@ func (c *TelegramTTSConfig) Validate() error {
 		}
 		if strings.TrimSpace(path) == "" {
 			return fmt.Errorf("channels.telegram.text_to_speech.voices: key %q has an empty path", lang)
-		}
-	}
-	if c.Enabled != nil && *c.Enabled {
-		if c.Voices["default"] == "" {
-			return fmt.Errorf("channels.telegram.text_to_speech: enabled but voices has no \"default\" entry (set voices: {\"default\": \"/path/voice.onnx\"}, plus per-language entries to mirror spoken languages)")
 		}
 	}
 	return nil
