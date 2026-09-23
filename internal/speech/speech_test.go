@@ -416,6 +416,65 @@ cp "$in" "$last"
 // configured per-language voice is used when the language matches; an
 // unconfigured language, an empty language, and a configured language with
 // a missing file all fall back to the default voice.
+// TestPiperVoiceScriptMirroring pins the reported case (#19): the ANSWER's
+// script drives voice selection, not the request's language. An Arabic
+// answer requested via a typed English prompt (no hint) is spoken with the
+// Arabic voice; an English voice note demanding an Arabic answer (hint=en)
+// still gets the Arabic voice; a Latin answer falls back to the default.
+func TestPiperVoiceScriptMirroring(t *testing.T) {
+	skipWindows(t)
+	binDir := t.TempDir()
+	voiceEn := filepath.Join(t.TempDir(), "en_US-amy-medium.onnx")
+	voiceAr := filepath.Join(t.TempDir(), "ar_JO-kareem-medium.onnx")
+	for _, v := range []string{voiceEn, voiceAr} {
+		if err := os.WriteFile(v, []byte("onnx"), 0o600); err != nil {
+			t.Fatalf("voice seed: %v", err)
+		}
+	}
+	p := NewPiperTTS(TTSConfig{
+		BinaryPath: writeFakeBin(t, binDir, "piper", fakePiperMarker),
+		Voices: map[string]string{
+			"default": voiceEn,
+			"ar":      voiceAr,
+		},
+		FFMpegPath: writeFakeBin(t, binDir, "ffmpeg", fakeFFMpegCopy),
+	})
+
+	if got := DetectScript("مرحبا كيف حالك"); got != "arabic" {
+		t.Fatalf("DetectScript(arabic text) = %q", got)
+	}
+	if got := DetectScript("hello there"); got != scriptLatin {
+		t.Fatalf("DetectScript(latin text) = %q", got)
+	}
+
+	// Typed request (no hint), Arabic answer → Arabic voice.
+	arOGG, err := p.Synthesize(context.Background(), "مرحبا كيف حالك", "")
+	if err != nil {
+		t.Fatalf("synthesize ar (no hint): %v", err)
+	}
+	if !strings.Contains(string(arOGG), "ar_JO-kareem-medium.onnx") {
+		t.Fatalf("arabic answer did not use the ar voice: %q", arOGG)
+	}
+
+	// English voice note (hint en), Arabic answer → answer script dominates.
+	enHintArOGG, err := p.Synthesize(context.Background(), "مرحبا", "en")
+	if err != nil {
+		t.Fatalf("synthesize ar with en hint: %v", err)
+	}
+	if !strings.Contains(string(enHintArOGG), "ar_JO-kareem-medium.onnx") {
+		t.Fatalf("answer script did not dominate the hint: %q", enHintArOGG)
+	}
+
+	// Latin answer → default voice.
+	enOGG, err := p.Synthesize(context.Background(), "hello there", "en")
+	if err != nil {
+		t.Fatalf("synthesize en: %v", err)
+	}
+	if !strings.Contains(string(enOGG), "en_US-amy-medium.onnx") {
+		t.Fatalf("latin answer did not use the default voice: %q", enOGG)
+	}
+}
+
 func TestPiperVoiceLanguageSelection(t *testing.T) {
 	skipWindows(t)
 	binDir := t.TempDir()

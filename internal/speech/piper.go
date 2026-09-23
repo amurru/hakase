@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"amurru/hakase/internal/util"
@@ -94,7 +95,7 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text, lang string) ([]byte, e
 	if text == "" {
 		return nil, fmt.Errorf("speech: nothing to synthesize")
 	}
-	voicePath := p.voiceFor(lang)
+	voicePath := p.voiceFor(lang, text)
 
 	dir, err := os.MkdirTemp("", "hakase-tts-")
 	if err != nil {
@@ -136,22 +137,59 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text, lang string) ([]byte, e
 	return ogg, nil
 }
 
-// voiceFor resolves the voice for a language: the per-language entry when
-// configured and present on disk, else the default VoicePath. A requested
-// language whose voice file is missing falls back loudly (logged), never
-// erroring the reply.
-func (p *PiperTTS) voiceFor(lang string) string {
-	lang = strings.ToLower(strings.TrimSpace(lang))
-	if lang != "" {
-		if path, ok := p.cfg.Voices[lang]; ok && path != "" {
-			if _, err := os.Stat(path); err == nil {
+// voiceFor resolves which configured voice speaks this reply, in priority
+// order:
+//  1. the ANSWER's own script (an Arabic answer must be read by an Arabic
+//     voice even when the request arrived in English);
+//  2. the whisper-detected language of a voice-note prompt;
+//  3. the "default" voice.
+// Candidates whose file is missing on disk are skipped (logged).
+func (p *PiperTTS) voiceFor(lang, text string) string {
+	if script := DetectScript(text); script != scriptLatin {
+		if code, ok := p.voiceKeyForScript(script); ok {
+			if path := p.usableVoice(code); path != "" {
 				return path
 			}
-			log.Printf("speech: no voice file for %q at %s — falling back to the default voice", lang, path)
-			return p.defaultVoice()
 		}
 	}
-	return p.defaultVoice()
+	if lang != "" {
+		if path := p.usableVoice(strings.ToLower(lang)); path != "" {
+			return path
+		}
+	}
+	return p.usableVoice("default")
+}
+
+// usableVoice returns the configured path for a voices-map key, provided
+// the file exists; otherwise "" (with a log line).
+func (p *PiperTTS) usableVoice(code string) string {
+	path := p.cfg.Voices[code]
+	if path == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err != nil {
+		log.Printf("speech: no voice file for %q at %s — falling back", code, path)
+		return ""
+	}
+	return path
+}
+
+// voiceKeyForScript picks the configured voice key whose language matches
+// the given Unicode script (deterministic: sorted keys, "default" excluded).
+func (p *PiperTTS) voiceKeyForScript(script string) (string, bool) {
+	keys := make([]string, 0, len(p.cfg.Voices))
+	for k := range p.cfg.Voices {
+		if k != "default" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if scriptByLang[k] == script {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 // defaultVoice returns the fallback voice path ("" when unconfigured —
