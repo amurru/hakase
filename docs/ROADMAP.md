@@ -53,6 +53,7 @@ generation, SkillOpt-Sleep phases 0–4.
 | Telegram group chats + webhooks | `internal/channel/telegram` package doc | forum topics cover the 1:1 flow end to end |
 | `dream_consolidate` memory trials | `internal/sleep/cycle.go`; `docs/skillopt-sleep/plan.md` | reserved surface from Phase 3 |
 | Landlock enforcement (Phase 3) | [#14](https://github.com/amurru/hakase/issues/14) (closed: fail-loud shipped, mode refused) | `sandbox.mode: landlock` is refused at config load and exec time until a real LSM enforcement lands: ruleset for FS read/write/exec per workspace/read/deny roots, ABI-version detection, clear error when the kernel lacks support; see the Proposed solution in #14 |
+| Web UI voice input (mic capture → speech pipeline) | `docs/telegram-voice/` deferred section | Telegram voice notes work end-to-end and `internal/speech` is transport-neutral; the web UI has no recording capture yet |
 
 ## Maintenance conventions
 

@@ -388,9 +388,11 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 	// Service messages (topic created/renamed/closed, pins, joins) carry no
-	// text, caption, or photo: not conversation input, stay silent. Voice
-	// notes pass through (issue #19) and are handled after auth below.
-	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 && m.Voice == nil {
+	// text, caption, or media: not conversation input, stay silent. Voice
+	// notes and attached media pass through (issue #19) and are handled
+	// after auth below.
+	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 && m.Voice == nil &&
+		m.Audio == nil && m.Video == nil && m.Document == nil {
 		return
 	}
 
@@ -435,6 +437,21 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 
 	if m.Voice != nil {
 		b.handleVoice(ctx, c, m)
+		return
+	}
+
+	// Attached media files go to the model as native parts (whisper is for
+	// voice NOTES only — issue #19 follow-up).
+	if m.Audio != nil {
+		b.handleAudioFile(ctx, c, m)
+		return
+	}
+	if m.Video != nil {
+		b.handleVideoFile(ctx, c, m)
+		return
+	}
+	if m.Document != nil {
+		b.handleDocumentFile(ctx, c, m)
 		return
 	}
 

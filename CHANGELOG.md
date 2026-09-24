@@ -52,6 +52,7 @@ guaranteed stable until 1.0.
 
 ### Planned
 
+- Web UI voice input: microphone capture feeding the speech pipeline (Telegram voice notes work; `internal/speech` is transport-neutral)
 - `generate_audio` implementation (currently a stub wired for v2)
 - `landlock` sandbox mode (in-process Landlock + seccomp confinement, Phase 3)
 - `git stash`/`rebase`/`merge`, `commit --amend` / signing, `git remote`/`tag` management - [docs/git-tools/](docs/git-tools/)

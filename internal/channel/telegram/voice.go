@@ -10,15 +10,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
 
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/speech"
 
-	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
 
@@ -56,7 +53,7 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 		return
 	}
 
-	audio, err := b.downloadVoice(ctx, v.FileID)
+	audio, err := b.downloadFile(ctx, v.FileID)
 	if err != nil {
 		b.log("voice download failed: %v", err)
 		b.sendText(ctx, c, "⚠️ Could not download the voice note: "+esc(err.Error()), nil, false)
@@ -176,35 +173,5 @@ func (rv *runView) trySendVoiceReply(ctx context.Context, full, lang string) boo
 	return rv.b.sendVoice(ctx, rv.c, ogg)
 }
 
-// downloadVoice fetches the voice file via getFile + the bot file URL,
-// mirroring the photo path. bytes are capped at maxVoiceBytes.
-func (b *Bot) downloadVoice(ctx context.Context, fileID string) ([]byte, error) {
-	f, err := b.api.GetFile(ctx, &tgbot.GetFileParams{FileID: fileID})
-	if err != nil {
-		return nil, fmt.Errorf("getFile: %w", err)
-	}
-	if f == nil || f.FilePath == "" {
-		return nil, errors.New("empty file path from Telegram")
-	}
-	url := b.fileBaseURL + "/file/bot" + b.token + "/" + f.FilePath
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("file download got HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxVoiceBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxVoiceBytes {
-		return nil, errors.New("voice note exceeds the 20 MB Bot API download limit")
-	}
-	return data, nil
-}
+// downloadVoice was folded into downloadFile (file.go) — voice notes and
+// attached media share the same getFile + download path.

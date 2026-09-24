@@ -37,6 +37,11 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 - [x] **T2.4 [QA]** inbound path tests (echo precedes run, transcript
       prompt, disabled hint, duration refuse, busy/failure/empty). Spec:
       TV-005.
+- [x] **T2.5 [BE/QA]** attached media files (audio/video/document) go to
+      the model as native inline parts with the caption as prompt — only
+      voice NOTES are transcribed (spec decision + directive); the old
+      silent drop / caption loss for attached files is fixed. Tests:
+      file_test.go.
 
 ## Phase 3 — Outbound TTS
 
@@ -61,3 +66,12 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
       `go test ./...` (fake binaries only — CI needs no real whisper/piper).
       Owner live acceptance on Telegram remains (echo/stop path, degraded
       hint, voice reply) before issue #19 closes.
+
+## Deferred
+
+- Web UI voice input: microphone capture in the chat composer feeding this
+  same pipeline (`internal/speech` is transport-neutral) — recorded in the
+  ROADMAP deferred ledger and CHANGELOG Planned.
+- Arabic-script voice quality note: piper voices are per-language; a
+  reply whose language has no configured voice entry speaks with the
+  default voice (script detection covers the configured set).
