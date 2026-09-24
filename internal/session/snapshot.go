@@ -238,8 +238,8 @@ func truncateSnapshotPreview(s string) string {
 // ErrSnapshotNotFound → 404, ErrInvalidSnapshotName → 400, anything else →
 // 500 (storage/corruption).
 var (
-	ErrSnapshotNotFound     = errors.New("snapshot not found")
-	ErrInvalidSnapshotName  = errors.New("invalid snapshot name")
+	ErrSnapshotNotFound        = errors.New("snapshot not found")
+	ErrInvalidSnapshotName     = errors.New("invalid snapshot name")
 	ErrSnapshotSessionMismatch = errors.New("snapshot belongs to a different session")
 )
 
