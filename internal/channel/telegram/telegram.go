@@ -23,6 +23,7 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
 	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/speech"
 	"amurru/hakase/internal/web/sse"
 
 	"google.golang.org/genai"
@@ -48,6 +49,7 @@ type api interface {
 	UnpinChatMessage(ctx context.Context, params *tgbot.UnpinChatMessageParams) (bool, error)
 	DeleteMessage(ctx context.Context, params *tgbot.DeleteMessageParams) (bool, error)
 	EditForumTopic(ctx context.Context, params *tgbot.EditForumTopicParams) (bool, error)
+	SendVoice(ctx context.Context, params *tgbot.SendVoiceParams) (*models.Message, error)
 }
 
 // Bot is the Telegram transport. It satisfies channel.Channel (lifecycle) and
@@ -88,6 +90,18 @@ type Bot struct {
 
 	mediaMu    sync.Mutex
 	mediaGroup map[string]*mediaGroupBuf // media_group_id -> buffered photos
+
+	// Voice-note transcription (issue #19): nil unless speech_to_text is
+	// enabled in config; queue serializes the CPU-bound pipeline.
+	transcriber transcriber
+	voiceQueue  *speech.Queue
+	stt         config.TelegramSTTConfig
+	// Voice-note replies (issue #19 TTS phase): nil unless text_to_speech
+	// is enabled in config.
+	synthesizer speech.Synthesizer
+	ttsMaxChars int
+	// fileBaseURL is the Bot API file origin; a seam for download tests.
+	fileBaseURL string
 }
 
 // pendingClarify is a clarify prompt waiting for the user's free-text answer.
@@ -139,6 +153,35 @@ func New(d Deps) (*Bot, error) {
 		pendingOther: map[conv]pendingClarify{},
 		clarifyCtx:   map[string]clarifyChoice{},
 		mediaGroup:   map[string]*mediaGroupBuf{},
+		fileBaseURL:  "https://api.telegram.org",
+	}
+
+	// Voice-note transcription (issue #19): built only when explicitly
+	// enabled; the whisper model auto-downloads on first use, and missing
+	// binaries degrade to an actionable hint per message.
+	if d.Config.SpeechToText.Enabled != nil && *d.Config.SpeechToText.Enabled {
+		b.stt = d.Config.SpeechToText
+		b.transcriber = speech.NewWhisperCLI(speech.STTConfig{
+			Model:          b.stt.Model,
+			Language:       b.stt.Language,
+			BinaryPath:     b.stt.BinaryPath,
+			FFMpegPath:     b.stt.FFMpegPath,
+			ModelsDir:      b.stt.ModelsDir,
+			MaxSeconds:     b.stt.MaxSeconds,
+			TimeoutSeconds: b.stt.TimeoutSeconds,
+			ModelURLBase:   b.stt.ModelURLBase,
+		})
+		b.voiceQueue = speech.NewQueue(3)
+	}
+	// Voice-note replies (issue #19 TTS phase): the per-chat /voice mode
+	// gates whether they are actually spoken.
+	if d.Config.TextToSpeech.Enabled != nil && *d.Config.TextToSpeech.Enabled {
+		b.synthesizer = speech.NewPiperTTS(speech.TTSConfig{
+			BinaryPath: d.Config.TextToSpeech.BinaryPath,
+			Voices:     d.Config.TextToSpeech.Voices,
+			FFMpegPath: d.Config.TextToSpeech.FFMpegPath,
+		})
+		b.ttsMaxChars = d.Config.TextToSpeech.MaxChars
 	}
 
 	api, err := tgbot.New(b.token,
@@ -298,6 +341,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{Command: "tasks", Description: "Show the task board"},
 			{Command: "cron", Description: "List cron jobs (/cron run <name> to trigger)"},
 			{Command: "stop", Description: "Cancel the running agent turn"},
+			{Command: "voice", Description: "Voice-note replies (/voice off|auto|on)"},
 			{Command: "notify", Description: "Toggle completion notifications (/notify on|off)"},
 			{Command: "id", Description: "Show your Telegram user/chat id"},
 			{Command: "help", Description: "Show help"},
@@ -344,8 +388,11 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 	// Service messages (topic created/renamed/closed, pins, joins) carry no
-	// text, caption, or photo: not conversation input, stay silent.
-	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 {
+	// text, caption, or media: not conversation input, stay silent. Voice
+	// notes and attached media pass through (issue #19) and are handled
+	// after auth below.
+	if m.Text == "" && m.Caption == "" && len(m.Photo) == 0 && m.Voice == nil &&
+		m.Audio == nil && m.Video == nil && m.Document == nil {
 		return
 	}
 
@@ -388,7 +435,27 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 
-	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil)
+	if m.Voice != nil {
+		b.handleVoice(ctx, c, m)
+		return
+	}
+
+	// Attached media files go to the model as native parts (whisper is for
+	// voice NOTES only — issue #19 follow-up).
+	if m.Audio != nil {
+		b.handleAudioFile(ctx, c, m)
+		return
+	}
+	if m.Video != nil {
+		b.handleVideoFile(ctx, c, m)
+		return
+	}
+	if m.Document != nil {
+		b.handleDocumentFile(ctx, c, m)
+		return
+	}
+
+	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil, "", false)
 }
 
 // lobbyHint points at the ✚ composer button; commands keep working in the root.

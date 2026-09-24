@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -204,6 +205,40 @@ type ChatAPI struct {
 
 	semMu         sync.Mutex
 	runSemaphores map[string]*sessionSem
+
+	// restoreMu/restoring serialize snapshot restores per session: a restore
+	// mutates the session file, so PostMessage must refuse while one is in
+	// flight (the run semaphore alone cannot — the user message is recorded
+	// before a slot is acquired).
+	restoreMu sync.Mutex
+	restoring map[string]bool
+}
+
+// beginRestore marks a session as being restored; false when one is already
+// in flight.
+func (api *ChatAPI) beginRestore(sessionID string) bool {
+	api.restoreMu.Lock()
+	defer api.restoreMu.Unlock()
+	if api.restoring == nil {
+		api.restoring = map[string]bool{}
+	}
+	if api.restoring[sessionID] {
+		return false
+	}
+	api.restoring[sessionID] = true
+	return true
+}
+
+func (api *ChatAPI) endRestore(sessionID string) {
+	api.restoreMu.Lock()
+	delete(api.restoring, sessionID)
+	api.restoreMu.Unlock()
+}
+
+func (api *ChatAPI) restoreInProgress(sessionID string) bool {
+	api.restoreMu.Lock()
+	defer api.restoreMu.Unlock()
+	return api.restoring[sessionID]
 }
 
 // ChatRouter is the minimum interface needed by RegisterChatRoutes.
@@ -221,7 +256,7 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 		runner:        runner,
 		runtime:       runtime,
 		history:       history,
-		driver:        agentrun.New(runner, sessionSvc),
+		driver:        agentrun.NewForTransport(runner, sessionSvc, "web"),
 		runSemaphores: make(map[string]*sessionSem),
 	}
 
@@ -230,6 +265,8 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 	r.Get("/sessions/{id}/graph", api.GetGraph)
 	r.Post("/sessions/{id}/sidekick", api.PostSidekick)
 	r.Post("/sessions/{id}/compact", api.PostCompact)
+	r.Get("/sessions/{id}/snapshots", api.GetSnapshots)
+	r.Post("/sessions/{id}/restore", api.PostRestore)
 }
 
 // PostSidekick handles POST /api/sessions/{id}/sidekick.
@@ -391,6 +428,125 @@ func chatSessionID(r *http.Request) string {
 	return chi.URLParam(r, "id")
 }
 
+// GetSnapshots lists a session's restore points (pre-turn snapshots and
+// pre-restore undo points), newest first (docs/session-rewind/spec.md).
+func (api *ChatAPI) GetSnapshots(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	if api.sessionSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "snapshots unavailable"})
+		return
+	}
+	store := api.sessionSvc.Store()
+	if _, err := store.Load(sessionID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	snaps, err := store.ListSnapshots(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list snapshots"})
+		return
+	}
+	if snaps == nil {
+		snaps = []hakasesession.SnapshotInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snaps})
+}
+
+// PostRestore rewinds the session to a snapshot: the requested snapshot is
+// validated first (404 when unknown — nothing is written for a bad name),
+// then the current state is captured as a pre-restore undo snapshot, and
+// only then is the session file replaced with the snapshot's content (same
+// session id, so project binding and the UI stay put) via the store's
+// atomic+flocked path. Refuses mid-run like compact, and refuses while
+// another restore of the same session is in flight.
+func (api *ChatAPI) PostRestore(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	if api.sessionSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "restore unavailable"})
+		return
+	}
+
+	var req struct {
+		Snapshot string `json:"snapshot"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Snapshot) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "snapshot name required"})
+		return
+	}
+
+	// Exclusive per-session restore: PostMessage records the user message
+	// before acquiring a run slot, so the run semaphore alone cannot keep a
+	// racing prompt out of the file this handler is about to replace.
+	if !api.beginRestore(sessionID) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "restore already in progress"})
+		return
+	}
+	defer api.endRestore(sessionID)
+
+	// Refuse mid-run restore: replacing the session file while the history
+	// builder iterates the same session would race with the live agent.
+	api.semMu.Lock()
+	sem := api.runSemaphores[sessionID]
+	api.semMu.Unlock()
+	if sem != nil {
+		sem.mu.Lock()
+		busy := sem.counter > 0
+		sem.mu.Unlock()
+		if busy {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "cannot restore while the agent is working"})
+			return
+		}
+	}
+
+	store := api.sessionSvc.Store()
+	sess, err := store.Load(sessionID)
+	if err != nil || sess == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	// Validate the requested snapshot BEFORE writing anything: a bad name
+	// must not churn (or prune) the real rewind points. Typed errors map to
+	// statuses; anything else is a storage problem (500).
+	restored, err := store.LoadSnapshot(sessionID, strings.TrimSpace(req.Snapshot))
+	switch {
+	case err == nil:
+	case errors.Is(err, hakasesession.ErrSnapshotNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "snapshot not found"})
+		return
+	case errors.Is(err, hakasesession.ErrInvalidSnapshotName),
+		errors.Is(err, hakasesession.ErrSnapshotSessionMismatch):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid snapshot"})
+		return
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load snapshot"})
+		return
+	}
+
+	// Undo point: the pre-restore state is captured only now — after every
+	// validation — so failed restores never churn the ring.
+	if _, err := store.SaveSnapshot(sess, hakasesession.SnapshotTriggerPreRestore); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to snapshot current state"})
+		return
+	}
+	restored.UpdatedAt = time.Now().UTC()
+	if err := store.Save(restored); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save restored session"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "restored",
+		"messages": len(restored.Messages),
+	})
+}
+
 // getOrCreateSem returns the sessionSem for sessionID, creating one if needed.
 // Must be called while holding api.semMu (or use the caller-safe wrapper).
 func (api *ChatAPI) getOrCreateSem(sessionID string) *sessionSem {
@@ -459,6 +615,13 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 		if err := api.sessionSvc.RecordUsageInSession(sessionID, "user", promptText, "", 0, refs); err != nil {
 			log.Printf("chat: warning: failed to save user message: %v", err)
 		}
+	}
+
+	// A restore in flight replaces the session file: record nothing and run
+	// nothing until it completes, or the prompt would be clobbered.
+	if api.restoreInProgress(sessionID) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "restore in progress — try again in a moment"})
+		return
 	}
 
 	// Start the agent run in a goroutine. The run must NOT be tied to the

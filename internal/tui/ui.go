@@ -6,6 +6,7 @@ import (
 	"amurru/hakase/internal/herdr"
 	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/session"
+	"amurru/hakase/internal/tracing"
 	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
@@ -2235,6 +2236,13 @@ func (m *AppModel) runAgentTask(content *genai.Content, taskID string) {
 	// Wrap the passed context so the degeneration watchdogs can abort the run.
 	runCtx, runCancel := context.WithCancel(m.ctx)
 	defer runCancel()
+	// Tracing run span: the trace root for this turn (tracing off = no-op);
+	// ADK's invoke_agent / generate_content / execute_tool spans nest under
+	// it. A user interrupt ends the turn completed; provider errors and
+	// guard aborts end it failed.
+	runCtx, runSpan := tracing.RunSpan(runCtx, tracing.RunParams{Transport: "tui", TaskID: taskID})
+	runStatus, runErrMsg := tracing.StatusCompleted, ""
+	defer func() { runSpan.End(runStatus, runErrMsg) }()
 	// Expose the cancel func to the TUI so Esc / Ctrl+C can interrupt.
 	m.runCtrl.SetCancel(runCancel)
 	defer m.runCtrl.SetCancel(nil)
@@ -2257,6 +2265,7 @@ outer:
 					util.DebugEvent("agent_interrupted", "task_id", taskID)
 					break outer
 				}
+				runStatus, runErrMsg = tracing.StatusFailed, fmt.Sprintf("%v", err)
 				if p != nil {
 					p.Send(agentLogMsg(fmt.Sprintf("❌ Error: %v", err)))
 				}
@@ -2278,6 +2287,7 @@ outer:
 						if !part.Thought {
 							if reason := guard.Feed(part.FunctionCall != nil, part.Text); reason != "" {
 								runCancel()
+								runStatus, runErrMsg = tracing.StatusFailed, hakaseagent.GuardReasonLog(reason)
 								util.DebugError("guard_abort", "reason", reason)
 								if p != nil {
 									p.Send(agentLogMsg(fmt.Sprintf("⚠ %s", hakaseagent.GuardReasonLog(reason))))

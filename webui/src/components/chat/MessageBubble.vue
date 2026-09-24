@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Bot, User, Copy, Check } from '@lucide/vue'
+import { Bot, User, Copy, Check, History } from '@lucide/vue'
 import type { ChatMessage } from '@/composables/useSSE'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
@@ -9,6 +9,14 @@ const props = defineProps<{
   message: ChatMessage
   streaming?: boolean
 }>()
+
+// Restore-to-here is offered on persisted user prompts only: the snapshot
+// taken just before that prompt is the rewind point (issue #21). Live
+// messages (no sequence yet) offer it after the next history reload.
+const canRestore = computed(
+  () => props.message.role === 'user' && !props.streaming && props.message.sequence !== undefined,
+)
+const emit = defineEmits<{ restore: [] }>()
 
 const isUser = computed(() => props.message.role === 'user')
 const copied = ref(false)
@@ -81,7 +89,7 @@ async function copyContent() {
         />
       </div>
 
-      <!-- Copy button -->
+      <!-- Copy + restore buttons -->
       <button
         v-if="!streaming"
         type="button"
@@ -91,6 +99,15 @@ async function copyContent() {
       >
         <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
         <Copy v-else class="h-3 w-3" />
+      </button>
+      <button
+        v-if="canRestore"
+        type="button"
+        class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+        title="Restore conversation to before this message"
+        @click="emit('restore')"
+      >
+        <History class="h-3 w-3" />
       </button>
     </div>
   </div>

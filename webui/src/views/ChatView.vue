@@ -6,7 +6,7 @@ import { useSessionStore } from '@/stores/session'
 import { useApprovalStore } from '@/stores/approval'
 import { useClarifyStore } from '@/stores/clarify'
 import { useCanvasStore } from '@/stores/canvas'
-import { useSSE } from '@/composables/useSSE'
+import { useSSE, type ChatMessage } from '@/composables/useSSE'
 import { sidekickSeverityClass, type SidekickNote } from '@/lib/sidekick'
 import { parseSlashCommand, SLASH_COMMANDS } from '@/lib/slash'
 import {
@@ -19,7 +19,7 @@ import {
 } from '@/lib/messageRail'
 import { useResizeObserver } from '@vueuse/core'
 import { useNotifications } from '@/composables/useNotifications'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, listSnapshots, restoreSession, type SessionSnapshot } from '@/lib/api'
 import { useProjectsStore, type ProjectStatus } from '@/stores/projects'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageRail from '@/components/chat/MessageRail.vue'
@@ -29,6 +29,7 @@ import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check,
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 // The canvas pulls in vue-flow (~large); keep it out of the main chunk like
 // the mermaid renderer.
@@ -372,6 +373,7 @@ async function loadSessionHistory(sid: string) {
         thinking?: string
         kind?: string
         timestamp?: string
+        sequence?: number
       }>
     }>(
       `/sessions/${sid}`,
@@ -406,6 +408,9 @@ async function loadSessionHistory(sid: string) {
           // Server timestamps are RFC3339; keep them so rail tooltips show
           // real times instead of the load moment.
           timestamp: (msg.timestamp && Date.parse(msg.timestamp)) || Date.now(),
+          // Server-side transcript position: the restore dialog aligns a
+          // message with the snapshot taken just before it.
+          sequence: msg.sequence,
         })
       }
       scrollToBottom()
@@ -554,6 +559,50 @@ async function runCompact(focus: string) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'compact failed'
     note('warning', msg)
+  }
+}
+
+// --- Restore-to-here (docs/session-rewind/spec.md, issue #21) ---
+// The snapshot taken just before a user prompt rewinds the conversation to
+// the state before it. Preselection matches the SERVER transcript position
+// (message.sequence — client array indexes drift when sidekick records are
+// dropped from the rail); when unknown, nothing is preselected and the user
+// picks from the list.
+const restoreDialogOpen = ref(false)
+const restoreBusy = ref(false)
+const snapshots = ref<SessionSnapshot[]>([])
+const selectedSnapshot = ref<string>('')
+
+async function openRestoreDialog(message: ChatMessage) {
+  if (!sessionId.value) return
+  restoreDialogOpen.value = true
+  try {
+    const data = await listSnapshots(sessionId.value)
+    snapshots.value = data.snapshots ?? []
+    const match =
+      message.sequence !== undefined
+        ? snapshots.value.find((s) => s.trigger === 'pre' && s.messages === message.sequence)
+        : undefined
+    selectedSnapshot.value = match?.name ?? ''
+  } catch (err) {
+    note('warning', err instanceof Error ? err.message : 'failed to list snapshots')
+    restoreDialogOpen.value = false
+  }
+}
+
+async function confirmRestore() {
+  if (!sessionId.value || !selectedSnapshot.value || restoreBusy.value) return
+  restoreBusy.value = true
+  try {
+    await restoreSession(sessionId.value, selectedSnapshot.value)
+    restoreDialogOpen.value = false
+    note('info', 'conversation restored')
+    clearMessages()
+    await loadSessionHistory(sessionId.value)
+  } catch (err) {
+    note('warning', err instanceof Error ? err.message : 'restore failed')
+  } finally {
+    restoreBusy.value = false
   }
 }
 
@@ -723,6 +772,7 @@ onMounted(() => {
                 :key="msg.id"
                 :message="msg"
                 :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
+                @restore="openRestoreDialog(msg)"
               />
             </div>
 
@@ -761,5 +811,48 @@ onMounted(() => {
         <ExecutionCanvas />
       </div>
     </div>
+
+    <!-- Restore-to-here dialog (issue #21): pick the snapshot to rewind to;
+         the snapshot before the clicked prompt is preselected. -->
+    <Dialog :open="restoreDialogOpen" @update:open="restoreDialogOpen = $event">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Restore conversation</DialogTitle>
+          <DialogDescription>
+            The conversation returns to the state captured by the selected snapshot
+            (everything after it is removed; the current state is kept as an undo
+            snapshot). Pick one:
+          </DialogDescription>
+        </DialogHeader>
+        <div class="max-h-72 space-y-1 overflow-y-auto" data-test="snapshot-list">
+          <p v-if="!snapshots.length" class="px-2 py-4 text-sm text-muted-foreground">
+            No snapshots yet — one is taken before every message you send.
+          </p>
+          <button
+            v-for="snap in snapshots"
+            :key="snap.name"
+            type="button"
+            class="flex w-full items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors"
+            :class="selectedSnapshot === snap.name ? 'border-primary bg-primary/5' : 'hover:bg-muted'"
+            @click="selectedSnapshot = snap.name"
+          >
+            <span class="mt-0.5 h-3 w-3 shrink-0 rounded-full border" :class="selectedSnapshot === snap.name ? 'border-primary bg-primary' : 'border-muted-foreground/40'" />
+            <span class="min-w-0 flex-1">
+              <span class="block text-xs text-muted-foreground">
+                {{ new Date(snap.created_at).toLocaleString() }} · {{ snap.messages }} message{{ snap.messages === 1 ? '' : 's' }}
+                <Badge v-if="snap.trigger === 'pre-restore'" variant="outline" class="ml-1 px-1 py-0 text-[10px]">undo point</Badge>
+              </span>
+              <span v-if="snap.preview" class="mt-0.5 block truncate text-xs text-muted-foreground/80">{{ snap.preview }}</span>
+            </span>
+          </button>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="restoreDialogOpen = false">Cancel</Button>
+          <Button :disabled="!selectedSnapshot || restoreBusy" @click="confirmRestore">
+            {{ restoreBusy ? 'Restoring…' : 'Restore' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

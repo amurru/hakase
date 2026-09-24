@@ -30,6 +30,7 @@ import (
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/tracing"
 	"amurru/hakase/internal/vision"
 	"amurru/hakase/internal/web"
 	"amurru/hakase/internal/web/handlers"
@@ -153,6 +154,21 @@ func runServer(args []string, serveSPA bool) int {
 		return 1
 	}
 
+	// Tracing (issue #18): install the OTLP provider before anything runs;
+	// no-op unless tracing.enabled. Span export flushes on shutdown.
+	shutdownTracing, err := tracing.Install(tracing.Options{
+		Enabled:     cfg.Tracing.Enabled,
+		Endpoint:    cfg.Tracing.Endpoint,
+		Headers:     cfg.Tracing.Headers,
+		SampleRatio: config.TracingSampleRatio(cfg),
+		Version:     cli.Version,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: %v\n", err)
+		return 1
+	}
+	defer shutdownTracing()
+
 	// --insecure-cookie (CLI) overrides auth.allow_insecure_cookie (config
 	// file), which defaults to false. The cookie setter consumes the resolved
 	// value (security-hardening Task 17 - W8).
@@ -198,10 +214,11 @@ func runServer(args []string, serveSPA bool) int {
 		log.Printf("web: %s", msg)
 	}
 
-	// Create session service.
+	// Create session service (snapshot ring from config, issue #21).
 	var sessionSvc *hakasesession.SessionService
-	if store, err := hakasesession.NewSessionStore(hakasesession.Dir); err == nil {
+	if store, err := hakasesession.NewSessionStoreWithSnapshotLimit(hakasesession.Dir, config.SessionSnapshotsMax(cfg)); err == nil {
 		if svc, err := hakasesession.NewSessionService(store); err == nil {
+			svc.SetSnapshotsEnabled(config.SessionSnapshotsEnabled(cfg))
 			sessionSvc = svc
 		}
 	}

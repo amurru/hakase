@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -10,6 +11,9 @@ import (
 type SessionService struct {
 	store           *SessionStore
 	activeSessionID string
+	// snapshotsOn gates the pre-user-turn checkpoint hook (issue #21);
+	// default on, disabled via config (session.snapshots.enabled=false).
+	snapshotsOn bool
 }
 
 // NewSessionService creates a SessionService backed by the given store.
@@ -17,9 +21,9 @@ type SessionService struct {
 // non-archived session as the active session.
 func NewSessionService(store *SessionStore) (*SessionService, error) {
 	svc := &SessionService{
-		store: store,
+		store:       store,
+		snapshotsOn: true,
 	}
-
 	// Try to restore the most recent non-archived session as active.
 	summaries, err := store.List()
 	if err != nil {
@@ -30,6 +34,23 @@ func NewSessionService(store *SessionStore) (*SessionService, error) {
 	}
 
 	return svc, nil
+}
+
+// SetSnapshotsEnabled turns the pre-user-turn checkpoint hook on or off
+// (config session.snapshots.enabled). The store's ring limit still applies.
+func (s *SessionService) SetSnapshotsEnabled(on bool) { s.snapshotsOn = on }
+
+// snapshotUserTurn best-effort captures the session state just before a user
+// message is recorded (restore-to-message rewind). Non-user roles and empty
+// sessions are skipped. Failures are logged and never block the turn: a
+// missing snapshot degrades the feature, not the chat.
+func (s *SessionService) snapshotUserTurn(role string, session *Session) {
+	if !s.snapshotsOn || role != "user" || session == nil || len(session.Messages) == 0 {
+		return
+	}
+	if _, err := s.store.SaveSnapshot(session, SnapshotTriggerPre); err != nil {
+		log.Printf("session: warning: failed to snapshot session %s before user turn: %v", session.ID, err)
+	}
 }
 
 // CreateSession creates a new session and sets it as active.
@@ -140,6 +161,7 @@ func (s *SessionService) RecordUsageWithAttachments(role, content, thinking stri
 	if err != nil {
 		return err
 	}
+	s.snapshotUserTurn(role, session)
 	session.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, MessageKindText, atts)
 	if BuildHintedPathsHook != nil {
 		session.HintedContextFiles = BuildHintedPathsHook()
@@ -161,6 +183,7 @@ func (s *SessionService) RecordUsageInSession(id, role, content, thinking string
 	if err != nil {
 		return err
 	}
+	s.snapshotUserTurn(role, session)
 	session.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, MessageKindText, atts)
 	if BuildHintedPathsHook != nil {
 		session.HintedContextFiles = BuildHintedPathsHook()
@@ -232,6 +255,11 @@ func (s *SessionService) DeleteSession(id string) error {
 	if id == s.activeSessionID {
 		s.activeSessionID = ""
 	}
+	// Snapshots die with the session (covers the web delete handler and
+	// CleanupStale through this single choke point). Best-effort.
+	if err := s.store.DeleteSnapshots(id); err != nil {
+		log.Printf("session: warning: failed to delete snapshots for %s: %v", id, err)
+	}
 	return s.store.Delete(id)
 }
 
@@ -296,14 +324,13 @@ func (s *SessionService) CleanupStale(maxAge time.Duration) (int, error) {
 	removed := 0
 	for _, summary := range all {
 		if summary.UpdatedAt.Before(cutoff) {
-			if err := s.store.Delete(summary.ID); err != nil {
+			// DeleteSession (not store.Delete) so the session's snapshot
+			// directory dies with it — stale snapshots must not accumulate.
+			if err := s.DeleteSession(summary.ID); err != nil {
 				// Log but continue cleaning up other sessions
 				continue
 			}
 			removed++
-			if summary.ID == s.activeSessionID {
-				s.activeSessionID = ""
-			}
 		}
 	}
 	return removed, nil

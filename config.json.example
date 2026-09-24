@@ -69,7 +69,27 @@
       "enabled": false,
       "bot_token": "",
       "allowed_user_ids": [],
-      "pairing_code": ""
+      "pairing_code": "",
+      "speech_to_text": {
+        "enabled": false,
+        "model": "base-q5_1",
+        "language": "auto",
+        "binary_path": "whisper-cli",
+        "ffmpeg_path": "ffmpeg",
+        "models_dir": "",
+        "max_seconds": 120,
+        "timeout_seconds": 180
+      },
+      "text_to_speech": {
+        "enabled": false,
+        "binary_path": "piper",
+        "voices": {
+          "default": "",
+          "de": ""
+        },
+        "ffmpeg_path": "ffmpeg",
+        "max_chars": 1200
+      }
     }
   },
   "vision_model": "",
@@ -158,5 +178,11 @@
     "enabled": true,
     "max_prompt_chars": 4000,
     "max_notes": 200
+  },
+  "tracing": {
+    "enabled": false,
+    "endpoint": "http://localhost:4318",
+    "headers": {},
+    "sample_ratio": 1.0
   }
 }

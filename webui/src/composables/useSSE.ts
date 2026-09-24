@@ -9,6 +9,10 @@ export interface ChatMessage {
   content: string
   thinking: string
   timestamp: number
+  // Server-side position in the persisted transcript (history loads only;
+  // live-streamed messages get it on the next reload). Used to align the
+  // restore dialog's snapshot with the message it rewinds to.
+  sequence?: number
   attachments?: Array<{ name: string; path: string; mime: string; label: string }>
 }
 

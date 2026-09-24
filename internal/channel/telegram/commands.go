@@ -59,6 +59,8 @@ func (b *Bot) handleCommand(ctx context.Context, c conv, m *models.Message) {
 		b.cmdCron(ctx, c, args)
 	case "notify":
 		b.cmdNotify(ctx, c, m, args)
+	case "voice":
+		b.cmdVoice(ctx, c, args)
 	default:
 		b.sendText(ctx, c, "Unknown command — /help lists what I can do.", nil, false)
 	}
@@ -107,6 +109,7 @@ Every topic in this chat is its own conversation with its own session — create
 /tasks [filter] — task board ("open", "completed", …)
 /cron — list jobs; /cron run|pause|resume &lt;name&gt;
 /stop — cancel the running turn
+/voice off|auto|on — voice-note replies (auto: speak, get spoken answers)
 /notify on|off — push notifications for cron/task completions
 /id — show your Telegram ids
 /start &lt;code&gt; — pair this account`
@@ -411,6 +414,49 @@ func (b *Bot) cmdNotify(ctx context.Context, c conv, m *models.Message, args str
 		b.sendText(ctx, c, "🔔 Notifications on: cron/task completions and failures will be pushed here. Approvals and clarifications always arrive.", nil, false)
 	} else {
 		b.sendText(ctx, c, "🔕 Notifications off. (Approvals and clarifications still arrive.)", nil, false)
+	}
+}
+
+// cmdVoice sets the chat's voice-reply preference (issue #19 TTS phase):
+// off (default) = text answers; auto = voice reply when the prompt was a
+// voice note; on = voice replies always. Only takes effect when
+// channels.telegram.text_to_speech is enabled in config.
+func (b *Bot) cmdVoice(ctx context.Context, c conv, args string) {
+	ck := chatKey(c.chatID)
+	arg := strings.ToLower(strings.TrimSpace(args))
+	if arg == "" {
+		mode := b.store.Get().Chats[ck].VoiceMode
+		if mode == "" {
+			mode = voiceModeOff
+		}
+		b.sendText(ctx, c, "🔊 Voice replies: "+mode+" — usage: /voice off|auto|on (auto = the answer is spoken when your message was a voice note). Needs <code>text_to_speech.enabled</code> in config.", nil, false)
+		return
+	}
+	switch arg {
+	case voiceModeOff, voiceModeAuto, voiceModeOn:
+	default:
+		b.sendText(ctx, c, "Usage: /voice off|auto|on", nil, false)
+		return
+	}
+	if err := b.store.Update(func(s *state.State) error {
+		if s.Chats == nil {
+			s.Chats = map[string]state.Chat{}
+		}
+		chat := s.Chats[ck]
+		chat.VoiceMode = arg
+		s.Chats[ck] = chat
+		return nil
+	}); err != nil {
+		b.sendText(ctx, c, "⚠️ "+err.Error(), nil, false)
+		return
+	}
+	switch arg {
+	case voiceModeOn:
+		b.sendText(ctx, c, "🔊 Voice replies on: every answer arrives as a voice note (when text_to_speech is configured).", nil, false)
+	case voiceModeAuto:
+		b.sendText(ctx, c, "🔊 Voice replies auto: speak to me and I'll speak back — text prompts keep text answers.", nil, false)
+	default:
+		b.sendText(ctx, c, "🔇 Voice replies off — answers arrive as text.", nil, false)
 	}
 }
 

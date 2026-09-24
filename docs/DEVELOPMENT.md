@@ -808,12 +808,49 @@ The `channels` block configures communication channels - chat transports that pr
 - `channels.telegram.allowed_user_ids` - static allowlist of Telegram numeric user IDs (deny-by-default). Empty = runtime pairing via `/start <code>`.
 - `channels.telegram.pairing_code` - optional static pairing code for scripted setups instead of the generated rotating code. Also write-only through the web config API.
 - `channels.telegram.pins` - pin the user's prompt message for the duration of each run and unpin at completion (Hermes-style turn marker). Default off.
+- `channels.telegram.speech_to_text` - local voice-note transcription via whisper.cpp, fully local (no cloud STT; issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; disabled voice notes get an actionable setup hint instead of a run.
+  - `enabled` - `*bool`; transcription runs only when explicitly `true`.
+  - `model` - whisper.cpp ggml model name (without the `ggml-` prefix/`.bin` suffix). Default `base-q5_1` (quantized, multilingual, ~58 MiB). The model file **auto-downloads on first transcription** from HuggingFace into `models_dir`; set `model_url_base` to a mirror for offline setups, or drop the `ggml-<model>.bin` file in manually.
+  - `language` - `auto` (detect) or an ISO code like `en`/`de`/`zh` (passed to `whisper-cli -l`; `auto` is the binary's native default). Default `auto`.
+  - `binary_path` - the `whisper-cli` binary (build from [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp): `cmake -B build && cmake --build build`). Default `whisper-cli` on PATH.
+  - `ffmpeg_path` - ffmpeg (OGG/Opus → 16 kHz mono WAV decode). Default `ffmpeg` on PATH.
+  - `models_dir` - ggml model storage. Default `~/.hakase/models/whisper`.
+  - `max_seconds` - refuse voice notes longer than this. Default 120.
+  - `timeout_seconds` - bound one transcription. Default 180.
+  - Behavior: the transcript is echoed (`🎙 Heard: …`) **before** the run starts so a mis-transcription can be stopped with `/stop`; transcriptions serialize (one at a time, queue depth 3, "queue is full" reply on overflow); whisper's non-speech annotations (`[ Inaudible ]`, `[BLANK_AUDIO]`, bare ellipses) are filtered — the reply invites a retry instead of prompting the agent with garbage; audio bytes never leave the machine and are never persisted — the transcript is the only trace. Missing ffmpeg/whisper degrades to an actionable hint, never a run failure. Env: `HAKASE_TELEGRAM_STT_ENABLED`.
+- `channels.telegram.text_to_speech` - local Piper voice-note replies (issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; per-chat behavior is chosen with the `/voice off|auto|on` command (`off` default = text answers, `auto` = the answer is spoken when your prompt was a voice note, `on` = always spoken; the preference persists per chat in `channels.json`).
+  - `enabled` - `*bool`; synthesis runs only when explicitly `true`.
+  - `binary_path` - the Piper CLI. Default `piper` on PATH; the name `piper-tts` (e.g. Arch's piper-tts-bin) resolves automatically as a fallback — explicit absolute paths are honored as-is.
+  - `voices` - map of voice models, REQUIRED when enabled. The reserved `"default"` key is the voice for typed prompts and the fallback for anything unmatched; every other key is a language code whose voice is used when whisper detects that language on an inbound voice note, so replies **mirror the caller's language**. Voices are downloaded externally from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) (unlike the whisper model they are NOT auto-downloaded — the repo nests voices per language/speaker/quality, so there is no single predictable URL):
+    ```
+    mkdir -p ~/.hakase/models/piper
+    cd ~/.hakase/models/piper
+    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx
+    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json
+    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx
+    ```
+    then reference the `.onnx` files by absolute path (no `~` expansion). A configured language whose file is missing on disk falls back to `default` (logged, never an error). `enabled: true` without a `"default"` entry loads fine but degrades at runtime: voice replies answer with the actionable setup hint instead of speech.
+  - `binary_path` naming: distros package the CLI as `piper` or `piper-tts` — hakase tries the configured name, then `piper`, then `piper-tts` (explicit absolute paths are used as-is with no fallback). On Arch (`piper-tts-bin`) set nothing: the fallback finds `/usr/bin/piper-tts`.
+  - `ffmpeg_path` - WAV → OGG/Opus encode (Telegram voice-note container). Default `ffmpeg` on PATH.
+  - `max_chars` - cap the spoken text length, with an explicit "[truncated for voice]" marker. Default 1200.
+  - Behavior: in voice mode the answer is **not** streamed as text — the status line ticks and the full answer is spoken at finalize; any synthesis failure falls back to the normal text answer (never a lost reply). Env: `HAKASE_TELEGRAM_TTS_ENABLED`.
 
 Pairing codes generated at runtime are 6 digits, valid 15 minutes, and surfaced three ways: the server console at boot, `hakase channels pair-code`, or `POST /api/channels/pairing-code` (the Channels page in the web UI). The pending code is never returned by `GET /api/channels` - only its expiry. Pairings, per-chat bindings (session, notify flag, topics mode), and per-topic bindings (`telegram:<chatID>:<threadID>` -> session + title) persist in `~/.hakase/channels.json` (0600, flock-protected, sandbox-denied); revoke via the web UI, `hakase channels revoke <user-id>`, or by deleting the entry from the file while the server is stopped.
 
-Behavior notes: inbound text and photo captions are supported (albums buffer ~1.5s into one prompt; voice/files are deferred); each conversation (chat root, or any thread — client-created threads count even without `/topic`) runs one agent turn at a time with `/stop` to cancel, and parallel topics run concurrently; answers stream into one progressively edited message (the creation is the turn's single notification) with a silent status line and 👀/👍/👎 reaction receipts (the bot reaction allowlist excludes ✅/❌); `/topic` makes the root area a lobby and `/topic off` undoes that — thread conversations work either way (topic auto-renames to the session title); approval/clarify prompts are routed to the conversation bound to the run's session when known (thread or root binding), falling back to the paired-users fan-out; channel runs mirror their stream/log/done events onto the SSE bridge so sessions are watchable live from the web UI; gate expiries are clamped to >=300s when a channel is enabled (mobile round-trip); env overrides are `HAKASE_TELEGRAM_ENABLED` and `HAKASE_TELEGRAM_BOT_TOKEN`. Config changes to this block need a server restart to take effect.
+Behavior notes: inbound text, photo captions (albums buffer ~1.5s into one prompt), voice notes (whisper.cpp transcription, see `channels.telegram.speech_to_text` above), and attached audio/video/document files (passed to the model as native parts, so multimodal models consume them respectively; the caption is the prompt) are supported; each conversation (chat root, or any thread — client-created threads count even without `/topic`) runs one agent turn at a time with `/stop` to cancel, and parallel topics run concurrently; answers stream into one progressively edited message (the creation is the turn's single notification) with a silent status line and 👀/👍/👎 reaction receipts (the bot reaction allowlist excludes ✅/❌); `/topic` makes the root area a lobby and `/topic off` undoes that — thread conversations work either way (topic auto-renames to the session title); approval/clarify prompts are routed to the conversation bound to the run's session when known (thread or root binding), falling back to the paired-users fan-out; channel runs mirror their stream/log/done events onto the SSE bridge so sessions are watchable live from the web UI; gate expiries are clamped to >=300s when a channel is enabled (mobile round-trip); env overrides are `HAKASE_TELEGRAM_ENABLED` and `HAKASE_TELEGRAM_BOT_TOKEN`. Config changes to this block need a server restart to take effect.
 
 **Token sharing / webhook conflicts (troubleshooting):** hakase is polling-only and never registers a webhook. But Telegram keeps one delivery mode per bot token: if any webhook-based integration (another framework, a hosted bot platform, an old project) set a webhook on the same token, every `getUpdates` is rejected with `409 Conflict: can't use getUpdates method while webhook is active` and the bot appears completely silent - pairing included. `Bot.Run` heals this at startup (getWebhookInfo -> deleteWebhook, verified, retried, and re-run with a cooldown when a conflict surfaces mid-poll; deleteWebhook goes through a plain-HTTP GET bypassing the library client, whose POST returned empty bodies in the field). If the webhook re-appears, another platform is actively holding the token - the durable fix is a dedicated token (`/newbot`, or `/revoke` to kill the other integration).
+
+### Tracing configuration
+
+The `tracing` block exports one waterfall trace per agent run over OTLP/HTTP, ingestible by Jaeger, Grafana Tempo, Langfuse, or Datadog (issue #18; see [docs/otel-tracing/](otel-tracing/spec.md)). Off by default: with `enabled: false` nothing is installed - no tracer provider, no exporter goroutine, no network traffic.
+
+- `tracing.enabled` - turn export on. Applied in the `web`/`serve` bootstrap (covering channel and cron runs in that process) and in the TUI.
+- `tracing.endpoint` - OTLP/HTTP base URL, default `http://localhost:4318` (the collector convention; scheme decides TLS). A pathless URL targets `/v1/traces`; a URL with a path (Langfuse's `.../api/public/otel`, for example) is used verbatim. A malformed endpoint is a startup error, not a silent trace-nowhere.
+- `tracing.headers` - key/value map sent verbatim on every export request (vendor auth such as Langfuse basic-auth pairs).
+- `tracing.sample_ratio` - root-sampling probability in [0,1] (default 1); child spans follow their parent.
+
+Span shape (GenAI semantic conventions, Development status - hakase pins its own attribute keys in `internal/tracing` rather than binding to a semconv package version): `hakase.run` per transport run (`hakase.session.id`, `hakase.task.id`, `hakase.project`, `hakase.transport`, canvas-status outcome) nesting ADK's `invoke_agent` / `generate_content` (model, finish reason, input/output/reasoning/cache token usage) / `execute_tool` spans, plus `retrieval knowledge` spans on the knowledge recall tools. MCP tool calls carry W3C `traceparent` via `_meta` (SEP-414) so tracing servers join the same trace. Env overrides: `HAKASE_TRACING_ENABLED`, `HAKASE_TRACING_ENDPOINT`, `HAKASE_TRACING_SAMPLE_RATIO`, `HAKASE_TRACING_HEADERS` (`K=V,K2=V2`).
 
 ### Environment variables
 
@@ -835,6 +872,15 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
 | `HAKASE_TELEGRAM_ENABLED` | `channels.telegram.enabled` |
 | `HAKASE_TELEGRAM_BOT_TOKEN` | `channels.telegram.bot_token` |
+| `HAKASE_TELEGRAM_STT_ENABLED` | `channels.telegram.speech_to_text.enabled` |
+| `HAKASE_TELEGRAM_TTS_ENABLED` | `channels.telegram.text_to_speech.enabled` |
+| `HAKASE_MEMORY_ENABLED` | `memory.enabled` |
+| `HAKASE_MEMORY_MAX_PROMPT_CHARS` | `memory.max_prompt_chars` |
+| `HAKASE_MEMORY_MAX_NOTES` | `memory.max_notes` |
+| `HAKASE_TRACING_ENABLED` | `tracing.enabled` |
+| `HAKASE_TRACING_ENDPOINT` | `tracing.endpoint` |
+| `HAKASE_TRACING_SAMPLE_RATIO` | `tracing.sample_ratio` |
+| `HAKASE_TRACING_HEADERS` | `tracing.headers` (`K=V,K2=V2`) |
 | `HAKASE_HOME` | user home directory (default `~/.hakase`) |
 
 Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.

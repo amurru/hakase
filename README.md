@@ -166,9 +166,32 @@ In-chat commands: `/new`, `/sessions`, `/use <id>`, `/topic`, `/status`, `/stop`
 
 **Topics (one topic = one session):** every thread in the DM is its own conversation with its own session — create topics with the ✚ / "All Messages" composer button and prompt there; the topic auto-renames to the session title, parallel topics run concurrently, and replies always land in the thread you typed in. `/topic <session-id-prefix>` binds the current topic to an existing session, `/new` inside a topic resets it, and `/topic` (optionally `/topic off` to undo) turns the root area into a lobby where commands work and plain prompts get a hint. Approvals and questions are delivered straight into the topic that started the run. Set `"pins": true` under `channels.telegram` to pin your prompt for the duration of each run.
 
+**Voice notes (local whisper.cpp):** send a voice note and it is transcribed locally (ffmpeg + whisper.cpp — no cloud STT; the model auto-downloads once to `~/.hakase/models/whisper/`), echoed back as `🎙 Heard: …` so you can `/stop` a mis-transcription, then answered like any typed prompt. Off by default — enable `channels.telegram.speech_to_text.enabled` (plus `model`, `language`, `binary_path`, `max_seconds`) and install ffmpeg + whisper.cpp; until then voice notes get an actionable setup hint. Env override: `HAKASE_TELEGRAM_STT_ENABLED`.
+
+**Voice replies (local Piper TTS):** enable `channels.telegram.text_to_speech` and configure its `voices` map — the reserved `"default"` entry (used for typed prompts and as fallback) plus one entry per language you want spoken, each pointing at a `.onnx` voice downloaded from HuggingFace `rhasspy/piper-voices` (needs `binary_path` — `pip install piper-tts` — and `ffmpeg_path`). Then pick a mode with `/voice auto` (speak, get spoken answers), `/voice on` (always voice), or `/voice off` (default). In voice mode the answer arrives as one voice note instead of streamed text; synthesis hiccups fall back to the text answer. Replies **mirror the language whisper detected** on your voice note when a matching voice is configured. Env override: `HAKASE_TELEGRAM_TTS_ENABLED`. See [docs/telegram-voice/](docs/telegram-voice/).
+
 Manage everything from the web UI's **Channels** page (status, pairing code, revoke) or `hakase channels status|pair-code|revoke`. Env overrides: `HAKASE_TELEGRAM_ENABLED`, `HAKASE_TELEGRAM_BOT_TOKEN`. Pairing state lives in `~/.hakase/channels.json` (0600, sandbox-denied).
 
 > **Bot completely silent?** Check the server log for `409 Conflict: can't use getUpdates method while webhook is active`. That means this bot token has a webhook registered — usually because another bot platform or an old project is (or was) using the same token; Telegram delivers updates to the webhook and refuses polling. hakase deletes stale webhooks automatically at startup, but if the webhook keeps coming back the other platform is still holding the token: either stop it, or give hakase its own bot via [@BotFather](https://t.me/BotFather) (`/newbot`, or `/revoke` to kill the old integration). Manual one-shot fix: open `https://api.telegram.org/bot<token>/deleteWebhook`.
+
+---
+
+## Tracing (OpenTelemetry)
+
+Set `tracing.enabled` (or `HAKASE_TRACING_ENABLED`) to export one waterfall trace per agent run over OTLP/HTTP — LLM calls with token usage, tool calls with durations, delegated sub-agents nested — ingestible by Jaeger, Grafana Tempo, Langfuse, or Datadog:
+
+```json
+{
+  "tracing": {
+    "enabled": true,
+    "endpoint": "http://localhost:4318",
+    "headers": { "authorization": "Basic ..." },
+    "sample_ratio": 1.0
+  }
+}
+```
+
+Spans follow the GenAI semantic conventions: `hakase.run` (session, project, transport, status) → `invoke_agent` → `generate_content` (model, finish reason, input/output/reasoning/cache tokens) and `execute_tool`, plus `retrieval` spans for knowledge recall. MCP tool calls propagate W3C `traceparent` via `_meta`, so tracing servers can join the same trace. A pathless `endpoint` targets the collector at `/v1/traces`; a URL with a path (e.g. Langfuse's `.../api/public/otel`) is used verbatim. Env overrides: `HAKASE_TRACING_ENABLED`, `HAKASE_TRACING_ENDPOINT`, `HAKASE_TRACING_SAMPLE_RATIO`, `HAKASE_TRACING_HEADERS` (`K=V,K2=V2`). Off by default — disabled tracing installs nothing: no exporter, no network traffic. See [docs/otel-tracing/](docs/otel-tracing/).
 
 ---
 
@@ -246,6 +269,8 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `sidekick` -- second model (on-demand/watch). See [Sidekick](docs/DEVELOPMENT.md#sidekick-second-model) and [docs/sidekick-agent/](docs/sidekick-agent/).
 - `channels` -- communication channels (Telegram bot today): remote prompting, live progress, in-chat approvals, task/cron control. See [Channels (Telegram)](#channels-telegram).
 - `media` -- image/video generation (`openai`, `fal`, `pil` fallback). See [Media Generation](docs/DEVELOPMENT.md#media-generation) and [docs/media-generation/support.md](docs/media-generation/support.md).
+- `tracing` -- OpenTelemetry GenAI tracing over OTLP/HTTP (`enabled`, `endpoint`, `headers`, `sample_ratio`). See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
+- `session.snapshots` -- restore-to-message checkpoints (`enabled`, `max` per session, default 50): "Restore to before this message" on any user prompt in the chat UI rewinds the conversation; the pre-restore state is kept as an undo snapshot. See [docs/session-rewind/](docs/session-rewind/).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
 - `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 

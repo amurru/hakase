@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -224,6 +225,135 @@ type Config struct {
 	// start. On by default; enabled:false removes the tools and the
 	// session-start injection. See MemoryConfig for the per-field meaning.
 	Memory MemoryConfig `json:"memory,omitempty"`
+	// Tracing configures OpenTelemetry GenAI tracing over OTLP/HTTP
+	// (docs/otel-tracing/spec.md, issue #18): one waterfall trace per agent
+	// run — LLM calls with token usage, tool calls with durations, delegated
+	// sub-agents nested. Off unless explicitly enabled; disabled tracing
+	// installs nothing (no exporter, no network traffic).
+	Tracing TracingConfig `json:"tracing,omitempty"`
+	// Session tunes per-session persistence behavior (docs/session-rewind/
+	// spec.md, issue #21). See SessionConfig for the per-field meaning.
+	Session SessionConfig `json:"session,omitempty"`
+}
+
+// Tracing default constants.
+const (
+	// DefaultTracingEndpoint is the OTLP/HTTP convention (collector default
+	// port 4318). Scheme decides TLS: https upgrades, http stays plaintext.
+	DefaultTracingEndpoint = "http://localhost:4318"
+	// DefaultTracingSampleRatio samples every root span when tracing is on.
+	DefaultTracingSampleRatio = 1.0
+)
+
+// TracingConfig configures OpenTelemetry tracing export (issue #18).
+type TracingConfig struct {
+	// Enabled turns tracing on. The zero value is the feature default
+	// (off) — no tri-state pointer needed, unlike sections that default on.
+	Enabled bool `json:"enabled,omitempty"`
+	// Endpoint is the OTLP/HTTP base URL receiving the spans. Default
+	// http://localhost:4318.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Headers are sent verbatim on every OTLP export request (vendor auth
+	// like Langfuse basic-auth pairs).
+	Headers map[string]string `json:"headers,omitempty"`
+	// SampleRatio is the root-sampling probability in [0,1]; children
+	// follow their parent. Default 1. A pointer so an explicit 0 ("sample
+	// nothing") is honored instead of being defaulted to 1.
+	SampleRatio *float64 `json:"sample_ratio,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after load.
+func (c *TracingConfig) ApplyDefaults() {
+	if c.Endpoint == "" {
+		c.Endpoint = DefaultTracingEndpoint
+	}
+	if c.SampleRatio == nil {
+		r := DefaultTracingSampleRatio
+		c.SampleRatio = &r
+	}
+}
+
+// Validate checks TracingConfig for sane values.
+func (c *TracingConfig) Validate() error {
+	if c.SampleRatio != nil {
+		r := *c.SampleRatio
+		if math.IsNaN(r) || r < 0 || r > 1 {
+			return fmt.Errorf("invalid tracing.sample_ratio %v: must be within [0,1]", r)
+		}
+	}
+	for k := range c.Headers {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("invalid tracing.headers: header keys must be non-empty")
+		}
+	}
+	return nil
+}
+
+// TracingSampleRatio returns the effective root-sampling ratio
+// (nil-safe; defaults to DefaultTracingSampleRatio).
+func TracingSampleRatio(c *Config) float64 {
+	if c == nil || c.Tracing.SampleRatio == nil {
+		return DefaultTracingSampleRatio
+	}
+	return *c.Tracing.SampleRatio
+}
+
+// Session default constants.
+const (
+	// DefaultSessionSnapshotsMax bounds the pre-turn snapshot ring per
+	// session (issue #21). Oldest snapshots are pruned beyond it.
+	DefaultSessionSnapshotsMax = 50
+)
+
+// SessionConfig tunes per-session persistence behavior.
+type SessionConfig struct {
+	// Snapshots configures restore-to-message checkpoints
+	// (docs/session-rewind/spec.md). On by default; see SnapshotsConfig.
+	Snapshots SnapshotsConfig `json:"snapshots,omitempty"`
+}
+
+// SnapshotsConfig configures pre-turn session snapshots (issue #21).
+type SnapshotsConfig struct {
+	// Enabled tri-state: nil (default) = on; an explicit false stops taking
+	// pre-turn snapshots entirely (existing snapshots stay restorable). The
+	// pointer keeps "absent" distinguishable from "false" (memory pattern).
+	Enabled *bool `json:"enabled,omitempty"`
+	// Max bounds the per-session snapshot ring; the oldest snapshots are
+	// pruned beyond it. Default 50.
+	Max int `json:"max,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after loading config.
+// Explicitly negative values are NOT defaulted here - Validate rejects them.
+func (c *SnapshotsConfig) ApplyDefaults() {
+	if c.Max == 0 {
+		c.Max = DefaultSessionSnapshotsMax
+	}
+}
+
+// Validate checks SnapshotsConfig for sane values.
+func (c *SnapshotsConfig) Validate() error {
+	if c.Max < 0 {
+		return fmt.Errorf("invalid session.snapshots.max %d: must be >= 0", c.Max)
+	}
+	return nil
+}
+
+// SessionSnapshotsEnabled reports whether pre-turn snapshots are on: only an
+// explicit enabled=false disables them.
+func SessionSnapshotsEnabled(c *Config) bool {
+	if c == nil || c.Session.Snapshots.Enabled == nil {
+		return true
+	}
+	return *c.Session.Snapshots.Enabled
+}
+
+// SessionSnapshotsMax returns the effective per-session snapshot ring size.
+func SessionSnapshotsMax(c *Config) int {
+	if c == nil || c.Session.Snapshots.Max <= 0 {
+		return DefaultSessionSnapshotsMax
+	}
+	return c.Session.Snapshots.Max
 }
 
 // Memory default constants. The block caps keep prompts lean; the note cap
@@ -426,6 +556,142 @@ type TelegramChannelConfig struct {
 	// Pins pins the user's prompt message for the duration of each Telegram
 	// run and unpins it at completion (Hermes-style turn marker). Default off.
 	Pins bool `json:"pins,omitempty"`
+	// SpeechToText configures local voice-note transcription via whisper.cpp
+	// (docs/telegram-voice/spec.md, issue #19). Off unless explicitly enabled.
+	SpeechToText TelegramSTTConfig `json:"speech_to_text,omitempty"`
+	// TextToSpeech configures optional local voice-note replies via Piper
+	// (the seam ships; transport wiring is the stretch phase). Off by default.
+	TextToSpeech TelegramTTSConfig `json:"text_to_speech,omitempty"`
+}
+
+// Default values for the Telegram speech blocks.
+const (
+	// DefaultTelegramSTTModel is the quantized multilingual whisper.cpp
+	// model (~58 MiB, auto-detects language).
+	DefaultTelegramSTTModel = "base-q5_1"
+	// DefaultTelegramSTTMaxSeconds caps accepted voice-note length.
+	DefaultTelegramSTTMaxSeconds = 120
+	// DefaultTelegramSTTTimeout bounds one transcription.
+	DefaultTelegramSTTTimeout = 180
+	// DefaultTelegramTTSMaxChars caps voice-note reply text length.
+	DefaultTelegramTTSMaxChars = 1200
+)
+
+// TelegramSTTConfig configures local whisper.cpp voice-note transcription.
+type TelegramSTTConfig struct {
+	// Enabled turns voice-note transcription on. nil/absent = disabled
+	// (voice notes then get an actionable setup hint instead of a run).
+	Enabled *bool `json:"enabled,omitempty"`
+	// Model is the whisper.cpp ggml model name (without ggml- prefix/.bin
+	// suffix), e.g. base-q5_1, small-q5_1, tiny. Default base-q5_1; the
+	// model file auto-downloads from HuggingFace on first transcription.
+	Model string `json:"model,omitempty"`
+	// Language is "auto" (detect) or an ISO code like en/de/zh. Default auto.
+	Language string `json:"language,omitempty"`
+	// BinaryPath is the whisper-cli binary. Default "whisper-cli" on PATH.
+	BinaryPath string `json:"binary_path,omitempty"`
+	// FFMpegPath is the ffmpeg binary (OGG/Opus → 16 kHz WAV). Default
+	// "ffmpeg" on PATH.
+	FFMpegPath string `json:"ffmpeg_path,omitempty"`
+	// ModelsDir holds ggml model files. Default ~/.hakase/models/whisper.
+	ModelsDir string `json:"models_dir,omitempty"`
+	// ModelURLBase overrides the model download base URL (mirrors/offline).
+	ModelURLBase string `json:"model_url_base,omitempty"`
+	// MaxSeconds refuses voice notes longer than this. Default 120.
+	MaxSeconds int `json:"max_seconds,omitempty"`
+	// TimeoutSeconds bounds one transcription. Default 180.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+// ApplyDefaults fills zero values with defaults. Call after load.
+func (c *TelegramSTTConfig) ApplyDefaults() {
+	if c.Model == "" {
+		c.Model = DefaultTelegramSTTModel
+	}
+	if c.Language == "" {
+		c.Language = "auto"
+	}
+	if c.MaxSeconds == 0 {
+		c.MaxSeconds = DefaultTelegramSTTMaxSeconds
+	}
+	if c.TimeoutSeconds == 0 {
+		c.TimeoutSeconds = DefaultTelegramSTTTimeout
+	}
+}
+
+// Validate checks the STT block for sane values.
+func (c *TelegramSTTConfig) Validate() error {
+	if c.MaxSeconds < 0 {
+		return fmt.Errorf("channels.telegram.speech_to_text.max_seconds %d: must be >= 0", c.MaxSeconds)
+	}
+	if c.TimeoutSeconds < 0 {
+		return fmt.Errorf("channels.telegram.speech_to_text.timeout_seconds %d: must be >= 0", c.TimeoutSeconds)
+	}
+	return nil
+}
+
+// TelegramTTSConfig configures optional local Piper voice-note replies.
+type TelegramTTSConfig struct {
+	// Enabled turns voice-reply synthesis on (the transport wiring is the
+	// stretch phase — the config is accepted now for forward stability).
+	Enabled *bool `json:"enabled,omitempty"`
+	// BinaryPath is the piper CLI. Default "piper" on PATH, with "piper-tts"
+	// (e.g. Arch piper-tts-bin) resolved as a fallback name.
+	BinaryPath string `json:"binary_path,omitempty"`
+	// Voices maps language codes to .onnx voice files, plus the RESERVED
+	// "default" key: the voice for typed prompts (no language known) and
+	// the fallback for languages without an entry or with a missing file.
+	// Example: {"default": ".../en_US-amy-medium.onnx", "de":
+	// ".../de_DE-thorsten-medium.onnx"} — a German voice note is then
+	// answered with German speech. Required when enabled.
+	Voices map[string]string `json:"voices,omitempty"`
+	// FFMpegPath is the ffmpeg binary (WAV → OGG/Opus). Default "ffmpeg".
+	FFMpegPath string `json:"ffmpeg_path,omitempty"`
+	// MaxChars caps voice-note reply text length. Default 1200.
+	MaxChars int `json:"max_chars,omitempty"`
+}
+
+// validLangKey guards the voices-map keys: language codes plus the
+// reserved "default".
+var validLangKey = regexp.MustCompile(`^(default|[a-z]{2,3}(-[a-z0-9]{1,16})?)$`)
+
+// ApplyDefaults fills zero values with defaults. Call after load.
+func (c *TelegramTTSConfig) ApplyDefaults() {
+	if c.MaxChars == 0 {
+		c.MaxChars = DefaultTelegramTTSMaxChars
+	}
+}
+
+// Validate checks the TTS block for sane values: map keys must be language
+// codes or the reserved "default", and paths must be non-empty. A missing
+// "default" entry with enabled:true is NOT a load error — it degrades at
+// runtime like any other missing tooling (voice replies answer with an
+// actionable hint), matching the speech_to_text posture.
+// Validate checks the TTS block for sane values. The block is inert unless
+// enabled, so structural validation only runs when explicitly enabled —
+// the shipped example carries placeholder voices that must not break a
+// config that merely turns the Telegram channel on. When enabled, a
+// missing "default" voice is a load error: every voice reply would
+// otherwise degrade to hints.
+func (c *TelegramTTSConfig) Validate() error {
+	if c.MaxChars < 0 {
+		return fmt.Errorf("channels.telegram.text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
+	}
+	if c.Enabled == nil || !*c.Enabled {
+		return nil
+	}
+	if c.Voices["default"] == "" {
+		return fmt.Errorf("channels.telegram.text_to_speech: enabled but voices has no \"default\" entry (set voices: {\"default\": \"/path/voice.onnx\"}, plus per-language entries to mirror spoken languages)")
+	}
+	for lang, path := range c.Voices {
+		if !validLangKey.MatchString(lang) {
+			return fmt.Errorf("channels.telegram.text_to_speech.voices: invalid key %q (want a language code like en/de/ar, or \"default\")", lang)
+		}
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("channels.telegram.text_to_speech.voices: key %q has an empty path", lang)
+		}
+	}
+	return nil
 }
 
 // ApplyDefaults fills zero values with channel defaults. Call after load.
@@ -440,12 +706,16 @@ func (c *ChannelsConfig) Validate() error {
 	return c.Telegram.Validate()
 }
 
-// ApplyDefaults normalizes the Telegram channel config (currently a no-op
-// hook kept for symmetry with the other config sections).
-func (c *TelegramChannelConfig) ApplyDefaults() {}
+// ApplyDefaults normalizes the Telegram channel config (speech sub-block
+// defaults; issue #19).
+func (c *TelegramChannelConfig) ApplyDefaults() {
+	c.SpeechToText.ApplyDefaults()
+	c.TextToSpeech.ApplyDefaults()
+}
 
 // Validate errors when the Telegram channel is explicitly enabled without a
-// bot token. Disabled/absent configs are always valid.
+// bot token, or when a speech sub-block carries negative bounds. Disabled/
+// absent configs are always valid.
 func (c *TelegramChannelConfig) Validate() error {
 	if c == nil || c.Enabled == nil || !*c.Enabled {
 		return nil
@@ -453,7 +723,10 @@ func (c *TelegramChannelConfig) Validate() error {
 	if strings.TrimSpace(c.BotToken) == "" {
 		return fmt.Errorf("channels.telegram: enabled but bot_token is empty (set bot_token or HAKASE_TELEGRAM_BOT_TOKEN, or disable with enabled:false)")
 	}
-	return nil
+	if err := c.SpeechToText.Validate(); err != nil {
+		return err
+	}
+	return c.TextToSpeech.Validate()
 }
 
 // EnabledWithToken reports whether the Telegram channel should actually start:
@@ -744,7 +1017,15 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != "" ||
 		os.Getenv("HAKASE_MEMORY_ENABLED") != "" ||
 		os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS") != "" ||
-		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != ""
+		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != "" ||
+		os.Getenv("HAKASE_TRACING_ENABLED") != "" ||
+		os.Getenv("HAKASE_TRACING_ENDPOINT") != "" ||
+		os.Getenv("HAKASE_TRACING_SAMPLE_RATIO") != "" ||
+		os.Getenv("HAKASE_TRACING_HEADERS") != "" ||
+		os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED") != "" ||
+		os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX") != "" ||
+		os.Getenv("HAKASE_TELEGRAM_STT_ENABLED") != "" ||
+		os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -830,6 +1111,35 @@ func parseEnvPositiveInt(name, v string) (int, error) {
 		return 0, fmt.Errorf("%s: must be a positive integer, got %d", name, n)
 	}
 	return n, nil
+}
+
+// parseEnvRatio parses a float HAKASE_* override that must land in [0,1]
+// (sampling ratios). NaN and out-of-range values are configuration errors,
+// same strict policy as the other numeric parsers.
+func parseEnvRatio(name, v string) (float64, error) {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid float value %q", name, v)
+	}
+	if math.IsNaN(f) || f < 0 || f > 1 {
+		return 0, fmt.Errorf("%s: must be within [0,1], got %v", name, f)
+	}
+	return f, nil
+}
+
+// parseEnvHeaders parses a comma-separated K=V header list for
+// HAKASE_TRACING_HEADERS. Entries without "=" are load errors; an empty
+// value is allowed (some vendors use bare keys).
+func parseEnvHeaders(name, v string) (map[string]string, error) {
+	headers := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		k, val, found := strings.Cut(pair, "=")
+		if !found || strings.TrimSpace(k) == "" {
+			return nil, fmt.Errorf("%s: invalid header entry %q (expected K=V)", name, pair)
+		}
+		headers[strings.TrimSpace(k)] = val
+	}
+	return headers, nil
 }
 
 // LoadConfig reads the JSON config file and applies HAKASE_* environment
@@ -965,6 +1275,20 @@ func LoadConfig(filePath string) (*Config, error) {
 	if v := os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Channels.Telegram.BotToken = v
 	}
+	if v := os.Getenv("HAKASE_TELEGRAM_STT_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_TELEGRAM_STT_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Channels.Telegram.SpeechToText.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_TELEGRAM_TTS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Channels.Telegram.TextToSpeech.Enabled = &b
+	}
 	cfg.Channels.ApplyDefaults()
 	if err := cfg.Channels.Validate(); err != nil {
 		return nil, err
@@ -994,6 +1318,56 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Memory.ApplyDefaults()
 	if err := cfg.Memory.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Tracing env overrides (mirrors the sidekick pattern).
+	if v := os.Getenv("HAKASE_TRACING_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_TRACING_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tracing.Enabled = b
+	}
+	if v := os.Getenv("HAKASE_TRACING_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = v
+	}
+	if v := os.Getenv("HAKASE_TRACING_SAMPLE_RATIO"); v != "" {
+		f, err := parseEnvRatio("HAKASE_TRACING_SAMPLE_RATIO", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tracing.SampleRatio = &f
+	}
+	if v := os.Getenv("HAKASE_TRACING_HEADERS"); v != "" {
+		h, err := parseEnvHeaders("HAKASE_TRACING_HEADERS", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tracing.Headers = h
+	}
+	cfg.Tracing.ApplyDefaults()
+	if err := cfg.Tracing.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Session snapshot env overrides (mirrors the memory pattern).
+	if v := os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_SESSION_SNAPSHOTS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Session.Snapshots.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX"); v != "" {
+		n, err := parseEnvPositiveInt("HAKASE_SESSION_SNAPSHOTS_MAX", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Session.Snapshots.Max = n
+	}
+	cfg.Session.Snapshots.ApplyDefaults()
+	if err := cfg.Session.Snapshots.Validate(); err != nil {
 		return nil, err
 	}
 

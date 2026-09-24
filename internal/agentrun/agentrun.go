@@ -22,6 +22,7 @@ import (
 	"amurru/hakase/internal/registry"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/tracing"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
@@ -54,11 +55,19 @@ type EventSink interface {
 type Driver struct {
 	Runner   *runner.Runner
 	Sessions *hakasesession.SessionService
+	// Transport labels the surface runs come in on ("web", "telegram") for
+	// the tracing run span; empty omits the attribute.
+	Transport string
 }
 
 // New creates a Driver.
 func New(r *runner.Runner, s *hakasesession.SessionService) *Driver {
 	return &Driver{Runner: r, Sessions: s}
+}
+
+// NewForTransport creates a Driver whose run spans carry the transport label.
+func NewForTransport(r *runner.Runner, s *hakasesession.SessionService, transport string) *Driver {
+	return &Driver{Runner: r, Sessions: s, Transport: transport}
 }
 
 // ActiveProjectRuns tracks in-flight agent runs per registered project id so
@@ -170,6 +179,10 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	// the resolved id here: the defer releases the active-run slot exactly
 	// once, whether the run ends normally, on error, or on a panic.
 	var runProjectID string
+	// Tracing run span is started below and captured here so the panic-path
+	// defer (registered first, runs last) can still close it. End is
+	// nil-safe.
+	var runSpan *tracing.Run
 
 	defer func() {
 		if runProjectID != "" {
@@ -178,11 +191,23 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 		if r := recover(); r != nil {
 			log.Printf("agentrun: panic in agent run for session %s: %v", sessionID, r)
 			d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
+			runSpan.End(tracing.StatusFailed, fmt.Sprintf("panic in agent run: %v", r))
 			sink.OnDone(sessionID)
 		}
 	}()
 
-	runCtx := ctx
+	// The run span is the trace root for everything this turn does (ADK's
+	// invoke_agent / generate_content / execute_tool spans derive from the
+	// ctx it returns). Started before project binding so the binding and
+	// snapshot work is inside the trace too.
+	taskID := hakasesession.GenerateTaskID()
+	bind := d.boundProject(sessionID)
+	runCtx, runSpan := tracing.RunSpan(ctx, tracing.RunParams{
+		Transport: d.Transport,
+		SessionID: sessionID,
+		TaskID:    taskID,
+		Project:   projectLabel(bind),
+	})
 	msg := content
 
 	// Project-bound sessions (project-registry DP-7): anchor the run to the
@@ -192,7 +217,7 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	// fresh per-session GIT WORKSPACE snapshot ahead of the user message.
 	// Delegated runs inherit the ctx root and sandbox override (delegate.go
 	// reuses the agent.Context as the sub-run ctx).
-	if bind := d.boundProject(sessionID); bind != nil {
+	if bind != nil {
 		// Register the active run against the bound project before the first
 		// agent step so the registry refuses to sync/delete under it.
 		runProjectID = bind.ID
@@ -209,11 +234,10 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 		}
 	}
 
-	// Generate task ID once before the retry loop so all repair attempts
-	// preserve the same session context. The task doubles as the ADK session
-	// id, so register the hakase session under it: gate prompts raised inside
-	// tool execution resolve their session through it (gate prompt routing).
-	taskID := hakasesession.GenerateTaskID()
+	// The task id (generated with the run span above) doubles as the ADK
+	// session id, so register the hakase session under it: gate prompts
+	// raised inside tool execution resolve their session through it (gate
+	// prompt routing).
 	interfaces.RegisterTaskSession(taskID, sessionID)
 	defer interfaces.UnregisterTask(taskID)
 
@@ -299,8 +323,18 @@ outer:
 		break
 	}
 	graph.agentEnd(contentBuf.String(), graph.runError)
+	runSpan.End(graph.runStatus, graph.runError)
 	d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
 	sink.OnDone(sessionID)
+}
+
+// projectLabel renders the bound project's name for the tracing run span;
+// empty when the session is unbound.
+func projectLabel(p *registry.Project) string {
+	if p == nil {
+		return ""
+	}
+	return p.Name
 }
 
 // persistAgentResponse saves the agent's answer to the session store so a UI
