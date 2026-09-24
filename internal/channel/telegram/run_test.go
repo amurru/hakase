@@ -82,7 +82,7 @@ func TestStreamingThrottledExactFinalRender(t *testing.T) {
 	}}
 
 	c := rootConv(100)
-	b.startRun(context.Background(), c, 77, "write me a thing", nil, nil, nil, "")
+	b.startRun(context.Background(), c, 77, "write me a thing", nil, nil, nil, "", false)
 	waitRunDone(t, b, c)
 
 	// Answer creation is the one loud send; the status line is silent.
@@ -162,7 +162,7 @@ func TestStreamingOverflowContinuation(t *testing.T) {
 		time.Sleep(120 * time.Millisecond)
 	}}
 
-	b.startRun(context.Background(), rootConv(100), 42, "long answer please", nil, nil, nil, "")
+	b.startRun(context.Background(), rootConv(100), 42, "long answer please", nil, nil, nil, "", false)
 	waitRunDone(t, b, rootConv(100))
 
 	// Answer creations: the loud first message plus silent continuations.
@@ -235,7 +235,7 @@ func TestRunMirrorsEventsToBridge(t *testing.T) {
 		sink.OnUsage(sess.ID, 1200, 0)
 		time.Sleep(40 * time.Millisecond)
 	}}
-	b.startRun(context.Background(), rootConv(100), 21, "prompt", nil, nil, nil, "")
+	b.startRun(context.Background(), rootConv(100), 21, "prompt", nil, nil, nil, "", false)
 	waitRunDone(t, b, rootConv(100))
 
 	seen := map[string]int{}
@@ -287,7 +287,7 @@ func TestOverflowKeepsDeltasDuringRender(t *testing.T) {
 		time.Sleep(60 * time.Millisecond)
 	}}
 
-	b.startRun(context.Background(), rootConv(100), 3, "long", nil, nil, nil, "")
+	b.startRun(context.Background(), rootConv(100), 3, "long", nil, nil, nil, "", false)
 	waitRunDone(t, b, rootConv(100))
 	select {
 	case <-blocked:
@@ -328,7 +328,7 @@ func TestReactionReceipts(t *testing.T) {
 			sink.OnStream("s", "all done", "")
 			time.Sleep(40 * time.Millisecond)
 		}}
-		b.startRun(context.Background(), rootConv(100), 5, "prompt", nil, nil, nil, "")
+		b.startRun(context.Background(), rootConv(100), 5, "prompt", nil, nil, nil, "", false)
 		waitRunDone(t, b, rootConv(100))
 
 		got := api.reactionsFor(5)
@@ -344,7 +344,7 @@ func TestReactionReceipts(t *testing.T) {
 			sink.OnLog("s", "Error: provider returned 500")
 			time.Sleep(40 * time.Millisecond)
 		}}
-		b.startRun(context.Background(), rootConv(100), 6, "prompt", nil, nil, nil, "")
+		b.startRun(context.Background(), rootConv(100), 6, "prompt", nil, nil, nil, "", false)
 		waitRunDone(t, b, rootConv(100))
 
 		got := api.reactionsFor(6)
@@ -383,7 +383,7 @@ func TestPinToggle(t *testing.T) {
 			sink.OnStream("s", "hi", "")
 			time.Sleep(40 * time.Millisecond)
 		}}
-		b.startRun(context.Background(), rootConv(100), 9, "prompt", nil, nil, nil, "")
+		b.startRun(context.Background(), rootConv(100), 9, "prompt", nil, nil, nil, "", false)
 		waitRunDone(t, b, rootConv(100))
 
 		if len(api.pins) != 1 || api.pins[0].messageID != 9 {
@@ -400,7 +400,7 @@ func TestPinToggle(t *testing.T) {
 			sink.OnStream("s", "hi", "")
 			time.Sleep(40 * time.Millisecond)
 		}}
-		b.startRun(context.Background(), rootConv(100), 9, "prompt", nil, nil, nil, "")
+		b.startRun(context.Background(), rootConv(100), 9, "prompt", nil, nil, nil, "", false)
 		waitRunDone(t, b, rootConv(100))
 
 		if len(api.pins) != 0 || len(api.unpins) != 0 {
@@ -417,7 +417,7 @@ func TestRunWithoutTextNeverBuzzes(t *testing.T) {
 		sink.OnLog("s", "Call: read_file(path)")
 		time.Sleep(60 * time.Millisecond)
 	}}
-	b.startRun(context.Background(), rootConv(100), 11, "prompt", nil, nil, nil, "")
+	b.startRun(context.Background(), rootConv(100), 11, "prompt", nil, nil, nil, "", false)
 	waitRunDone(t, b, rootConv(100))
 
 	for _, s := range api.sends() {

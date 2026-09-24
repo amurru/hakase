@@ -189,15 +189,14 @@ func TestPostRestoreGuards(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sessions/"+sess.ID+"/restore", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", rec.Code)
+		// A validated-but-unknown snapshot is "not found", and — by design —
+		// nothing was written for it: no undo snapshot churns the ring.
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
 		}
-		// The undo snapshot for the aborted restore is by design already
-		// captured before the snapshot is validated, so the session now has
-		// exactly one (the pre-restore point) to restore from.
 		snaps, err := store.ListSnapshots(sess.ID)
-		if err != nil || len(snaps) != 1 || snaps[0].Trigger != hakasesession.SnapshotTriggerPreRestore {
-			t.Fatalf("expected one pre-restore undo snapshot, got %+v (%v)", snaps, err)
+		if err != nil || len(snaps) != 0 {
+			t.Fatalf("failed restore must not write snapshots: %v (%d)", err, len(snaps))
 		}
 	})
 }

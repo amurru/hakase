@@ -965,22 +965,23 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 		runCtx = context.Background()
 	}
 
-	guard := hakaseagent.GuardDefaults(currentGuard)
-	guardCtx, guardCancel := context.WithCancel(runCtx)
-	defer guardCancel()
-
 	var finalErr error
 	attempt := 0
 	taskID := job.ID
 
 	// Tracing run span: the trace root for this scheduled run; the watchdog
 	// ctx (and everything the ADK runner does) nests inside it. No-op when
-	// tracing is disabled.
+	// tracing is disabled. Started BEFORE guardCtx derives from runCtx, so
+	// the run span is in the context the runner actually receives.
 	runCtx, runSpan := tracing.RunSpan(runCtx, tracing.RunParams{
 		Transport: "cron",
 		TaskID:    taskID,
 		Extra:     map[string]string{"hakase.cron.job": job.Name},
 	})
+
+	guard := hakaseagent.GuardDefaults(currentGuard)
+	guardCtx, guardCancel := context.WithCancel(runCtx)
+	defer guardCancel()
 
 	for {
 		repaired := false

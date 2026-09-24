@@ -75,7 +75,7 @@ func TestSnapshotPerms0600(t *testing.T) {
 	if _, err := st.SaveSnapshot(sess, SnapshotTriggerPre); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
 	}
-	matches, err := filepath.Glob(filepath.Join(st.sessionsDir, snapshotDirName, "task_perm", "*.json"))
+	matches, err := filepath.Glob(filepath.Join(st.sessionsDir, snapshotDirName, snapshotKey("task_perm"), "*.json"))
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("glob: %v (%d matches)", err, len(matches))
 	}
@@ -211,7 +211,7 @@ func TestDeleteSessionRemovesSnapshots(t *testing.T) {
 	if err != nil || len(snaps) != 0 {
 		t.Fatalf("snapshots must die with the session: %v (%d)", err, len(snaps))
 	}
-	if _, err := os.Stat(filepath.Join(store.sessionsDir, snapshotDirName, "task_gone")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(store.sessionsDir, snapshotDirName, snapshotKey("task_gone"))); !os.IsNotExist(err) {
 		t.Fatal("snapshot dir should be removed")
 	}
 }
@@ -228,7 +228,7 @@ func TestSnapshotNameForeignFilesIgnored(t *testing.T) {
 		t.Fatalf("record 2: %v", err)
 	}
 	// Drop a foreign file into the snapshot dir; listings must ignore it.
-	foreign := filepath.Join(store.sessionsDir, snapshotDirName, "task_f", "123-not-a-trigger.json")
+	foreign := filepath.Join(store.sessionsDir, snapshotDirName, snapshotKey("task_f"), "123-not-a-trigger.json")
 	if err := os.WriteFile(foreign, []byte("{}"), 0o600); err != nil {
 		t.Fatalf("seed foreign: %v", err)
 	}

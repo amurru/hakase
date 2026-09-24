@@ -2,12 +2,16 @@
 // rewind (docs/session-rewind/spec.md, issue #21). One snapshot is taken
 // just before each user message is recorded, plus one before every restore
 // (so restore is itself undoable). Snapshots live under
-// <sessionsDir>/.snapshots/<sessionID>/ — a dot-subdirectory that
-// listSessionIDs ignores, so the summary index never sees them — and reuse
-// the session store's flock, atomic writes, and 0600/0700 discipline.
+// <sessionsDir>/.snapshots/<sha256 of session id>/ — a dot-subdirectory
+// that listSessionIDs ignores, so the summary index never sees them, and a
+// hash keeps request-derived ids out of file-path expressions while keeping
+// session ids out of directory listings — and reuse the session store's
+// flock, atomic writes, and 0600/0700 discipline.
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,6 +23,16 @@ import (
 	"strings"
 	"time"
 )
+
+// snapshotKey maps a session id to its snapshot directory name: a SHA-256
+// of the id. Snapshot paths are built from request-derived ids, so the hash
+// keeps tainted data out of file-path expressions entirely — and keeps
+// session ids out of directory listings (privacy bonus). The id is still
+// charset-validated before hashing.
+func snapshotKey(sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(sum[:])
+}
 
 // DefaultSnapshotMax is the per-session snapshot ring size used when the
 // config does not say otherwise.
@@ -93,43 +107,45 @@ func (s *SessionStore) SaveSnapshot(session *Session, trigger string) (string, e
 		return "", fmt.Errorf("failed to marshal snapshot for %s: %w", session.ID, err)
 	}
 	name := fmt.Sprintf("%d-%s.json", time.Now().UnixNano(), trigger)
-	dir := filepath.Join(s.snapshotsDir(), session.ID)
+	dir := filepath.Join(s.snapshotsDir(), snapshotKey(session.ID))
 	if err := writeFileAtomic(filepath.Join(dir, name), data, 0600); err != nil {
 		return "", fmt.Errorf("failed to write snapshot for %s: %w", session.ID, err)
 	}
-	s.pruneSnapshotsLocked(session.ID)
+	s.pruneSnapshotsLocked(snapshotKey(session.ID))
 	return name, nil
 }
 
 // pruneSnapshotsLocked enforces the per-session ring (newest kept). Callers
 // hold s.mu and the dir flock. Best-effort: removal failures are logged and
-// never fail the save that triggered pruning.
-func (s *SessionStore) pruneSnapshotsLocked(sessionID string) {
+// never fail the save that triggered pruning. key is the hashed session
+// directory name (snapshotKey).
+func (s *SessionStore) pruneSnapshotsLocked(key string) {
 	limit := s.snapshotLimit()
 	if limit <= 0 {
 		return
 	}
-	names, err := s.snapshotNamesLocked(sessionID)
+	names, err := s.snapshotNamesLocked(key)
 	if err != nil || len(names) <= limit {
 		return
 	}
 	// Names sort chronologically by their unix-nano prefix.
 	sort.Strings(names)
 	for _, name := range names[:len(names)-limit] {
-		if err := os.Remove(filepath.Join(s.snapshotsDir(), sessionID, name)); err != nil {
-			log.Printf("session store: failed to prune snapshot %s/%s: %v", sessionID, name, err)
+		if err := os.Remove(filepath.Join(s.snapshotsDir(), key, name)); err != nil {
+			log.Printf("session store: failed to prune snapshot %s/%s: %v", key, name, err)
 		}
 	}
 }
 
-// snapshotNamesLocked lists snapshot file names for a session, oldest first.
-func (s *SessionStore) snapshotNamesLocked(sessionID string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(s.snapshotsDir(), sessionID))
+// snapshotNamesLocked lists snapshot file names for a session key, oldest
+// first.
+func (s *SessionStore) snapshotNamesLocked(key string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.snapshotsDir(), key))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to list snapshots for %s: %w", sessionID, err)
+		return nil, fmt.Errorf("failed to list snapshots for %s: %w", key, err)
 	}
 	var names []string
 	for _, e := range entries {
@@ -150,6 +166,7 @@ func (s *SessionStore) ListSnapshots(sessionID string) ([]SnapshotInfo, error) {
 	if !validSnapshotID(sessionID) {
 		return nil, fmt.Errorf("invalid session id %q", sessionID)
 	}
+	key := snapshotKey(sessionID)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -159,16 +176,16 @@ func (s *SessionStore) ListSnapshots(sessionID string) ([]SnapshotInfo, error) {
 	}
 	defer unlockDir(lf)
 
-	names, err := s.snapshotNamesLocked(sessionID)
+	names, err := s.snapshotNamesLocked(key)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]SnapshotInfo, 0, len(names))
 	// Walk newest-first so a read error still yields the most recent entries.
 	for i := len(names) - 1; i >= 0; i-- {
-		info, err := s.readSnapshotInfoLocked(sessionID, names[i])
+		info, err := s.readSnapshotInfoLocked(key, names[i])
 		if err != nil {
-			log.Printf("session store: skipping unreadable snapshot %s/%s: %v", sessionID, names[i], err)
+			log.Printf("session store: skipping unreadable snapshot %s/%s: %v", key, names[i], err)
 			continue
 		}
 		out = append(out, info)
@@ -177,7 +194,7 @@ func (s *SessionStore) ListSnapshots(sessionID string) ([]SnapshotInfo, error) {
 }
 
 // readSnapshotInfoLocked decodes one snapshot just far enough for a listing.
-func (s *SessionStore) readSnapshotInfoLocked(sessionID, name string) (SnapshotInfo, error) {
+func (s *SessionStore) readSnapshotInfoLocked(key, name string) (SnapshotInfo, error) {
 	m := validSnapshotName.FindStringSubmatch(name)
 	if m == nil {
 		return SnapshotInfo{}, fmt.Errorf("invalid snapshot name %q", name)
@@ -186,7 +203,7 @@ func (s *SessionStore) readSnapshotInfoLocked(sessionID, name string) (SnapshotI
 	if err != nil {
 		return SnapshotInfo{}, fmt.Errorf("invalid snapshot timestamp %q", m[1])
 	}
-	data, err := os.ReadFile(filepath.Join(s.snapshotsDir(), sessionID, name))
+	data, err := os.ReadFile(filepath.Join(s.snapshotsDir(), key, name))
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
@@ -234,7 +251,7 @@ func (s *SessionStore) LoadSnapshot(sessionID, name string) (*Session, error) {
 	}
 	defer unlockDir(lf)
 
-	data, err := os.ReadFile(filepath.Join(s.snapshotsDir(), sessionID, name))
+	data, err := os.ReadFile(filepath.Join(s.snapshotsDir(), snapshotKey(sessionID), name))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("snapshot %s not found", name)
@@ -267,7 +284,7 @@ func (s *SessionStore) DeleteSnapshots(sessionID string) error {
 	}
 	defer unlockDir(lf)
 
-	if err := os.RemoveAll(filepath.Join(s.snapshotsDir(), sessionID)); err != nil {
+	if err := os.RemoveAll(filepath.Join(s.snapshotsDir(), snapshotKey(sessionID))); err != nil {
 		return fmt.Errorf("failed to delete snapshots for %s: %w", sessionID, err)
 	}
 	return nil

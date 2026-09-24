@@ -257,24 +257,29 @@ type TracingConfig struct {
 	// like Langfuse basic-auth pairs).
 	Headers map[string]string `json:"headers,omitempty"`
 	// SampleRatio is the root-sampling probability in [0,1]; children
-	// follow their parent. Default 1.
-	SampleRatio float64 `json:"sample_ratio,omitempty"`
+	// follow their parent. Default 1. A pointer so an explicit 0 ("sample
+	// nothing") is honored instead of being defaulted to 1.
+	SampleRatio *float64 `json:"sample_ratio,omitempty"`
 }
 
-// ApplyDefaults fills zero values with defaults. Call after loading config.
+// ApplyDefaults fills zero values with defaults. Call after load.
 func (c *TracingConfig) ApplyDefaults() {
 	if c.Endpoint == "" {
 		c.Endpoint = DefaultTracingEndpoint
 	}
-	if c.SampleRatio == 0 {
-		c.SampleRatio = DefaultTracingSampleRatio
+	if c.SampleRatio == nil {
+		r := DefaultTracingSampleRatio
+		c.SampleRatio = &r
 	}
 }
 
 // Validate checks TracingConfig for sane values.
 func (c *TracingConfig) Validate() error {
-	if math.IsNaN(c.SampleRatio) || c.SampleRatio < 0 || c.SampleRatio > 1 {
-		return fmt.Errorf("invalid tracing.sample_ratio %v: must be within [0,1]", c.SampleRatio)
+	if c.SampleRatio != nil {
+		r := *c.SampleRatio
+		if math.IsNaN(r) || r < 0 || r > 1 {
+			return fmt.Errorf("invalid tracing.sample_ratio %v: must be within [0,1]", r)
+		}
 	}
 	for k := range c.Headers {
 		if strings.TrimSpace(k) == "" {
@@ -282,6 +287,15 @@ func (c *TracingConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// TracingSampleRatio returns the effective root-sampling ratio
+// (nil-safe; defaults to DefaultTracingSampleRatio).
+func TracingSampleRatio(c *Config) float64 {
+	if c == nil || c.Tracing.SampleRatio == nil {
+		return DefaultTracingSampleRatio
+	}
+	return *c.Tracing.SampleRatio
 }
 
 // Session default constants.
@@ -653,9 +667,21 @@ func (c *TelegramTTSConfig) ApplyDefaults() {
 // "default" entry with enabled:true is NOT a load error — it degrades at
 // runtime like any other missing tooling (voice replies answer with an
 // actionable hint), matching the speech_to_text posture.
+// Validate checks the TTS block for sane values. The block is inert unless
+// enabled, so structural validation only runs when explicitly enabled —
+// the shipped example carries placeholder voices that must not break a
+// config that merely turns the Telegram channel on. When enabled, a
+// missing "default" voice is a load error: every voice reply would
+// otherwise degrade to hints.
 func (c *TelegramTTSConfig) Validate() error {
 	if c.MaxChars < 0 {
 		return fmt.Errorf("channels.telegram.text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
+	}
+	if c.Enabled == nil || !*c.Enabled {
+		return nil
+	}
+	if c.Voices["default"] == "" {
+		return fmt.Errorf("channels.telegram.text_to_speech: enabled but voices has no \"default\" entry (set voices: {\"default\": \"/path/voice.onnx\"}, plus per-language entries to mirror spoken languages)")
 	}
 	for lang, path := range c.Voices {
 		if !validLangKey.MatchString(lang) {
@@ -1311,7 +1337,7 @@ func LoadConfig(filePath string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		cfg.Tracing.SampleRatio = f
+		cfg.Tracing.SampleRatio = &f
 	}
 	if v := os.Getenv("HAKASE_TRACING_HEADERS"); v != "" {
 		h, err := parseEnvHeaders("HAKASE_TRACING_HEADERS", v)

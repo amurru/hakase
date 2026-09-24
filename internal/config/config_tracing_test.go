@@ -23,8 +23,8 @@ func TestTracingDefaults(t *testing.T) {
 	if cfg.Tracing.Endpoint != DefaultTracingEndpoint {
 		t.Errorf("endpoint default = %q, want %q", cfg.Tracing.Endpoint, DefaultTracingEndpoint)
 	}
-	if cfg.Tracing.SampleRatio != DefaultTracingSampleRatio {
-		t.Errorf("sample_ratio default = %v, want %v", cfg.Tracing.SampleRatio, DefaultTracingSampleRatio)
+	if TracingSampleRatio(cfg) != DefaultTracingSampleRatio {
+		t.Errorf("sample_ratio default = %v, want %v", TracingSampleRatio(cfg), DefaultTracingSampleRatio)
 	}
 }
 
@@ -41,7 +41,7 @@ func TestTracingFileConfigAndBounds(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if !cfg.Tracing.Enabled || cfg.Tracing.Endpoint != "https://otel.example.com/v1/traces" || cfg.Tracing.SampleRatio != 0.25 {
+		if !cfg.Tracing.Enabled || cfg.Tracing.Endpoint != "https://otel.example.com/v1/traces" || TracingSampleRatio(cfg) != 0.25 {
 			t.Fatalf("tracing section not applied: %+v", cfg.Tracing)
 		}
 		if cfg.Tracing.Headers["authorization"] != "Basic x" {
@@ -85,11 +85,23 @@ func TestTracingEnvOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load with env: %v", err)
 	}
-	if !cfg.Tracing.Enabled || cfg.Tracing.Endpoint != "https://collector:4318" || cfg.Tracing.SampleRatio != 0.5 {
+	if !cfg.Tracing.Enabled || cfg.Tracing.Endpoint != "https://collector:4318" || TracingSampleRatio(cfg) != 0.5 {
 		t.Fatalf("env overrides not applied: %+v", cfg.Tracing)
 	}
 	if cfg.Tracing.Headers["A"] != "B" || cfg.Tracing.Headers["C"] != "D" {
 		t.Fatalf("headers parse wrong: %+v", cfg.Tracing.Headers)
+	}
+}
+
+// TestTracingSampleRatioZeroHonored pins the *float64 semantics: an explicit
+// 0 means "sample nothing", never the unset default.
+func TestTracingSampleRatioZeroHonored(t *testing.T) {
+	cfg, err := loadWithEnv(t, map[string]string{"HAKASE_TRACING_SAMPLE_RATIO": "0"})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Tracing.SampleRatio == nil || *cfg.Tracing.SampleRatio != 0 {
+		t.Fatalf("sample_ratio = %v, want explicit 0", cfg.Tracing.SampleRatio)
 	}
 }
 

@@ -36,10 +36,12 @@ const maxStatusErrLen = 200
 // session attachment refs, and the manifest lines appended to the prompt).
 // promptID is the user's prompt message (reaction receipts and the turn
 // pin). voiceLang is whisper's detected language when the prompt arrived as
-// a voice note ("" for typed/photo turns) — under /voice auto it makes the
-// reply a voice note, and it lets the voice reply mirror the caller's
+// a voice note ("" for typed/photo turns, or when detection failed), and
+// fromVoice marks the turn as a voice note regardless: under /voice auto
+// fromVoice makes the reply a voice note (spoken with the default voice
+// when no language was detected), and voiceLang lets it mirror the caller's
 // language.
-func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string, voiceLang string) {
+func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string, photoParts []*genai.Part, refs []hakasesession.AttachmentRef, manifest []string, voiceLang string, fromVoice bool) {
 	rk := threadKey(c)
 	if _, running := b.runs.Running(rk); running {
 		b.sendText(ctx, c, "⏳ A run is already active here — send /stop to cancel it first.", nil, false)
@@ -87,7 +89,7 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 	}
 	content := genai.NewContentFromParts(parts, genai.RoleUser)
 
-	rv := newRunView(b, c, promptID, runCtx, voiceLang)
+	rv := newRunView(b, c, promptID, runCtx, voiceLang, fromVoice)
 	go func() {
 		defer b.runs.Finish(rk)
 		rv.begin() // 👀 receipt and the optional turn pin
@@ -211,17 +213,20 @@ func (rv *runView) fullText() string {
 	return rv.full.String()
 }
 
-func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceLang string) *runView {
+func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceLang string, fromVoice bool) *runView {
 	voiceReply := false
 	if b.synthesizer != nil {
 		switch b.voiceModeFor(c) {
 		case voiceModeOn:
 			voiceReply = true
 		case voiceModeAuto:
-			voiceReply = voiceLang != ""
+			voiceReply = fromVoice
 		}
 	}
-	return &runView{b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx, voiceReply: voiceReply, voiceLang: voiceLang}
+	return &runView{
+		b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx,
+		voiceReply: voiceReply, voiceLang: voiceLang,
+	}
 }
 
 // begin marks the turn start: 👀 receipt on the prompt and the optional

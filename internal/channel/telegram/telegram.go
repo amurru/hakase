@@ -455,7 +455,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *models.Message) {
 		return
 	}
 
-	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil, "")
+	b.startRun(ctx, c, m.ID, m.Text, nil, nil, nil, "", false)
 }
 
 // lobbyHint points at the ✚ composer button; commands keep working in the root.

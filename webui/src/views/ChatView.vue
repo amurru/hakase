@@ -6,7 +6,7 @@ import { useSessionStore } from '@/stores/session'
 import { useApprovalStore } from '@/stores/approval'
 import { useClarifyStore } from '@/stores/clarify'
 import { useCanvasStore } from '@/stores/canvas'
-import { useSSE } from '@/composables/useSSE'
+import { useSSE, type ChatMessage } from '@/composables/useSSE'
 import { sidekickSeverityClass, type SidekickNote } from '@/lib/sidekick'
 import { parseSlashCommand, SLASH_COMMANDS } from '@/lib/slash'
 import {
@@ -564,26 +564,26 @@ async function runCompact(focus: string) {
 
 // --- Restore-to-here (docs/session-rewind/spec.md, issue #21) ---
 // The snapshot taken just before a user prompt rewinds the conversation to
-// the state before it. The dialog preselects that snapshot (matched by the
-// message's transcript position) but any snapshot — including pre-restore
-// undo points — can be picked.
+// the state before it. Preselection matches the SERVER transcript position
+// (message.sequence — client array indexes drift when sidekick records are
+// dropped from the rail); when unknown, nothing is preselected and the user
+// picks from the list.
 const restoreDialogOpen = ref(false)
 const restoreBusy = ref(false)
-const restoreMsgIndex = ref(0)
 const snapshots = ref<SessionSnapshot[]>([])
 const selectedSnapshot = ref<string>('')
 
-async function openRestoreDialog(msgIndex: number) {
+async function openRestoreDialog(message: ChatMessage) {
   if (!sessionId.value) return
-  restoreMsgIndex.value = msgIndex
   restoreDialogOpen.value = true
   try {
     const data = await listSnapshots(sessionId.value)
     snapshots.value = data.snapshots ?? []
-    // Preselect the pre-message snapshot: taken before the message at
-    // array index i, it holds exactly i messages.
-    const match = snapshots.value.find((s) => s.trigger === 'pre' && s.messages === msgIndex)
-    selectedSnapshot.value = match?.name ?? snapshots.value[0]?.name ?? ''
+    const match =
+      message.sequence !== undefined
+        ? snapshots.value.find((s) => s.trigger === 'pre' && s.messages === message.sequence)
+        : undefined
+    selectedSnapshot.value = match?.name ?? ''
   } catch (err) {
     note('warning', err instanceof Error ? err.message : 'failed to list snapshots')
     restoreDialogOpen.value = false
@@ -768,11 +768,11 @@ onMounted(() => {
             <!-- Message list -->
             <div class="py-4">
               <MessageBubble
-                v-for="(msg, msgIdx) in messages"
+                v-for="msg in messages"
                 :key="msg.id"
                 :message="msg"
                 :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
-                @restore="openRestoreDialog(msgIdx)"
+                @restore="openRestoreDialog(msg)"
               />
             </div>
 

@@ -324,14 +324,13 @@ func (s *SessionService) CleanupStale(maxAge time.Duration) (int, error) {
 	removed := 0
 	for _, summary := range all {
 		if summary.UpdatedAt.Before(cutoff) {
-			if err := s.store.Delete(summary.ID); err != nil {
+			// DeleteSession (not store.Delete) so the session's snapshot
+			// directory dies with it — stale snapshots must not accumulate.
+			if err := s.DeleteSession(summary.ID); err != nil {
 				// Log but continue cleaning up other sessions
 				continue
 			}
 			removed++
-			if summary.ID == s.activeSessionID {
-				s.activeSessionID = ""
-			}
 		}
 	}
 	return removed, nil

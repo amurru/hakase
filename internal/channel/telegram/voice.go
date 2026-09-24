@@ -86,16 +86,19 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 	}
 
 	// Echo-verification BEFORE the run: a mis-transcription can be stopped
-	// with /stop (issue step 4 — no confirmation gate).
+	// with /stop (issue step 4 — no confirmation gate). Truncated by runes:
+	// a byte cut can split a multi-byte character and Telegram rejects
+	// non-UTF-8 bodies, which would lose the echo entirely.
 	echo := tr.Text
-	if len(echo) > 800 {
-		echo = echo[:800] + "…"
+	if r := []rune(echo); len(r) > 800 {
+		echo = string(r[:800]) + "…"
 	}
 	b.sendText(ctx, c, "🎙 Heard:\n"+esc(echo), nil, false)
 
 	// tr.Language is whisper's detection — carried so a voice reply (TTS)
-	// can mirror the caller's language when a matching voice is configured.
-	b.startRun(ctx, c, m.ID, tr.Text, nil, nil, nil, tr.Language)
+	// can mirror the caller's language when a matching voice is configured;
+	// fromVoice=true keeps /voice auto speaking even when detection failed.
+	b.startRun(ctx, c, m.ID, tr.Text, nil, nil, nil, tr.Language, true)
 }
 
 // Voice-reply mode preferences (per chat, persisted in channels.json).

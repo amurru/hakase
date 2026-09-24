@@ -51,7 +51,7 @@ func (b *Bot) handleFile(ctx context.Context, c conv, m *models.Message, fileID,
 	}}
 	manifest := []string{fmt.Sprintf("%s %s (attached %s, %d KB)", label, fileName, mime, len(data)/1024)}
 
-	b.startRun(ctx, c, m.ID, strings.TrimSpace(m.Caption), parts, refs, manifest, "")
+	b.startRun(ctx, c, m.ID, strings.TrimSpace(m.Caption), parts, refs, manifest, "", false)
 }
 
 // handleAudioFile handles Telegram "music"/audio messages.
@@ -104,7 +104,9 @@ func (b *Bot) downloadFile(ctx context.Context, fileID string) ([]byte, error) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		// Transport errors embed the full request URL, which contains the
+		// bot token — strip it before the error can reach the chat or log.
+		return nil, errors.New(strings.ReplaceAll(err.Error(), b.token, "<redacted>"))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

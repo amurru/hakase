@@ -66,7 +66,7 @@ func runTUI() {
 		Enabled:     cfg.Tracing.Enabled,
 		Endpoint:    cfg.Tracing.Endpoint,
 		Headers:     cfg.Tracing.Headers,
-		SampleRatio: cfg.Tracing.SampleRatio,
+		SampleRatio: config.TracingSampleRatio(cfg),
 		Version:     cli.Version,
 	})
 	if err != nil {
