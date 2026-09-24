@@ -39,6 +39,10 @@ func main() {
 	cli.RegisterCommand("web", "serve the web UI", runWeb)
 	cli.RegisterCommand("serve", "run the API-only server", runServe)
 	cli.RegisterCommand("tui", "launch the interactive terminal UI", runTUICommand)
+	// The agent-flavored MCP server (`mcp serve --agent`) needs the same
+	// main-only deps factories as web/serve, so its bootstrap lives here and
+	// internal/cli delegates through this hook.
+	cli.MCPAgentServeFn = runMCPAgentServe
 
 	// No subcommand falls through to the TUI handler via Dispatch, like
 	// every other subcommand.

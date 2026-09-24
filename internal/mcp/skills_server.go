@@ -64,7 +64,14 @@ type indexEntry struct {
 // warning by discovery.
 func NewSkillsServer(cwd string, extraDirs []string, log interfaces.LogFunc, version string) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "hakase-skills", Version: version}, nil)
+	AddSkillResources(srv, cwd, extraDirs, log)
+	return srv
+}
 
+// AddSkillResources registers the skill:// resources on an existing server,
+// so a run-enabled server (`hakase mcp serve --agent`) can serve skills and
+// runs over one connection. See NewSkillsServer for the discovery contract.
+func AddSkillResources(srv *mcp.Server, cwd string, extraDirs []string, log interfaces.LogFunc) {
 	skills := skill.DiscoverMarkdownSkills(cwd, extraDirs, log)
 	entries := make([]indexEntry, 0, len(skills))
 	for _, sk := range skills {
@@ -166,6 +173,4 @@ func NewSkillsServer(cwd string, extraDirs []string, log interfaces.LogFunc, ver
 	} else if log != nil {
 		log(fmt.Sprintf("[skills] mcp: cannot render index.json: %v", err))
 	}
-
-	return srv
 }
