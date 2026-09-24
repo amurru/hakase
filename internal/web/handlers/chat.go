@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -512,14 +513,20 @@ func (api *ChatAPI) PostRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Validate the requested snapshot BEFORE writing anything: a bad name
-	// must not churn (or prune) the real rewind points.
+	// must not churn (or prune) the real rewind points. Typed errors map to
+	// statuses; anything else is a storage problem (500).
 	restored, err := store.LoadSnapshot(sessionID, strings.TrimSpace(req.Snapshot))
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "snapshot not found"})
-		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid snapshot: %v", err)})
-		}
+	switch {
+	case err == nil:
+	case errors.Is(err, hakasesession.ErrSnapshotNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "snapshot not found"})
+		return
+	case errors.Is(err, hakasesession.ErrInvalidSnapshotName),
+		errors.Is(err, hakasesession.ErrSnapshotSessionMismatch):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid snapshot"})
+		return
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load snapshot"})
 		return
 	}
 

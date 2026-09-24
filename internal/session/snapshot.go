@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -233,14 +234,25 @@ func truncateSnapshotPreview(s string) string {
 	return string(r[:max]) + "…"
 }
 
+// Typed snapshot errors, for HTTP classification at the restore endpoint:
+// ErrSnapshotNotFound → 404, ErrInvalidSnapshotName → 400, anything else →
+// 500 (storage/corruption).
+var (
+	ErrSnapshotNotFound     = errors.New("snapshot not found")
+	ErrInvalidSnapshotName  = errors.New("invalid snapshot name")
+	ErrSnapshotSessionMismatch = errors.New("snapshot belongs to a different session")
+)
+
 // LoadSnapshot reads one snapshot as a Session (normalized like a store
-// load, so legacy snapshots behave identically).
+// load, so legacy snapshots behave identically). Errors wrap
+// ErrSnapshotNotFound / ErrInvalidSnapshotName so callers can classify with
+// errors.Is; storage and corruption errors stay untyped (500).
 func (s *SessionStore) LoadSnapshot(sessionID, name string) (*Session, error) {
 	if !validSnapshotID(sessionID) {
-		return nil, fmt.Errorf("invalid session id %q", sessionID)
+		return nil, fmt.Errorf("%w: invalid session id %q", ErrInvalidSnapshotName, sessionID)
 	}
 	if !validSnapshotName.MatchString(name) {
-		return nil, fmt.Errorf("invalid snapshot name %q", name)
+		return nil, fmt.Errorf("%w: %q", ErrInvalidSnapshotName, name)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -254,7 +266,7 @@ func (s *SessionStore) LoadSnapshot(sessionID, name string) (*Session, error) {
 	data, err := os.ReadFile(filepath.Join(s.snapshotsDir(), snapshotKey(sessionID), name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("snapshot %s not found", name)
+			return nil, fmt.Errorf("%w: %s", ErrSnapshotNotFound, name)
 		}
 		return nil, fmt.Errorf("failed to read snapshot %s: %w", name, err)
 	}
@@ -263,7 +275,7 @@ func (s *SessionStore) LoadSnapshot(sessionID, name string) (*Session, error) {
 		return nil, fmt.Errorf("snapshot %s corrupt: %w", name, err)
 	}
 	if sess.ID != sessionID {
-		return nil, fmt.Errorf("snapshot %s belongs to session %s, not %s", name, sess.ID, sessionID)
+		return nil, fmt.Errorf("%w: %s belongs to %s", ErrSnapshotSessionMismatch, name, sess.ID)
 	}
 	normalizeLegacyMessages(&sess)
 	return &sess, nil
