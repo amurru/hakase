@@ -439,20 +439,22 @@ func TestOpenBrowserSchemeGuard(t *testing.T) {
 	}
 
 	openBrowser("https://example.com/auth")
-	var data []byte
 	deadline := time.Now().Add(2 * time.Second)
 	for {
+		// Poll until the URL is IN the file, not merely until the file
+		// exists: the stub's `>>` redirection creates it before echo's
+		// write lands, so an existence-only check races the stub and can
+		// read zero bytes (seen on loaded CI runners).
 		d, err := os.ReadFile(calls)
-		if err == nil {
-			data = d
+		if err == nil && strings.Contains(string(d), "https://example.com/auth") {
 			break
 		}
 		if time.Now().After(deadline) {
+			if err == nil {
+				t.Fatalf("opener argv = %q, want it to carry the URL", string(d))
+			}
 			t.Fatalf("https dispatch not recorded within 2s: %v", err)
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if !strings.Contains(string(data), "https://example.com/auth") {
-		t.Fatalf("opener argv = %q, want it to carry the URL", string(data))
 	}
 }
