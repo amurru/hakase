@@ -15,11 +15,20 @@ defineProps<{
 
 const isRecording = ref(false)
 const isTranscribing = ref(false)
+// True while the microphone permission prompt is open. getUserMedia awaits
+// the user, so without a separate guard a second click starts a second
+// acquisition whose stream gets overwritten (and orphaned - no Stop control,
+// mic stays on).
+const isStarting = ref(false)
 const recordSeconds = ref(0)
 
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
 let timerInterval: ReturnType<typeof setInterval> | null = null
+// Set by cancel/unmount BEFORE stop(). stop() delivers a final
+// dataavailable event, so clearing the chunks is not enough on its own -
+// without this flag a discarded recording still reaches the upload path.
+let cancelled = false
 
 function formatTime(sec: number): string {
   const m = Math.floor(sec / 60)
@@ -27,11 +36,22 @@ function formatTime(sec: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`
 }
 
-async function startRecording() {
-  if (isRecording.value || isTranscribing.value) return
+function clearTimer() {
+  if (timerInterval) {
+    clearInterval(timerInterval)
+    timerInterval = null
+  }
+}
 
+async function startRecording() {
+  if (isRecording.value || isTranscribing.value || isStarting.value) return
+  // Claim the slot synchronously, before the first await.
+  isStarting.value = true
+  cancelled = false
+
+  let stream: MediaStream | null = null
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     audioChunks = []
 
     // Choose supported MIME type
@@ -46,21 +66,31 @@ async function startRecording() {
       mimeType = 'audio/mp4'
     }
 
-    mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+    // A local reference, not the module-level one: the closures below must
+    // never observe a recorder belonging to a different acquisition.
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+    mediaRecorder = recorder
 
-    mediaRecorder.ondataavailable = (event: BlobEvent) => {
+    recorder.ondataavailable = (event: BlobEvent) => {
       if (event.data && event.data.size > 0) {
         audioChunks.push(event.data)
       }
     }
 
-    mediaRecorder.onstop = async () => {
+    recorder.onstop = async () => {
       // Stop all audio tracks to release microphone
-      stream.getTracks().forEach((track) => track.stop())
+      stream?.getTracks().forEach((track) => track.stop())
+
+      const discard = cancelled
+      cancelled = false
+      if (discard) {
+        audioChunks = []
+        return
+      }
 
       if (audioChunks.length === 0) return
 
-      const blobType = mediaRecorder?.mimeType || 'audio/webm'
+      const blobType = recorder.mimeType || 'audio/webm'
       const audioBlob = new Blob(audioChunks, { type: blobType })
 
       if (audioBlob.size === 0) return
@@ -82,7 +112,7 @@ async function startRecording() {
       }
     }
 
-    mediaRecorder.start(250) // Collect chunks every 250ms
+    recorder.start(250) // Collect chunks every 250ms
     isRecording.value = true
     recordSeconds.value = 0
 
@@ -90,18 +120,22 @@ async function startRecording() {
       recordSeconds.value++
     }, 1000)
   } catch (err: unknown) {
+    // Release anything already acquired: a failure after getUserMedia
+    // resolved would otherwise leave the browser's mic indicator on.
+    stream?.getTracks().forEach((track) => track.stop())
+    mediaRecorder = null
+    audioChunks = []
     toast.error('Microphone access denied or unavailable')
     console.error('Error starting voice recording:', err)
+  } finally {
+    isStarting.value = false
   }
 }
 
 function stopRecording() {
   if (!isRecording.value || !mediaRecorder) return
   isRecording.value = false
-  if (timerInterval) {
-    clearInterval(timerInterval)
-    timerInterval = null
-  }
+  clearTimer()
   if (mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop()
   }
@@ -110,11 +144,10 @@ function stopRecording() {
 function cancelRecording() {
   if (!isRecording.value || !mediaRecorder) return
   isRecording.value = false
-  if (timerInterval) {
-    clearInterval(timerInterval)
-    timerInterval = null
-  }
-  // Clear chunks so onstop does nothing
+  // Flag before stop(), which fires a final dataavailable that would
+  // otherwise refill the chunks we are about to discard.
+  cancelled = true
+  clearTimer()
   audioChunks = []
   if (mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop()
@@ -122,7 +155,10 @@ function cancelRecording() {
 }
 
 onUnmounted(() => {
-  if (timerInterval) clearInterval(timerInterval)
+  // Unmounting mid-recording must not upload either.
+  cancelled = true
+  clearTimer()
+  audioChunks = []
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop()
   }
@@ -155,10 +191,10 @@ onUnmounted(() => {
       </Button>
     </div>
 
-    <!-- Transcribing spinner UI -->
-    <div v-else-if="isTranscribing" class="flex items-center gap-2 rounded-xl bg-muted px-3 py-1.5 text-xs text-muted-foreground">
+    <!-- Transcribing spinner UI (also covers the pending-permission state) -->
+    <div v-else-if="isTranscribing || isStarting" class="flex items-center gap-2 rounded-xl bg-muted px-3 py-1.5 text-xs text-muted-foreground">
       <Loader2 class="h-3.5 w-3.5 animate-spin text-primary" />
-      <span>Transcribing...</span>
+      <span>{{ isStarting ? 'Waiting for mic...' : 'Transcribing...' }}</span>
     </div>
 
     <!-- Normal Dictation Mic Button -->
@@ -167,7 +203,7 @@ onUnmounted(() => {
       variant="ghost"
       size="icon"
       class="h-10 w-10 shrink-0 rounded-xl text-muted-foreground hover:text-foreground"
-      :disabled="disabled"
+      :disabled="disabled || isStarting"
       title="Dictate voice prompt"
       @click="startRecording"
     >

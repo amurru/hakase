@@ -420,7 +420,7 @@ func (b *Bot) cmdNotify(ctx context.Context, c conv, m *models.Message, args str
 // cmdVoice sets the chat's voice-reply preference (issue #19 TTS phase):
 // off (default) = text answers; auto = voice reply when the prompt was a
 // voice note; on = voice replies always. Only takes effect when
-// channels.telegram.text_to_speech is enabled in config.
+// text_to_speech is enabled in config.
 func (b *Bot) cmdVoice(ctx context.Context, c conv, args string) {
 	ck := chatKey(c.chatID)
 	arg := strings.ToLower(strings.TrimSpace(args))

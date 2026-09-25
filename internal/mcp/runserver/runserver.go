@@ -135,6 +135,9 @@ type suspendedRun struct {
 	broker    *gateBroker
 	state     string
 	sessionID string
+	// sink is the run's event sink, kept so every invocation of the handler
+	// can rebind progress to the call being served (see runSink.bind).
+	sink *runSink
 
 	done    chan struct{}
 	once    sync.Once
@@ -297,6 +300,17 @@ func (s *server) runHandler(ctx context.Context, req *mcp.CallToolRequest, in ru
 		}
 	}
 
+	// Point progress at the call being served right now, and stop it again
+	// on the way out. Every invocation of this handler re-binds: a gate
+	// round trip returns and the client re-enters with a fresh progress
+	// token, so a token captured at start time would be stale - and a
+	// notification naming a completed request is protocol-invalid. The run
+	// itself is unaffected, it executes on its own detached context.
+	if sr.sink != nil {
+		sr.sink.bind(ctx, req)
+		defer sr.sink.unbind()
+	}
+
 	// Serve completion or the next gate query. On completion the typed
 	// return value becomes the tool result; on a query the input-required
 	// result suspends the call until the client's retry resumes it.
@@ -370,7 +384,9 @@ func (s *server) startRun(ctx context.Context, req *mcp.CallToolRequest, prompt,
 	}
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
-	sink := newRunSink(runCtx, req, s.deps.Log)
+	sink := &runSink{log: s.deps.Log}
+	sink.bind(ctx, req)
+	sr.sink = sink
 	if s.deps.Gates != nil {
 		s.deps.Gates.attach(sessionID, sr.broker)
 	}
