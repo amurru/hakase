@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -114,11 +115,23 @@ func writeFakeBinary(t *testing.T, path, script string) {
 	}
 }
 
+// skipWindows skips tests that execute shell-script fake binaries: windows CI
+// has no /bin/sh, and LookPath there requires .exe/.bat extensions, so the
+// fake-binary pipeline mechanics only translate to POSIX. Mirrors the
+// equivalent guard in internal/speech and the #22 windows-suite convention.
+func skipWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binaries are POSIX-only")
+	}
+}
+
 // TestTranscribeHandler_HonorsSTTTimeout pins speech_to_text.timeout_seconds
 // on the web dictation path. r.Context() cannot end this work - it cancels
 // only when the client disconnects - so a decode that hangs would otherwise
 // hold the request and the ffmpeg process for as long as the browser waits.
 func TestTranscribeHandler_HonorsSTTTimeout(t *testing.T) {
+	skipWindows(t)
 	home := isolateHome(t)
 	// HAKASE_HOME is what config.ResolveConfigPath consults; pinning it keeps
 	// the test off any config.json in the package directory.
@@ -197,6 +210,7 @@ func TestTranscribeHandler_HonorsSTTTimeout(t *testing.T) {
 // permanently unable to complete a first run. It must run under
 // model_timeout_seconds instead.
 func TestTranscribeHandler_ModelDownloadHasItsOwnBudget(t *testing.T) {
+	skipWindows(t)
 	home := isolateHome(t)
 	t.Setenv("HAKASE_HOME", home)
 
