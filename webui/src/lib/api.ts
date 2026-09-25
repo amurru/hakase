@@ -107,3 +107,31 @@ export function restoreSession(
 ): Promise<{ status: string; messages: number }> {
   return apiPost<{ status: string; messages: number }>(`/sessions/${sessionId}/restore`, { snapshot })
 }
+
+// ---------------------------------------------------------------------------
+// Speech / Audio Transcription (Dictation)
+
+export interface TranscribeResponse {
+  text: string
+  language?: string
+  error?: string
+}
+
+export async function transcribeAudio(blob: Blob): Promise<TranscribeResponse> {
+  const formData = new FormData()
+  formData.append('file', blob, 'recording.webm')
+
+  const res = await fetch('/api/transcribe', {
+    method: 'POST',
+    body: formData,
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    const message = data?.error || `Transcription error (${res.status})`
+    throw new ApiError(res.status, message, data)
+  }
+
+  return data as TranscribeResponse
+}
