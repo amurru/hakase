@@ -49,7 +49,10 @@ type runSink struct {
 	token   any
 	// active is true only while a request is being served.
 	active bool
-	log    interfaces.LogFunc
+	// gen counts bindings so a late unbind from an overlapping call cannot
+	// clear a newer call's binding.
+	gen uint64
+	log interfaces.LogFunc
 
 	content       strings.Builder
 	thinkBuf      strings.Builder
@@ -60,19 +63,25 @@ type runSink struct {
 }
 
 // bindToken points the sink at one session/token pair and marks it active.
-func (s *runSink) bindToken(ctx context.Context, n progressNotifier, token any) {
+// It returns the binding generation, which unbind takes back: two `run` calls
+// can briefly overlap on one run (a client retrying the same request state
+// before the previous call returned), and the older call's deferred unbind
+// must not tear down the newer call's binding.
+func (s *runSink) bindToken(ctx context.Context, n progressNotifier, token any) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.gen++
 	s.ctx = ctx
 	s.session = n
 	s.token = token
 	s.active = true
+	return s.gen
 }
 
 // bind points the sink at the request being served right now. A client is
 // not required to send a progress token, in which case nothing is emitted
 // and only the final result matters.
-func (s *runSink) bind(ctx context.Context, req *mcp.CallToolRequest) {
+func (s *runSink) bind(ctx context.Context, req *mcp.CallToolRequest) uint64 {
 	var (
 		n     progressNotifier
 		token any
@@ -83,15 +92,20 @@ func (s *runSink) bind(ctx context.Context, req *mcp.CallToolRequest) {
 			token = req.Params.GetProgressToken()
 		}
 	}
-	s.bindToken(ctx, n, token)
+	return s.bindToken(ctx, n, token)
 }
 
 // unbind marks the sink as having no in-flight request. The run keeps
 // executing on its detached context after a gate suspends the call, so
 // without this a later delta would notify a token whose request is done.
-func (s *runSink) unbind() {
+// A stale gen is ignored so an overlapping call's teardown cannot silence a
+// call that is still in flight.
+func (s *runSink) unbind(gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if gen != s.gen {
+		return
+	}
 	s.active = false
 }
 

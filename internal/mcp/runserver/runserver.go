@@ -307,8 +307,8 @@ func (s *server) runHandler(ctx context.Context, req *mcp.CallToolRequest, in ru
 	// notification naming a completed request is protocol-invalid. The run
 	// itself is unaffected, it executes on its own detached context.
 	if sr.sink != nil {
-		sr.sink.bind(ctx, req)
-		defer sr.sink.unbind()
+		gen := sr.sink.bind(ctx, req)
+		defer sr.sink.unbind(gen)
 	}
 
 	// Serve completion or the next gate query. On completion the typed

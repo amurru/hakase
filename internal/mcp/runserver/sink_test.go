@@ -36,10 +36,9 @@ func (f *fakeNotifier) seen() []any {
 	return out
 }
 
-func newTestSink(n *fakeNotifier, token any) *runSink {
+func newTestSink(n *fakeNotifier, token any) (*runSink, uint64) {
 	s := &runSink{}
-	s.bindToken(context.Background(), n, token)
-	return s
+	return s, s.bindToken(context.Background(), n, token)
 }
 
 // An unbound sink emits nothing: the run outlives the call that started it,
@@ -48,8 +47,8 @@ func TestRunSink_UnboundEmitsNothing(t *testing.T) {
 	t.Parallel()
 
 	n := &fakeNotifier{}
-	s := newTestSink(n, "tok-1")
-	s.unbind()
+	s, gen := newTestSink(n, "tok-1")
+	s.unbind(gen)
 
 	s.OnStream("sess", "hello", "")
 	s.OnLog("sess", "some activity")
@@ -71,7 +70,7 @@ func TestRunSink_BoundEmitsWithToken(t *testing.T) {
 	t.Parallel()
 
 	n := &fakeNotifier{}
-	s := newTestSink(n, "tok-1")
+	s, _ := newTestSink(n, "tok-1")
 
 	s.OnStream("sess", "hello", "")
 
@@ -88,11 +87,11 @@ func TestRunSink_RebindsToNewTokenAfterGateRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	n := &fakeNotifier{}
-	s := newTestSink(n, "tok-1")
+	s, gen := newTestSink(n, "tok-1")
 
 	s.OnStream("sess", "before", "")
 	// The handler returns an input-required result: the first call is done.
-	s.unbind()
+	s.unbind(gen)
 	s.OnStream("sess", "while-suspended", "")
 	// The client re-enters with a fresh token.
 	s.bindToken(context.Background(), n, "tok-2")
@@ -116,11 +115,41 @@ func TestRunSink_NoTokenEmitsNothing(t *testing.T) {
 	t.Parallel()
 
 	n := &fakeNotifier{}
-	s := newTestSink(n, nil)
+	s, _ := newTestSink(n, nil)
 
 	s.OnStream("sess", "hello", "")
 
 	if got := n.seen(); len(got) != 0 {
 		t.Fatalf("emitted %d notifications without a progress token: %v", len(got), got)
+	}
+}
+
+// Two calls can briefly overlap on one run (a client retrying the same
+// request state before the earlier call returned). The older call's deferred
+// teardown must not silence the newer call's binding, or the live call would
+// silently stop receiving progress.
+func TestRunSink_StaleUnbindDoesNotClobberNewerBinding(t *testing.T) {
+	t.Parallel()
+
+	n := &fakeNotifier{}
+	s, firstGen := newTestSink(n, "tok-1")
+
+	// The newer call arrives and takes over the binding.
+	newGen := s.bindToken(context.Background(), n, "tok-2")
+	// The older call now returns and runs its deferred unbind.
+	s.unbind(firstGen)
+
+	s.OnStream("sess", "still-live", "")
+
+	got := n.seen()
+	if len(got) != 1 || got[0] != "tok-2" {
+		t.Fatalf("tokens = %v, want [tok-2] (a stale unbind must not silence the live call)", got)
+	}
+
+	// The newer call's own teardown still works.
+	s.unbind(newGen)
+	s.OnStream("sess", "after-teardown", "")
+	if got := n.seen(); len(got) != 1 {
+		t.Fatalf("tokens = %v, want the current binding released", got)
 	}
 }

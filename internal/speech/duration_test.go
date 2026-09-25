@@ -32,8 +32,18 @@ var testByteRate = testSampleRate * testChannels * testBits / 8 // 32000
 // word-alignment pad instead of assuming a bare 44-byte header.
 func buildWAV(t *testing.T, dir string, seconds int, withList bool) string {
 	t.Helper()
+	return buildWAVBytes(t, dir, testByteRate*seconds, withList)
+}
 
-	data := bytes.Repeat([]byte{0x01, 0x02}, testByteRate*seconds/2)
+// buildWAVBytes writes a WAV whose data chunk is exactly nBytes long, so a
+// test can express a fractional-second duration.
+func buildWAVBytes(t *testing.T, dir string, nBytes int, withList bool) string {
+	t.Helper()
+
+	data := bytes.Repeat([]byte{0x01, 0x02}, nBytes/2)
+	if nBytes%2 == 1 {
+		data = append(data, 0x01)
+	}
 
 	var body bytes.Buffer
 	if withList {
@@ -106,8 +116,8 @@ func TestWavDurationSeconds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("wavDurationSeconds: %v", err)
 			}
-			if got != tc.seconds {
-				t.Fatalf("duration = %d, want %d", got, tc.seconds)
+			if got != float64(tc.seconds) {
+				t.Fatalf("duration = %g, want %d", got, tc.seconds)
 			}
 		})
 	}
@@ -266,5 +276,23 @@ func TestTranscribe_NoMaxSecondsSkipsProbe(t *testing.T) {
 	}
 	if strings.Contains(string(argv), "-t ") {
 		t.Fatalf("unexpected decode bound with no max_seconds: %q", strings.TrimSpace(string(argv)))
+	}
+}
+
+// TestWavDurationSeconds_Fractional pins the fractional result. Truncating
+// to whole seconds would let a 120.5s clip pass a max_seconds of 120, so the
+// probe must not round down.
+func TestWavDurationSeconds_Fractional(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Half a second is 16000 bytes at the test byte rate.
+	path := buildWAVBytes(t, dir, testByteRate*3+testByteRate/2, false)
+	got, err := wavDurationSeconds(path)
+	if err != nil {
+		t.Fatalf("wavDurationSeconds: %v", err)
+	}
+	if got != 3.5 {
+		t.Fatalf("duration = %g, want 3.5 (fractional seconds must survive)", got)
 	}
 }

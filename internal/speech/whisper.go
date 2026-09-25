@@ -124,8 +124,8 @@ func (w *WhisperCLI) Transcribe(ctx context.Context, audio []byte, mime string, 
 		if err != nil {
 			return Transcript{}, fmt.Errorf("speech: probe duration: %w", err)
 		}
-		if secs > w.cfg.MaxSeconds {
-			return Transcript{}, fmt.Errorf("%w: %ds > max_seconds %d", ErrTooLong, secs, w.cfg.MaxSeconds)
+		if secs > float64(w.cfg.MaxSeconds) {
+			return Transcript{}, fmt.Errorf("%w: %gs > max_seconds %d", ErrTooLong, secs, w.cfg.MaxSeconds)
 		}
 	}
 
@@ -169,13 +169,16 @@ func (w *WhisperCLI) Transcribe(ctx context.Context, audio []byte, mime string, 
 	}, nil
 }
 
-// wavDurationSeconds returns the playing time of a PCM WAV file, in whole
-// seconds, by walking the RIFF chunk list to the data chunk and dividing its
-// size by the byte rate declared in the fmt chunk. Reading the declared rate
-// (rather than assuming 16 kHz mono 16-bit) keeps the result correct if the
-// decode step's format ever changes. Chunks are word-aligned, so an odd-sized
-// chunk is followed by one pad byte that must be skipped.
-func wavDurationSeconds(path string) (int, error) {
+// wavDurationSeconds returns the playing time of a PCM WAV file in seconds,
+// by walking the RIFF chunk list to the data chunk and dividing its size by
+// the byte rate declared in the fmt chunk. Reading the declared rate (rather
+// than assuming 16 kHz mono 16-bit) keeps the result correct if the decode
+// step's format ever changes. Chunks are word-aligned, so an odd-sized chunk
+// is followed by one pad byte that must be skipped.
+//
+// The result is fractional on purpose: truncating to whole seconds would let
+// a 120.5s clip pass a max_seconds of 120.
+func wavDurationSeconds(path string) (float64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -219,7 +222,7 @@ func wavDurationSeconds(path string) (int, error) {
 			if byteRate <= 0 {
 				return 0, fmt.Errorf("data chunk precedes a usable fmt chunk")
 			}
-			return size / byteRate, nil
+			return float64(size) / float64(byteRate), nil
 		default:
 			if _, err := f.Seek(int64(size+pad), io.SeekCurrent); err != nil {
 				return 0, err
