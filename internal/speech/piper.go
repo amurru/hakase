@@ -56,7 +56,7 @@ func (p *PiperTTS) piperBin() (string, error) {
 	if bin := resolvePiperBin(p.cfg.BinaryPath); bin != "" {
 		return bin, nil
 	}
-	return "", fmt.Errorf("speech: piper not found (pip install piper-tts, pacman -S piper-tts-bin, or set channels.telegram.text_to_speech.binary_path)")
+	return "", fmt.Errorf("speech: piper not found (pip install piper-tts, pacman -S piper-tts-bin, or set text_to_speech.binary_path)")
 }
 
 // NewPiperTTS builds a synthesizer from the config (defaults applied).
@@ -75,7 +75,7 @@ func (p *PiperTTS) Availability() error {
 		return fmt.Errorf("speech: default piper voice model %s not found: %w", dv, err)
 	}
 	if _, err := exec.LookPath(p.cfg.FFMpegPath); err != nil {
-		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.text_to_speech.ffmpeg_path)")
+		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set text_to_speech.ffmpeg_path)")
 	}
 	if _, err := p.piperBin(); err != nil {
 		return err
@@ -120,7 +120,7 @@ func (p *PiperTTS) Synthesize(ctx context.Context, text, lang string) ([]byte, e
 	// ffmpeg: WAV → OGG/Opus (Telegram voice-note container).
 	ffbin, err := exec.LookPath(p.cfg.FFMpegPath)
 	if err != nil {
-		return nil, fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.text_to_speech.ffmpeg_path)")
+		return nil, fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set text_to_speech.ffmpeg_path)")
 	}
 	oggPath := filepath.Join(dir, "speech.ogg")
 	ffcmd := &exec.Cmd{Path: ffbin, Args: []string{ffbin,

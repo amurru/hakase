@@ -38,7 +38,7 @@ func (w *WhisperCLI) ensureModel(ctx context.Context) (string, error) {
 	}
 	resp, err := downloadClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("speech: downloading whisper model %q from %s: %w (offline? download the ggml file manually into channels.telegram.speech_to_text.models_dir)", w.cfg.Model, url, err)
+		return "", fmt.Errorf("speech: downloading whisper model %q from %s: %w (offline? download the ggml file manually into speech_to_text.models_dir)", w.cfg.Model, url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

@@ -95,7 +95,7 @@ type Bot struct {
 	// enabled in config; queue serializes the CPU-bound pipeline.
 	transcriber transcriber
 	voiceQueue  *speech.Queue
-	stt         config.TelegramSTTConfig
+	stt         config.STTConfig
 	// Voice-note replies (issue #19 TTS phase): nil unless text_to_speech
 	// is enabled in config.
 	synthesizer speech.Synthesizer
@@ -119,9 +119,11 @@ type clarifyChoice struct {
 
 // Deps wires the transport to the channel service and config.
 type Deps struct {
-	Service *channel.Service
-	Config  config.TelegramChannelConfig
-	Log     channel.LogFunc
+	Service      *channel.Service
+	Config       config.TelegramChannelConfig
+	SpeechToText config.STTConfig
+	TextToSpeech config.TTSConfig
+	Log          channel.LogFunc
 }
 
 // runTurner drives one agent turn; *agentrun.Driver satisfies it. A seam so
@@ -159,8 +161,8 @@ func New(d Deps) (*Bot, error) {
 	// Voice-note transcription (issue #19): built only when explicitly
 	// enabled; the whisper model auto-downloads on first use, and missing
 	// binaries degrade to an actionable hint per message.
-	if d.Config.SpeechToText.Enabled != nil && *d.Config.SpeechToText.Enabled {
-		b.stt = d.Config.SpeechToText
+	if d.SpeechToText.Enabled != nil && *d.SpeechToText.Enabled {
+		b.stt = d.SpeechToText
 		b.transcriber = speech.NewWhisperCLI(speech.STTConfig{
 			Model:          b.stt.Model,
 			Language:       b.stt.Language,
@@ -175,13 +177,13 @@ func New(d Deps) (*Bot, error) {
 	}
 	// Voice-note replies (issue #19 TTS phase): the per-chat /voice mode
 	// gates whether they are actually spoken.
-	if d.Config.TextToSpeech.Enabled != nil && *d.Config.TextToSpeech.Enabled {
+	if d.TextToSpeech.Enabled != nil && *d.TextToSpeech.Enabled {
 		b.synthesizer = speech.NewPiperTTS(speech.TTSConfig{
-			BinaryPath: d.Config.TextToSpeech.BinaryPath,
-			Voices:     d.Config.TextToSpeech.Voices,
-			FFMpegPath: d.Config.TextToSpeech.FFMpegPath,
+			BinaryPath: d.TextToSpeech.BinaryPath,
+			Voices:     d.TextToSpeech.Voices,
+			FFMpegPath: d.TextToSpeech.FFMpegPath,
 		})
-		b.ttsMaxChars = d.Config.TextToSpeech.MaxChars
+		b.ttsMaxChars = d.TextToSpeech.MaxChars
 	}
 
 	api, err := tgbot.New(b.token,

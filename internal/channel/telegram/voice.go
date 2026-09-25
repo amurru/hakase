@@ -25,7 +25,7 @@ const maxVoiceBytes = 20 << 20
 
 // voiceSetupHint is sent when STT is disabled in config (actionable, names
 // the config block and the binaries).
-const voiceSetupHint = "🎙 Voice notes are not transcribed yet.\n\nEnable voice by setting <code>channels.telegram.speech_to_text.enabled = true</code> in config.json and installing:\n• ffmpeg (audio decode)\n• whisper.cpp — <a href=\"https://github.com/ggml-org/whisper.cpp\">ggml-org/whisper.cpp</a> (local transcription; the model auto-downloads on first use)\n\nUntil then, text works exactly as before. See docs/telegram-voice/."
+const voiceSetupHint = "🎙 Voice notes are not transcribed yet.\n\nEnable voice by setting <code>speech_to_text.enabled = true</code> in config.json and installing:\n• ffmpeg (audio decode)\n• whisper.cpp — <a href=\"https://github.com/ggml-org/whisper.cpp\">ggml-org/whisper.cpp</a> (local transcription; the model auto-downloads on first use)\n\nUntil then, text works exactly as before. See docs/telegram-voice/."
 
 // transcriber is the speech seam (satisfied by *speech.WhisperCLI; tests
 // substitute a fake).
@@ -45,7 +45,7 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 		return
 	}
 	if b.stt.MaxSeconds > 0 && v.Duration > b.stt.MaxSeconds {
-		b.sendText(ctx, c, fmt.Sprintf("🎙 That voice note is %ds — the limit is %ds (channels.telegram.speech_to_text.max_seconds). Trim it or raise the cap.", v.Duration, b.stt.MaxSeconds), nil, false)
+		b.sendText(ctx, c, fmt.Sprintf("🎙 That voice note is %ds — the limit is %ds (speech_to_text.max_seconds). Trim it or raise the cap.", v.Duration, b.stt.MaxSeconds), nil, false)
 		return
 	}
 	if err := b.transcriber.Availability(); err != nil {

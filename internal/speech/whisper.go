@@ -52,10 +52,10 @@ func (w *WhisperCLI) Availability() error {
 		return fmt.Errorf("speech: invalid whisper language %q (want \"auto\" or an ISO code like en/de/zh)", w.cfg.Language)
 	}
 	if _, err := exec.LookPath(w.cfg.FFMpegPath); err != nil {
-		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.speech_to_text.ffmpeg_path)")
+		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set speech_to_text.ffmpeg_path)")
 	}
 	if _, err := exec.LookPath(w.cfg.BinaryPath); err != nil {
-		return fmt.Errorf("speech: whisper-cli not found (build whisper.cpp — github.com/ggml-org/whisper.cpp: cmake -B build && cmake --build build — or set channels.telegram.speech_to_text.binary_path)")
+		return fmt.Errorf("speech: whisper-cli not found (build whisper.cpp — github.com/ggml-org/whisper.cpp: cmake -B build && cmake --build build — or set speech_to_text.binary_path)")
 	}
 	return nil
 }

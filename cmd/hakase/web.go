@@ -388,9 +388,11 @@ func runServer(args []string, serveSPA bool) int {
 			log.Printf("web: channel service unavailable: %v", err)
 		} else {
 			tg, err := telegram.New(telegram.Deps{
-				Service: chanSvc,
-				Config:  cfg.Channels.Telegram,
-				Log:     func(format string, args ...any) { log.Printf("telegram: "+format, args...) },
+				Service:      chanSvc,
+				Config:       cfg.Channels.Telegram,
+				SpeechToText: cfg.SpeechToText,
+				TextToSpeech: cfg.TextToSpeech,
+				Log:          func(format string, args ...any) { log.Printf("telegram: "+format, args...) },
 			})
 			if err != nil {
 				log.Printf("web: telegram channel disabled: %v", err)
