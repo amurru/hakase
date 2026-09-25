@@ -3,6 +3,7 @@ import { ref, computed, nextTick, onMounted } from 'vue'
 import { Send, Paperclip } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import AttachmentPicker, { type FileAttachment } from './AttachmentPicker.vue'
+import VoiceRecorder from './VoiceRecorder.vue'
 import { suggestCommands, type SlashCommand } from '@/lib/slash'
 
 const emit = defineEmits<{
@@ -93,6 +94,19 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+function handleTranscription(text: string) {
+  if (!text) return
+  if (content.value.trim().length > 0) {
+    content.value += ' ' + text
+  } else {
+    content.value = text
+  }
+  nextTick(() => {
+    autoResize()
+    textareaRef.value?.focus()
+  })
+}
+
 function handlePaste(event: ClipboardEvent) {
   const items = event.clipboardData?.items
   if (!items) return
@@ -158,6 +172,12 @@ onMounted(() => {
       >
         <Paperclip class="h-4 w-4" />
       </Button>
+
+      <!-- Voice recorder (dictation) -->
+      <VoiceRecorder
+        :disabled="disabled"
+        @transcription="handleTranscription"
+      />
       <div class="relative flex-1">
         <!-- Slash command palette -->
         <ul
