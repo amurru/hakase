@@ -106,25 +106,21 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 		}
 		modelTimeout = stt.ModelTimeoutSeconds
 	}
-	// Fail closed on the length bound. With no config.json the block above is
-	// the zero value, and an unset max_seconds must not mean "transcribe
-	// whatever the client uploads" - an unauthenticated-length upload is
-	// exactly the resource-exhaustion path this endpoint must not offer.
+	// Fail closed on the length bound, and this one is load-bearing: unlike
+	// TimeoutSeconds, speech's STTConfig.resolved() - applied inside
+	// NewWhisperCLI - does NOT default MaxSeconds, so with no config.json the
+	// field is 0 and both the duration check and the -t decode cap inside
+	// Transcribe are skipped. An unset max_seconds must not mean "transcribe
+	// whatever the client uploads".
 	if sttCfg.MaxSeconds <= 0 {
 		sttCfg.MaxSeconds = config.DefaultSTTMaxSeconds
 	}
-	// Fail closed on the time bound for the same reason. This handler builds
-	// the STTConfig by hand, so when config.json is absent the block above left
-	// TimeoutSeconds at 0 - and speech.WithTimeout reads 0 as "no wrapper",
-	// which would silently leave the work unbounded. r.Context() cancels only
-	// when the client goes away, so a stalled ffmpeg or whisper-cli would
-	// otherwise keep running for as long as the browser holds the socket open.
-	if sttCfg.TimeoutSeconds <= 0 {
-		sttCfg.TimeoutSeconds = config.DefaultSTTTimeout
-	}
-	// The model download gets its own, much larger budget. It is a network
-	// transfer of tens to hundreds of MiB, so bounding it by the transcription
-	// timeout would leave a slow connection unable to ever finish a first run.
+	// modelTimeout is read straight off config and is not carried in
+	// speech.STTConfig, so nothing else defaults it; with no config.json the
+	// block above left it 0. Keep this guard. The budget is deliberately much
+	// larger than the transcription timeout: the model is tens to hundreds of
+	// MiB over the network, so bounding it at timeout_seconds would leave a
+	// slow connection unable to ever finish a first run.
 	if modelTimeout <= 0 {
 		modelTimeout = config.DefaultSTTModelTimeout
 	}
