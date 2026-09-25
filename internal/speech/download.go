@@ -19,6 +19,19 @@ var modelMinBytes int64 = 5 << 20 // 5 MiB
 // downloadClient is a var for test injection.
 var downloadClient = &http.Client{}
 
+// EnsureModel makes sure the configured ggml model is on disk, downloading it
+// on first use. It exists so a transport can give the download its own, larger
+// budget before starting a transcription whose budget is sized for decode and
+// inference only: Transcribe calls ensureModel itself, but by then the
+// caller's context is already the short transcription timeout, which a
+// multi-hundred-MiB pull cannot always meet. Calling this first means the
+// later internal call short-circuits on the os.Stat fast path and never
+// re-enters the network.
+func (w *WhisperCLI) EnsureModel(ctx context.Context) error {
+	_, err := w.ensureModel(ctx)
+	return err
+}
+
 // ensureModel returns the path to the configured ggml model, downloading it
 // on first use (missing file). Concurrent callers are serialized upstream by
 // the transcription queue.

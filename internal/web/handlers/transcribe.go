@@ -91,6 +91,7 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 
 	// Load speech config from config.json if available
 	var sttCfg speech.STTConfig
+	modelTimeout := 0
 	if cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json")); err == nil {
 		stt := cfg.SpeechToText
 		sttCfg = speech.STTConfig{
@@ -103,6 +104,7 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 			MaxSeconds:     stt.MaxSeconds,
 			TimeoutSeconds: stt.TimeoutSeconds,
 		}
+		modelTimeout = stt.ModelTimeoutSeconds
 	}
 	// Fail closed on the length bound. With no config.json the block above is
 	// the zero value, and an unset max_seconds must not mean "transcribe
@@ -110,6 +112,21 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 	// exactly the resource-exhaustion path this endpoint must not offer.
 	if sttCfg.MaxSeconds <= 0 {
 		sttCfg.MaxSeconds = config.DefaultSTTMaxSeconds
+	}
+	// Fail closed on the time bound for the same reason. This handler builds
+	// the STTConfig by hand, so when config.json is absent the block above left
+	// TimeoutSeconds at 0 - and speech.WithTimeout reads 0 as "no wrapper",
+	// which would silently leave the work unbounded. r.Context() cancels only
+	// when the client goes away, so a stalled ffmpeg or whisper-cli would
+	// otherwise keep running for as long as the browser holds the socket open.
+	if sttCfg.TimeoutSeconds <= 0 {
+		sttCfg.TimeoutSeconds = config.DefaultSTTTimeout
+	}
+	// The model download gets its own, much larger budget. It is a network
+	// transfer of tens to hundreds of MiB, so bounding it by the transcription
+	// timeout would leave a slow connection unable to ever finish a first run.
+	if modelTimeout <= 0 {
+		modelTimeout = config.DefaultSTTModelTimeout
 	}
 
 	whisper := speech.NewWhisperCLI(sttCfg)
@@ -122,7 +139,26 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tr, err := whisper.Transcribe(r.Context(), audioBytes, mimeType, 0)
+	// Fetch the model before the transcription budget starts. Transcribe would
+	// do this internally, but by then it is already running under tctx, so a
+	// first-use download would be cut off at timeout_seconds. After this
+	// returns, the internal call hits the os.Stat fast path.
+	dctx, dcancel := speech.WithTimeout(r.Context(), modelTimeout)
+	modelErr := whisper.EnsureModel(dctx)
+	dcancel()
+	if modelErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": modelErr.Error(),
+		})
+		return
+	}
+
+	tctx, cancel := speech.WithTimeout(r.Context(), sttCfg.TimeoutSeconds)
+	defer cancel()
+
+	tr, err := whisper.Transcribe(tctx, audioBytes, mimeType, 0)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

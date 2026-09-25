@@ -573,6 +573,11 @@ const (
 	DefaultSTTMaxSeconds = 120
 	// DefaultSTTTimeout bounds one transcription.
 	DefaultSTTTimeout = 180
+	// DefaultSTTModelTimeout bounds the first-use model download. It is
+	// deliberately far larger than DefaultSTTTimeout: this is a network
+	// transfer of tens or hundreds of MiB, not a bounded decode, so it must
+	// not share a budget sized for a short transcription.
+	DefaultSTTModelTimeout = 1800
 	// DefaultTTSMaxChars caps voice-note reply text length.
 	DefaultTTSMaxChars = 1200
 
@@ -607,6 +612,11 @@ type STTConfig struct {
 	MaxSeconds int `json:"max_seconds,omitempty"`
 	// TimeoutSeconds bounds one transcription. Default 180.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// ModelTimeoutSeconds bounds the first-use ggml model download, which is
+	// a separate budget from TimeoutSeconds: the model is tens to hundreds of
+	// MiB over the network, so bounding it by the transcription timeout would
+	// make a slow connection permanently unable to finish. Default 1800.
+	ModelTimeoutSeconds int `json:"model_timeout_seconds,omitempty"`
 }
 
 type TelegramSTTConfig = STTConfig
@@ -625,6 +635,9 @@ func (c *STTConfig) ApplyDefaults() {
 	if c.TimeoutSeconds == 0 {
 		c.TimeoutSeconds = DefaultSTTTimeout
 	}
+	if c.ModelTimeoutSeconds == 0 {
+		c.ModelTimeoutSeconds = DefaultSTTModelTimeout
+	}
 }
 
 // Validate checks the STT block for sane values.
@@ -634,6 +647,9 @@ func (c *STTConfig) Validate() error {
 	}
 	if c.TimeoutSeconds < 0 {
 		return fmt.Errorf("speech_to_text.timeout_seconds %d: must be >= 0", c.TimeoutSeconds)
+	}
+	if c.ModelTimeoutSeconds < 0 {
+		return fmt.Errorf("speech_to_text.model_timeout_seconds %d: must be >= 0", c.ModelTimeoutSeconds)
 	}
 	return nil
 }
