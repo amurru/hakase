@@ -36,7 +36,7 @@ body:
     attributes:
       label: Version
       description: Output of `hakase version`, or the commit you are running.
-      placeholder: v0.1.0-alpha.5
+      placeholder: v0.1.0-alpha.6
     validations:
       required: true
   - type: dropdown
