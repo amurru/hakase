@@ -808,7 +808,7 @@ The `channels` block configures communication channels - chat transports that pr
 - `channels.telegram.allowed_user_ids` - static allowlist of Telegram numeric user IDs (deny-by-default). Empty = runtime pairing via `/start <code>`.
 - `channels.telegram.pairing_code` - optional static pairing code for scripted setups instead of the generated rotating code. Also write-only through the web config API.
 - `channels.telegram.pins` - pin the user's prompt message for the duration of each run and unpin at completion (Hermes-style turn marker). Default off.
-- `channels.telegram.speech_to_text` - local voice-note transcription via whisper.cpp, fully local (no cloud STT; issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; disabled voice notes get an actionable setup hint instead of a run.
+- `speech_to_text` - local voice-note transcription via whisper.cpp, fully local (no cloud STT; issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; disabled voice notes get an actionable setup hint instead of a run.
   - `enabled` - `*bool`; transcription runs only when explicitly `true`.
   - `model` - whisper.cpp ggml model name (without the `ggml-` prefix/`.bin` suffix). Default `base-q5_1` (quantized, multilingual, ~58 MiB). The model file **auto-downloads on first transcription** from HuggingFace into `models_dir`; set `model_url_base` to a mirror for offline setups, or drop the `ggml-<model>.bin` file in manually.
   - `language` - `auto` (detect) or an ISO code like `en`/`de`/`zh` (passed to `whisper-cli -l`; `auto` is the binary's native default). Default `auto`.
@@ -817,8 +817,8 @@ The `channels` block configures communication channels - chat transports that pr
   - `models_dir` - ggml model storage. Default `~/.hakase/models/whisper`.
   - `max_seconds` - refuse voice notes longer than this. Default 120.
   - `timeout_seconds` - bound one transcription. Default 180.
-  - Behavior: the transcript is echoed (`🎙 Heard: …`) **before** the run starts so a mis-transcription can be stopped with `/stop`; transcriptions serialize (one at a time, queue depth 3, "queue is full" reply on overflow); whisper's non-speech annotations (`[ Inaudible ]`, `[BLANK_AUDIO]`, bare ellipses) are filtered — the reply invites a retry instead of prompting the agent with garbage; audio bytes never leave the machine and are never persisted — the transcript is the only trace. Missing ffmpeg/whisper degrades to an actionable hint, never a run failure. Env: `HAKASE_TELEGRAM_STT_ENABLED`.
-- `channels.telegram.text_to_speech` - local Piper voice-note replies (issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; per-chat behavior is chosen with the `/voice off|auto|on` command (`off` default = text answers, `auto` = the answer is spoken when your prompt was a voice note, `on` = always spoken; the preference persists per chat in `channels.json`).
+  - Behavior: the transcript is echoed (`🎙 Heard: …`) **before** the run starts so a mis-transcription can be stopped with `/stop`; transcriptions serialize (one at a time, queue depth 3, "queue is full" reply on overflow); whisper's non-speech annotations (`[ Inaudible ]`, `[BLANK_AUDIO]`, bare ellipses) are filtered — the reply invites a retry instead of prompting the agent with garbage; audio bytes never leave the machine and are never persisted — the transcript is the only trace. Missing ffmpeg/whisper degrades to an actionable hint, never a run failure. Env: `HAKASE_STT_ENABLED` (legacy `HAKASE_TELEGRAM_STT_ENABLED` supported).
+- `text_to_speech` - local Piper voice-note replies (issue #19, [docs/telegram-voice/](telegram-voice/spec.md)). Off unless explicitly enabled; per-chat behavior is chosen with the `/voice off|auto|on` command (`off` default = text answers, `auto` = the answer is spoken when your prompt was a voice note, `on` = always spoken; the preference persists per chat in `channels.json`).
   - `enabled` - `*bool`; synthesis runs only when explicitly `true`.
   - `binary_path` - the Piper CLI. Default `piper` on PATH; the name `piper-tts` (e.g. Arch's piper-tts-bin) resolves automatically as a fallback — explicit absolute paths are honored as-is.
   - `voices` - map of voice models, REQUIRED when enabled. The reserved `"default"` key is the voice for typed prompts and the fallback for anything unmatched; every other key is a language code whose voice is used when whisper detects that language on an inbound voice note, so replies **mirror the caller's language**. Voices are downloaded externally from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) (unlike the whisper model they are NOT auto-downloaded — the repo nests voices per language/speaker/quality, so there is no single predictable URL):
@@ -833,7 +833,7 @@ The `channels` block configures communication channels - chat transports that pr
   - `binary_path` naming: distros package the CLI as `piper` or `piper-tts` — hakase tries the configured name, then `piper`, then `piper-tts` (explicit absolute paths are used as-is with no fallback). On Arch (`piper-tts-bin`) set nothing: the fallback finds `/usr/bin/piper-tts`.
   - `ffmpeg_path` - WAV → OGG/Opus encode (Telegram voice-note container). Default `ffmpeg` on PATH.
   - `max_chars` - cap the spoken text length, with an explicit "[truncated for voice]" marker. Default 1200.
-  - Behavior: in voice mode the answer is **not** streamed as text — the status line ticks and the full answer is spoken at finalize; any synthesis failure falls back to the normal text answer (never a lost reply). Env: `HAKASE_TELEGRAM_TTS_ENABLED`.
+  - Behavior: in voice mode the answer is **not** streamed as text — the status line ticks and the full answer is spoken at finalize; any synthesis failure falls back to the normal text answer (never a lost reply). Env: `HAKASE_TTS_ENABLED` (legacy `HAKASE_TELEGRAM_TTS_ENABLED` supported).
 
 Pairing codes generated at runtime are 6 digits, valid 15 minutes, and surfaced three ways: the server console at boot, `hakase channels pair-code`, or `POST /api/channels/pairing-code` (the Channels page in the web UI). The pending code is never returned by `GET /api/channels` - only its expiry. Pairings, per-chat bindings (session, notify flag, topics mode), and per-topic bindings (`telegram:<chatID>:<threadID>` -> session + title) persist in `~/.hakase/channels.json` (0600, flock-protected, sandbox-denied); revoke via the web UI, `hakase channels revoke <user-id>`, or by deleting the entry from the file while the server is stopped.
 
@@ -872,8 +872,10 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_MAX_OUTPUT_TOKENS` | `loop_guard.max_output_tokens` |
 | `HAKASE_TELEGRAM_ENABLED` | `channels.telegram.enabled` |
 | `HAKASE_TELEGRAM_BOT_TOKEN` | `channels.telegram.bot_token` |
-| `HAKASE_TELEGRAM_STT_ENABLED` | `channels.telegram.speech_to_text.enabled` |
-| `HAKASE_TELEGRAM_TTS_ENABLED` | `channels.telegram.text_to_speech.enabled` |
+| `HAKASE_STT_ENABLED` | `speech_to_text.enabled` |
+| `HAKASE_TTS_ENABLED` | `text_to_speech.enabled` |
+| `HAKASE_TELEGRAM_STT_ENABLED` | `speech_to_text.enabled` (legacy fallback) |
+| `HAKASE_TELEGRAM_TTS_ENABLED` | `text_to_speech.enabled` (legacy fallback) |
 | `HAKASE_MEMORY_ENABLED` | `memory.enabled` |
 | `HAKASE_MEMORY_MAX_PROMPT_CHARS` | `memory.max_prompt_chars` |
 | `HAKASE_MEMORY_MAX_NOTES` | `memory.max_notes` |

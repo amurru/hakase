@@ -60,7 +60,7 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 	// Load speech config from config.json if available
 	var sttCfg speech.STTConfig
 	if cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json")); err == nil {
-		stt := cfg.Channels.Telegram.SpeechToText
+		stt := cfg.SpeechToText
 		sttCfg = speech.STTConfig{
 			Model:          stt.Model,
 			Language:       stt.Language,
