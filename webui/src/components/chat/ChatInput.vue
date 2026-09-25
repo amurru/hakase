@@ -47,12 +47,18 @@ function onPaletteMousedown(e: MouseEvent, cmd: SlashCommand) {
 }
 // ---------------------------------------------------------------------------
 
+// Cap the input at ~8 lines; past that the textarea scrolls.
+const MAX_CONTENT_HEIGHT = 8 * 20 + 20 // 8 lines at line-height 20 + py-2.5 padding
+
 function autoResize() {
   const el = textareaRef.value
   if (!el) return
   el.style.height = 'auto'
-  const maxHeight = 8 * 24 // ~8 lines at ~24px line height
-  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+  el.style.height = `${Math.min(el.scrollHeight, MAX_CONTENT_HEIGHT)}px`
+  // Fractional zoom/DPI rounds clientHeight and scrollHeight apart by 1px,
+  // which would show a phantom scrollbar on an empty input. Only allow
+  // scrolling once content genuinely exceeds the cap.
+  el.style.overflowY = el.scrollHeight > MAX_CONTENT_HEIGHT ? 'auto' : 'hidden'
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -149,6 +155,7 @@ function handleSend() {
 }
 
 onMounted(() => {
+  autoResize()
   textareaRef.value?.focus()
 })
 </script>
@@ -162,12 +169,19 @@ onMounted(() => {
       @update:attachments="attachments = $event"
     />
 
-    <div class="flex items-end gap-2">
+    <!-- One cohesive composer pill: attach / dictate on the left, message in
+         the middle, send on the right. focus-within carries the highlight so
+         the textarea itself stays borderless. -->
+    <div
+      class="flex items-end gap-1.5 rounded-2xl border border-border bg-muted/50 p-1.5 transition-colors focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30"
+    >
       <Button
         variant="ghost"
         size="icon"
         class="h-10 w-10 shrink-0 rounded-xl text-muted-foreground hover:text-foreground"
         :disabled="disabled"
+        title="Attach files"
+        aria-label="Attach files"
         @click="pickerRef?.openPicker()"
       >
         <Paperclip class="h-4 w-4" />
@@ -178,7 +192,7 @@ onMounted(() => {
         :disabled="disabled"
         @transcription="handleTranscription"
       />
-      <div class="relative flex-1">
+      <div class="relative min-w-0 flex-1">
         <!-- Slash command palette -->
         <ul
           v-if="showPalette"
@@ -206,7 +220,7 @@ onMounted(() => {
           v-model="content"
           placeholder="Type a message... / for commands"
           rows="1"
-          class="w-full resize-none rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
+          class="block w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none"
           :disabled="disabled"
           @input="autoResize(); resetPalette()"
           @keydown="handleKeydown"
@@ -217,6 +231,8 @@ onMounted(() => {
         size="icon"
         class="h-10 w-10 shrink-0 rounded-xl"
         :disabled="(!content.trim() && attachments.length === 0) || disabled"
+        title="Send message"
+        aria-label="Send message"
         @click="handleSend"
       >
         <Send class="h-4 w-4" />
