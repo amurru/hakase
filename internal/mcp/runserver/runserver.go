@@ -165,7 +165,11 @@ func (sr *suspendedRun) deliver(responses mcp.InputResponseMap) {
 			continue
 		}
 		delete(sr.pending, id)
-		elicit, _ := resp.(*mcp.ElicitResult)
+		elicit, ok := resp.(*mcp.ElicitResult)
+		if !ok || elicit == nil {
+			q.respCh <- gateResp{err: fmt.Errorf("input response %s is not an elicitation result (fail-closed)", id)}
+			continue
+		}
 		q.respCh <- gateResp{res: elicit}
 	}
 }
@@ -296,6 +300,8 @@ func (s *server) runHandler(ctx context.Context, req *mcp.CallToolRequest, in ru
 	// Serve completion or the next gate query. On completion the typed
 	// return value becomes the tool result; on a query the input-required
 	// result suspends the call until the client's retry resumes it.
+	// Cancellation ends only the call: the run keeps executing on its
+	// detached context and its output stays retrievable via the session.
 	for {
 		select {
 		case q := <-sr.broker.queries:
@@ -313,6 +319,8 @@ func (s *server) runHandler(ctx context.Context, req *mcp.CallToolRequest, in ru
 			return &mcp.CallToolResult{InputRequests: requests, RequestState: state}, runOut{}, nil
 		case <-sr.done:
 			return nil, sr.result, nil
+		case <-ctx.Done():
+			return nil, runOut{}, fmt.Errorf("run call cancelled; run continues in session %s (use get_session): %w", sr.sessionID, ctx.Err())
 		}
 	}
 }

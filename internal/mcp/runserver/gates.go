@@ -148,6 +148,9 @@ func (g *Gates) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("approval refused (fail-closed): %w", err)
 	}
+	if res == nil {
+		return false, fmt.Errorf("approval refused (fail-closed): nil elicitation result")
+	}
 	if res.Action != "accept" {
 		// An explicit decline or a dismissed dialog is a "no", not an error.
 		return false, nil
@@ -194,6 +197,9 @@ func (g *Gates) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyRes
 			return interfaces.ClarifyResponse{TimedOut: true}, nil
 		}
 		return interfaces.ClarifyResponse{}, fmt.Errorf("clarify failed: %w", err)
+	}
+	if res == nil {
+		return interfaces.ClarifyResponse{}, fmt.Errorf("clarify failed: nil elicitation result")
 	}
 	if res.Action != "accept" {
 		return interfaces.ClarifyResponse{Canceled: true}, nil

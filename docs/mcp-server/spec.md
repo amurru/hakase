@@ -6,8 +6,10 @@ precedent; the issue (#20, first item) scoped it as a facade: run/session
 listing + prompt + stream events + gate responses over MCP. All of the
 hard parts already exist — `agentrun.Driver` is the transport-neutral turn
 loop the web chat and Telegram drive, and go-sdk v1.8 (MCP 2026-07-28, #17)
-provides server-initiated elicitation, which is what makes hakase's gate
-system reachable from a remote driving agent.
+provides the SEP-2322 input-required round-trip mechanism, which is what
+makes hakase's gate system reachable from a remote driving agent
+(standalone server-initiated elicitation is forbidden under 2026-07-28;
+gates ride the `input_required` round trips described below).
 
 Governing issue: amurru/hakase#45 (tier-2 backlog item 1 of #20).
 
@@ -43,9 +45,9 @@ Governing issue: amurru/hakase#45 (tier-2 backlog item 1 of #20).
   driving agent wants hakase's answer as the tool result. Stream deltas and
   activity lines go out as MCP progress notifications (`notifications/progress`
   with the call's progress token) so hosts can show liveness and keep long
-  runs from being reaped. Client cancellation cancels the run through the
-  request context — the same path web SSE consumers get by cancelling the
-  HTTP stream.
+  runs from being reaped. The run executes on a detached context: client
+  cancellation ends the call but not the run; `timeout_seconds` is the
+  server-side stop (see MS-002 item 4).
 - **Bootstrap lives in package main.** The agent-flavored serve needs the
   full `agent.Deps` wiring (vision resolver, media setup — main-only
   helpers), so it follows the web/serve/tui pattern: `internal/cli` exposes

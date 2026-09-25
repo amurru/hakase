@@ -77,13 +77,19 @@ func runMCPAgentServe(_ []string) int {
 	vision.CurrentConfig = func() *config.Config { return cfg }
 
 	// Session service (snapshot ring from config, issue #21).
-	var sessionSvc *hakasesession.SessionService
-	if store, err := hakasesession.NewSessionStoreWithSnapshotLimit(hakasesession.Dir, config.SessionSnapshotsMax(cfg)); err == nil {
-		if svc, err := hakasesession.NewSessionService(store); err == nil {
-			svc.SetSnapshotsEnabled(config.SessionSnapshotsEnabled(cfg))
-			sessionSvc = svc
-		}
+	// Fail hard: without sessions every run tool rejects, so starting a
+	// serving process would only advertise a broken server.
+	store, err := hakasesession.NewSessionStoreWithSnapshotLimit(hakasesession.Dir, config.SessionSnapshotsMax(cfg))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase mcp serve --agent: session store: %v\n", err)
+		return 1
 	}
+	sessionSvc, err := hakasesession.NewSessionService(store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase mcp serve --agent: session service: %v\n", err)
+		return 1
+	}
+	sessionSvc.SetSnapshotsEnabled(config.SessionSnapshotsEnabled(cfg))
 
 	// Project registry (fail-soft, same as web.go: a corrupt file disables
 	// project features without blocking the server).
