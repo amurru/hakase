@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -390,5 +391,107 @@ func TestTranscribeHandler_ModelDownloadHasItsOwnBudget(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatal("downloaded model is empty")
+	}
+}
+
+// TestTranscribeHandler_SerializesAndRefusesBeyondCapacity pins the fan-out
+// bound. Transcription is CPU-bound, so N concurrent dictation requests would
+// otherwise run N whisper processes on one host; the per-request limits bound
+// each request but never the number of them.
+//
+// speech.Queue admits transcribeQueueDepth callers in total (one holding the
+// worker, the rest waiting), so requests past that are refused with 503
+// immediately. The stub sleeps rather than decoding, so the admitted ones end
+// in 500 once their budget expires - the point is which path they took, not
+// that they succeed.
+func TestTranscribeHandler_SerializesAndRefusesBeyondCapacity(t *testing.T) {
+	skipWindows(t)
+	home := isolateHome(t)
+	t.Setenv("HAKASE_HOME", home)
+
+	// Long enough that nothing finishes while the requests are dispatched.
+	stall := filepath.Join(home, "ffmpeg-stall")
+	writeFakeBinary(t, stall, "#!/bin/sh\nexec sleep 8\n")
+	whisperBin := filepath.Join(home, "whisper-cli")
+	writeFakeBinary(t, whisperBin, "#!/bin/sh\nexit 0\n")
+
+	modelsDir := filepath.Join(home, "models")
+	if err := os.MkdirAll(modelsDir, 0o700); err != nil {
+		t.Fatalf("mkdir models: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, "ggml-base-q5_1.bin"), []byte("seeded"), 0o600); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+
+	cfg := fmt.Sprintf(`{
+		"speech_to_text": {
+			"model": "base-q5_1",
+			"language": "auto",
+			"binary_path": %q,
+			"ffmpeg_path": %q,
+			"models_dir": %q,
+			"max_seconds": 120,
+			"timeout_seconds": 2,
+			"model_timeout_seconds": 10
+		}
+	}`, whisperBin, stall, modelsDir)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Build every body up front so the goroutines only race into the handler.
+	const requests = transcribeQueueDepth + 2 // one over the cap
+	type prepared struct {
+		body        []byte
+		contentType string
+	}
+	preparedReqs := make([]prepared, requests)
+	for i := range preparedReqs {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "test.webm")
+		if err != nil {
+			t.Fatalf("create form file: %v", err)
+		}
+		if _, err := part.Write([]byte("fake audio content")); err != nil {
+			t.Fatalf("write form file: %v", err)
+		}
+		writer.Close()
+		preparedReqs[i] = prepared{body: body.Bytes(), contentType: writer.FormDataContentType()}
+	}
+
+	// Release all goroutines together so they contend for the queue together.
+	start := make(chan struct{})
+	codes := make([]int, requests)
+	var wg sync.WaitGroup
+	for i := range preparedReqs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/api/transcribe", bytes.NewReader(preparedReqs[i].body))
+			req.Header.Set("Content-Type", preparedReqs[i].contentType)
+			rec := httptest.NewRecorder()
+			<-start
+			Transcribe(rec, req)
+			codes[i] = rec.Code
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var busy, admitted int
+	for _, c := range codes {
+		switch c {
+		case http.StatusServiceUnavailable:
+			busy++
+		default:
+			admitted++
+		}
+	}
+	if busy != requests-transcribeQueueDepth {
+		t.Fatalf("expected %d refused with 503, got %d (codes: %v)", requests-transcribeQueueDepth, busy, codes)
+	}
+	if admitted != transcribeQueueDepth {
+		t.Fatalf("expected %d admitted, got %d (codes: %v)", transcribeQueueDepth, admitted, codes)
 	}
 }

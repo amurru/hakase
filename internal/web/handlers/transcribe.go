@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,7 +22,26 @@ const (
 	// transcribeMemory is how much of the upload is kept in RAM before the
 	// parser spills the rest to a temp file.
 	transcribeMemory = 4 << 20
+	// transcribeQueueDepth bounds how many transcriptions may be in the queue
+	// at once, matching the Telegram voice queue's depth. Note that
+	// speech.Queue admits `depth` callers in total - one holds the worker and
+	// the rest wait - so this is the real cap on concurrent whisper
+	// processes, not a cap on waiters. Transcription is CPU-bound (ffmpeg
+	// decode plus whisper inference), so without a queue N concurrent browser
+	// requests would run N of them on one host; the per-request limits bound
+	// each request but never the number of them. The request past the cap is
+	// refused with 503 rather than piling up work, which the composer already
+	// surfaces as a toast.
+	transcribeQueueDepth = 3
 )
+
+// transcribeQueue serializes transcriptions process-wide. It is a package
+// var rather than per-request state because the contended resource is the
+// host's CPU, which is shared by every request. The model warm-up deliberately
+// stays OUTSIDE the queue: it is network-bound rather than CPU-bound, and
+// holding the single worker for a multi-hundred-MiB download would stall
+// unrelated dictations.
+var transcribeQueue = speech.NewQueue(transcribeQueueDepth)
 
 // transcribeRouter is the minimal interface for transcribe routes.
 type transcribeRouter interface {
@@ -159,10 +179,25 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tctx, cancel := speech.WithTimeout(r.Context(), sttCfg.TimeoutSeconds)
-	defer cancel()
-
-	tr, err := whisper.Transcribe(tctx, audioBytes, mimeType, 0)
+	// Serialized: one transcription at a time per host, with a bounded wait
+	// queue. The transcription budget starts inside the closure, so time spent
+	// waiting for the queue is not charged against it.
+	var tr speech.Transcript
+	err = transcribeQueue.Run(r.Context(), func(ctx context.Context) error {
+		tctx, cancel := speech.WithTimeout(ctx, sttCfg.TimeoutSeconds)
+		defer cancel()
+		var terr error
+		tr, terr = whisper.Transcribe(tctx, audioBytes, mimeType, 0)
+		return terr
+	})
+	if errors.Is(err, speech.ErrBusy) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Transcription queue is full - try again in a moment.",
+		})
+		return
+	}
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
