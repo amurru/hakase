@@ -10,6 +10,12 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent web dictation was unbounded** - the per-request limits on `POST /api/transcribe` bound each request but never the *number* of them, so N simultaneous dictations ran N ffmpeg + `whisper-cli` pairs on one host. A user holding the mic, or a handful of tabs, could saturate the CPU that a single transcription is meant to get. Transcription is now serialized process-wide through the same `speech.Queue` the Telegram voice path uses, capped at 3 concurrent (one in flight, the rest queued); a request past the cap is refused immediately with 503 "Transcription queue is full - try again in a moment" instead of piling up work. The composer's existing error toast surfaces that with no UI change, and the model warm-up deliberately stays outside the queue so a multi-hundred-MiB download never holds the worker. **Behavior change:** a heavily contended host can now return 503 where it previously queued the work.
+- **Telegram voice notes ran the first-use model download under the transcription timeout** - `speech_to_text.timeout_seconds` (180s) is sized for a short decode plus inference, but `Transcribe` also fetches the ggml model on first use, and that is a network transfer of tens to hundreds of MiB. On a slow connection a first voice note could never finish: the download was killed at 180s and every retry started over. The voice path now warms the model under `speech_to_text.model_timeout_seconds` (default 1800, added for the web dictation endpoint in alpha.6) before the transcription budget starts, so `Transcribe`'s internal lookup short-circuits on the file already being on disk. When the model is present this costs one `os.Stat` per message. Mirrors the web dictation handler, so the two transports now behave the same.
+- **A failed model download leaked internal hosts into the Telegram chat** - the download error embeds the configured `speech_to_text.model_url_base` and on-disk model paths (e.g. `downloading whisper model "base-q5_1" from http://mirror.internal/...`), and it was being echoed into the chat. A chat is not a single-operator surface, so the detail now goes to the server log and the reply is a fixed line pointing there - the same property the web endpoint's 503 got in alpha.6. The pre-existing `Availability` hint is unchanged, since it names config keys the operator chose rather than environment internals.
+
 ## [0.1.0-alpha.6] - 2026-09-25
 
 ### Added

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -51,14 +52,49 @@ func TestTranscribeHandler_EmptyFile(t *testing.T) {
 	}
 }
 
-func TestTranscribeHandler_UnavailableWhisper(t *testing.T) {
+// TestTranscribeHandler_MissingToolingIsActionable pins the 503 an operator
+// sees when whisper-cli or ffmpeg is absent.
+//
+// It points the config at a path that cannot exist rather than relying on the
+// test machine lacking the binaries. That matters: with the real tools
+// installed, Availability passes and the handler reaches EnsureModel, which
+// fetches the model over the network - downloadClient has no Timeout and the
+// default transport has no ResponseHeaderTimeout, so the request can hang on
+// the dial. The previous version of this test accepted 503/500/200 "depending
+// on env", which is exactly what let it reach the network unnoticed. An
+// explicit missing binary is deterministic, and needs no shell fakes, so it
+// also runs on windows.
+func TestTranscribeHandler_MissingToolingIsActionable(t *testing.T) {
+	home := isolateHome(t)
+	t.Setenv("HAKASE_HOME", home)
+
+	// Inside the (empty) isolated home, so it cannot exist as an executable.
+	missing := filepath.Join(home, "definitely-not-installed")
+	cfg := fmt.Sprintf(`{
+		"speech_to_text": {
+			"model": "base-q5_1",
+			"language": "auto",
+			"binary_path": %q,
+			"ffmpeg_path": %q,
+			"models_dir": %q,
+			"max_seconds": 120,
+			"timeout_seconds": 5,
+			"model_timeout_seconds": 30
+		}
+	}`, missing, missing, filepath.Join(home, "models"))
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("file", "test.webm")
 	if err != nil {
 		t.Fatalf("failed to create form file: %v", err)
 	}
-	_, _ = part.Write([]byte("fake audio content"))
+	if _, err := part.Write([]byte("fake audio content")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
 	writer.Close()
 
 	req := httptest.NewRequest("POST", "/api/transcribe", &body)
@@ -67,10 +103,13 @@ func TestTranscribeHandler_UnavailableWhisper(t *testing.T) {
 
 	Transcribe(rec, req)
 
-	// Since whisper-cli/ffmpeg might not be installed in the test environment,
-	// status code should be 503 Service Unavailable (or 500/200 depending on env).
-	if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status code: %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when the tools are missing, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	// The message is the VoiceRecorder toast's only actionable content, so
+	// the config block it names is part of the contract.
+	if !strings.Contains(rec.Body.String(), "speech_to_text") {
+		t.Fatalf("503 should name the config block to fix, got: %s", rec.Body.String())
 	}
 }
 
@@ -352,5 +391,107 @@ func TestTranscribeHandler_ModelDownloadHasItsOwnBudget(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatal("downloaded model is empty")
+	}
+}
+
+// TestTranscribeHandler_SerializesAndRefusesBeyondCapacity pins the fan-out
+// bound. Transcription is CPU-bound, so N concurrent dictation requests would
+// otherwise run N whisper processes on one host; the per-request limits bound
+// each request but never the number of them.
+//
+// speech.Queue admits transcribeQueueDepth callers in total (one holding the
+// worker, the rest waiting), so requests past that are refused with 503
+// immediately. The stub sleeps rather than decoding, so the admitted ones end
+// in 500 once their budget expires - the point is which path they took, not
+// that they succeed.
+func TestTranscribeHandler_SerializesAndRefusesBeyondCapacity(t *testing.T) {
+	skipWindows(t)
+	home := isolateHome(t)
+	t.Setenv("HAKASE_HOME", home)
+
+	// Long enough that nothing finishes while the requests are dispatched.
+	stall := filepath.Join(home, "ffmpeg-stall")
+	writeFakeBinary(t, stall, "#!/bin/sh\nexec sleep 8\n")
+	whisperBin := filepath.Join(home, "whisper-cli")
+	writeFakeBinary(t, whisperBin, "#!/bin/sh\nexit 0\n")
+
+	modelsDir := filepath.Join(home, "models")
+	if err := os.MkdirAll(modelsDir, 0o700); err != nil {
+		t.Fatalf("mkdir models: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, "ggml-base-q5_1.bin"), []byte("seeded"), 0o600); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+
+	cfg := fmt.Sprintf(`{
+		"speech_to_text": {
+			"model": "base-q5_1",
+			"language": "auto",
+			"binary_path": %q,
+			"ffmpeg_path": %q,
+			"models_dir": %q,
+			"max_seconds": 120,
+			"timeout_seconds": 2,
+			"model_timeout_seconds": 10
+		}
+	}`, whisperBin, stall, modelsDir)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Build every body up front so the goroutines only race into the handler.
+	const requests = transcribeQueueDepth + 2 // one over the cap
+	type prepared struct {
+		body        []byte
+		contentType string
+	}
+	preparedReqs := make([]prepared, requests)
+	for i := range preparedReqs {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "test.webm")
+		if err != nil {
+			t.Fatalf("create form file: %v", err)
+		}
+		if _, err := part.Write([]byte("fake audio content")); err != nil {
+			t.Fatalf("write form file: %v", err)
+		}
+		writer.Close()
+		preparedReqs[i] = prepared{body: body.Bytes(), contentType: writer.FormDataContentType()}
+	}
+
+	// Release all goroutines together so they contend for the queue together.
+	start := make(chan struct{})
+	codes := make([]int, requests)
+	var wg sync.WaitGroup
+	for i := range preparedReqs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/api/transcribe", bytes.NewReader(preparedReqs[i].body))
+			req.Header.Set("Content-Type", preparedReqs[i].contentType)
+			rec := httptest.NewRecorder()
+			<-start
+			Transcribe(rec, req)
+			codes[i] = rec.Code
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var busy, admitted int
+	for _, c := range codes {
+		switch c {
+		case http.StatusServiceUnavailable:
+			busy++
+		default:
+			admitted++
+		}
+	}
+	if busy != requests-transcribeQueueDepth {
+		t.Fatalf("expected %d refused with 503, got %d (codes: %v)", requests-transcribeQueueDepth, busy, codes)
+	}
+	if admitted != transcribeQueueDepth {
+		t.Fatalf("expected %d admitted, got %d (codes: %v)", transcribeQueueDepth, admitted, codes)
 	}
 }
