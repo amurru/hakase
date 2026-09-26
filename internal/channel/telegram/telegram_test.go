@@ -92,11 +92,15 @@ func (f *fakeAPI) SendMessage(ctx context.Context, params *tgbot.SendMessagePara
 		silent:   params.DisableNotification,
 	})
 	hook := f.sendHook
+	id := f.nextMsgID
 	f.mu.Unlock()
 	if hook != nil {
 		hook(params) // called without f.mu: may block
 	}
-	return &models.Message{ID: f.nextMsgID}, nil
+	// id was captured under f.mu. Reading f.nextMsgID here instead would race
+	// with a concurrent SendMessage (e.g. runView.pump sending while the
+	// handler sends), which is what made -race fail on this package.
+	return &models.Message{ID: id}, nil
 }
 
 // fakeVoice records one SendVoice call.
