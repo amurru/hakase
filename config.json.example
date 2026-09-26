@@ -63,33 +63,34 @@
     "max_note_chars": 1200,
     "transcript_window_chars": 6000
   },
+  "speech_to_text": {
+    "enabled": false,
+    "model": "base-q5_1",
+    "language": "auto",
+    "binary_path": "whisper-cli",
+    "ffmpeg_path": "ffmpeg",
+    "models_dir": "",
+    "max_seconds": 120,
+    "timeout_seconds": 180,
+    "model_timeout_seconds": 1800
+  },
+  "text_to_speech": {
+    "enabled": false,
+    "binary_path": "piper",
+    "voices": {
+      "default": "",
+      "de": ""
+    },
+    "ffmpeg_path": "ffmpeg",
+    "max_chars": 1200
+  },
   "channels": {
     "enable_cron_scheduler": false,
     "telegram": {
       "enabled": false,
       "bot_token": "",
       "allowed_user_ids": [],
-      "pairing_code": "",
-      "speech_to_text": {
-        "enabled": false,
-        "model": "base-q5_1",
-        "language": "auto",
-        "binary_path": "whisper-cli",
-        "ffmpeg_path": "ffmpeg",
-        "models_dir": "",
-        "max_seconds": 120,
-        "timeout_seconds": 180
-      },
-      "text_to_speech": {
-        "enabled": false,
-        "binary_path": "piper",
-        "voices": {
-          "default": "",
-          "de": ""
-        },
-        "ffmpeg_path": "ffmpeg",
-        "max_chars": 1200
-      }
+      "pairing_code": ""
     }
   },
   "vision_model": "",

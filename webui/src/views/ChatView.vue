@@ -765,8 +765,10 @@ onMounted(() => {
               <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
 
-            <!-- Message list -->
-            <div class="py-4">
+            <!-- Message list. Wrapper stays out of the empty state: its
+                 padding would add dead scroll below the h-full empty panel
+                 and pin a scrollbar over the composer. -->
+            <div v-if="messages.length" class="py-4">
               <MessageBubble
                 v-for="msg in messages"
                 :key="msg.id"

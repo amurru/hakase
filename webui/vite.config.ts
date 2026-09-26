@@ -22,7 +22,10 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // HAKASE_API lets a second dev stack target a backend on another
+        // port (e.g. an isolated HAKASE_HOME instance) without touching
+        // the default single-instance workflow.
+        target: process.env.HAKASE_API || 'http://localhost:8080',
         changeOrigin: true,
       },
     },

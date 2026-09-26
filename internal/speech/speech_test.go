@@ -573,3 +573,23 @@ printf 'RIFFfake-wav' > "$out"
 		t.Fatalf("expected voice-model error, got: %v", err)
 	}
 }
+
+// TestResolvedDefaultsTimeoutButNotMaxSeconds documents the asymmetry the
+// transcribe handler's own defaulting depends on. STTConfig.resolved() is
+// applied inside NewWhisperCLI, and it defaults TimeoutSeconds - so a handler
+// that builds a zero STTConfig still gets a bounded transcription with no
+// config.json, and needs no guard of its own. It does NOT default MaxSeconds,
+// so MaxSeconds stays 0 and both the duration check and the -t decode cap in
+// Transcribe are skipped; that is why the web dictation handler defaults
+// MaxSeconds itself. If either half of this ever changes, that guard becomes
+// either dead or load-bearing and this test says which.
+func TestResolvedDefaultsTimeoutButNotMaxSeconds(t *testing.T) {
+	got := STTConfig{}.resolved()
+
+	if got.TimeoutSeconds != 180 {
+		t.Fatalf("resolved() should default TimeoutSeconds to 180, got %d", got.TimeoutSeconds)
+	}
+	if got.MaxSeconds != 0 {
+		t.Fatalf("resolved() should leave MaxSeconds at 0 (handlers must default it), got %d", got.MaxSeconds)
+	}
+}

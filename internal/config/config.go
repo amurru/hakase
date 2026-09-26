@@ -231,6 +231,12 @@ type Config struct {
 	// sub-agents nested. Off unless explicitly enabled; disabled tracing
 	// installs nothing (no exporter, no network traffic).
 	Tracing TracingConfig `json:"tracing,omitempty"`
+	// SpeechToText configures local voice-note transcription via whisper.cpp
+	// (docs/telegram-voice/spec.md, issue #19). Off unless explicitly enabled.
+	SpeechToText STTConfig `json:"speech_to_text,omitempty"`
+	// TextToSpeech configures optional local voice-note replies via Piper
+	// (issue #19 TTS phase). Off by default.
+	TextToSpeech TTSConfig `json:"text_to_speech,omitempty"`
 	// Session tunes per-session persistence behavior (docs/session-rewind/
 	// spec.md, issue #21). See SessionConfig for the per-field meaning.
 	Session SessionConfig `json:"session,omitempty"`
@@ -556,29 +562,34 @@ type TelegramChannelConfig struct {
 	// Pins pins the user's prompt message for the duration of each Telegram
 	// run and unpins it at completion (Hermes-style turn marker). Default off.
 	Pins bool `json:"pins,omitempty"`
-	// SpeechToText configures local voice-note transcription via whisper.cpp
-	// (docs/telegram-voice/spec.md, issue #19). Off unless explicitly enabled.
-	SpeechToText TelegramSTTConfig `json:"speech_to_text,omitempty"`
-	// TextToSpeech configures optional local voice-note replies via Piper
-	// (the seam ships; transport wiring is the stretch phase). Off by default.
-	TextToSpeech TelegramTTSConfig `json:"text_to_speech,omitempty"`
 }
 
-// Default values for the Telegram speech blocks.
+// Default values for the speech blocks.
 const (
-	// DefaultTelegramSTTModel is the quantized multilingual whisper.cpp
+	// DefaultSTTModel is the quantized multilingual whisper.cpp
 	// model (~58 MiB, auto-detects language).
-	DefaultTelegramSTTModel = "base-q5_1"
-	// DefaultTelegramSTTMaxSeconds caps accepted voice-note length.
-	DefaultTelegramSTTMaxSeconds = 120
-	// DefaultTelegramSTTTimeout bounds one transcription.
-	DefaultTelegramSTTTimeout = 180
-	// DefaultTelegramTTSMaxChars caps voice-note reply text length.
-	DefaultTelegramTTSMaxChars = 1200
+	DefaultSTTModel = "base-q5_1"
+	// DefaultSTTMaxSeconds caps accepted voice-note length.
+	DefaultSTTMaxSeconds = 120
+	// DefaultSTTTimeout bounds one transcription.
+	DefaultSTTTimeout = 180
+	// DefaultSTTModelTimeout bounds the first-use model download. It is
+	// deliberately far larger than DefaultSTTTimeout: this is a network
+	// transfer of tens or hundreds of MiB, not a bounded decode, so it must
+	// not share a budget sized for a short transcription.
+	DefaultSTTModelTimeout = 1800
+	// DefaultTTSMaxChars caps voice-note reply text length.
+	DefaultTTSMaxChars = 1200
+
+	// Backward compatibility constants for existing callers.
+	DefaultTelegramSTTModel      = DefaultSTTModel
+	DefaultTelegramSTTMaxSeconds = DefaultSTTMaxSeconds
+	DefaultTelegramSTTTimeout    = DefaultSTTTimeout
+	DefaultTelegramTTSMaxChars   = DefaultTTSMaxChars
 )
 
-// TelegramSTTConfig configures local whisper.cpp voice-note transcription.
-type TelegramSTTConfig struct {
+// STTConfig configures local whisper.cpp voice-note transcription.
+type STTConfig struct {
 	// Enabled turns voice-note transcription on. nil/absent = disabled
 	// (voice notes then get an actionable setup hint instead of a run).
 	Enabled *bool `json:"enabled,omitempty"`
@@ -601,39 +612,51 @@ type TelegramSTTConfig struct {
 	MaxSeconds int `json:"max_seconds,omitempty"`
 	// TimeoutSeconds bounds one transcription. Default 180.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// ModelTimeoutSeconds bounds the first-use ggml model download, which is
+	// a separate budget from TimeoutSeconds: the model is tens to hundreds of
+	// MiB over the network, so bounding it by the transcription timeout would
+	// make a slow connection permanently unable to finish. Default 1800.
+	ModelTimeoutSeconds int `json:"model_timeout_seconds,omitempty"`
 }
 
+type TelegramSTTConfig = STTConfig
+
 // ApplyDefaults fills zero values with defaults. Call after load.
-func (c *TelegramSTTConfig) ApplyDefaults() {
+func (c *STTConfig) ApplyDefaults() {
 	if c.Model == "" {
-		c.Model = DefaultTelegramSTTModel
+		c.Model = DefaultSTTModel
 	}
 	if c.Language == "" {
 		c.Language = "auto"
 	}
 	if c.MaxSeconds == 0 {
-		c.MaxSeconds = DefaultTelegramSTTMaxSeconds
+		c.MaxSeconds = DefaultSTTMaxSeconds
 	}
 	if c.TimeoutSeconds == 0 {
-		c.TimeoutSeconds = DefaultTelegramSTTTimeout
+		c.TimeoutSeconds = DefaultSTTTimeout
+	}
+	if c.ModelTimeoutSeconds == 0 {
+		c.ModelTimeoutSeconds = DefaultSTTModelTimeout
 	}
 }
 
 // Validate checks the STT block for sane values.
-func (c *TelegramSTTConfig) Validate() error {
+func (c *STTConfig) Validate() error {
 	if c.MaxSeconds < 0 {
-		return fmt.Errorf("channels.telegram.speech_to_text.max_seconds %d: must be >= 0", c.MaxSeconds)
+		return fmt.Errorf("speech_to_text.max_seconds %d: must be >= 0", c.MaxSeconds)
 	}
 	if c.TimeoutSeconds < 0 {
-		return fmt.Errorf("channels.telegram.speech_to_text.timeout_seconds %d: must be >= 0", c.TimeoutSeconds)
+		return fmt.Errorf("speech_to_text.timeout_seconds %d: must be >= 0", c.TimeoutSeconds)
+	}
+	if c.ModelTimeoutSeconds < 0 {
+		return fmt.Errorf("speech_to_text.model_timeout_seconds %d: must be >= 0", c.ModelTimeoutSeconds)
 	}
 	return nil
 }
 
-// TelegramTTSConfig configures optional local Piper voice-note replies.
-type TelegramTTSConfig struct {
-	// Enabled turns voice-reply synthesis on (the transport wiring is the
-	// stretch phase — the config is accepted now for forward stability).
+// TTSConfig configures optional local Piper voice-note replies.
+type TTSConfig struct {
+	// Enabled turns voice-reply synthesis on.
 	Enabled *bool `json:"enabled,omitempty"`
 	// BinaryPath is the piper CLI. Default "piper" on PATH, with "piper-tts"
 	// (e.g. Arch piper-tts-bin) resolved as a fallback name.
@@ -651,44 +674,37 @@ type TelegramTTSConfig struct {
 	MaxChars int `json:"max_chars,omitempty"`
 }
 
+type TelegramTTSConfig = TTSConfig
+
 // validLangKey guards the voices-map keys: language codes plus the
 // reserved "default".
 var validLangKey = regexp.MustCompile(`^(default|[a-z]{2,3}(-[a-z0-9]{1,16})?)$`)
 
 // ApplyDefaults fills zero values with defaults. Call after load.
-func (c *TelegramTTSConfig) ApplyDefaults() {
+func (c *TTSConfig) ApplyDefaults() {
 	if c.MaxChars == 0 {
-		c.MaxChars = DefaultTelegramTTSMaxChars
+		c.MaxChars = DefaultTTSMaxChars
 	}
 }
 
-// Validate checks the TTS block for sane values: map keys must be language
-// codes or the reserved "default", and paths must be non-empty. A missing
-// "default" entry with enabled:true is NOT a load error — it degrades at
-// runtime like any other missing tooling (voice replies answer with an
-// actionable hint), matching the speech_to_text posture.
 // Validate checks the TTS block for sane values. The block is inert unless
-// enabled, so structural validation only runs when explicitly enabled —
-// the shipped example carries placeholder voices that must not break a
-// config that merely turns the Telegram channel on. When enabled, a
-// missing "default" voice is a load error: every voice reply would
-// otherwise degrade to hints.
-func (c *TelegramTTSConfig) Validate() error {
+// enabled, so structural validation only runs when explicitly enabled.
+func (c *TTSConfig) Validate() error {
 	if c.MaxChars < 0 {
-		return fmt.Errorf("channels.telegram.text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
+		return fmt.Errorf("text_to_speech.max_chars %d: must be >= 0", c.MaxChars)
 	}
 	if c.Enabled == nil || !*c.Enabled {
 		return nil
 	}
 	if c.Voices["default"] == "" {
-		return fmt.Errorf("channels.telegram.text_to_speech: enabled but voices has no \"default\" entry (set voices: {\"default\": \"/path/voice.onnx\"}, plus per-language entries to mirror spoken languages)")
+		return fmt.Errorf("text_to_speech: enabled but voices has no \"default\" entry (set voices: {\"default\": \"/path/voice.onnx\"}, plus per-language entries to mirror spoken languages)")
 	}
 	for lang, path := range c.Voices {
 		if !validLangKey.MatchString(lang) {
-			return fmt.Errorf("channels.telegram.text_to_speech.voices: invalid key %q (want a language code like en/de/ar, or \"default\")", lang)
+			return fmt.Errorf("text_to_speech.voices: invalid key %q (want a language code like en/de/ar, or \"default\")", lang)
 		}
 		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("channels.telegram.text_to_speech.voices: key %q has an empty path", lang)
+			return fmt.Errorf("text_to_speech.voices: key %q has an empty path", lang)
 		}
 	}
 	return nil
@@ -699,23 +715,17 @@ func (c *ChannelsConfig) ApplyDefaults() {
 	c.Telegram.ApplyDefaults()
 }
 
-// Validate checks ChannelsConfig. Like SidekickConfig, it only errors when a
-// channel is explicitly enabled but unusable, so a misconfigured block fails
-// fast instead of silently staying off.
+// Validate checks ChannelsConfig.
 func (c *ChannelsConfig) Validate() error {
 	return c.Telegram.Validate()
 }
 
-// ApplyDefaults normalizes the Telegram channel config (speech sub-block
-// defaults; issue #19).
+// ApplyDefaults normalizes the Telegram channel config.
 func (c *TelegramChannelConfig) ApplyDefaults() {
-	c.SpeechToText.ApplyDefaults()
-	c.TextToSpeech.ApplyDefaults()
 }
 
 // Validate errors when the Telegram channel is explicitly enabled without a
-// bot token, or when a speech sub-block carries negative bounds. Disabled/
-// absent configs are always valid.
+// bot token.
 func (c *TelegramChannelConfig) Validate() error {
 	if c == nil || c.Enabled == nil || !*c.Enabled {
 		return nil
@@ -723,10 +733,7 @@ func (c *TelegramChannelConfig) Validate() error {
 	if strings.TrimSpace(c.BotToken) == "" {
 		return fmt.Errorf("channels.telegram: enabled but bot_token is empty (set bot_token or HAKASE_TELEGRAM_BOT_TOKEN, or disable with enabled:false)")
 	}
-	if err := c.SpeechToText.Validate(); err != nil {
-		return err
-	}
-	return c.TextToSpeech.Validate()
+	return nil
 }
 
 // EnabledWithToken reports whether the Telegram channel should actually start:
@@ -1024,6 +1031,8 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_TRACING_HEADERS") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX") != "" ||
+		os.Getenv("HAKASE_STT_ENABLED") != "" ||
+		os.Getenv("HAKASE_TTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_STT_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED") != ""
 }
@@ -1275,22 +1284,41 @@ func LoadConfig(filePath string) (*Config, error) {
 	if v := os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Channels.Telegram.BotToken = v
 	}
-	if v := os.Getenv("HAKASE_TELEGRAM_STT_ENABLED"); v != "" {
-		b, err := parseEnvBool("HAKASE_TELEGRAM_STT_ENABLED", v)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Channels.Telegram.SpeechToText.Enabled = &b
-	}
-	if v := os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED"); v != "" {
-		b, err := parseEnvBool("HAKASE_TELEGRAM_TTS_ENABLED", v)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Channels.Telegram.TextToSpeech.Enabled = &b
-	}
 	cfg.Channels.ApplyDefaults()
 	if err := cfg.Channels.Validate(); err != nil {
+		return nil, err
+	}
+
+	// STT/TTS env overrides (supports HAKASE_STT_ENABLED / HAKASE_TTS_ENABLED, fallback to legacy HAKASE_TELEGRAM_*).
+	sttEnv := os.Getenv("HAKASE_STT_ENABLED")
+	if sttEnv == "" {
+		sttEnv = os.Getenv("HAKASE_TELEGRAM_STT_ENABLED")
+	}
+	if sttEnv != "" {
+		b, err := parseEnvBool("HAKASE_STT_ENABLED", sttEnv)
+		if err != nil {
+			return nil, err
+		}
+		cfg.SpeechToText.Enabled = &b
+	}
+	cfg.SpeechToText.ApplyDefaults()
+	if err := cfg.SpeechToText.Validate(); err != nil {
+		return nil, err
+	}
+
+	ttsEnv := os.Getenv("HAKASE_TTS_ENABLED")
+	if ttsEnv == "" {
+		ttsEnv = os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED")
+	}
+	if ttsEnv != "" {
+		b, err := parseEnvBool("HAKASE_TTS_ENABLED", ttsEnv)
+		if err != nil {
+			return nil, err
+		}
+		cfg.TextToSpeech.Enabled = &b
+	}
+	cfg.TextToSpeech.ApplyDefaults()
+	if err := cfg.TextToSpeech.Validate(); err != nil {
 		return nil, err
 	}
 

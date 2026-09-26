@@ -15,12 +15,15 @@ package speech
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"amurru/hakase/internal/util"
@@ -52,10 +55,10 @@ func (w *WhisperCLI) Availability() error {
 		return fmt.Errorf("speech: invalid whisper language %q (want \"auto\" or an ISO code like en/de/zh)", w.cfg.Language)
 	}
 	if _, err := exec.LookPath(w.cfg.FFMpegPath); err != nil {
-		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.speech_to_text.ffmpeg_path)")
+		return fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set speech_to_text.ffmpeg_path)")
 	}
 	if _, err := exec.LookPath(w.cfg.BinaryPath); err != nil {
-		return fmt.Errorf("speech: whisper-cli not found (build whisper.cpp — github.com/ggml-org/whisper.cpp: cmake -B build && cmake --build build — or set channels.telegram.speech_to_text.binary_path)")
+		return fmt.Errorf("speech: whisper-cli not found (build whisper.cpp — github.com/ggml-org/whisper.cpp: cmake -B build && cmake --build build — or set speech_to_text.binary_path)")
 	}
 	return nil
 }
@@ -91,14 +94,39 @@ func (w *WhisperCLI) Transcribe(ctx context.Context, audio []byte, mime string, 
 	// ffmpeg: any input container → 16 kHz mono 16-bit WAV for whisper.
 	ffbin, err := exec.LookPath(w.cfg.FFMpegPath)
 	if err != nil {
-		return Transcript{}, fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set channels.telegram.speech_to_text.ffmpeg_path)")
+		return Transcript{}, fmt.Errorf("speech: ffmpeg not found (install ffmpeg, or set speech_to_text.ffmpeg_path)")
 	}
 	wavPath := filepath.Join(dir, "audio.wav")
-	ffcmd := &exec.Cmd{Path: ffbin, Args: []string{ffbin,
-		"-y", "-i", inPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath,
-	}}
+	ffArgs := []string{ffbin,
+		"-y", "-i", inPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+	}
+	if w.cfg.MaxSeconds > 0 {
+		// Decode at most max_seconds+1s. That is enough to tell an
+		// over-long clip from an acceptable one while bounding decode CPU
+		// and disk on a hostile upload. The truncation is never observable:
+		// the length check below refuses such an input outright.
+		ffArgs = append(ffArgs, "-t", strconv.Itoa(w.cfg.MaxSeconds+1))
+	}
+	ffArgs = append(ffArgs, wavPath)
+	ffcmd := &exec.Cmd{Path: ffbin, Args: ffArgs}
 	if out, err := util.CombinedOutputContext(ctx, ffcmd); err != nil {
 		return Transcript{}, fmt.Errorf("speech: ffmpeg decode: %w: %s", err, tailRunOutput(string(out)))
+	}
+
+	// Enforce max_seconds on the decoded audio, not just on a
+	// caller-supplied duration. Some transports (the web dictation
+	// endpoint) have no duration to pass, and treating "unknown" as "fine"
+	// let an unbounded clip reach whisper inference. The decode above was
+	// already capped, so this measures the decoded WAV and refuses before
+	// the expensive step.
+	if w.cfg.MaxSeconds > 0 {
+		secs, err := wavDurationSeconds(wavPath)
+		if err != nil {
+			return Transcript{}, fmt.Errorf("speech: probe duration: %w", err)
+		}
+		if secs > float64(w.cfg.MaxSeconds) {
+			return Transcript{}, fmt.Errorf("%w: %gs > max_seconds %d", ErrTooLong, secs, w.cfg.MaxSeconds)
+		}
 	}
 
 	modelPath, err := w.ensureModel(ctx)
@@ -112,7 +140,7 @@ func (w *WhisperCLI) Transcribe(ctx context.Context, audio []byte, mime string, 
 	// (best-effort: voice mirroring degrades to the default voice).
 	whbin, err := exec.LookPath(w.cfg.BinaryPath)
 	if err != nil {
-		return Transcript{}, fmt.Errorf("speech: whisper-cli not found (build whisper.cpp — github.com/ggml-org/whisper.cpp: cmake -B build && cmake --build build — or set channels.telegram.speech_to_text.binary_path)")
+		return Transcript{}, fmt.Errorf("speech: whisper-cli not found (build whisper.cpp — github.com/ggml-org/whisper.cpp: cmake -B build && cmake --build build — or set speech_to_text.binary_path)")
 	}
 	base := filepath.Join(dir, "transcript")
 	whcmd := &exec.Cmd{Path: whbin, Args: []string{whbin,
@@ -139,6 +167,68 @@ func (w *WhisperCLI) Transcribe(ctx context.Context, audio []byte, mime string, 
 		Text:     text,
 		Language: detectedLanguage(base + ".json"),
 	}, nil
+}
+
+// wavDurationSeconds returns the playing time of a PCM WAV file in seconds,
+// by walking the RIFF chunk list to the data chunk and dividing its size by
+// the byte rate declared in the fmt chunk. Reading the declared rate (rather
+// than assuming 16 kHz mono 16-bit) keeps the result correct if the decode
+// step's format ever changes. Chunks are word-aligned, so an odd-sized chunk
+// is followed by one pad byte that must be skipped.
+//
+// The result is fractional on purpose: truncating to whole seconds would let
+// a 120.5s clip pass a max_seconds of 120.
+func wavDurationSeconds(path string) (float64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	hdr := make([]byte, 12)
+	if _, err := io.ReadFull(f, hdr); err != nil {
+		return 0, err
+	}
+	if string(hdr[0:4]) != "RIFF" || string(hdr[8:12]) != "WAVE" {
+		return 0, fmt.Errorf("not a RIFF/WAVE file")
+	}
+
+	byteRate := 0
+	for {
+		chdr := make([]byte, 8)
+		if _, err := io.ReadFull(f, chdr); err != nil {
+			return 0, fmt.Errorf("truncated chunk header: %w", err)
+		}
+		id := string(chdr[0:4])
+		size := int(binary.LittleEndian.Uint32(chdr[4:8]))
+		pad := size % 2
+
+		switch id {
+		case "fmt ":
+			if size < 16 {
+				return 0, fmt.Errorf("fmt chunk too short (%d bytes)", size)
+			}
+			body := make([]byte, size)
+			if _, err := io.ReadFull(f, body); err != nil {
+				return 0, fmt.Errorf("truncated fmt chunk: %w", err)
+			}
+			byteRate = int(binary.LittleEndian.Uint32(body[8:12]))
+			if pad == 1 {
+				if _, err := f.Seek(1, io.SeekCurrent); err != nil {
+					return 0, err
+				}
+			}
+		case "data":
+			if byteRate <= 0 {
+				return 0, fmt.Errorf("data chunk precedes a usable fmt chunk")
+			}
+			return float64(size) / float64(byteRate), nil
+		default:
+			if _, err := f.Seek(int64(size+pad), io.SeekCurrent); err != nil {
+				return 0, err
+			}
+		}
+	}
 }
 
 // nonSpeechRe matches a transcript that is ENTIRELY a whisper non-speech

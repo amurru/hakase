@@ -11,11 +11,8 @@ import (
 
 func writeTTSConfig(t *testing.T, tts string) (*Config, error) {
 	t.Helper()
-	// The TTS block only validates when the Telegram channel itself is
-	// enabled (an inert block can't be misconfigured), so the wrapper turns
-	// the channel on with a token.
 	path := filepath.Join(t.TempDir(), "config.json")
-	body := `{"provider":"openai","model_name":"m","api_key":"k","channels":{"telegram":{"enabled":true,"bot_token":"tok","text_to_speech":` + tts + `}}}`
+	body := `{"provider":"openai","model_name":"m","api_key":"k","text_to_speech":` + tts + `}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -34,8 +31,8 @@ func TestTTSVoicesDefaultRequiredWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid voices rejected: %v", err)
 	}
-	if cfg.Channels.Telegram.TextToSpeech.Voices["de"] != "/v/de.onnx" {
-		t.Fatalf("voices map not applied: %+v", cfg.Channels.Telegram.TextToSpeech.Voices)
+	if cfg.TextToSpeech.Voices["de"] != "/v/de.onnx" {
+		t.Fatalf("voices map not applied: %+v", cfg.TextToSpeech.Voices)
 	}
 }
 
@@ -55,7 +52,7 @@ func TestTTSDisabledWithoutVoicesIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disabled TTS with no voices must load: %v", err)
 	}
-	if cfg.Channels.Telegram.TextToSpeech.MaxChars != DefaultTelegramTTSMaxChars {
-		t.Fatalf("defaults not applied: %+v", cfg.Channels.Telegram.TextToSpeech)
+	if cfg.TextToSpeech.MaxChars != DefaultTelegramTTSMaxChars {
+		t.Fatalf("defaults not applied: %+v", cfg.TextToSpeech)
 	}
 }
