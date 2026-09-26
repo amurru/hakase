@@ -263,6 +263,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HAKASE_HOME"
+          # `hakase web` refuses to boot without a config file (Quick Start
+          # step 1: `cp config.json.example config.json`), so this step has to
+          # lay one down or the server exits with "failed to load config"
+          # before binding the port. Every other field in the example is
+          # optional, which is all /api/health needs.
+          cp config.json.example config.json
           printf 'admin\nsmoke-test-password\nsmoke-test-password\n' | ./hakase.exe auth set-password
           ./hakase.exe web --port 18080 &
           WEB_PID=$!
