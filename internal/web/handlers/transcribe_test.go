@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -201,6 +202,78 @@ func TestTranscribeHandler_HonorsSTTTimeout(t *testing.T) {
 	// from "waited for the process"; it is not a latency assertion.
 	if elapsed > 6*time.Second {
 		t.Fatalf("transcription was not bounded by timeout_seconds: took %s (stall is 15s)", elapsed)
+	}
+}
+
+// TestTranscribeHandler_ModelErrorDoesNotLeakConfig pins CWE-209 on the model
+// download path. ensureModel's errors embed the configured model_url_base and
+// on-disk model paths, and any authenticated client can hit this endpoint, so
+// the response must not carry them. The failure is forced with a server that
+// returns 500, which makes ensureModel build exactly such an error.
+func TestTranscribeHandler_ModelErrorDoesNotLeakConfig(t *testing.T) {
+	skipWindows(t)
+	home := isolateHome(t)
+	t.Setenv("HAKASE_HOME", home)
+
+	// Refuse the download, and make the host part of the URL distinctive so
+	// the assertion below cannot pass by accident.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ffmpeg := filepath.Join(home, "ffmpeg-noop")
+	writeFakeBinary(t, ffmpeg, "#!/bin/sh\nexec true\n")
+	whisperBin := filepath.Join(home, "whisper-cli")
+	writeFakeBinary(t, whisperBin, "#!/bin/sh\nexit 0\n")
+
+	modelsDir := filepath.Join(home, "models")
+	cfg := fmt.Sprintf(`{
+		"speech_to_text": {
+			"model": "base-q5_1",
+			"language": "auto",
+			"binary_path": %q,
+			"ffmpeg_path": %q,
+			"models_dir": %q,
+			"model_url_base": %q,
+			"max_seconds": 120,
+			"timeout_seconds": 5,
+			"model_timeout_seconds": 30
+		}
+	}`, whisperBin, ffmpeg, modelsDir, srv.URL)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "test.webm")
+	if err != nil {
+		t.Fatalf("failed to create form file: %v", err)
+	}
+	if _, err := part.Write([]byte("fake audio content")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/transcribe", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+
+	Transcribe(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when the model download fails, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, secret := range []string{srv.URL, "ggml-base-q5_1.bin", modelsDir, "base-q5_1"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("503 body leaked %q: %s", secret, got)
+		}
+	}
+	// The message must still say something actionable about the failure.
+	if !strings.Contains(got, "speech model unavailable") {
+		t.Fatalf("expected a fixed client-safe message, got: %s", got)
 	}
 }
 

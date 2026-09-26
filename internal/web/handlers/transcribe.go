@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"amurru/hakase/internal/config"
@@ -143,10 +144,17 @@ func Transcribe(w http.ResponseWriter, r *http.Request) {
 	modelErr := whisper.EnsureModel(dctx)
 	dcancel()
 	if modelErr != nil {
+		// The download error can name the configured model_url_base and
+		// on-disk model paths, which is environment detail the client does
+		// not need. Keep it server-side (log.Printf is this package's
+		// convention) and return a fixed message. Unlike the Availability
+		// hint below, which names config keys the operator chose, this one
+		// can leak an internal mirror hostname to any authenticated client.
+		log.Printf("transcribe: speech model unavailable: %v", modelErr)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"error": modelErr.Error(),
+			"error": "speech model unavailable - see server logs",
 		})
 		return
 	}
