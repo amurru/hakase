@@ -32,6 +32,21 @@ const voiceSetupHint = "🎙 Voice notes are not transcribed yet.\n\nEnable voic
 type transcriber interface {
 	Transcribe(ctx context.Context, audio []byte, mime string, durationSec int) (speech.Transcript, error)
 	Availability() error
+	// EnsureModel warms the ggml model on disk under the caller's budget.
+	// Transcribe fetches it too, but by then it is already running under the
+	// transcription timeout, which a multi-hundred-MiB pull cannot always
+	// meet - so handleVoice calls this first, on its own larger budget.
+	EnsureModel(ctx context.Context) error
+}
+
+// modelDownloadBudget returns the budget for the first-use model download. It
+// is deliberately much larger than timeout_seconds, and fails closed to the
+// default when unset, mirroring the web dictation handler.
+func (b *Bot) modelDownloadBudget() int {
+	if b.stt.ModelTimeoutSeconds > 0 {
+		return b.stt.ModelTimeoutSeconds
+	}
+	return config.DefaultSTTModelTimeout
 }
 
 // handleVoice runs the inbound voice pipeline.
@@ -57,6 +72,22 @@ func (b *Bot) handleVoice(ctx context.Context, c conv, m *models.Message) {
 	if err != nil {
 		b.log("voice download failed: %v", err)
 		b.sendText(ctx, c, "⚠️ Could not download the voice note: "+esc(err.Error()), nil, false)
+		return
+	}
+
+	// Warm the model before the transcription budget starts, on its own
+	// (larger) budget - see modelDownloadBudget. When the model is already on
+	// disk this is a single os.Stat, so it costs nothing per message.
+	mctx, mcancel := speech.WithTimeout(ctx, b.modelDownloadBudget())
+	modelErr := b.transcriber.EnsureModel(mctx)
+	mcancel()
+	if modelErr != nil {
+		// The download error can name the configured model_url_base and
+		// on-disk model paths, and a chat can have members the operator does
+		// not intend to show internal hosts to, so log it and reply with a
+		// fixed line. Same reasoning as the web handler's 503.
+		b.log("voice model unavailable: %v", modelErr)
+		b.sendText(ctx, c, "🎙 The speech model isn't available yet - check the server logs, then try again.", nil, false)
 		return
 	}
 

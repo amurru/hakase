@@ -10,6 +10,11 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Telegram voice notes ran the first-use model download under the transcription timeout** - `speech_to_text.timeout_seconds` (180s) is sized for a short decode plus inference, but `Transcribe` also fetches the ggml model on first use, and that is a network transfer of tens to hundreds of MiB. On a slow connection a first voice note could never finish: the download was killed at 180s and every retry started over. The voice path now warms the model under `speech_to_text.model_timeout_seconds` (default 1800, added for the web dictation endpoint in alpha.6) before the transcription budget starts, so `Transcribe`'s internal lookup short-circuits on the file already being on disk. When the model is present this costs one `os.Stat` per message. Mirrors the web dictation handler, so the two transports now behave the same.
+- **A failed model download leaked internal hosts into the Telegram chat** - the download error embeds the configured `speech_to_text.model_url_base` and on-disk model paths (e.g. `downloading whisper model "base-q5_1" from http://mirror.internal/...`), and it was being echoed into the chat. A chat is not a single-operator surface, so the detail now goes to the server log and the reply is a fixed line pointing there - the same property the web endpoint's 503 got in alpha.6. The pre-existing `Availability` hint is unchanged, since it names config keys the operator chose rather than environment internals.
+
 ## [0.1.0-alpha.6] - 2026-09-25
 
 ### Added

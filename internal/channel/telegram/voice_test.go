@@ -5,11 +5,13 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"amurru/hakase/internal/agentrun"
 	"amurru/hakase/internal/config"
@@ -24,6 +26,13 @@ type fakeTranscriber struct {
 	transcript string
 	lang       string
 	err        error
+	// modelErr fails the model warm-up.
+	modelErr error
+	// sawModelBudget records how much time EnsureModel's context was given,
+	// so a test can pin which budget the download runs under.
+	sawModelBudget time.Duration
+	// sawModelBudgetSet distinguishes "no deadline" from "0".
+	sawModelBudgetSet bool
 }
 
 func (f *fakeTranscriber) Transcribe(_ context.Context, _ []byte, _ string, _ int) (speech.Transcript, error) {
@@ -31,6 +40,14 @@ func (f *fakeTranscriber) Transcribe(_ context.Context, _ []byte, _ string, _ in
 }
 
 func (f *fakeTranscriber) Availability() error { return nil }
+
+func (f *fakeTranscriber) EnsureModel(ctx context.Context) error {
+	if dl, ok := ctx.Deadline(); ok {
+		f.sawModelBudget = time.Until(dl)
+		f.sawModelBudgetSet = true
+	}
+	return f.modelErr
+}
 
 // recordingDriver captures the prompt content handed to RunTurn.
 type recordingDriver struct {
@@ -190,4 +207,80 @@ func TestVoiceBusyAndFailures(t *testing.T) {
 			t.Fatalf("expected the nothing-heard message, sends: %+v", sends)
 		}
 	})
+}
+
+// TestVoiceModelDownloadUsesItsOwnBudget pins the separation on the Telegram
+// path, mirroring the web handler. The first-use ggml pull is tens to hundreds
+// of MiB over the network, so running it under timeout_seconds would leave a
+// slow connection permanently unable to finish a first voice note.
+func TestVoiceModelDownloadUsesItsOwnBudget(t *testing.T) {
+	tr := &fakeTranscriber{transcript: "hello"}
+	b, _, _ := newVoiceTestBot(t, tr)
+	b.stt = config.TelegramSTTConfig{MaxSeconds: 120, TimeoutSeconds: 5, ModelTimeoutSeconds: 900}
+
+	b.handleVoice(context.Background(), rootConv(200), voiceMessage(200, 5))
+
+	if !tr.sawModelBudgetSet {
+		t.Fatal("EnsureModel was called with no deadline, so the download is unbounded")
+	}
+	// Generous tolerance: this only has to distinguish the model budget from
+	// the 5s transcription budget.
+	if tr.sawModelBudget < 800*time.Second {
+		t.Fatalf("model download got %s of budget, want ~900s (not the 5s transcription timeout)", tr.sawModelBudget)
+	}
+}
+
+// TestVoiceModelDownloadBudgetFailsClosed pins the default. model_timeout_seconds
+// is optional, and WithTimeout treats 0 as "no wrapper", so an unset value
+// must not mean an unbounded download.
+func TestVoiceModelDownloadBudgetFailsClosed(t *testing.T) {
+	tr := &fakeTranscriber{transcript: "hello"}
+	b, _, _ := newVoiceTestBot(t, tr)
+	// ModelTimeoutSeconds deliberately left at 0.
+	b.stt = config.TelegramSTTConfig{MaxSeconds: 120, TimeoutSeconds: 5}
+
+	b.handleVoice(context.Background(), rootConv(200), voiceMessage(200, 5))
+
+	if !tr.sawModelBudgetSet {
+		t.Fatal("unset model_timeout_seconds left the download unbounded")
+	}
+	if tr.sawModelBudget < 1500*time.Second {
+		t.Fatalf("expected the %ds default, got %s", config.DefaultSTTModelTimeout, tr.sawModelBudget)
+	}
+}
+
+// TestVoiceModelDownloadFailureDoesNotLeak pins the same CWE-209 property the
+// web handler has: the download error embeds the configured model_url_base and
+// on-disk model paths, and a chat can contain people the operator would not
+// show internal hosts to. The detail goes to the log, not the chat.
+func TestVoiceModelDownloadFailureDoesNotLeak(t *testing.T) {
+	tr := &fakeTranscriber{
+		transcript: "hello",
+		modelErr: errors.New(`speech: downloading whisper model "base-q5_1" from ` +
+			`http://mirror.internal.corp/ggml-base-q5_1.bin: dial timeout`),
+	}
+	b, api, _ := newVoiceTestBot(t, tr)
+	b.stt = config.TelegramSTTConfig{MaxSeconds: 120, TimeoutSeconds: 5, ModelTimeoutSeconds: 900}
+
+	b.handleVoice(context.Background(), rootConv(200), voiceMessage(200, 5))
+
+	sends := api.sends()
+	if len(sends) == 0 {
+		t.Fatal("expected a reply when the model download fails")
+	}
+	for _, s := range sends {
+		if strings.Contains(s.text, "mirror.internal.corp") {
+			t.Fatalf("chat reply leaked the model URL: %q", s.text)
+		}
+	}
+	// The operator still gets an actionable line, without the internals.
+	var found bool
+	for _, s := range sends {
+		if strings.Contains(s.text, "server logs") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a reply pointing at the server logs, got: %v", sends)
+	}
 }
