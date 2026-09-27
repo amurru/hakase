@@ -776,3 +776,120 @@ func removeString(list []string, target string) []string {
 	}
 	return out
 }
+
+// ServerDiagnostic is one server's measured reachability, as reported by
+// Diagnose. Unlike MCPServerStatus it carries the timings, because "is it up"
+// is not the question that matters - "how long does Tools() block on it" is,
+// since ADK calls Tools() before every model call.
+type ServerDiagnostic struct {
+	Name      string
+	Type      string
+	Transport string
+	Disabled  bool
+	ToolCount int
+	OK        bool
+	Error     string
+
+	// Dial is the wall time a fresh connect + tools/list took. It bypasses
+	// the tool-list cache and the failure cooldown so it reports the real
+	// cost rather than a warm reading.
+	Dial time.Duration
+	// Budget is the ceiling the dial was held to (toolsListBudget).
+	Budget time.Duration
+	// Cached reports that a healthy result was served from the tool-list
+	// cache instead of re-dialled, which is the steady state for a working
+	// server.
+	Cached bool
+}
+
+// StatusWord is a short human label for the server's state, for CLI output.
+func (d ServerDiagnostic) StatusWord() string {
+	switch {
+	case d.Disabled:
+		return "disabled"
+	case !d.OK:
+		return "UNREACHABLE"
+	case d.Cached:
+		return "ok (cached)"
+	default:
+		return "ok"
+	}
+}
+
+// Diagnose measures every configured server once and reports how long each
+// dial took, bypassing the tool-list cache and the failure cooldown. It exists
+// because a trace (logs/hakase-debug-20260927T151220) showed a single
+// unreachable server consuming 155s of a 191s turn, and nothing in the UI
+// distinguished "connected slowly" from "unreachable".
+//
+// Servers are probed sequentially and each is bounded by its list budget, so
+// the whole call is bounded by len(servers) * budget.
+func (m *MCPServerManager) Diagnose(ctx agent.ReadonlyContext) []ServerDiagnostic {
+	m.mu.Lock()
+	servers := make([]*managedServer, 0, len(m.servers))
+	for _, ms := range m.servers {
+		servers = append(servers, ms)
+	}
+	m.mu.Unlock()
+	sort.Slice(servers, func(i, j int) bool { return servers[i].name < servers[j].name })
+
+	out := make([]ServerDiagnostic, 0, len(servers))
+	for _, ms := range servers {
+		d := ServerDiagnostic{
+			Name:      ms.name,
+			Transport: serverTransportLabel(ms.cfg),
+			Disabled:  ms.cfg != nil && ms.cfg.Disabled,
+			Budget:    ms.toolsListBudget(),
+		}
+		if ms.cfg != nil {
+			d.Type = ms.cfg.Type
+		}
+		switch {
+		case d.Disabled:
+			out = append(out, d)
+			continue
+		case ms.toolset == nil:
+			d.Error = "failed to build toolset (check the command or URL in config)"
+			out = append(out, d)
+			continue
+		}
+
+		// Warm check first: if a valid cached list is already there, the
+		// steady-state cost of this server is zero and re-dialling would only
+		// measure the network again.
+		ms.mu.Lock()
+		warm := ms.toolsCachedOnce && time.Since(ms.cachedToolsAt) < toolListTTL
+		cachedTools := ms.cachedTools
+		ms.mu.Unlock()
+		if warm {
+			d.OK, d.Cached, d.ToolCount = true, true, len(cachedTools)
+			out = append(out, d)
+			continue
+		}
+
+		start := time.Now()
+		tools, err := ms.toolsCached(ctx, start)
+		d.Dial = time.Since(start)
+		if err != nil {
+			d.Error = err.Error()
+		} else {
+			d.OK, d.ToolCount = true, len(tools)
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// serverTransportLabel renders a human-readable endpoint for diagnostics.
+func serverTransportLabel(cfg *config.MCPServerConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.URL != "" {
+		return cfg.URL
+	}
+	if len(cfg.Command) > 0 {
+		return strings.Join(cfg.Command, " ")
+	}
+	return ""
+}
