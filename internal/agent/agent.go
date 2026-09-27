@@ -1070,14 +1070,19 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 	}
 
 	var sb strings.Builder
+	// The loading instructions are stated once here rather than repeated per
+	// entry. Repeating a 70-byte sentence 148 times cost ~10 KB of the
+	// per-turn prefix and told the model nothing it had not read on line one.
 	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
+	if len(mdEnabled) > 0 {
+		sb.WriteString("Markdown skills - to read one, call 'load_markdown_skill' with its name; the entry below is an index, not the instructions.\n")
+	}
 	for _, s := range pythonSkills {
 		sb.WriteString(
 			fmt.Sprintf(
-				"- Skill: '%s'\n  Description: %s\n  Import Usage: `from skills.%s import ...` or `import %s`\n\n",
+				"- %s (python): %s  Import: `from skills.%s import ...`\n",
 				s.Name,
 				hctx.WrapUntrustedData(s.Description),
-				s.Name,
 				s.Name,
 			),
 		)
@@ -1085,11 +1090,9 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 	for _, s := range mdEnabled {
 		sb.WriteString(
 			fmt.Sprintf(
-				"- Skill: '%s' (markdown)\n  Description: %s\n  Location: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
+				"- %s: %s\n",
 				s.Frontmatter.Name,
 				hctx.WrapUntrustedData(s.Frontmatter.Description),
-				s.Source,
-				s.Frontmatter.Name,
 			),
 		)
 	}
