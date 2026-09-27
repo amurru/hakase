@@ -8,7 +8,7 @@ During the alpha phase (0.x), breaking changes may land in any minor release;
 the web UI and `config.json` formats aim for backward compatibility but are not
 guaranteed stable until 1.0.
 
-## [Unreleased]
+## [0.1.0-alpha.8] - 2026-09-27
 
 ### Fixed
 
@@ -25,6 +25,8 @@ guaranteed stable until 1.0.
   - the time reminder rendered the wall clock to the second and was cached by the minute, so a long-running session lost its entire conversation cache once a minute. It now renders the calendar date and is cached by day. Nothing needs the exact time - `cronjob` takes relative forms the server resolves, and `system_exec` can read the clock.
   - the skill index was 58 KB of the 69 KB prompt, mostly waste: the "call `load_markdown_skill` ..." sentence repeated once per skill, and every entry advertised an absolute path the model never used. With the 148 skills this repo ships, the prompt drops from 69,024 to 44,278 bytes. Descriptions are unchanged and the per-entry `<UNTRUSTED_DATA>` marker is a security control, so neither was touched.
   - MCP tool lists are now cached for 60s instead of being re-fetched before every model call. ADK calls `Tools()` per turn and the web-search fallback probes it a second time, so a healthy server was paying a connect+list round trip twice per turn - a process spawn for stdio, a network round trip for HTTP. Failures are deliberately not cached, so a server that comes back is picked up on the next probe rather than staying failed for the TTL; the existing cooldown gate still paces retries, and a manual reconnect invalidates the cache.
+
+## [Unreleased]
 
 ## [0.1.0-alpha.7] - 2026-09-27
 
