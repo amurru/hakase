@@ -10,8 +10,11 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7] - 2026-09-27
+
 ### Changed
 
+- **Releases are now published as prereleases** - every release up to and including `v0.1.0-alpha.6` was created without `--prerelease`, so GitHub treated a `0.x` alpha as the latest stable release: `/releases/latest` resolved to an alpha and upgrade tooling would follow it as though it were stable. New tags are flagged at creation, and `v0.1.0-alpha.6` was re-flagged. **Consequence:** `/releases/latest` now resolves to the newest *stable* release rather than the newest alpha, so anything following that redirect - a script, a `curl .../releases/latest/...` URL, a packaging helper - gets `v0.1.0-alpha.5` until a non-prerelease ever ships. Pin a tag or a version instead if you want the current alpha. Nothing in this repository relied on that redirect (the AUR `PKGBUILD` pins a tag URL), and the flag applies only at creation, so re-running a release for an existing tag will not re-flag it.
 - **mermaid 11.16.1 -> 12.0.0, and diagrams now render differently** - a deliberate major upgrade, but it carries three changes worth knowing about before you file a bug. `useMermaid.ts` configures only `startOnLoad` and `securityLevel`, so all three of mermaid 12's new defaults apply: (1) **the default layout flips from dagre to ELK** for flowchart, state, class, ER, requirement and use-case diagrams, which upstream describes as changing how existing diagrams look; (2) **the default theme becomes `redux-color` and the default look `neo`** for ten diagram types including sequence and state, so those change appearance too; (3) **the browser floor rises to Safari 17.4+ / ES2024** and Node 22.12+ (mermaid is lazily imported, so this only affects a client that actually renders a diagram, not the rest of the web UI). ELK ships bundled now, so no extra install; its code is fetched only when a diagram uses it, and the tiny build still falls back to dagre. The previous appearance is one line away if it turns out to be unwanted: `layout: 'dagre'`, `theme: 'default'` and `look: 'classic'` in `mermaidOptions`. Unaffected by this upgrade: the Visual Execution Canvas, which is a Vue Flow graph rather than mermaid.
 
 ### Fixed
