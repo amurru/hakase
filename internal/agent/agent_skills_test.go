@@ -103,23 +103,29 @@ func TestGetSkillsPromptMixed(t *testing.T) {
 	if got := strings.Count(prompt, "AVAILABLE PRE-LEARNED SKILLS:"); got != 1 {
 		t.Errorf("expected exactly 1 header, got %d\nprompt:\n%s", got, prompt)
 	}
+	// Entries are one line each: name, description, and how to load. The
+	// per-entry load sentence and the absolute Location were removed as
+	// prefill waste - see skills_index_size_test.go.
 	for _, want := range []string{
-		"- Skill: 'render_card'\n  Description: \n<UNTRUSTED_DATA>\nRenders an HTML card to PNG\n</UNTRUSTED_DATA>\n\n  Import Usage: `from skills.render_card import ...` or `import render_card`\n\n",
-		"- Skill: 'extract_pdf'\n  Description: \n<UNTRUSTED_DATA>\nExtracts tables from PDFs\n</UNTRUSTED_DATA>\n\n  Import Usage: `from skills.extract_pdf import ...` or `import extract_pdf`\n\n",
+		"- render_card (python): \n<UNTRUSTED_DATA>\nRenders an HTML card to PNG\n</UNTRUSTED_DATA>\n  Import: `from skills.render_card import ...`",
+		"- extract_pdf (python): \n<UNTRUSTED_DATA>\nExtracts tables from PDFs\n</UNTRUSTED_DATA>\n  Import: `from skills.extract_pdf import ...`",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing python entry %q\nprompt:\n%s", want, prompt)
 		}
 	}
 	for _, want := range []string{
-		"- Skill: 'data-cleaner' (markdown)",
-		"  Description: \n<UNTRUSTED_DATA>\nCleans raw datasets\n</UNTRUSTED_DATA>\n",
-		"  Location: " + filepath.Join(sandbox, ".agents", "skills"),
-		"  Load: call 'load_markdown_skill' with name 'data-cleaner' to read full instructions",
+		"- data-cleaner: \n<UNTRUSTED_DATA>\nCleans raw datasets\n</UNTRUSTED_DATA>",
+		// The loading instruction is stated once in the header, not per entry.
+		"call 'load_markdown_skill' with its name",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing markdown fragment %q\nprompt:\n%s", want, prompt)
 		}
+	}
+	// The absolute path is no longer advertised: the model loads by name.
+	if strings.Contains(prompt, filepath.Join(sandbox, ".agents", "skills")) {
+		t.Errorf("prompt still advertises the skills directory path\nprompt:\n%s", prompt)
 	}
 	if len(msgs) != 0 {
 		t.Errorf("expected no warnings, got %v", msgs)
@@ -148,13 +154,13 @@ func TestGetSkillsPromptCollision(t *testing.T) {
 
 	prompt := getSkillsPrompt(mdSkills, log)
 
-	if strings.Contains(prompt, "Import Usage: `from skills.shared import ...`") {
+	if strings.Contains(prompt, "from skills.shared import ...") {
 		t.Errorf("colliding python entry must be omitted from prompt:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "- Skill: 'shared' (markdown)") {
+	if !strings.Contains(prompt, "- shared: ") {
 		t.Errorf("markdown entry must win in prompt:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "- Skill: 'plain-skill'") {
+	if !strings.Contains(prompt, "- plain-skill (python): ") {
 		t.Errorf("non-colliding python entry must stay in prompt:\n%s", prompt)
 	}
 	want := "[skills] Skipping Python skill 'shared' in prompt: collides with markdown skill"
@@ -291,7 +297,7 @@ func TestBuildOrchestratorInstruction(t *testing.T) {
 
 	for _, want := range []string{
 		"AVAILABLE PRE-LEARNED SKILLS:",
-		"- Skill: 'data-cleaner' (markdown)",
+		"- data-cleaner: ",
 		"load_markdown_skill",
 		"web_researcher",
 		"code_interpreter",
@@ -420,7 +426,7 @@ func TestGetSkillsPromptDisabledCollision(t *testing.T) {
 
 	// Disabling the markdown skill lifts its shadow: the python twin becomes
 	// visible again.
-	if !strings.Contains(prompt, "- Skill: 'shared'") {
+	if !strings.Contains(prompt, "- shared (python): ") {
 		t.Errorf("python twin should be visible once the markdown skill is disabled:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "(markdown)") {

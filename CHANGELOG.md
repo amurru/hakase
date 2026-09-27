@@ -10,6 +10,22 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A single unreachable MCP server could stall every model call.** `Tools()` runs before every model call, and two faults compounded on that path. The failure cooldown was armed with a timestamp captured *before* the dial, so for any server slower to fail than the window being armed, the cooldown was written into the past and the backoff never engaged - dead servers were re-dialled on every turn. And `timeout_ms` bounded a single attempt while the go-sdk retries a failed initialize 5 times and then sleeps through a backoff that ignores context cancellation, so it bounded the wrong thing. A traced run of "what's the real price of crypto trading?" took **191 seconds, 155 of them (81%) spent dialling one unreachable server, twice in the same turn.** The cooldown is now armed from when the failure was observed and floored at the attempt's own duration, and the whole SDK call is raced against a 6s list budget and abandoned when it expires. Measured on the machine the regression came from: that server takes **82.6s to fail before, 6.0s after** - and once per session rather than once per model call. An explicit larger `timeout_ms` is still honoured rather than truncated.
+- **Simple questions cost several model round trips before the first word of an answer.** The orchestrator's instruction required two knowledge lookups "at the start of a session, before planning", a `list_tasks` preamble for task-shaped work, and up to four lookups before a filesystem search for an artifact location. Every tool call is a full round trip, so a one-line question paid several turns of pure overhead - the model was complying, not misbehaving. Those lookups are now reactive: consult prior lessons when the task resembles something previously hard-won or you are repeating an approach that failed, recall a note when the question is about a topic you have notes on, open the task board for genuinely multi-step work. The capabilities and the useful guidance are unchanged, including checking the task board first for artifact paths - it just no longer fans out to four tools before answering.
+
+### Added
+
+- **`hakase mcp doctor`** - measures every configured MCP server's tool count and dial time, bypassing the cache and the failure cooldown so it reports the real cost. The dial time is the number that matters, and nothing previously distinguished "connected slowly" from "unreachable". Servers already served from the tool-list cache report as `ok (cached)`, which is the steady state for a healthy one. It also surfaces servers whose toolset failed to build, which `Tools()` otherwise skips silently.
+
+### Changed
+
+- **The system prompt is ~36% smaller, and no longer re-invalidates the prompt cache every minute.** Three separate costs, all paid on every single model call since the system prompt is the request prefix:
+  - the time reminder rendered the wall clock to the second and was cached by the minute, so a long-running session lost its entire conversation cache once a minute. It now renders the calendar date and is cached by day. Nothing needs the exact time - `cronjob` takes relative forms the server resolves, and `system_exec` can read the clock.
+  - the skill index was 58 KB of the 69 KB prompt, mostly waste: the "call `load_markdown_skill` ..." sentence repeated once per skill, and every entry advertised an absolute path the model never used. With the 148 skills this repo ships, the prompt drops from 69,024 to 44,278 bytes. Descriptions are unchanged and the per-entry `<UNTRUSTED_DATA>` marker is a security control, so neither was touched.
+  - MCP tool lists are now cached for 60s instead of being re-fetched before every model call. ADK calls `Tools()` per turn and the web-search fallback probes it a second time, so a healthy server was paying a connect+list round trip twice per turn - a process spawn for stdio, a network round trip for HTTP. Failures are deliberately not cached, so a server that comes back is picked up on the next probe rather than staying failed for the TTL; the existing cooldown gate still paces retries, and a manual reconnect invalidates the cache.
+
 ## [0.1.0-alpha.7] - 2026-09-27
 
 ### Changed

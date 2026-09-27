@@ -18,6 +18,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -28,7 +34,7 @@ import (
 // used without the main wiring), `mcp serve --agent` is a usage error.
 var MCPAgentServeFn func(args []string) int
 
-// RunMCPCLI implements the mcp subcommand (serve).
+// RunMCPCLI implements the mcp subcommand (serve, doctor).
 func RunMCPCLI(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		mcpUsage()
@@ -37,6 +43,8 @@ func RunMCPCLI(args []string) int {
 	switch args[0] {
 	case "serve":
 		return runMCPServe(args[1:])
+	case "doctor":
+		return runMCPDoctor(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "hakase: unknown mcp subcommand %q\n\n", args[0])
 		mcpUsage()
@@ -44,18 +52,124 @@ func RunMCPCLI(args []string) int {
 	}
 }
 
+// runMCPDoctor measures every configured MCP server: how many tools it
+// exposes, and how long the dial takes. The dial time is the number that
+// matters - Tools() runs before every model call, so an unreachable server is
+// charged to the first turn of every session.
+func runMCPDoctor(args []string) int {
+	fs := flag.NewFlagSet("mcp doctor", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: loading config: %v\n", err)
+		return 1
+	}
+	mgr, err := mcp.NewMCPServerManager(cfg, func(s string) { fmt.Fprintln(os.Stderr, s) })
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: building mcp manager: %v\n", err)
+		return 1
+	}
+
+	diags := mgr.Diagnose(mcpDoctorCtx{})
+
+	if len(diags) == 0 {
+		fmt.Println("No MCP servers configured. Add them under \"mcp\": {\"servers\": {...}} in config.json")
+		return 0
+	}
+
+	nameW, kindW, dialW := 4, 8, 6
+	for _, d := range diags {
+		if n := len(d.Name); n > nameW {
+			nameW = n
+		}
+		if k := len(d.StatusWord()); k > kindW {
+			kindW = k
+		}
+		if s := len(d.Dial.Round(time.Millisecond).String()); s > dialW {
+			dialW = s
+		}
+	}
+
+	fmt.Printf("%-*s  %-*s  %8s  %6s  %s\n", nameW, "SERVER", kindW, "STATUS", "TOOLS", "DIAL", "ENDPOINT")
+	var unreachable []string
+	for _, d := range diags {
+		tools := "-"
+		if !d.Disabled && d.ToolCount > 0 {
+			tools = strconv.Itoa(d.ToolCount)
+		}
+		dial := "-"
+		if !d.Disabled && d.ToolCount >= 0 && d.Dial > 0 {
+			dial = d.Dial.Round(time.Millisecond).String()
+		}
+		fmt.Printf("%-*s  %-*s  %8s  %6s  %s\n", nameW, d.Name, kindW, d.StatusWord(), tools, dial, d.Transport)
+		if !d.OK && !d.Disabled {
+			unreachable = append(unreachable, d.Name)
+		}
+	}
+
+	if len(unreachable) > 0 {
+		fmt.Printf("\n%d of %d enabled servers unreachable: %s\n", len(unreachable), len(diags), strings.Join(unreachable, ", "))
+		fmt.Println("Tools() runs before every model call, so each unreachable server is charged to the")
+		fmt.Println("first turn of every session (up to its list budget), then skipped by the failure")
+		fmt.Println("cooldown. Fix or remove them in config.json / ~/.hakase/mcp.json.")
+		for _, d := range diags {
+			if !d.OK && !d.Disabled && d.Error != "" {
+				fmt.Printf("  %s: %s\n", d.Name, truncate(d.Error, 160))
+			}
+		}
+	}
+	return 0
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// mcpDoctorCtx is a minimal ReadonlyContext for a command that never runs an
+// agent: Diagnose only needs somewhere to hang a deadline and the ADK
+// accessors the MCP client reads.
+type mcpDoctorCtx struct {
+	context.Context
+}
+
+func (mcpDoctorCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (mcpDoctorCtx) Done() <-chan struct{}       { return nil }
+func (mcpDoctorCtx) Err() error                  { return nil }
+func (mcpDoctorCtx) Value(any) any               { return nil }
+
+func (mcpDoctorCtx) UserContent() *genai.Content          { return nil }
+func (mcpDoctorCtx) InvocationID() string                 { return "mcp-doctor" }
+func (mcpDoctorCtx) AgentName() string                    { return "mcp-doctor" }
+func (mcpDoctorCtx) ReadonlyState() session.ReadonlyState { return nil }
+func (mcpDoctorCtx) UserID() string                       { return "" }
+func (mcpDoctorCtx) AppName() string                      { return "hakase" }
+func (mcpDoctorCtx) SessionID() string                    { return "" }
+func (mcpDoctorCtx) Branch() string                       { return "" }
+
 func mcpUsage() {
 	fmt.Fprint(os.Stderr, `Usage: hakase mcp serve [--agent]
+       hakase mcp doctor
 
-Serve hakase over MCP (stdio transport).
-Point your MCP host at: hakase mcp serve
+  serve   Serve hakase over MCP (stdio transport).
+          Point your MCP host at: hakase mcp serve
 
-  (default)    skills only: skill:// resources (SEP-2640)
-  --agent      also expose hakase runs: the run, list_sessions and
-               get_session tools drive the full agent (model config,
-               sandbox, approval gates via MCP elicitation)
+            (default)    skills only: skill:// resources (SEP-2640)
+            --agent      also expose hakase runs: the run, list_sessions and
+                         get_session tools drive the full agent (model config,
+                         sandbox, approval gates via MCP elicitation)
 
-Resources:
+  doctor  Measure every configured MCP server: tool count and dial time.
+          Tools() runs before every model call, so an unreachable server is
+          charged to the first turn of every session. Use this to find one.
+
+Resources (serve):
   skill://index.json            index of every exposed skill
   skill://<name>/SKILL.md       a skill's entry point
   skill://<name>/<file>         supporting files of a skill
