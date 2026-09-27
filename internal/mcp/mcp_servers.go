@@ -80,12 +80,72 @@ type managedServer struct {
 	// the exponential backoff and is reset on a successful connect.
 	failedUntil time.Time
 	consecFails int
+
+	// Tool-list cache. Tools() runs before EVERY model call, and the web
+	// search fallback probes the manager a second time per call, so a healthy
+	// server was paying a connect+list round trip twice per turn - a process
+	// spawn for stdio, a network round trip for http. The tool list of a
+	// connected server is near-static, so cache it briefly. A TTL rather
+	// than invalidation-on-change because the SDK exposes no change hook.
+	//
+	// Successes only. The failure path is the cooldown gate's job, and
+	// caching an error here would block recovery: Tools() would keep
+	// reporting the stale error, the caller would re-arm the cooldown on
+	// every call, and a server that came back would stay "failed" until
+	// the TTL expired.
+	cachedTools     []tool.Tool
+	cachedToolsAt   time.Time
+	toolsCachedOnce bool
 }
 
 const (
 	failureCooldownBase = 30 * time.Second
 	failureCooldownMax  = 5 * time.Minute
 )
+
+// toolListTTL bounds how stale a cached tool list may be. Short enough that
+// a server restarted with new tools is picked up promptly in an interactive
+// session, long enough that a multi-turn run does not re-list per turn.
+const toolListTTL = 60 * time.Second
+
+// toolsCached returns the server's tool list, hitting the SDK only when there
+// is no cached copy or it is older than toolListTTL. Only successful lists are
+// cached; an error always re-probes, leaving retry pacing to the cooldown gate.
+func (ms *managedServer) toolsCached(ctx agent.ReadonlyContext, now time.Time) ([]tool.Tool, error) {
+	ms.mu.Lock()
+	if ms.toolsCachedOnce && now.Sub(ms.cachedToolsAt) < toolListTTL {
+		tools := ms.cachedTools
+		ms.mu.Unlock()
+		return tools, nil
+	}
+	ms.mu.Unlock()
+
+	tools, err := ms.toolset.Tools(ctx)
+	if err != nil {
+		// Do not cache the failure, and drop any stale success so a server
+		// that has gone bad cannot keep serving a cached tool list.
+		ms.mu.Lock()
+		ms.toolsCachedOnce = false
+		ms.cachedTools = nil
+		ms.mu.Unlock()
+		return nil, err
+	}
+
+	ms.mu.Lock()
+	ms.cachedTools, ms.cachedToolsAt = tools, now
+	ms.toolsCachedOnce = true
+	ms.mu.Unlock()
+	return tools, nil
+}
+
+// invalidateToolCache drops the cached tool list, so the next Tools() call
+// re-lists. Called when a server's configuration or connection changes.
+func (ms *managedServer) invalidateToolCache() {
+	ms.mu.Lock()
+	ms.toolsCachedOnce = false
+	ms.cachedTools = nil
+	ms.mu.Unlock()
+}
 
 // startCooldown arms the skip window after a failed attempt: the next
 // cooldown window doubles per consecutive failure, capped at
@@ -221,7 +281,7 @@ func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 		}
 		// The slow connect/list happens OUTSIDE both locks so the TUI can
 		// keep rendering while a server is unreachable.
-		tsTools, err := ms.toolset.Tools(ctx)
+		tsTools, err := ms.toolsCached(ctx, now)
 		if err != nil {
 			ms.startCooldown(now)
 			ms.setStatus("failed", err.Error())
@@ -311,6 +371,9 @@ func (m *MCPServerManager) Reconnect(name string) error {
 	// Manual reconnect is explicit user intent: dial on the next Tools()
 	// call regardless of any armed failure cooldown.
 	ms.clearCooldown()
+	// The whole point of this call is to re-run connect and tools/list, so
+	// the tool-list cache must not satisfy the next Tools() with a stale copy.
+	ms.invalidateToolCache()
 	ms.setStatus("idle", "")
 	return nil
 }
