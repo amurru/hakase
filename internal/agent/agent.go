@@ -210,8 +210,14 @@ type timeReminderCacheEntry struct {
 	expiresAt time.Time
 }
 
-// cacheExpiry defines how long a cached time reminder remains valid (5 minutes).
-const cacheExpiry = 5 * time.Minute
+// cacheExpiry bounds a cached time reminder. The value only changes when the
+// calendar date (or UTC offset) does, so this is generous on purpose: it
+// exists to collapse the rebuild cost, not to keep the value fresh.
+const cacheExpiry = 1 * time.Hour
+
+// timeReminderCacheKeyLayout keys the cache by calendar DAY. See the comment
+// in buildTimeReminder for why finer granularity is actively harmful.
+const timeReminderCacheKeyLayout = "2006-01-02"
 
 // buildTimeReminder returns a system-prompt block that grounds the agent in
 // the current wall-clock time on the user's machine. LLM training cutoffs go
@@ -256,19 +262,26 @@ func buildTimeReminder() string {
 	// Build the current time reminder
 	currentReminder := fmt.Sprintf(`
 ### SYSTEM REMINDER - CURRENT DATE & TIME:
-The current date and time on the user's machine is %s (%s, UTC offset %s).
+The current date on the user's machine is %s (%s, UTC offset %s).
 
 - Treat this as "now" for ALL temporal reasoning: news recency, "latest" / "today" / "yesterday", current events, ages, seasons, holidays, and deadlines.
 - Your training data was frozen at your knowledge cutoff and is likely outdated. Whenever a fact, price, version, event, or statistic can change over time, do NOT answer from memory alone - use your search and browsing tools to fetch current, verifiable information.
 - When searching, prefer the most recent results and verify publication dates before asserting something is "current", "latest", or "breaking". If freshly retrieved sources conflict with your training data, trust the fresh sources.`,
-		now.Format("Monday, 02 January 2006 at 15:04:05"),
+		now.Format("Monday, 02 January 2006"),
 		zoneName,
 		now.Format("-07:00"),
 	)
 
-	// Use the current timestamp (truncated to minute) as cache key to share
-	// within the same minute across all runners, but force refresh on minute boundary
-	cacheKey := now.Format("2006-01-02-15:04")
+	// Cache key is the DATE, not the minute. This block is part of the
+	// system instruction, which is the PREFIX of every request, so any
+	// change here invalidates the provider's prompt cache for the system
+	// prompt *and every message after it*. Keying by minute meant a
+	// long-running session lost its entire cache once a minute. The exact
+	// wall-clock time is deliberately omitted: nothing needs it (cronjob
+	// takes relative forms like "30m" that the server resolves, and
+	// system_exec can read the clock), and the date is what temporal
+	// reasoning actually rests on.
+	cacheKey := now.Format(timeReminderCacheKeyLayout)
 
 	// Check if we have a valid cached entry
 	if cached, ok := timeReminderCache.Load(cacheKey); ok {
@@ -286,7 +299,7 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 
 	// Clean up expired entries periodically (simple cleanup - in production,
 	// this would be a background goroutine with proper cleanup logic)
-	if now.Minute()%5 == 0 && now.Second() < 10 {
+	if now.Minute()%5 == 0 && now.Second() < 10 && now.Hour()%2 == 0 {
 		timeReminderCache.Range(func(key, value interface{}) bool {
 			if entry, ok := value.(timeReminderCacheEntry); ok {
 				if now.After(entry.expiresAt) {
@@ -1057,14 +1070,19 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 	}
 
 	var sb strings.Builder
+	// The loading instructions are stated once here rather than repeated per
+	// entry. Repeating a 70-byte sentence 148 times cost ~10 KB of the
+	// per-turn prefix and told the model nothing it had not read on line one.
 	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
+	if len(mdEnabled) > 0 {
+		sb.WriteString("Markdown skills - to read one, call 'load_markdown_skill' with its name; the entry below is an index, not the instructions.\n")
+	}
 	for _, s := range pythonSkills {
 		sb.WriteString(
 			fmt.Sprintf(
-				"- Skill: '%s'\n  Description: %s\n  Import Usage: `from skills.%s import ...` or `import %s`\n\n",
+				"- %s (python): %s  Import: `from skills.%s import ...`\n",
 				s.Name,
 				hctx.WrapUntrustedData(s.Description),
-				s.Name,
 				s.Name,
 			),
 		)
@@ -1072,11 +1090,9 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 	for _, s := range mdEnabled {
 		sb.WriteString(
 			fmt.Sprintf(
-				"- Skill: '%s' (markdown)\n  Description: %s\n  Location: %s\n  Load: call 'load_markdown_skill' with name '%s' to read full instructions\n\n",
+				"- %s: %s\n",
 				s.Frontmatter.Name,
 				hctx.WrapUntrustedData(s.Frontmatter.Description),
-				s.Source,
-				s.Frontmatter.Name,
 			),
 		)
 	}
@@ -1795,14 +1811,14 @@ You have a 'clarify' tool to ask the user a question mid-task when you need inpu
 You have a 'cronjob' tool to schedule one-shot or recurring tasks that run in fresh headless sessions with attached skills. Use it for recurring research digests, monitoring, periodic reports, delayed prompts, or planning workflows. Schedule string formats: '30m' (once in 30 minutes), 'every 2h' (recurring interval), '0 9 * * *' (5-field cron expression), or an ISO timestamp like '2026-06-01T09:00:00' (one-shot at a specific time). Jobs run in isolated sub-agent sessions with restricted toolsets; results are saved to outputs/cron/ and appear in the TUI. Lifecycle actions: create (schedule a new job), list (show all jobs), update (modify fields), pause / resume, run (trigger immediately), remove (delete).
 
 ### TASK BOARD:
-You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'archive_task' (archive completed tasks to keep them for reference and remove them from the active board), 'delete_task' (remove any task permanently, including completed or archived tasks, upon user request). For any multi-step request, break it into tasks, use 'list_tasks' to review your plan, and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board.
-ARTIFACT LOCATION: When asked where a file/artifact produced earlier is, FIRST call 'list_tasks'/'get_task' and 'search_knowledge'/'recall_knowledge' to find recorded paths BEFORE searching the filesystem with 'search_files' or 'system_exec'.
+You have a task management system (persisted in tasks.json) for planning and tracking multi-step work. Available tools: 'create_task' (create), 'list_tasks' (list with optional status/assignee/tags/parent filters), 'get_task' (details by ID), 'update_task' (change status/priority/assignee/result), 'archive_task' (archive completed tasks to keep them for reference and remove them from the active board), 'delete_task' (remove any task permanently, including completed or archived tasks, upon user request). For genuinely multi-step work, break it into tasks and keep statuses current: mark a task 'in_progress' before executing it and 'completed' once done. Prefer the task tools over ad-hoc planning notes so progress is visible on the task board. Do NOT open the task board for a single-step request, and do NOT call 'list_tasks' as a preamble - the board is a record of work in flight, not something to read before answering.
+ARTIFACT LOCATION: when asked where a file/artifact produced earlier is, check 'list_tasks' first, since recorded paths live there, before falling back to 'search_files' or 'system_exec'. Add 'recall_knowledge' only if the task board has nothing.
 
 ### KNOWLEDGE BASE:
-You have a persistent knowledge base (markdown notes with YAML frontmatter in the configured knowledge directory) for storing durable facts you learn. Available tools: 'save_knowledge' (create a new note when you learn something important and worth keeping; provide a concise 'summary', relevant 'tags', 'aliases', and 'sources' when you have them - the tool also auto-enriches the note with the configured summarization model, producing a summary, excerpt, tags, aliases, related notes, and structured metadata such as GitHub maintainers, stars, and language for repository references, with deterministic extraction as fallback), 'recall_knowledge' (load a note by name - call this before answering about a known topic so you ground your reply in what you already recorded), 'search_knowledge' (keyword/tag grep across all notes), 'update_knowledge' (correct or extend an existing note), 'link_knowledge' (create [[wikilinks]] between notes to model relationships), 'cite_knowledge' (produce a footnote citation of a note when you use its content in an answer), 'list_knowledge' (enumerate notes), 'lint_knowledge' (run a health check for orphan notes, broken cross-references, and oversized pages). Use save/recall/update proactively: when the user tells you a durable fact, a preference, or a decision, save it; before answering about a topic you have notes on, recall it first. CRITICAL - dangling links: when 'save_knowledge', 'recall_knowledge', 'update_knowledge', or 'link_knowledge' return dangling links (wikilink targets that do not exist yet), you MUST surface them to the user, list the missing notes, and offer to create them. Only create the missing notes after the user confirms. Cite notes in answers either via the 'cite_knowledge' tool output or by inlining [[wikilinks]] so the user can trace claims back to their source note.
+You have a persistent knowledge base (markdown notes with YAML frontmatter in the configured knowledge directory) for storing durable facts you learn. Available tools: 'save_knowledge' (create a new note when you learn something important and worth keeping; provide a concise 'summary', relevant 'tags', 'aliases', and 'sources' when you have them - the tool also auto-enriches the note with the configured summarization model, producing a summary, excerpt, tags, aliases, related notes, and structured metadata such as GitHub maintainers, stars, and language for repository references, with deterministic extraction as fallback), 'recall_knowledge' (load a note by name - call this before answering about a known topic so you ground your reply in what you already recorded), 'search_knowledge' (keyword/tag grep across all notes), 'update_knowledge' (correct or extend an existing note), 'link_knowledge' (create [[wikilinks]] between notes to model relationships), 'cite_knowledge' (produce a footnote citation of a note when you use its content in an answer), 'list_knowledge' (enumerate notes), 'lint_knowledge' (run a health check for orphan notes, broken cross-references, and oversized pages). Use save/recall/update proactively: when the user tells you a durable fact, a preference, or a decision, save it; when the question is about a topic you have notes on, recall the note rather than answering from memory. Do not spend a lookup on questions your notes are unlikely to cover. CRITICAL - dangling links: when 'save_knowledge', 'recall_knowledge', 'update_knowledge', or 'link_knowledge' return dangling links (wikilink targets that do not exist yet), you MUST surface them to the user, list the missing notes, and offer to create them. Only create the missing notes after the user confirms. Cite notes in answers either via the 'cite_knowledge' tool output or by inlining [[wikilinks]] so the user can trace claims back to their source note.
 
 ### REFLEXION (LESSONS LEARNED):
-After a task that FAILED (repeated errors, dead-ends, blocked steps) or was COMPLEX (multi-step research, tricky debugging, novel problem solved with hard-won steps), write a short "lessons learned" knowledge note via 'save_knowledge' capturing what did NOT work, what finally DID, and any reusable gotchas. Tag it with 'lessons-learned' plus topic tags; set 'confidence' to reflect how certain you are; include 'sources' (URLs or file paths) that were load-bearing. Keep the body focused and actionable (2-6 sentences). This builds a durable reflection layer: at the start of a session, before planning, call 'search_knowledge' with tag 'lessons-learned' (and relevant topic terms) and 'recall_knowledge' the matching notes so you start from what was already learned instead of repeating mistakes. Do NOT create reflection notes for routine successes - only for genuinely instructive failures or hard-won solutions.
+After a task that FAILED (repeated errors, dead-ends, blocked steps) or was COMPLEX (multi-step research, tricky debugging, novel problem solved with hard-won steps), write a short "lessons learned" knowledge note via 'save_knowledge' capturing what did NOT work, what finally DID, and any reusable gotchas. Tag it with 'lessons-learned' plus topic tags; set 'confidence' to reflect how certain you are; include 'sources' (URLs or file paths) that were load-bearing. Keep the body focused and actionable (2-6 sentences). This builds a durable reflection layer you can consult when it is relevant: if the task at hand resembles something previously hard-won, or you are about to repeat an approach that has failed before, call 'search_knowledge' with tag 'lessons-learned' plus topic terms and 'recall_knowledge' the matches. Do NOT front-load this lookup on every request - a small question does not need it, and paying two tool calls before answering is what makes simple turns slow. Do NOT create reflection notes for routine successes - only for genuinely instructive failures or hard-won solutions.
 
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
