@@ -210,8 +210,14 @@ type timeReminderCacheEntry struct {
 	expiresAt time.Time
 }
 
-// cacheExpiry defines how long a cached time reminder remains valid (5 minutes).
-const cacheExpiry = 5 * time.Minute
+// cacheExpiry bounds a cached time reminder. The value only changes when the
+// calendar date (or UTC offset) does, so this is generous on purpose: it
+// exists to collapse the rebuild cost, not to keep the value fresh.
+const cacheExpiry = 1 * time.Hour
+
+// timeReminderCacheKeyLayout keys the cache by calendar DAY. See the comment
+// in buildTimeReminder for why finer granularity is actively harmful.
+const timeReminderCacheKeyLayout = "2006-01-02"
 
 // buildTimeReminder returns a system-prompt block that grounds the agent in
 // the current wall-clock time on the user's machine. LLM training cutoffs go
@@ -256,19 +262,26 @@ func buildTimeReminder() string {
 	// Build the current time reminder
 	currentReminder := fmt.Sprintf(`
 ### SYSTEM REMINDER - CURRENT DATE & TIME:
-The current date and time on the user's machine is %s (%s, UTC offset %s).
+The current date on the user's machine is %s (%s, UTC offset %s).
 
 - Treat this as "now" for ALL temporal reasoning: news recency, "latest" / "today" / "yesterday", current events, ages, seasons, holidays, and deadlines.
 - Your training data was frozen at your knowledge cutoff and is likely outdated. Whenever a fact, price, version, event, or statistic can change over time, do NOT answer from memory alone - use your search and browsing tools to fetch current, verifiable information.
 - When searching, prefer the most recent results and verify publication dates before asserting something is "current", "latest", or "breaking". If freshly retrieved sources conflict with your training data, trust the fresh sources.`,
-		now.Format("Monday, 02 January 2006 at 15:04:05"),
+		now.Format("Monday, 02 January 2006"),
 		zoneName,
 		now.Format("-07:00"),
 	)
 
-	// Use the current timestamp (truncated to minute) as cache key to share
-	// within the same minute across all runners, but force refresh on minute boundary
-	cacheKey := now.Format("2006-01-02-15:04")
+	// Cache key is the DATE, not the minute. This block is part of the
+	// system instruction, which is the PREFIX of every request, so any
+	// change here invalidates the provider's prompt cache for the system
+	// prompt *and every message after it*. Keying by minute meant a
+	// long-running session lost its entire cache once a minute. The exact
+	// wall-clock time is deliberately omitted: nothing needs it (cronjob
+	// takes relative forms like "30m" that the server resolves, and
+	// system_exec can read the clock), and the date is what temporal
+	// reasoning actually rests on.
+	cacheKey := now.Format(timeReminderCacheKeyLayout)
 
 	// Check if we have a valid cached entry
 	if cached, ok := timeReminderCache.Load(cacheKey); ok {
@@ -286,7 +299,7 @@ The current date and time on the user's machine is %s (%s, UTC offset %s).
 
 	// Clean up expired entries periodically (simple cleanup - in production,
 	// this would be a background goroutine with proper cleanup logic)
-	if now.Minute()%5 == 0 && now.Second() < 10 {
+	if now.Minute()%5 == 0 && now.Second() < 10 && now.Hour()%2 == 0 {
 		timeReminderCache.Range(func(key, value interface{}) bool {
 			if entry, ok := value.(timeReminderCacheEntry); ok {
 				if now.After(entry.expiresAt) {
