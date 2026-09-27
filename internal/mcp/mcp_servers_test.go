@@ -461,6 +461,69 @@ func cooldownTestManager(t *testing.T) (*MCPServerManager, *atomic.Int32, *atomi
 	return m, &hits, &healthy, &logs
 }
 
+// TestCooldownSurvivesASlowFailure reproduces a real trace (logs/hakase-debug
+// 2026-09-27T15:12): a server that takes 77s to fail was dialed again on the
+// very next model call, paying the full 77s every turn, for 191s total on a
+// one-line question.
+//
+// Tools() captures `now` once before the dial loop and passes it to
+// startCooldown after the failure. For a server that fails fast the two
+// timestamps are nearly identical and the cooldown works. For a server slower
+// than the cooldown window, `now` is already older than the window by the time
+// it is used, so failedUntil is born in the past, cooldownRemaining returns 0,
+// and the backoff never engages - which is precisely the case it exists for.
+//
+// The existing TestMCPServerManagerFailureCooldown does not catch this
+// because its server fails instantly, making the stale timestamp harmless.
+func TestCooldownSurvivesASlowFailure(t *testing.T) {
+	mcpTestIsolate(t)
+
+	// Shrink the window so a slow-but-finite failure is testable.
+	origBase, origMax := failureCooldownBase, failureCooldownMax
+	failureCooldownBase, failureCooldownMax = 30*time.Millisecond, 30*time.Millisecond
+	t.Cleanup(func() { failureCooldownBase, failureCooldownMax = origBase, origMax })
+
+	const hang = 150 * time.Millisecond
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(hang) // failure takes longer than the cooldown window
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	m, err := NewMCPServerManager(&config.Config{MCPServers: config.MCPConfig{
+		Servers: map[string]*config.MCPServerConfig{
+			"slow-dead": {Type: "http", URL: srv.URL, TimeoutMs: 2000},
+		}}}, func(string) {})
+	if err != nil {
+		t.Fatalf("NewMCPServerManager: %v", err)
+	}
+
+	start := time.Now()
+	if _, err := m.Tools(mcpTestCtx{}); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < hang {
+		t.Fatalf("test did not actually exercise a slow failure: %v < %v", elapsed, hang)
+	}
+	first := hits.Load()
+	if first < 1 {
+		t.Fatal("no dial attempts on first call")
+	}
+
+	// The cooldown must still be armed even though the failure took longer
+	// than the window it arms.
+	if _, err := m.Tools(mcpTestCtx{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := hits.Load(); got != first {
+		t.Errorf("dead server re-dialed %d extra times after a %v failure with a %v cooldown: %d attempts, want %d",
+			got-first, elapsed, failureCooldownBase, got, first)
+	}
+}
+
 func TestMCPServerManagerFailureCooldown(t *testing.T) {
 	mcpTestIsolate(t)
 	m, hits, healthy, logs := cooldownTestManager(t)
@@ -522,7 +585,9 @@ func TestManagedServerBackoffGrowth(t *testing.T) {
 	now := time.Now()
 	wants := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 5 * time.Minute, 5 * time.Minute}
 	for i, want := range wants {
-		ms.startCooldown(now)
+		// attemptStarted == failedAt, so the attempt-duration floor does not
+		// apply and this exercises the backoff ladder alone.
+		ms.startCooldown(now, now)
 		if got := ms.failedUntil.Sub(now); got != want {
 			t.Fatalf("failure %d: cooldown %v, want %v", i+1, got, want)
 		}

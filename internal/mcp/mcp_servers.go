@@ -15,6 +15,7 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -98,7 +99,10 @@ type managedServer struct {
 	toolsCachedOnce bool
 }
 
-const (
+// Failure-cooldown backoff bounds how often a dead MCP server is re-dialled.
+// Vars, not consts, so tests can shrink the window and exercise the
+// slow-failure path; see TestCooldownSurvivesASlowFailure.
+var (
 	failureCooldownBase = 30 * time.Second
 	failureCooldownMax  = 5 * time.Minute
 )
@@ -108,9 +112,61 @@ const (
 // session, long enough that a multi-turn run does not re-list per turn.
 const toolListTTL = 60 * time.Second
 
+// defaultToolsListBudget bounds the TOTAL time spent listing one server's
+// tools. It exists because timeout_ms is a per-request bound and the go-sdk
+// retries a failed initialize up to 5 times: a server that is down cost
+// 5 x timeout_ms on the critical path of every model call. A trace
+// (logs/hakase-debug-20260927T151220) caught one taking 77s, twice in a single
+// turn, for 155s of a 191s one-line answer.
+//
+// A healthy server's initialize + tools/list is well under a second, so this
+// is generous for real endpoints while cutting an unreachable one by an order
+// of magnitude. An explicit larger timeout_ms is honoured rather than
+// truncated, so a deliberately slow server still works.
+//
+// A var so tests can shrink it; production never reassigns it.
+var defaultToolsListBudget = 6 * time.Second
+
+// toolsListBudget returns the total listing budget for this server.
+func (ms *managedServer) toolsListBudget() time.Duration {
+	if ms.cfg != nil && ms.cfg.TimeoutMs > 0 {
+		if d := time.Duration(ms.cfg.TimeoutMs)*time.Millisecond + 2*time.Second; d > defaultToolsListBudget {
+			return d
+		}
+	}
+	return defaultToolsListBudget
+}
+
+// boundedReadonlyContext caps the deadline of a ReadonlyContext while keeping
+// its ADK-specific accessors. ReadonlyContext embeds context.Context, so
+// overriding the deadline trio is enough to bound a call without losing
+// UserContent/InvocationID/ReadonlyState.
+type boundedReadonlyContext struct {
+	agent.ReadonlyContext
+	ctx context.Context
+}
+
+func (c boundedReadonlyContext) Deadline() (time.Time, bool) { return c.ctx.Deadline() }
+func (c boundedReadonlyContext) Done() <-chan struct{}       { return c.ctx.Done() }
+func (c boundedReadonlyContext) Err() error                  { return c.ctx.Err() }
+
 // toolsCached returns the server's tool list, hitting the SDK only when there
 // is no cached copy or it is older than toolListTTL. Only successful lists are
 // cached; an error always re-probes, leaving retry pacing to the cooldown gate.
+//
+// The SDK call runs behind a hard deadline because it sits on the critical path
+// of every model call and cannot be trusted to return promptly. A context
+// deadline alone is not enough: it does bound the HTTP work (a black-hole
+// server's requests are cancelled on schedule), but the go-sdk then sleeps
+// through a retry backoff that never observes the context, adding a further
+// ~5s with no traffic at all. So the call is also raced against the budget and
+// abandoned when it expires.
+//
+// Abandoning leaks one goroutine per dead server until the SDK gives up on its
+// own (a few seconds). That is a deliberate trade: the failure cooldown means
+// this happens a handful of times per dead server per session, not per turn,
+// and a hard bound on the critical path is worth more than tidiness. The
+// result channel is buffered so the abandoned goroutine can always exit.
 func (ms *managedServer) toolsCached(ctx agent.ReadonlyContext, now time.Time) ([]tool.Tool, error) {
 	ms.mu.Lock()
 	if ms.toolsCachedOnce && now.Sub(ms.cachedToolsAt) < toolListTTL {
@@ -120,22 +176,43 @@ func (ms *managedServer) toolsCached(ctx agent.ReadonlyContext, now time.Time) (
 	}
 	ms.mu.Unlock()
 
-	tools, err := ms.toolset.Tools(ctx)
-	if err != nil {
-		// Do not cache the failure, and drop any stale success so a server
-		// that has gone bad cannot keep serving a cached tool list.
+	dctx, cancel := context.WithTimeout(ctx, ms.toolsListBudget())
+	defer cancel()
+
+	type listResult struct {
+		tools []tool.Tool
+		err   error
+	}
+	res := make(chan listResult, 1)
+	go func() {
+		tools, err := ms.toolset.Tools(boundedReadonlyContext{ReadonlyContext: ctx, ctx: dctx})
+		res <- listResult{tools: tools, err: err}
+	}()
+
+	select {
+	case r := <-res:
+		if r.err != nil {
+			// Do not cache the failure, and drop any stale success so a
+			// server that has gone bad cannot keep serving a cached list.
+			ms.mu.Lock()
+			ms.toolsCachedOnce = false
+			ms.cachedTools = nil
+			ms.mu.Unlock()
+			return nil, r.err
+		}
+		ms.mu.Lock()
+		ms.cachedTools, ms.cachedToolsAt = r.tools, now
+		ms.toolsCachedOnce = true
+		ms.mu.Unlock()
+		return r.tools, nil
+
+	case <-dctx.Done():
 		ms.mu.Lock()
 		ms.toolsCachedOnce = false
 		ms.cachedTools = nil
 		ms.mu.Unlock()
-		return nil, err
+		return nil, dctx.Err()
 	}
-
-	ms.mu.Lock()
-	ms.cachedTools, ms.cachedToolsAt = tools, now
-	ms.toolsCachedOnce = true
-	ms.mu.Unlock()
-	return tools, nil
 }
 
 // invalidateToolCache drops the cached tool list, so the next Tools() call
@@ -152,7 +229,19 @@ func (ms *managedServer) invalidateToolCache() {
 // failureCooldownMax, so a dead server is re-probed roughly once per window
 // (recovery is detected on the first probe after expiry) instead of on every
 // model call.
-func (ms *managedServer) startCooldown(now time.Time) {
+//
+// failedAt is the time the failure was OBSERVED and attemptStarted is when the
+// dial began. Using the attempt's start time for both is what made the backoff
+// useless: Tools() captured one `now` before the dial loop, so for a server
+// that takes longer to fail than the window being armed, failedUntil was
+// already in the past by the time it was written, cooldownRemaining returned 0,
+// and the next model call re-dialled and paid the full cost again. A trace
+// (logs/hakase-debug-20260927T151220) caught this: a server that took 77s to
+// fail was dialled twice in one turn, 155s of a 191s one-line answer.
+//
+// The window is also floored at the attempt's own duration, so a server that
+// reliably takes 77s to fail is never re-probed sooner than that.
+func (ms *managedServer) startCooldown(failedAt, attemptStarted time.Time) {
 	shift := ms.consecFails
 	if shift > 4 {
 		shift = 4
@@ -161,9 +250,12 @@ func (ms *managedServer) startCooldown(now time.Time) {
 	if cool > failureCooldownMax {
 		cool = failureCooldownMax
 	}
+	if d := failedAt.Sub(attemptStarted); d > cool {
+		cool = d
+	}
 	ms.mu.Lock()
 	ms.consecFails++
-	ms.failedUntil = now.Add(cool)
+	ms.failedUntil = failedAt.Add(cool)
 	ms.mu.Unlock()
 }
 
@@ -280,10 +372,13 @@ func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 			continue
 		}
 		// The slow connect/list happens OUTSIDE both locks so the TUI can
-		// keep rendering while a server is unreachable.
-		tsTools, err := ms.toolsCached(ctx, now)
+		// keep rendering while a server is unreachable. The attempt start is
+		// captured per server, not once for the whole loop, so a server that
+		// follows a slow one is not credited with the earlier server's dial.
+		attemptStarted := time.Now()
+		tsTools, err := ms.toolsCached(ctx, attemptStarted)
 		if err != nil {
-			ms.startCooldown(now)
+			ms.startCooldown(time.Now(), attemptStarted)
 			ms.setStatus("failed", err.Error())
 			ms.setToolCount(0)
 			if m.log != nil {
