@@ -10,6 +10,17 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Simple questions cost several model round trips before the first word of an answer.** The orchestrator's instruction required two knowledge lookups "at the start of a session, before planning", a `list_tasks` preamble for task-shaped work, and up to four lookups before a filesystem search for an artifact location. Every tool call is a full round trip, so a one-line question paid several turns of pure overhead - the model was complying, not misbehaving. Those lookups are now reactive: consult prior lessons when the task resembles something previously hard-won or you are repeating an approach that failed, recall a note when the question is about a topic you have notes on, open the task board for genuinely multi-step work. The capabilities and the useful guidance are unchanged, including checking the task board first for artifact paths - it just no longer fans out to four tools before answering.
+
+### Changed
+
+- **The system prompt is ~36% smaller, and no longer re-invalidates the prompt cache every minute.** Three separate costs, all paid on every single model call since the system prompt is the request prefix:
+  - the time reminder rendered the wall clock to the second and was cached by the minute, so a long-running session lost its entire conversation cache once a minute. It now renders the calendar date and is cached by day. Nothing needs the exact time - `cronjob` takes relative forms the server resolves, and `system_exec` can read the clock.
+  - the skill index was 58 KB of the 69 KB prompt, mostly waste: the "call `load_markdown_skill` ..." sentence repeated once per skill, and every entry advertised an absolute path the model never used. With the 148 skills this repo ships, the prompt drops from 69,024 to 44,278 bytes. Descriptions are unchanged and the per-entry `<UNTRUSTED_DATA>` marker is a security control, so neither was touched.
+  - MCP tool lists are now cached for 60s instead of being re-fetched before every model call. ADK calls `Tools()` per turn and the web-search fallback probes it a second time, so a healthy server was paying a connect+list round trip twice per turn - a process spawn for stdio, a network round trip for HTTP. Failures are deliberately not cached, so a server that comes back is picked up on the next probe rather than staying failed for the TTL; the existing cooldown gate still paces retries, and a manual reconnect invalidates the cache.
+
 ## [0.1.0-alpha.7] - 2026-09-27
 
 ### Changed
