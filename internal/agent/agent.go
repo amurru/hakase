@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/env"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
@@ -73,6 +74,45 @@ func buildSidekickConfig(cfg *config.Config) *config.Config {
 	}
 	sk.FallbackProviders = nil
 	return &sk
+}
+
+// hookResultStr reads a string field from a hook block result for audit
+// logging. Block results always carry "hook" and "error" (see
+// hooks.blockResult); anything else yields "" rather than panicking.
+func hookResultStr(result map[string]any, key string) string {
+	if result == nil {
+		return ""
+	}
+	s, _ := result[key].(string)
+	return s
+}
+
+// makeHookBeforeToolCallback adapts a hooks Runner to ADK's
+// BeforeToolCallback: a hook denial becomes the tool result (skipping
+// tool.Run) and is recorded on the audit trail; anything else allows.
+// A disabled runner allows everything. Named (not inline) so wiring tests
+// can drive the exact production path.
+func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
+	return func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+		blocked, result := r.CheckPreToolUse(ctx, t.Name(), args)
+		if blocked {
+			AuditHookBlock(t.Name(), hookResultStr(result, "hook"), hookResultStr(result, "error"), interfaces.SessionIDFromCtx(ctx))
+			return result, nil
+		}
+		return nil, nil
+	}
+}
+
+// makeHookAfterToolCallback adapts a hooks Runner to ADK's
+// AfterToolCallback: collected PostToolUse context overrides the result,
+// otherwise the tool result passes through. Named for the same reason.
+func makeHookAfterToolCallback(r *hooks.Runner) llmagent.AfterToolCallback {
+	return func(ctx agent.Context, t tool.Tool, args, result map[string]any, runErr error) (map[string]any, error) {
+		if override := r.CheckPostToolUse(ctx, t.Name(), args, result); override != nil {
+			return override, nil
+		}
+		return nil, nil
+	}
 }
 
 // askSidekickInput is the argument schema for the ask_sidekick tool.
@@ -2143,6 +2183,26 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Apply the configured thinking level to every agent sharing this model.
 	genCfg := BuildGenerationConfig(cfg.ThinkingLevel)
 
+	// Tool-lifecycle hooks (docs/hooks/spec.md HK-004): one runner built
+	// from cfg.Hooks, adapted to ADK tool callbacks on all four agents so
+	// every tool call (built-in, MCP, git, fileops) passes the user's
+	// PreToolUse/PostToolUse handlers. A group-less or disabled config
+	// yields a no-op runner, so default runs are byte-identical. The
+	// per-tool approval gate still runs underneath when a hook allows.
+	hooksRunner, err := hooks.NewRunner(cfg.Hooks)
+	if err != nil {
+		return nil, fmt.Errorf("hooks: %w", err)
+	}
+	if log != nil {
+		hooksRunner.SetLog(func(msg string) { log(msg) })
+	}
+	var hookBeforeTool []llmagent.BeforeToolCallback
+	var hookAfterTool []llmagent.AfterToolCallback
+	if hooksRunner.Enabled() {
+		hookBeforeTool = []llmagent.BeforeToolCallback{makeHookBeforeToolCallback(hooksRunner)}
+		hookAfterTool = []llmagent.AfterToolCallback{makeHookAfterToolCallback(hooksRunner)}
+	}
+
 	// Build toolsets slice for the researcher agent (MCP manager only when present).
 	var researcherToolsets []tool.Toolset
 	if mcpManager != nil {
@@ -2172,7 +2232,11 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 	})
+
+	// Code Inpterpreter agent/ data analyst
 
 	// Code Inpterpreter agent/ data analyst
 	pythonTool, err := createPythonTool(log)
@@ -2249,6 +2313,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 	})
 	if err != nil {
 		return nil, err
@@ -2293,6 +2359,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 	})
 	if err != nil {
 		return nil, err
@@ -2460,6 +2528,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			ToolResultGuard,
 		},
 		AfterModelCallbacks: makeSidekickWatcher(sk, cfg),
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 		Tools:               orchestratorTools,
 		Toolsets:            orchestratorToolsets,
 		SubAgents: []agent.Agent{

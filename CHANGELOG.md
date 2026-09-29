@@ -28,6 +28,10 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Tool-lifecycle hooks (`PreToolUse` / `PostToolUse`)** - user-configurable command hooks that run around every tool call (built-in, MCP, git, fileops). A `PreToolUse` handler can block the call: exit 2 (stderr is the reason) or exit-0 JSON with `hookSpecificOutput.permissionDecision: "deny"` (legacy `{"decision":"block"}` also accepted). `PostToolUse` handlers observe results and can append context. Handlers are argv arrays executed with no shell, matched by unanchored regex on the tool name, 30s default timeout, and per-handler `on_failure: allow|block` (fail-open default; fail-closed only on `PreToolUse`). Configured under `"hooks"` in `~/.hakase/config.json`; invalid blocks fail startup loudly, and denials are recorded on the exec-audit trail as `hook_blocked`. `hakase hooks list` shows the loaded hooks with content fingerprints. User-scope only in this cut - project-scope hooks with the content-hash trust store are a separate follow-up (docs/hooks/tasks.md Phase 2).
+
 ## [0.1.0-alpha.7] - 2026-09-27
 
 ### Changed

@@ -775,6 +775,7 @@ When `model_name` is empty, the provider's default model is used. `openai-compat
 - `sandbox` -- Optional confinement block (see [Sandboxing & Workspace Confinement](#sandboxing--workspace-confinement)). Absent -> `paths` mode. Fields: `mode` (`paths` | `bubblewrap` | `off`; `landlock` is refused until implemented), `workspace_roots`, `read_roots`, `deny_roots`, `allow_network`, `allow_pip_install`, `permissions`.
 - `loop_guard` -- Optional anti-degeneration guardrails that abort a run stuck in a repetition loop or text-only bloat instead of burning the whole context/output window. Zero values use the defaults. Fields: `max_output_tokens` (cap on provider `maxOutputTokens`, default `8192`), `repetition_limit` (abort after this many consecutive identical non-thought chunks, default `8`), `max_text_without_tool` (abort after this many runes of text with zero tool calls, default `20000`). Set `HAKASE_MAX_OUTPUT_TOKENS` to override the cap via environment.
 - `approval` - Interactive approval gate for sensitive tool calls: `mode` (`interactive` or off) and `expiry_seconds` (auto-deny timeout, default `60`). Works in both the TUI and the web UI.
+- `hooks` - Tool-lifecycle hooks (`PreToolUse` blockable, `PostToolUse` observability): per-event groups of `{matcher, hooks[]}`, each handler `{name, type: "command", command: [argv...], timeout, on_failure: allow|block}`. Exit 2 blocks (stderr is the reason); exit-0 JSON `hookSpecificOutput.permissionDecision: "deny"` also blocks. User-scope only in v1. See [docs/hooks/](../docs/hooks/).
 - `clarify` - Mid-run clarify questions: `expiry_seconds` (auto-dismiss timeout).
 - `auth` - Web server auth tuning: `allow_insecure_cookie` (permit the session cookie without the `Secure` flag on non-loopback plain-HTTP; the `--insecure-cookie` CLI flag overrides it).
 - `thinking_level` - Thinking budget hint for models that support it (editable in the web UI Settings view).
@@ -884,6 +885,7 @@ Environment variables override the matching `config.json` fields, with environme
 | `HAKASE_TRACING_ENDPOINT` | `tracing.endpoint` |
 | `HAKASE_TRACING_SAMPLE_RATIO` | `tracing.sample_ratio` |
 | `HAKASE_TRACING_HEADERS` | `tracing.headers` (`K=V,K2=V2`) |
+| `HAKASE_HOOKS_ENABLED` | `hooks.enabled` |
 | `HAKASE_HOME` | user home directory (default `~/.hakase`) |
 
 Note: `HAKASE_*` variables are scrubbed from the environment of subprocesses spawned by the agent (see `system_exec`), so the API key used for providers never leaks into shell commands or sandboxed Python runs.

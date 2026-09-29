@@ -180,6 +180,24 @@
     "max_prompt_chars": 4000,
     "max_notes": 200
   },
+  "hooks": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "^system_exec$",
+        "hooks": [
+          {
+            "name": "no-rm-rf",
+            "type": "command",
+            "command": ["/home/you/.hakase/hooks/no-rm-rf.sh"],
+            "timeout": 30,
+            "on_failure": "allow"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": []
+  },
   "tracing": {
     "enabled": false,
     "endpoint": "http://localhost:4318",

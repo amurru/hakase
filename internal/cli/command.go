@@ -178,6 +178,11 @@ func init() {
 		Handler:     RunMemoryCLI,
 	})
 	registerCommand(Command{
+		Name:        "hooks",
+		Description: "inspect tool-lifecycle hooks (list)",
+		Handler:     RunHooksCLI,
+	})
+	registerCommand(Command{
 		Name:        "sleep",
 		Description: "offline skill self-improvement loop (harvest, review, run, adopt)",
 		Handler:     RunSleepCLI,

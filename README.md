@@ -212,6 +212,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `cron` | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
 | `sleep` | SkillOpt-Sleep self-improvement loop for markdown skills (`harvest`, `review`, `dry-run`, `run`, `adopt`, `status`, `schedule`, `evalkit`; real runs need a configured model) |
 | `channels` | Manage communication channels (`status`, `pair-code`, `revoke`) |
+| `hooks` | Inspect tool-lifecycle hooks (`list`) |
 | `auth` | Manage web authentication (`set-password`) |
 | `version` | Print build version (version, commit, build date, Go runtime) |
 
@@ -273,6 +274,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `media` -- image/video generation (`openai`, `fal`, `pil` fallback). See [Media Generation](docs/DEVELOPMENT.md#media-generation) and [docs/media-generation/support.md](docs/media-generation/support.md).
 - `tracing` -- OpenTelemetry GenAI tracing over OTLP/HTTP (`enabled`, `endpoint`, `headers`, `sample_ratio`). See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 - `session.snapshots` -- restore-to-message checkpoints (`enabled`, `max` per session, default 50): "Restore to before this message" on any user prompt in the chat UI rewinds the conversation; the pre-restore state is kept as an undo snapshot. See [docs/session-rewind/](docs/session-rewind/).
+- `hooks` -- tool-lifecycle hooks (`PreToolUse` blockable, `PostToolUse` observability; argv commands, tool-name regex matchers, 30s default timeout, `on_failure: allow|block`). See [docs/hooks/](docs/hooks/).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
 - `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 

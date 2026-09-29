@@ -120,9 +120,12 @@ Verdict parsing (exit-code first, then stdout JSON):
   `hookSpecificOutput.permissionDecision` of `deny`/`block` (or legacy
   top-level `decision: "block"`) blocks with
   `permissionDecisionReason`/`reason`. `hookSpecificOutput.additionalContext`
-  is carried through (PreToolUse: appended to the block/allow note;
-  PostToolUse: appended to the result). Unparseable stdout on exit 0 is a hook
-  error (per `on_failure`).
+  is carried through on the block path (appended to the denial) and on
+  PostToolUse (appended to the result). On the PreToolUse **allow** path it
+  is logged server-side but NOT delivered to the model: ADK's
+  BeforeToolCallback can only allow (`nil, nil`) or skip the tool
+  (non-nil), so there is no channel for allow-path context. Unparseable
+  stdout on exit 0 is a hook error (per `on_failure`).
 - **exit 2**: block; `stderr` (trimmed, truncated to 500 runes) is the reason.
 - **other non-zero / timeout / exec failure**: hook error → `on_failure`
   decides (`allow` = proceed, warn; `block` = deny with the error as reason).

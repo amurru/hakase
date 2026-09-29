@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/sandbox"
 )
 
@@ -225,6 +226,12 @@ type Config struct {
 	// start. On by default; enabled:false removes the tools and the
 	// session-start injection. See MemoryConfig for the per-field meaning.
 	Memory MemoryConfig `json:"memory,omitempty"`
+	// Hooks tunes user-configurable tool-lifecycle hooks (docs/hooks/
+	// spec.md, issue #20 Tier-2 item): PreToolUse handlers that can block a
+	// tool call and PostToolUse handlers that observe results. The embedded
+	// type is hooks.Config so there is exactly one shape; absent = on but
+	// with no groups the runner is a no-op. See HooksEnabled.
+	Hooks hooks.Config `json:"hooks,omitempty"`
 	// Tracing configures OpenTelemetry GenAI tracing over OTLP/HTTP
 	// (docs/otel-tracing/spec.md, issue #18): one waterfall trace per agent
 	// run — LLM calls with token usage, tool calls with durations, delegated
@@ -431,6 +438,17 @@ func MemoryMaxNotes(c *Config) int {
 		return DefaultMemoryMaxNotes
 	}
 	return c.Memory.MaxNotes
+}
+
+// HooksEnabled reports whether tool-lifecycle hooks are on: only an
+// explicit enabled:false disables them (MemoryConfig tri-state pattern).
+// Note this only gates the block; with no hook groups configured the
+// runner is a no-op either way.
+func HooksEnabled(c *Config) bool {
+	if c == nil {
+		return true
+	}
+	return hooks.Enabled(&c.Hooks)
 }
 
 // SleepConfig tunes one SkillOpt-Sleep night. Defaults (documented per
@@ -1031,6 +1049,7 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_TRACING_HEADERS") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX") != "" ||
+		os.Getenv("HAKASE_HOOKS_ENABLED") != "" ||
 		os.Getenv("HAKASE_STT_ENABLED") != "" ||
 		os.Getenv("HAKASE_TTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_STT_ENABLED") != "" ||
@@ -1396,6 +1415,21 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Session.Snapshots.ApplyDefaults()
 	if err := cfg.Session.Snapshots.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Hooks env override (mirrors the memory pattern) + defaults/validate.
+	// Validation runs at load so a malformed hooks block fails startup
+	// loudly (landlock precedent), never silently.
+	if v := os.Getenv("HAKASE_HOOKS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_HOOKS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Hooks.Enabled = &b
+	}
+	cfg.Hooks.ApplyDefaults()
+	if err := cfg.Hooks.Validate(); err != nil {
 		return nil, err
 	}
 
