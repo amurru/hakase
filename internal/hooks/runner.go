@@ -244,7 +244,13 @@ func (r *Runner) CheckPreToolUse(ctx context.Context, toolName string, toolInput
 // collected hook context appended under AdditionalContextKey. PostToolUse
 // can never block (ecosystem-wide rule); an exit-2 there is folded into the
 // collected context, never a denial.
-func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInput, toolResult map[string]any) map[string]any {
+//
+// When toolErr is non-nil the override is suppressed and nil is returned:
+// ADK drops the error whenever an AfterTool callback returns a non-nil
+// result, so overriding a failed call would convert the failure into a
+// success and the model would never see it. The failure reaches the model
+// intact; the undelivered context goes to the warn log instead of vanishing.
+func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInput, toolResult map[string]any, toolErr error) map[string]any {
 	if r == nil || len(r.post) == 0 {
 		return nil
 	}
@@ -274,11 +280,16 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 	if len(contexts) == 0 {
 		return nil
 	}
+	joined := strings.Join(contexts, "\n\n")
+	if toolErr != nil {
+		r.warnf("hooks: PostToolUse context on failed tool %q not delivered (error preserved): %s", toolName, joined)
+		return nil
+	}
 	out := make(map[string]any, len(toolResult)+1)
 	for k, v := range toolResult {
 		out[k] = v
 	}
-	out[AdditionalContextKey] = strings.Join(contexts, "\n\n")
+	out[AdditionalContextKey] = joined
 	return out
 }
 

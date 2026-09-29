@@ -125,8 +125,12 @@ Verdict parsing (exit-code first, then stdout JSON):
   PostToolUse (appended to the result). On the PreToolUse **allow** path it
   is logged server-side but NOT delivered to the model: ADK's
   BeforeToolCallback can only allow (`nil, nil`) or skip the tool
-  (non-nil), so there is no channel for allow-path context. Unparseable
-  stdout on exit 0 is a hook error (per `on_failure`).
+  (non-nil), so there is no channel for allow-path context. PostToolUse
+  context is likewise suppressed when the tool itself **failed**: ADK drops
+  the tool error whenever an AfterTool callback returns a non-nil result,
+  so overriding there would convert the failure into a success — the error
+  reaches the model intact and the context goes to the warn log instead.
+  Unparseable stdout on exit 0 is a hook error (per `on_failure`).
 - **exit 2**: block; `stderr` (trimmed, truncated to 500 runes) is the reason.
 - **other non-zero / timeout / exec failure**: hook error → `on_failure`
   decides (`allow` = proceed, warn; `block` = deny with the error as reason).

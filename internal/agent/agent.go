@@ -123,7 +123,7 @@ func hookToolCallbacks(r *hooks.Runner) ([]llmagent.BeforeToolCallback, []llmage
 // otherwise the tool result passes through. Named for the same reason.
 func makeHookAfterToolCallback(r *hooks.Runner) llmagent.AfterToolCallback {
 	return func(ctx agent.Context, t tool.Tool, args, result map[string]any, runErr error) (map[string]any, error) {
-		if override := r.CheckPostToolUse(ctx, t.Name(), args, result); override != nil {
+		if override := r.CheckPostToolUse(ctx, t.Name(), args, result, runErr); override != nil {
 			return override, nil
 		}
 		return nil, nil

@@ -2,14 +2,19 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func errExecFailed() error { return errors.New("exec: binary not found") }
+
+func errHookBoom() error { return errors.New("tool exploded") }
 
 func TestParseVerdictMatrix(t *testing.T) {
 	cases := []struct {
@@ -100,7 +105,7 @@ func TestNoOpRunner(t *testing.T) {
 	if blocked, _ := nilRunner.CheckPreToolUse(context.Background(), "x", nil); blocked {
 		t.Error("nil runner must allow")
 	}
-	if out := nilRunner.CheckPostToolUse(context.Background(), "x", nil, map[string]any{"a": 1}); out != nil {
+	if out := nilRunner.CheckPostToolUse(context.Background(), "x", nil, map[string]any{"a": 1}, nil); out != nil {
 		t.Error("nil runner must pass results through")
 	}
 	empty, err := NewRunner(Config{})
@@ -222,7 +227,7 @@ func TestPostToolUseAppendsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	orig := map[string]any{"ok": true}
-	out := r.CheckPostToolUse(context.Background(), "write_file", nil, orig)
+	out := r.CheckPostToolUse(context.Background(), "write_file", nil, orig, nil)
 	if out == nil {
 		t.Fatal("context hook must override the result")
 	}
@@ -245,7 +250,7 @@ func TestPostToolUseExit2IsContextNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := r.CheckPostToolUse(context.Background(), "t", nil, map[string]any{"ok": true})
+	out := r.CheckPostToolUse(context.Background(), "t", nil, map[string]any{"ok": true}, nil)
 	if out == nil {
 		t.Fatal("exit-2 on PostToolUse must surface as context, not vanish")
 	}
@@ -296,5 +301,123 @@ func TestHookPayloadSessionBestEffort(t *testing.T) {
 	}
 	if p.Timestamp == "" || p.CWD == "" {
 		t.Errorf("payload must carry timestamp and cwd, got %+v", p)
+	}
+}
+
+// TestPostToolUseFailedToolPreservesError pins the ADK constraint behind
+// CheckPostToolUse: ADK drops the tool error whenever an AfterTool callback
+// returns a non-nil result, so a context override on a failed call would
+// silently convert the failure into a success. The override must be
+// suppressed (nil) and the context must go to the warn log instead.
+func TestPostToolUseFailedToolPreservesError(t *testing.T) {
+	sh := testShell(t)
+	r, err := NewRunner(Config{PostToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{sh, "-c", `printf '{"hookSpecificOutput":{"additionalContext":"lint clean"}}'`}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warns []string
+	r.SetLog(func(s string) { warns = append(warns, s) })
+	toolErr := errHookBoom()
+	out := r.CheckPostToolUse(context.Background(), "write_file", nil, map[string]any{"ok": false}, toolErr)
+	if out != nil {
+		t.Errorf("failed tool must pass through un-overridden, got %v", out)
+	}
+	if len(warns) == 0 || !strings.Contains(warns[0], "lint clean") {
+		t.Errorf("undelivered context must be logged, got %v", warns)
+	}
+}
+
+// TestMissingBinaryFailsOpen is portable (no shell needed): a hook pointing
+// at a nonexistent binary is an exec failure, which per on_failure:allow
+// must warn and let the tool run — never wedge a session over a bad path.
+func TestMissingBinaryFailsOpen(t *testing.T) {
+	r, err := NewRunner(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{"/nonexistent-dir-12345/no-such-hook"}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warns []string
+	r.SetLog(func(s string) { warns = append(warns, s) })
+	if blocked, _ := r.CheckPreToolUse(context.Background(), "t", nil); blocked {
+		t.Error("missing hook binary must fail open")
+	}
+	if len(warns) == 0 {
+		t.Error("missing binary must log a warning")
+	}
+}
+
+// TestUserStyleGuardScript emulates the canonical user hook: a PreToolUse
+// guard that reads tool_input from stdin and denies dangerous commands
+// while allowing everything else. Written the way a user would write it
+// (sh + grep on the raw JSON), not the way the test suite would.
+func TestUserStyleGuardScript(t *testing.T) {
+	sh := testShell(t)
+	guard := `if grep -q 'rm -rf /\|mkfs\|dd .*of=/dev/' ; then echo "refusing destructive command" >&2; exit 2; fi; exit 0`
+	r, err := NewRunner(Config{PreToolUse: []Group{{Matcher: "system_exec", Hooks: []Handler{
+		{Name: "guard", Command: []string{sh, "-c", guard}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if blocked, _ := r.CheckPreToolUse(ctx, "system_exec", map[string]any{"command": "ls /tmp"}); blocked {
+		t.Error("benign command must pass the guard")
+	}
+	blocked, res := r.CheckPreToolUse(ctx, "system_exec", map[string]any{"command": "rm -rf /"})
+	if !blocked {
+		t.Fatal("destructive command must be blocked by the guard")
+	}
+	if s, _ := res["error"].(string); !strings.Contains(s, "refusing destructive") {
+		t.Errorf("block reason = %q, want the guard's stderr", s)
+	}
+	// A different tool family is untouched by the matcher.
+	if blocked, _ := r.CheckPreToolUse(ctx, "read_file", map[string]any{"path": "/etc/passwd"}); blocked {
+		t.Error("unmatched tool must pass")
+	}
+}
+
+// TestHookPayloadContent emulates a user hook end to end: the script reads
+// the JSON payload from stdin, and the test asserts the contract fields a
+// hook author depends on.
+func TestHookPayloadContent(t *testing.T) {
+	sh := testShell(t)
+	dump := filepath.Join(t.TempDir(), "stdin.json")
+	r, err := NewRunner(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{sh, "-c", "cat > " + dump}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, _ := r.CheckPreToolUse(context.Background(), "system_exec", map[string]any{"command": "ls"})
+	if blocked {
+		t.Fatal("dumping hook must allow")
+	}
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("hook did not receive stdin: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("stdin is not JSON: %v\n%s", err, raw)
+	}
+	if got["hook_event_name"] != "PreToolUse" {
+		t.Errorf("hook_event_name = %v", got["hook_event_name"])
+	}
+	if got["tool_name"] != "system_exec" {
+		t.Errorf("tool_name = %v", got["tool_name"])
+	}
+	input, _ := got["tool_input"].(map[string]any)
+	if input["command"] != "ls" {
+		t.Errorf("tool_input = %v, want command passthrough", got["tool_input"])
+	}
+	if cwd, _ := got["cwd"].(string); cwd == "" {
+		t.Error("cwd must be non-empty")
+	}
+	ts, _ := got["timestamp"].(string)
+	if _, err := time.Parse(time.RFC3339Nano, ts); err != nil {
+		t.Errorf("timestamp %q is not RFC3339Nano: %v", ts, err)
 	}
 }

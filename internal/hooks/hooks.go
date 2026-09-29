@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -228,10 +229,11 @@ func (h *Handler) Fingerprint() string {
 	}
 	if len(h.Command) > 0 {
 		if f, err := os.Open(h.Command[0]); err == nil {
+			// ReadFull (not a single Read): a short read must not produce
+			// a run-dependent fingerprint for the same file.
 			buf := make([]byte, maxScriptHashBytes)
-			if n, rerr := f.Read(buf); rerr == nil || n > 0 {
-				sum.Write(buf[:n])
-			}
+			n, _ := io.ReadFull(f, buf)
+			sum.Write(buf[:n])
 			_ = f.Close()
 		}
 	}

@@ -5,6 +5,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,8 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 )
+
+func errHookRunFailed() error { return errors.New("tool exploded") }
 
 type fakeHookTool struct{ name string }
 
@@ -125,6 +128,27 @@ func TestHookAfterToolOverridesWithContext(t *testing.T) {
 	}
 	if res == nil || res[hooks.AdditionalContextKey] != "lint clean" || res["ok"] != true {
 		t.Errorf("override = %v, want original keys plus hook context", res)
+	}
+}
+
+// TestHookAfterToolFailedPassthrough pins the error-path fix at the adapter
+// level: when the tool failed, the callback must return (nil, nil) so ADK
+// falls back to (fResult, fErr) and the failure reaches the model intact,
+// even though a PostToolUse hook emitted context.
+func TestHookAfterToolFailedPassthrough(t *testing.T) {
+	sh := hookTestShell(t)
+	r := hookTestRunner(t, hooks.Config{PostToolUse: []hooks.Group{{Hooks: []hooks.Handler{{
+		Command: []string{sh, "-c", `printf '{"hookSpecificOutput":{"additionalContext":"lint clean"}}'`},
+	}}}}})
+	cb := makeHookAfterToolCallback(r)
+	ctx := agent.NewContext(&agent.ContextMock{})
+
+	res, err := cb(ctx, &fakeHookTool{name: "write_file"}, nil, map[string]any{"ok": false}, errHookRunFailed())
+	if err != nil {
+		t.Fatalf("callback must not manufacture an error, got %v", err)
+	}
+	if res != nil {
+		t.Errorf("failed tool must pass through un-overridden, got %v", res)
 	}
 }
 
