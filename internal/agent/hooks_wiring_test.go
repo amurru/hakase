@@ -127,3 +127,34 @@ func TestHookAfterToolOverridesWithContext(t *testing.T) {
 		t.Errorf("override = %v, want original keys plus hook context", res)
 	}
 }
+
+// TestHookToolCallbacksSharedHelper pins the contract delegate.go relies on:
+// nil/disabled runners yield nil callback slices (ADK ranges fine over nil),
+// and an enabled runner yields callbacks that actually enforce the gate.
+// This is what keeps delegate_task sub-agents from bypassing PreToolUse.
+func TestHookToolCallbacksSharedHelper(t *testing.T) {
+	if before, after := hookToolCallbacks(nil); before != nil || after != nil {
+		t.Error("nil runner must yield nil callbacks")
+	}
+	disabled := hookTestRunner(t, hooks.Config{})
+	if before, after := hookToolCallbacks(disabled); before != nil || after != nil {
+		t.Error("disabled runner must yield nil callbacks")
+	}
+
+	sh := hookTestShell(t)
+	enabled := hookTestRunner(t, hooks.Config{PreToolUse: []hooks.Group{{Hooks: []hooks.Handler{{
+		Command: []string{sh, "-c", "exit 2"},
+	}}}}})
+	before, after := hookToolCallbacks(enabled)
+	if len(before) != 1 || len(after) != 1 {
+		t.Fatalf("enabled runner must yield one callback each, got %d/%d", len(before), len(after))
+	}
+	ctx := agent.NewContext(&agent.ContextMock{})
+	res, err := before[0](ctx, &fakeHookTool{name: "system_exec"}, nil)
+	if err != nil {
+		t.Fatalf("callback err: %v", err)
+	}
+	if res == nil || res["blocked_by"] != "hook" {
+		t.Errorf("shared before-callback must enforce the gate, got %v", res)
+	}
+}

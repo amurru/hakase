@@ -26,8 +26,9 @@ store are Phase 2 (see Non-goals). Rationale in plan.md "Critical path".
   (`agent/llmagent/llmagent.go:324,330`). `Flow.callTool`
   (`internal/llminternal/base_flow.go:1374`) invokes `BeforeToolCallback`
   first and **skips `tool.Run` when it returns a non-nil result**. One wiring
-  point on each of the four `llmagent.New` sites in `internal/agent/agent.go`
-  (orchestrator + `web_researcher` + `code_interpreter` + `general_purpose`)
+  point on each of the five `llmagent.New` sites in `internal/agent`
+  (orchestrator + `web_researcher` + `code_interpreter` + `general_purpose`
+  + the per-delegation ephemeral sub-agent in `delegate.go`)
   covers every tool, including MCP toolsets. No per-tool wiring, and the
   existing per-tool approval gate (`sandbox/systemexec.go:285-367`) still runs
   underneath when a hook allows the call.
@@ -168,22 +169,28 @@ package) following the `MemoryConfig` pattern:
   an absolute path or a small wrapper script) — keeps the trust surface and the
   config surface minimal.
 
-### Spec HK-004: wiring into the four agents
+### Spec HK-004: wiring into all five agents
 
-In `internal/agent/agent.go`, build one `*hooks.Runner` from `cfg.Hooks` near
-the other tool construction, then add to each `llmagent.New` config:
+In `internal/agent/agent.go`, build one `*hooks.Runner` from `cfg.Hooks`,
+publish it on `Deps.HooksRunner` for the delegation path, then adapt it via
+`hookToolCallbacks` (nil/disabled runner = nil slices = unchanged behaviour)
+at each `llmagent.New` config:
 
 ```go
-BeforeToolCallbacks: []llmagent.BeforeToolCallback{ hooksRunner.BeforeToolUse },
-AfterToolCallbacks:  []llmagent.AfterToolCallback{ hooksRunner.AfterToolUse },
+BeforeToolCallbacks: hookBeforeTool,
+AfterToolCallbacks:  hookAfterTool,
 ```
 
-The four sites: `web_researcher` (2155), `code_interpreter` (~2230),
-`general_purpose` (~2280), `orchestrator` (2436). Because all four are wired,
-`PreToolUse` also sees tool calls made by delegated sub-agents (Claude
-behaviour). The `internal/agent` package gains a direct import of
-`internal/hooks`; the runner is built from `cfg` (no `Deps` bridge factory
-needed — hooks depend only on config, keeping `internal/agent` decoupled).
+The five sites: `web_researcher` (2155), `code_interpreter` (~2230),
+`general_purpose` (~2280), `orchestrator` (2436), plus the per-delegation
+ephemeral sub-agent in `internal/agent/delegate.go` (which reads
+`Deps.HooksRunner` because it is built long after SetupRunner returns).
+Because all five are wired, `PreToolUse` also sees tool calls made by
+delegated sub-agents (Claude behaviour) — including `delegate_task`
+runs, which would otherwise be a gate bypass. The `internal/agent` package
+gains a direct import of `internal/hooks`; the runner is built from `cfg`
+(no `Deps` bridge factory needed — hooks depend only on config, keeping
+`internal/agent` decoupled).
 
 Note: the existing `BeforeModelCallbacks` on some sites are preserved and
 concatenated, not replaced.

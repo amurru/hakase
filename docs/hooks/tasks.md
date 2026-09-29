@@ -43,15 +43,23 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 ## Phase 3 — wiring
 
 - [x] **T3.1 [BE]** `internal/agent/agent.go`: build `*hooks.Runner` from
-      `cfg.Hooks`; add `BeforeToolCallbacks`/`AfterToolCallbacks` to all four
-      `llmagent.New` sites (researcher, code_interpreter, general_purpose,
-      orchestrator), concatenating with existing callbacks. Spec: HK-004.
+      `cfg.Hooks`, publish on `Deps.HooksRunner`; add
+      `BeforeToolCallbacks`/`AfterToolCallbacks` (via the shared
+      `hookToolCallbacks` helper — nil/disabled runner yields nil slices) to
+      all four `llmagent.New` sites (researcher, code_interpreter,
+      general_purpose, orchestrator), concatenating with existing callbacks;
+      `internal/agent/delegate.go`: same callbacks on the per-delegation
+      ephemeral sub-agent (read from `Deps.HooksRunner`), closing the
+      `delegate_task` gate bypass. Spec: HK-004.
 - [x] **T3.2 [BE]** `internal/agent/audit.go`: record hook denials
       (`blocked_by: "hook"` + hook name) on the audit trail, best-effort.
       Spec: HK-005.
-- [x] **T3.3 [QA]** wiring test: a `PreToolUse` exit-2 hook on `^system_exec$`
+- [x] **T3.3 [QA]** wiring tests: a `PreToolUse` exit-2 hook on `^system_exec$`
       short-circuits `tool.Run`; an allow returns `nil, nil` and the tool runs;
-      no `hooks` block = unchanged behaviour. Spec: HK-004.
+      no `hooks` block = unchanged behaviour; the shared
+      `hookToolCallbacks` helper yields nil slices for nil/disabled runners
+      and an enforcing gate for enabled ones (the contract `delegate.go`
+      relies on). Spec: HK-004.
 
 ## Phase 4 — CLI + docs
 

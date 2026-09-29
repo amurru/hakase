@@ -103,6 +103,21 @@ func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
 	}
 }
 
+// hookToolCallbacks adapts a hooks Runner to the ADK tool-callback slices
+// for llmagent.Config. A nil or disabled runner yields nil slices (ADK
+// ranges fine over nil), so call sites wire unconditionally. Shared by
+// SetupRunner's four prebuilt agents and delegate.go's per-delegation
+// sub-agents, which would otherwise bypass the user's PreToolUse gate.
+func hookToolCallbacks(r *hooks.Runner) ([]llmagent.BeforeToolCallback, []llmagent.AfterToolCallback) {
+	if r == nil || !r.Enabled() {
+		return nil, nil
+	}
+	return []llmagent.BeforeToolCallback{makeHookBeforeToolCallback(r)},
+		[]llmagent.AfterToolCallback{makeHookAfterToolCallback(r)}
+}
+
+// AfterToolCallback: collected PostToolUse context overrides the result,
+// otherwise the tool result passes through. Named for the same reason.
 // makeHookAfterToolCallback adapts a hooks Runner to ADK's
 // AfterToolCallback: collected PostToolUse context overrides the result,
 // otherwise the tool result passes through. Named for the same reason.
@@ -2196,12 +2211,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if log != nil {
 		hooksRunner.SetLog(func(msg string) { log(msg) })
 	}
-	var hookBeforeTool []llmagent.BeforeToolCallback
-	var hookAfterTool []llmagent.AfterToolCallback
-	if hooksRunner.Enabled() {
-		hookBeforeTool = []llmagent.BeforeToolCallback{makeHookBeforeToolCallback(hooksRunner)}
-		hookAfterTool = []llmagent.AfterToolCallback{makeHookAfterToolCallback(hooksRunner)}
-	}
+	// Publish the runner for the delegate_task path, whose sub-agents are
+	// built per-delegation in delegate.go (long after SetupRunner returns).
+	deps.HooksRunner = hooksRunner
+	hookBeforeTool, hookAfterTool := hookToolCallbacks(hooksRunner)
 
 	// Build toolsets slice for the researcher agent (MCP manager only when present).
 	var researcherToolsets []tool.Toolset

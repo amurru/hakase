@@ -6,6 +6,7 @@ package agent
 import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
@@ -46,6 +47,14 @@ type Deps struct {
 
 	// HistoryBuilder for context management.
 	HistoryBuilder *hctx.HistoryBuilder
+
+	// HooksRunner is the process-wide tool-lifecycle hooks runner built
+	// from cfg.Hooks during SetupRunner (docs/hooks/spec.md HK-004). The
+	// four prebuilt agents close over it directly; the delegate_task path
+	// reads it here because its sub-agents are built per-delegation in
+	// delegate.go, long after SetupRunner returns. Nil (or disabled) means
+	// no hooks: every Check method is a no-op on it.
+	HooksRunner *hooks.Runner
 
 	// Knowledge enrichment / query expansion callbacks (model-backed).
 	EnrichKnowledgeFn func(ctx context.Context, prompt string) (string, error)
