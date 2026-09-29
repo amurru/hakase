@@ -24,11 +24,13 @@ import (
 	"strings"
 )
 
-// Lifecycle events. Only these two exist in v1; anything else in config is
-// a load-time error.
+// Lifecycle events. PreToolUse/PostToolUse fire around tool calls;
+// SessionStart fires once per session (see RunSessionStart). Anything else
+// in config is a load-time error.
 const (
-	EventPreToolUse  = "PreToolUse"
-	EventPostToolUse = "PostToolUse"
+	EventPreToolUse   = "PreToolUse"
+	EventPostToolUse  = "PostToolUse"
+	EventSessionStart = "SessionStart"
 )
 
 // Handler defaults and limits.
@@ -95,6 +97,20 @@ type Config struct {
 	PreToolUse []Group `json:"PreToolUse,omitempty"`
 	// PostToolUse groups run after the tool; observability only.
 	PostToolUse []Group `json:"PostToolUse,omitempty"`
+	// SessionStart groups run once per session; their stdout/context is
+	// injected into the first turn. Matchers must be empty (no meaningful
+	// match target exists at session start).
+	SessionStart []Group `json:"SessionStart,omitempty"`
+	// Project tunes the project layer (<root>/.hakase/hooks.json).
+	Project ProjectConfig `json:"project,omitempty"`
+}
+
+// ProjectConfig tunes project-scope hooks (Phase 2, spec HK-101).
+type ProjectConfig struct {
+	// Enabled tri-state: nil (default) = the project layer loads (hooks
+	// still need per-hook trust before they execute); explicit false
+	// disables project files entirely.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // ApplyDefaults fills zero values. Call before Validate (NewRunner and
@@ -108,6 +124,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	for i := range c.PostToolUse {
 		c.PostToolUse[i].applyDefaults()
+	}
+	for i := range c.SessionStart {
+		c.SessionStart[i].applyDefaults()
 	}
 }
 
@@ -127,28 +146,36 @@ func (g *Group) applyDefaults() {
 }
 
 // Validate checks the whole block. Bad matcher regex, non-command types,
-// empty commands, negative timeouts, bad on_failure values, and
-// on_failure:block on PostToolUse are all errors with the group/handler
-// index attached.
+// empty commands, negative timeouts, bad on_failure values,
+// on_failure:block off PreToolUse, and non-empty SessionStart matchers are
+// all errors with the group/handler index attached.
 func (c *Config) Validate() error {
 	if c == nil {
 		return nil
 	}
 	for i := range c.PreToolUse {
-		if err := c.PreToolUse[i].validate(fmt.Sprintf("hooks.PreToolUse[%d]", i), true); err != nil {
+		if err := c.PreToolUse[i].validate(fmt.Sprintf("hooks.PreToolUse[%d]", i), EventPreToolUse); err != nil {
 			return err
 		}
 	}
 	for i := range c.PostToolUse {
-		if err := c.PostToolUse[i].validate(fmt.Sprintf("hooks.PostToolUse[%d]", i), false); err != nil {
+		if err := c.PostToolUse[i].validate(fmt.Sprintf("hooks.PostToolUse[%d]", i), EventPostToolUse); err != nil {
+			return err
+		}
+	}
+	for i := range c.SessionStart {
+		if err := c.SessionStart[i].validate(fmt.Sprintf("hooks.SessionStart[%d]", i), EventSessionStart); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (g *Group) validate(where string, pre bool) error {
+func (g *Group) validate(where string, event string) error {
 	if g.Matcher != "" {
+		if event == EventSessionStart {
+			return fmt.Errorf("invalid %s.matcher %q: SessionStart handlers run unconditionally; a matcher would silently never fire", where, g.Matcher)
+		}
 		if _, err := regexp.Compile(g.Matcher); err != nil {
 			return fmt.Errorf("invalid %s.matcher %q: %v", where, g.Matcher, err)
 		}
@@ -157,14 +184,14 @@ func (g *Group) validate(where string, pre bool) error {
 		return fmt.Errorf("invalid %s: no hooks (group with a matcher but no handlers never fires)", where)
 	}
 	for i := range g.Hooks {
-		if err := g.Hooks[i].validate(fmt.Sprintf("%s.hooks[%d]", where, i), pre); err != nil {
+		if err := g.Hooks[i].validate(fmt.Sprintf("%s.hooks[%d]", where, i), event); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *Handler) validate(where string, pre bool) error {
+func (h *Handler) validate(where string, event string) error {
 	if h.Type != HookTypeCommand {
 		return fmt.Errorf("invalid %s.type %q: only %q is supported in v1", where, h.Type, HookTypeCommand)
 	}
@@ -177,8 +204,8 @@ func (h *Handler) validate(where string, pre bool) error {
 	if h.OnFailure != OnFailureAllow && h.OnFailure != OnFailureBlock {
 		return fmt.Errorf("invalid %s.on_failure %q: must be %q or %q", where, h.OnFailure, OnFailureAllow, OnFailureBlock)
 	}
-	if !pre && h.OnFailure == OnFailureBlock {
-		return fmt.Errorf("invalid %s.on_failure %q: fail-closed is only meaningful on PreToolUse (PostToolUse cannot block)", where, h.OnFailure)
+	if event != EventPreToolUse && h.OnFailure == OnFailureBlock {
+		return fmt.Errorf("invalid %s.on_failure %q: fail-closed is only meaningful on PreToolUse (%s cannot block)", where, h.OnFailure, event)
 	}
 	return nil
 }
@@ -197,13 +224,23 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	for k := range raw {
 		switch k {
-		case "enabled", "PreToolUse", "PostToolUse":
+		case "enabled", "PreToolUse", "PostToolUse", "SessionStart", "project":
 		default:
-			return fmt.Errorf("invalid hooks.%s: unknown key (want one of enabled, PreToolUse, PostToolUse)", k)
+			return fmt.Errorf("invalid hooks.%s: unknown key (want one of enabled, PreToolUse, PostToolUse, SessionStart, project)", k)
 		}
 	}
 	*c = Config(p)
 	return nil
+}
+
+// ProjectLayerEnabled reports the project-layer switch: nil (absent) = on
+// (project files load but their hooks still need per-hook trust before
+// they execute); explicit false disables project files entirely.
+func ProjectLayerEnabled(c *Config) bool {
+	if c == nil || c.Project.Enabled == nil {
+		return true
+	}
+	return *c.Project.Enabled
 }
 
 // Enabled reports the tri-state switch: nil (absent) = on, matching the

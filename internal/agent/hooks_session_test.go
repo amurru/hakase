@@ -1,0 +1,80 @@
+package agent
+
+import (
+	"runtime"
+	"testing"
+
+	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/hooks"
+
+	"google.golang.org/adk/v2/agent"
+)
+
+// TestWireHookSessionStartNoop covers the guard rails: nil runners never
+// install a provider, and a runner with no session source (no user groups
+// AND the project layer disabled) leaves the builder untouched.
+func TestWireHookSessionStartNoop(t *testing.T) {
+	hb := hctx.NewHistoryBuilder(nil)
+	wireHookSessionStart(hb, nil)
+	if hb.SessionStartProvider() != nil {
+		t.Error("nil runner must not install a provider")
+	}
+
+	empty, err := hooks.NewRunner(hooks.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireHookSessionStart(hb, empty)
+	// Group-less but project-layered: a project SessionStart file may
+	// appear — or be trusted — mid-process, so the provider installs.
+	if hb.SessionStartProvider() == nil {
+		t.Error("project-capable runner must install a provider")
+	}
+
+	// Tool-only user hooks plus a DISABLED project layer: SessionStart can
+	// never fire from anywhere.
+	off := false
+	toolOnly, err := hooks.NewRunner(hooks.Config{
+		PreToolUse: []hooks.Group{{Hooks: []hooks.Handler{{Command: []string{"/bin/true"}}}}},
+		Project:    hooks.ProjectConfig{Enabled: &off},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb2 := hctx.NewHistoryBuilder(nil)
+	wireHookSessionStart(hb2, toolOnly)
+	if hb2.SessionStartProvider() != nil {
+		t.Error("runner with no session source must not install a provider")
+	}
+}
+
+// TestWireHookSessionStartInstalls pins the happy path: user SessionStart
+// groups install a provider that delivers runner output into the session.
+func TestWireHookSessionStartInstalls(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	hb := hctx.NewHistoryBuilder(nil)
+	r, err := hooks.NewRunner(hooks.Config{
+		SessionStart: []hooks.Group{{Hooks: []hooks.Handler{{Command: []string{"/bin/sh", "-c", "echo wired"}}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireHookSessionStart(hb, r)
+	prov := hb.SessionStartProvider()
+	if prov == nil {
+		t.Fatal("session-capable runner must install a provider")
+	}
+	ctx := agent.NewContext(&agent.ContextMock{})
+	// ContextMock panics on context methods; the runner's recover guards
+	// must hold (this is the same mock the wiring tests use).
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("provider panicked on mock context: %v", rec)
+		}
+	}()
+	if got := prov(ctx); got != "wired" {
+		t.Errorf("provider = %q, want the hook output", got)
+	}
+}

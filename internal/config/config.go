@@ -451,6 +451,17 @@ func HooksEnabled(c *Config) bool {
 	return hooks.Enabled(&c.Hooks)
 }
 
+// ProjectHooksEnabled reports whether the project hooks layer
+// (<root>/.hakase/hooks.json) loads. Default true; the trust gate still
+// applies per hook. Only an explicit enabled:false (or
+// HAKASE_HOOKS_PROJECT_ENABLED=0) disables the layer entirely.
+func ProjectHooksEnabled(c *Config) bool {
+	if c == nil {
+		return true
+	}
+	return hooks.ProjectLayerEnabled(&c.Hooks)
+}
+
 // SleepConfig tunes one SkillOpt-Sleep night. Defaults (documented per
 // field) keep the loop conservative: redaction always on, no evidence log,
 // single-group nights, no auto-adoption. redact_secrets is the one field
@@ -1050,6 +1061,7 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX") != "" ||
 		os.Getenv("HAKASE_HOOKS_ENABLED") != "" ||
+		os.Getenv("HAKASE_HOOKS_PROJECT_ENABLED") != "" ||
 		os.Getenv("HAKASE_STT_ENABLED") != "" ||
 		os.Getenv("HAKASE_TTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_STT_ENABLED") != "" ||
@@ -1427,6 +1439,13 @@ func LoadConfig(filePath string) (*Config, error) {
 			return nil, err
 		}
 		cfg.Hooks.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_HOOKS_PROJECT_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_HOOKS_PROJECT_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Hooks.Project.Enabled = &b
 	}
 	cfg.Hooks.ApplyDefaults()
 	if err := cfg.Hooks.Validate(); err != nil {

@@ -2211,6 +2211,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if log != nil {
 		hooksRunner.SetLog(func(msg string) { log(msg) })
 	}
+	// Content-hash trust for the project layer (spec HK-102/HK-103): an
+	// unopenable store trusts nothing, so cloned-repo hooks stay skipped.
+	hooksRunner.SetTrustStore(hooks.OpenDefaultTrustStore())
 	// Publish the runner for the delegate_task path, whose sub-agents are
 	// built per-delegation in delegate.go (long after SetupRunner returns).
 	deps.HooksRunner = hooksRunner
@@ -2503,6 +2506,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	} else if len(memoryTools) > 0 {
 		orchestratorTools = append(orchestratorTools, memoryTools...)
 	}
+
+	// SessionStart hooks (docs/hooks/spec.md HK-104): no-op unless the
+	// runner could ever fire (user groups or project layer enabled).
+	wireHookSessionStart(historyBuilder, hooksRunner)
 
 	// Orchestrator toolsets: MCP manager plus the web search fallback when
 	// enabled. A nil manager element is omitted (ADK would panic).

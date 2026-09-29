@@ -94,3 +94,52 @@ func TestHooksEnvOverrides(t *testing.T) {
 		t.Fatalf("expected strict bool error naming the variable, got: %v", err)
 	}
 }
+
+func TestHooksProjectLayerEnvAndDefaults(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !ProjectHooksEnabled(cfg) {
+		t.Error("project layer must default to enabled (trust gate still applies)")
+	}
+	cfg, err = loadWithEnv(t, map[string]string{"HAKASE_HOOKS_PROJECT_ENABLED": "0"})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if ProjectHooksEnabled(cfg) {
+		t.Error("HAKASE_HOOKS_PROJECT_ENABLED=0 must disable the project layer")
+	}
+	if _, err := loadWithEnv(t, map[string]string{"HAKASE_HOOKS_PROJECT_ENABLED": "maybe"}); err == nil ||
+		!strings.Contains(err.Error(), "HAKASE_HOOKS_PROJECT_ENABLED") {
+		t.Fatalf("expected strict bool error naming the variable, got: %v", err)
+	}
+	if !ProjectHooksEnabled(nil) {
+		t.Error("nil config must read project-enabled")
+	}
+}
+
+func TestHooksSessionStartValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	// Non-empty matcher on SessionStart must fail loudly (it would never fire).
+	body := `{"provider":"openai","model_name":"m","api_key":"k","hooks":{"SessionStart":[{"matcher":"x","hooks":[{"command":["/bin/true"]}]}]}}`
+	if err := writeFileForTest(t, path, body); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unconditionally") {
+		t.Fatalf("load = %v, want SessionStart-matcher error", err)
+	}
+	// Empty-matcher SessionStart loads, with defaults applied.
+	body = `{"provider":"openai","model_name":"m","api_key":"k","hooks":{"SessionStart":[{"hooks":[{"command":["/bin/true"]}]}]}}`
+	if err := writeFileForTest(t, path, body); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	h := cfg.Hooks.SessionStart[0].Hooks[0]
+	if h.Timeout != 30 || h.OnFailure != "allow" || h.Type != "command" {
+		t.Errorf("session defaults not applied: %+v", h)
+	}
+}

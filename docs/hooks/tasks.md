@@ -76,20 +76,43 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
       Zero `webui/` files are touched by this change, so CI is the backstop
       — confirm green there before merge.
 
-## Phase 2 (next arc, separate issue) — project scope + trust
+## Phase 2 (this arc) — project scope + trust + SessionStart
 
-Deliberately not in the first cut. Recorded here so it is not lost; tracked
-against #20. Codex content-hash model (NOT Gemini's broken fingerprint — see
-gemini-cli#27900).
+Governing model: Codex content-hash trust (NOT Gemini's broken
+fingerprint — see gemini-cli#27900). Spec: Phase-2 section in
+[spec.md](spec.md) (HK-101..HK-105).
 
-- [ ] **T5.1 [BE]** project-scope `.hakase/hooks.json` loading, layered
-      user → project.
-- [ ] **T5.2 [BE]** content-hash trust store (`~/.hakase/hooks-trust.json`):
+- [x] **T5.1 [BE]** project-scope `.hakase/hooks.json` loading, layered
+      user → project: `ProjectHooksPath` / `LoadProjectFile` (strict keys,
+      no `enabled`, symlink-escape guard, relative commands rooted at the
+      project), per-turn root resolution with per-root mtime cache.
+      Spec: HK-101, HK-103.
+- [x] **T5.2 [BE]** content-hash trust store (`~/.hakase/hooks-trust.json`,
+      0600, atomic rename under `.lock` flock, mtime-cached reads):
       fingerprint = hash(resolved argv + local script bytes); explicit
-      `hakase hooks trust/untrust <name>` accept gate (no auto-trust, no
-      warning-without-gate).
-- [ ] **T5.3 [BE]** harden per the CVE record: trust never derived from
-      repo-writable git config/worktree; hook config read-only inside the
-      sandbox; managed/policy tier that lower tiers cannot disable.
-- [ ] **T5.4 [BE]** `hakase hooks test <name>` dry-run + `SessionStart` event
-      (needs a non-ADK injection point).
+      `hakase hooks trust/untrust` accept gate (no auto-trust, no
+      warning-without-gate); script-body rewrite lapses trust.
+      Spec: HK-102.
+- [x] **T5.3 [BE]** harden per the CVE record: `hooks-trust.json` in
+      `sensitiveFilePaths()`; write-deny (reads allowed) for
+      `*/.hakase/hooks.json` in `ResolveScopedPath` pre- and post-resolve;
+      project files cannot disable user hooks or the trust gate (shape
+      enforced). Full MDM tier explicitly deferred (no MDM infra exists;
+      see spec). Spec: HK-105.
+- [x] **T5.4 [BE]** `hakase hooks test <name|prefix>` dry-run (sample
+      payload, printed verdict; warns loudly on untrusted project hooks)
+      + `SessionStart` event: user + trusted-project groups, once per
+      session via `HistoryBuilder` provider slot (reserve/rollback mirror),
+      plain-stdout-is-context contract, exit 2 warns. Spec: HK-104, HK-105.
+- [x] **T5.5 [QA]** project/trust/layer/session/sandbox-deny/CLI/config
+      tests (skip-on-windows for shell spawns; portable missing-binary
+      and pure-parse rows run everywhere). Spec: HK-101..105.
+- [x] **T5.6 [DOCS]** spec Phase-2 section, tasks, `config.json.example`
+      (`project.enabled`, SessionStart sample), DEVELOPMENT.md
+      (hooks bullet + env table), README (CLI row), CHANGELOG entry,
+      roadmap Tier-2 hooks note.
+- [x] **T5.7 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
+      `go test ./...` (36/36 packages, plus `-race` on hooks/agent and
+      windows cross-compile). `pnpm test` could not run on this host (npm
+      registry fetch times out; pre-existing environmental issue, same as
+      the Phase-1 note). Zero `webui/` files touched — CI is the backstop.

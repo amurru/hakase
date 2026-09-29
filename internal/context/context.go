@@ -42,6 +42,16 @@ type HistoryBuilder struct {
 	memorySeen     map[string]bool
 	memoryMu       sync.Mutex
 
+	// SessionStart hooks (docs/hooks/spec.md HK-104): hookProvider renders
+	// the one-shot SessionStart context block ("" = nothing to inject);
+	// hookSeen tracks served sessions. Mirrors the memory slot exactly,
+	// including the rollback-on-empty behavior (a mid-session trust grant
+	// re-arms a later call). Wired in SetupRunner; nil when hooks cannot
+	// fire SessionStart. Guarded by hookMu.
+	hookProvider func(ctx agent.Context) string
+	hookSeen     map[string]bool
+	hookMu       sync.Mutex
+
 	// Token estimates of the rendered project-context block and the git
 	// workspace snapshot that are folded into the system prompt
 	// (setupRunner). fitToBudget reserves them so large AGENTS.md files or
@@ -131,6 +141,44 @@ func (h *HistoryBuilder) rollbackMemory(sessionID string) {
 	delete(h.memorySeen, sessionID)
 }
 
+// SetSessionStartProvider attaches the SessionStart-hooks block renderer
+// (SetupRunner). Same once-per-session contract as SetMemoryProvider.
+func (h *HistoryBuilder) SetSessionStartProvider(fn func(ctx agent.Context) string) {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	h.hookProvider = fn
+	if h.hookSeen == nil {
+		h.hookSeen = make(map[string]bool)
+	}
+}
+
+// SessionStartProvider returns the attached renderer (nil when hooks cannot
+// fire SessionStart).
+func (h *HistoryBuilder) SessionStartProvider() func(ctx agent.Context) string {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	return h.hookProvider
+}
+
+// reserveSessionStart atomically claims the session's one-shot hook
+// injection; rollbackSessionStart releases an empty render. Mirrors
+// reserveMemory/rollbackMemory.
+func (h *HistoryBuilder) reserveSessionStart(sessionID string) bool {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	if h.hookProvider == nil || h.hookSeen[sessionID] {
+		return false
+	}
+	h.hookSeen[sessionID] = true
+	return true
+}
+
+func (h *HistoryBuilder) rollbackSessionStart(sessionID string) {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	delete(h.hookSeen, sessionID)
+}
+
 // SetLogFunc installs a logger (usually the TUI log pane) for compaction
 // status messages.
 func (h *HistoryBuilder) SetLogFunc(f func(format string, args ...any)) {
@@ -190,9 +238,22 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 			h.rollbackMemory(session.ID)
 		}
 	}
+	// SessionStart hooks: same one-shot reservation, spliced AHEAD of the
+	// memory block (hook context is the freshest per-session signal).
+	var hookContent *genai.Content
+	if h.reserveSessionStart(session.ID) {
+		if block := h.hookProvider(ctx); block != "" {
+			hookContent = genai.NewContentFromText("HOOK SESSIONSTART CONTEXT:\n"+block, genai.RoleUser)
+		} else {
+			h.rollbackSessionStart(session.ID)
+		}
+	}
 	defer func() {
 		if memoryContent != nil {
 			req.Contents = append([]*genai.Content{memoryContent}, req.Contents...)
+		}
+		if hookContent != nil {
+			req.Contents = append([]*genai.Content{hookContent}, req.Contents...)
 		}
 	}()
 

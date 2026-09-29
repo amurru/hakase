@@ -196,7 +196,23 @@
         ]
       }
     ],
-    "PostToolUse": []
+    "PostToolUse": [],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "name": "project-context",
+            "type": "command",
+            "command": ["/home/you/.hakase/hooks/session-start.sh"],
+            "timeout": 30,
+            "on_failure": "allow"
+          }
+        ]
+      }
+    ],
+    "project": {
+      "enabled": true
+    }
   },
   "tracing": {
     "enabled": false,

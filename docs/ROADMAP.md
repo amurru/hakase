@@ -43,12 +43,11 @@ All shipped and closed (2026-09-20 → 2026-09-27):
 Parking lot: [#20](https://github.com/amurru/hakase/issues/20) (the current
 open issue). Per-item notes live there; ordered by expected value:
 
-1. **Hooks system** — *in progress, this branch.* User-configurable
-   `PreToolUse` (blockable) / `PostToolUse` command hooks riding ADK's tool
-   callbacks; first cut is user-scope only. Design: `docs/hooks/`.
-   Trust model for project scope adopts **Codex's content-hash** model, not
-   Gemini CLI's fingerprint-and-approve (that one is known-broken —
-   gemini-cli#27900).
+1. **Hooks system** — shipped (user-scope `PreToolUse`/`PostToolUse` +
+   project-scope `.hakase/hooks.json` with content-hash trust +
+   `SessionStart`). Design: `docs/hooks/`. Trust model is **Codex's
+   content-hash**, not Gemini CLI's fingerprint-and-approve (that one is
+   known-broken — gemini-cli#27900).
 2. **Hybrid retrieval for knowledge** — optional embeddings fused with BM25
    via reciprocal rank fusion, default off to preserve zero-dependency.
 3. **Second channel transport** (Discord/Slack) — the `channel.Channel` +
@@ -73,7 +72,7 @@ open issue). Per-item notes live there; ordered by expected value:
 | `dream_consolidate` memory trials | `internal/sleep/cycle.go`; `docs/skillopt-sleep/plan.md` | reserved surface from Phase 3 |
 | Landlock enforcement (Phase 3) | [#14](https://github.com/amurru/hakase/issues/14) (closed: fail-loud shipped, mode refused) | `sandbox.mode: landlock` is refused at config load and exec time until a real LSM enforcement lands: ruleset for FS read/write/exec per workspace/read/deny roots, ABI-version detection, clear error when the kernel lacks support; see the Proposed solution in #14 |
 | Web UI voice input (mic capture → speech pipeline) | `docs/telegram-voice/` deferred section | Telegram voice notes work end-to-end and `internal/speech` is transport-neutral; the web UI has no recording capture yet |
-| Project-scope hooks + content-hash trust store | `docs/hooks/spec.md` Non-goals; `docs/hooks/tasks.md` Phase 2 | first cut is user-scope (`~/.hakase/config.json`) only; project `.hakase/hooks.json` needs Codex-style content-hash trust + an explicit-accept gate. Gemini CLI's fingerprint-and-approve is the anti-pattern (gemini-cli#27900: forgeable `name:command` key, self-filling trust store, warning that does not gate → one-click shell from a cloned repo) |
+| Project-scope hooks + content-hash trust store | `docs/hooks/spec.md` Phase 2; shipped this arc | project `.hakase/hooks.json` loads layered under user config with Codex-style content-hash trust + explicit-accept gate, sandbox write-deny, and `SessionStart`. Gemini CLI's fingerprint-and-approve remains the documented anti-pattern (gemini-cli#27900) |
 
 ## Maintenance conventions
 

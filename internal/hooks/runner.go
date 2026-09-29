@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"amurru/hakase/internal/interfaces"
@@ -18,6 +19,10 @@ import (
 // AdditionalContextKey is the result key a PostToolUse hook's context is
 // appended under when it overrides the tool result.
 const AdditionalContextKey = "hook_additional_context"
+
+// SessionStartContextCap bounds the total context SessionStart handlers
+// may inject (Claude parity: 10k chars, then truncate).
+const SessionStartContextCap = 10000
 
 // compiledGroup is a Group with its matcher compiled. A nil matcher matches
 // every tool name.
@@ -41,6 +46,55 @@ type Runner struct {
 	log  func(string)
 	pre  []compiledGroup
 	post []compiledGroup
+	// session holds the user-layer SessionStart groups.
+	session []compiledGroup
+	// projectEnabled gates the project layer (<root>/.hakase/hooks.json).
+	projectEnabled bool
+	// trust gates project handlers. Nil means trust nothing (safe default:
+	// every project handler is skipped).
+	trust TrustChecker
+
+	// projCache memoizes loaded project files by root, keyed on
+	// (mtime, size) so edits — and mid-session trust grants, via the
+	// store's own mtime cache — take effect without a restart.
+	projMu    sync.Mutex
+	projCache map[string]projectCacheEntry
+
+	// warned remembers skipped-as-untrusted fingerprints already warned
+	// about, so every tool call doesn't re-log. Trust grants are NOT
+	// forgotten here (a lapse re-warns only after a process restart;
+	// the skip itself happens every call regardless).
+	warnedMu sync.Mutex
+	warned   map[string]bool
+
+	// fired tracks sessions already served by RunSessionStart (plus
+	// in-flight claims), mirroring HistoryBuilder's reserve/rollback so
+	// SessionStart context injects exactly once per session.
+	firedMu  sync.Mutex
+	fired    map[string]bool
+	inflight map[string]bool
+}
+
+type projectCacheEntry struct {
+	mtime   time.Time
+	size    int64
+	pre     []compiledGroup
+	post    []compiledGroup
+	session []compiledGroup
+}
+
+// compileGroups compiles validated groups (compile cannot fail after
+// Validate; a failure is skipped loudly rather than panicking).
+func compileGroups(groups []Group) []compiledGroup {
+	var out []compiledGroup
+	for _, g := range groups {
+		cg, err := compileGroup(g)
+		if err != nil {
+			continue
+		}
+		out = append(out, cg)
+	}
+	return out
 }
 
 // NewRunner validates cfg (bad regex/type/on_failure fail here, so a bad
@@ -52,7 +106,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	r := &Runner{}
+	r := &Runner{projectEnabled: Enabled(&c) && ProjectLayerEnabled(&c)}
 	if !Enabled(&c) {
 		return r, nil
 	}
@@ -69,6 +123,13 @@ func NewRunner(cfg Config) (*Runner, error) {
 			return nil, err
 		}
 		r.post = append(r.post, cg)
+	}
+	for _, g := range c.SessionStart {
+		cg, err := compileGroup(g)
+		if err != nil {
+			return nil, err
+		}
+		r.session = append(r.session, cg)
 	}
 	return r, nil
 }
@@ -97,10 +158,27 @@ func (r *Runner) warnf(format string, args ...any) {
 	}
 }
 
+// SetTrustStore installs the content-hash trust source for project-layer
+// handlers. Nil (the default) trusts nothing: every project handler is
+// skipped with a warning.
+func (r *Runner) SetTrustStore(s TrustChecker) {
+	if r == nil {
+		return
+	}
+	r.trust = s
+}
+
 // Enabled reports whether any hook group is loaded. A disabled runner's
 // Check methods return allow/passthrough without spawning anything.
 func (r *Runner) Enabled() bool {
-	return r != nil && (len(r.pre) > 0 || len(r.post) > 0)
+	return r != nil && (len(r.pre) > 0 || len(r.post) > 0 || len(r.session) > 0)
+}
+
+// HasSessionStart reports whether a SessionStart event could ever fire:
+// user groups exist, or the project layer is enabled (a project file may
+// appear — or be trusted — mid-process).
+func (r *Runner) HasSessionStart() bool {
+	return r != nil && (len(r.session) > 0 || r.projectEnabled)
 }
 
 // Snapshot describes one loaded handler for `hakase hooks list` and the
@@ -113,9 +191,14 @@ type Snapshot struct {
 	Timeout     int
 	OnFailure   string
 	Fingerprint string
+	// Layer is "user" (own config, always runs) or "project" (trust-gated).
+	Layer string
+	// Trusted is true for user-layer handlers and for trusted project
+	// handlers; false for skipped-as-untrusted project handlers.
+	Trusted bool
 }
 
-// Snapshots lists every loaded handler in config order.
+// Snapshots lists every loaded user-layer handler in config order.
 func (r *Runner) Snapshots() []Snapshot {
 	if r == nil {
 		return nil
@@ -123,14 +206,46 @@ func (r *Runner) Snapshots() []Snapshot {
 	var out []Snapshot
 	for _, g := range r.pre {
 		for _, h := range g.handlers {
-			out = append(out, Snapshot{Event: EventPreToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint()})
+			out = append(out, Snapshot{Event: EventPreToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
 		}
 	}
 	for _, g := range r.post {
 		for _, h := range g.handlers {
-			out = append(out, Snapshot{Event: EventPostToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint()})
+			out = append(out, Snapshot{Event: EventPostToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
 		}
 	}
+	for _, g := range r.session {
+		for _, h := range g.handlers {
+			out = append(out, Snapshot{Event: EventSessionStart, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
+		}
+	}
+	return out
+}
+
+// ProjectSnapshots lists the project-layer handlers for root with their
+// trust status. Nil when the layer is disabled, rootless, or file-less.
+// Used by `hakase hooks list`; the agent path uses projectGroups instead
+// (ctx-rooted, mtime-cached).
+func (r *Runner) ProjectSnapshots(root string) []Snapshot {
+	if r == nil || !r.projectEnabled || strings.TrimSpace(root) == "" {
+		return nil
+	}
+	f, err := LoadProjectFile(root)
+	if err != nil || f == nil {
+		return nil
+	}
+	var out []Snapshot
+	collect := func(event string, groups []Group) {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				fp := h.Fingerprint()
+				out = append(out, Snapshot{Event: event, Matcher: g.Matcher, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: fp, Layer: "project", Trusted: r.isTrusted(fp)})
+			}
+		}
+	}
+	collect(EventPreToolUse, f.PreToolUse)
+	collect(EventPostToolUse, f.PostToolUse)
+	collect(EventSessionStart, f.SessionStart)
 	return out
 }
 
@@ -207,33 +322,71 @@ func safeCWD(ctx context.Context) string {
 // config order. It returns blocked=true with a model-legible result map when
 // a hook denies (first block wins, deny-wins); otherwise blocked=false and
 // the tool must run. A nil/empty toolInput is fine.
+//
+// Layers run user-first, then the trust-gated project layer (HK-103): an
+// untrusted project handler is skipped with a once-per-process warning, and
+// the tool proceeds.
 func (r *Runner) CheckPreToolUse(ctx context.Context, toolName string, toolInput map[string]any) (bool, map[string]any) {
-	if r == nil || len(r.pre) == 0 {
+	if r == nil {
 		return false, nil
 	}
 	p := buildPayload(ctx, EventPreToolUse, toolName, toolInput, nil)
-	for _, g := range r.pre {
+	if blocked, res := r.runPreGroups(ctx, p, r.pre, toolName); blocked {
+		return true, res
+	}
+	// Project layer: each handler runs only when its content fingerprint
+	// is trusted; anything else is skipped loudly and the tool proceeds.
+	pre, _, _ := r.projectGroups(ctx)
+	for _, g := range pre {
 		if !g.matches(toolName) {
 			continue
 		}
 		for _, h := range g.handlers {
-			v := r.runHandler(ctx, EventPreToolUse, h, p)
-			switch {
-			case v.block:
-				return true, blockResult(toolName, h, v.reason)
-			case v.hookErr != "":
-				if h.OnFailure == OnFailureBlock {
-					return true, blockResult(toolName, h, "hook error (fail-closed): "+v.hookErr)
-				}
-				r.warnf("hooks: PreToolUse %q failed open: %s", displayName(h), v.hookErr)
-			default:
-				// Allow-path additionalContext has no ADK delivery channel:
-				// BeforeToolCallback can only allow (nil,nil) or skip the
-				// tool (non-nil). Log it so it is not silently lost.
-				if v.additionalContext != "" {
-					r.warnf("hooks: PreToolUse %q context (allow path, not delivered to model): %s", displayName(h), v.additionalContext)
-				}
+			fp := h.Fingerprint()
+			if !r.isTrusted(fp) {
+				r.warnUntrustedOnce(fp, displayName(h))
+				continue
 			}
+			if blocked, res := r.stepPre(ctx, p, h, toolName); blocked {
+				return true, res
+			}
+		}
+	}
+	return false, nil
+}
+
+// runPreGroups runs compiled user-layer groups (no trust gate: own config).
+func (r *Runner) runPreGroups(ctx context.Context, p payload, groups []compiledGroup, toolName string) (bool, map[string]any) {
+	for _, g := range groups {
+		if !g.matches(toolName) {
+			continue
+		}
+		for _, h := range g.handlers {
+			if blocked, res := r.stepPre(ctx, p, h, toolName); blocked {
+				return true, res
+			}
+		}
+	}
+	return false, nil
+}
+
+// stepPre runs one PreToolUse handler: block=true stops the whole chain.
+func (r *Runner) stepPre(ctx context.Context, p payload, h Handler, toolName string) (bool, map[string]any) {
+	v := r.runHandler(ctx, EventPreToolUse, h, p)
+	switch {
+	case v.block:
+		return true, blockResult(toolName, h, v.reason)
+	case v.hookErr != "":
+		if h.OnFailure == OnFailureBlock {
+			return true, blockResult(toolName, h, "hook error (fail-closed): "+v.hookErr)
+		}
+		r.warnf("hooks: PreToolUse %q failed open: %s", displayName(h), v.hookErr)
+	default:
+		// Allow-path additionalContext has no ADK delivery channel:
+		// BeforeToolCallback can only allow (nil,nil) or skip the
+		// tool (non-nil). Log it so it is not silently lost.
+		if v.additionalContext != "" {
+			r.warnf("hooks: PreToolUse %q context (allow path, not delivered to model): %s", displayName(h), v.additionalContext)
 		}
 	}
 	return false, nil
@@ -251,7 +404,7 @@ func (r *Runner) CheckPreToolUse(ctx context.Context, toolName string, toolInput
 // success and the model would never see it. The failure reaches the model
 // intact; the undelivered context goes to the warn log instead of vanishing.
 func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInput, toolResult map[string]any, toolErr error) map[string]any {
-	if r == nil || len(r.post) == 0 {
+	if r == nil {
 		return nil
 	}
 	p := buildPayload(ctx, EventPostToolUse, toolName, toolInput, toolResult)
@@ -261,20 +414,22 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 			continue
 		}
 		for _, h := range g.handlers {
-			v := r.runHandler(ctx, EventPostToolUse, h, p)
-			if v.hookErr != "" {
-				// on_failure:block is rejected on PostToolUse at Validate,
-				// so every error here is fail-open by construction.
-				r.warnf("hooks: PostToolUse %q failed open: %s", displayName(h), v.hookErr)
+			r.stepPost(ctx, p, h, &contexts)
+		}
+	}
+	// Project layer, trust-gated like PreToolUse.
+	_, post, _ := r.projectGroups(ctx)
+	for _, g := range post {
+		if !g.matches(toolName) {
+			continue
+		}
+		for _, h := range g.handlers {
+			fp := h.Fingerprint()
+			if !r.isTrusted(fp) {
+				r.warnUntrustedOnce(fp, displayName(h))
 				continue
 			}
-			if v.block {
-				contexts = append(contexts, fmt.Sprintf("hook %q reported: %s", displayName(h), v.reason))
-				continue
-			}
-			if v.additionalContext != "" {
-				contexts = append(contexts, v.additionalContext)
-			}
+			r.stepPost(ctx, p, h, &contexts)
 		}
 	}
 	if len(contexts) == 0 {
@@ -291,6 +446,232 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 	}
 	out[AdditionalContextKey] = joined
 	return out
+}
+
+// stepPost runs one PostToolUse handler, appending any context to dst.
+// Hook errors are fail-open by construction (Validate rejects
+// on_failure:block off PreToolUse).
+func (r *Runner) stepPost(ctx context.Context, p payload, h Handler, dst *[]string) {
+	v := r.runHandler(ctx, EventPostToolUse, h, p)
+	if v.hookErr != "" {
+		r.warnf("hooks: PostToolUse %q failed open: %s", displayName(h), v.hookErr)
+		return
+	}
+	if v.block {
+		*dst = append(*dst, fmt.Sprintf("hook %q reported: %s", displayName(h), v.reason))
+		return
+	}
+	if v.additionalContext != "" {
+		*dst = append(*dst, v.additionalContext)
+	}
+}
+
+// isTrusted reports whether a project-handler fingerprint is trusted. A
+// nil store (or nil runner) trusts nothing: the safe default that keeps
+// existing unit tests meaningful.
+func (r *Runner) isTrusted(fp string) bool {
+	if r == nil || r.trust == nil || fp == "" {
+		return false
+	}
+	return r.trust.Trusted(fp)
+}
+
+// warnUntrustedOnce warns about a skipped-as-untrusted project hook once
+// per process per fingerprint, naming the trust command. The skip itself
+// happens on every call regardless; only the log is deduplicated.
+func (r *Runner) warnUntrustedOnce(fp, name string) {
+	r.warnedMu.Lock()
+	defer r.warnedMu.Unlock()
+	if r.warned == nil {
+		r.warned = map[string]bool{}
+	}
+	if r.warned[fp] {
+		return
+	}
+	r.warned[fp] = true
+	r.warnf("hooks: skipping untrusted project hook %q (%s) — run `hakase hooks trust` to review and trust it", name, fp)
+}
+
+// safeProjectRoot resolves the per-turn project root without ever
+// panicking on a hostile context. "" means no project identity: no
+// project layer, no project hooks.
+func safeProjectRoot(ctx context.Context) string {
+	defer func() { _ = recover() }()
+	if ctx == nil {
+		return ""
+	}
+	return project.RootFrom(ctx)
+}
+
+// projectGroups returns the compiled project layer for this turn's root.
+// Results are mtime-cached per root so edits take effect without a
+// restart; a broken file warns (once per root per mtime) and yields
+// nothing, never breaking the user's own hooks.
+func (r *Runner) projectGroups(ctx context.Context) (pre, post, sess []compiledGroup) {
+	if r == nil || !r.projectEnabled {
+		return nil, nil, nil
+	}
+	root := safeProjectRoot(ctx)
+	if root == "" {
+		return nil, nil, nil
+	}
+	path := ProjectHooksPath(root)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, nil // absent (or transient stat failure): skip quietly
+	}
+	r.projMu.Lock()
+	defer r.projMu.Unlock()
+	if r.projCache == nil {
+		r.projCache = map[string]projectCacheEntry{}
+	}
+	if e, ok := r.projCache[root]; ok && e.mtime.Equal(fi.ModTime()) && e.size == fi.Size() {
+		return e.pre, e.post, e.session
+	}
+	f, err := LoadProjectFile(root)
+	if err != nil {
+		r.warnf("hooks: ignoring broken project hooks %s: %v (`hakase hooks test` diagnoses it)", path, err)
+		r.projCache[root] = projectCacheEntry{mtime: fi.ModTime(), size: fi.Size()}
+		return nil, nil, nil
+	}
+	if f == nil {
+		return nil, nil, nil
+	}
+	e := projectCacheEntry{mtime: fi.ModTime(), size: fi.Size(), pre: compileGroups(f.PreToolUse), post: compileGroups(f.PostToolUse), session: compileGroups(f.SessionStart)}
+	r.projCache[root] = e
+	return e.pre, e.post, e.session
+}
+
+// RunSessionStart runs SessionStart handlers once per session and returns
+// the context to inject ("" = nothing). The once-per-session claim mirrors
+// HistoryBuilder's reserve/rollback: an empty result unmarks the session,
+// so a later call — e.g. after a mid-session `hakase hooks trust` — can
+// still fire. Session-less surfaces share the "process" key (fire once per
+// process).
+func (r *Runner) RunSessionStart(ctx context.Context) string {
+	if r == nil || !r.HasSessionStart() {
+		return ""
+	}
+	key := safeSessionID(ctx)
+	if key == "" {
+		key = "process"
+	}
+	r.firedMu.Lock()
+	if r.fired == nil {
+		r.fired = map[string]bool{}
+		r.inflight = map[string]bool{}
+	}
+	if r.fired[key] || r.inflight[key] {
+		r.firedMu.Unlock()
+		return ""
+	}
+	r.inflight[key] = true
+	r.firedMu.Unlock()
+
+	p := buildPayload(ctx, EventSessionStart, "", nil, nil)
+	var parts []string
+	for _, g := range r.session {
+		for _, h := range g.handlers {
+			if c := r.runSessionHandler(ctx, p, h); c != "" {
+				parts = append(parts, c)
+			}
+		}
+	}
+	_, _, sess := r.projectGroups(ctx)
+	for _, g := range sess {
+		for _, h := range g.handlers {
+			fp := h.Fingerprint()
+			if !r.isTrusted(fp) {
+				r.warnUntrustedOnce(fp, displayName(h))
+				continue
+			}
+			if c := r.runSessionHandler(ctx, p, h); c != "" {
+				parts = append(parts, c)
+			}
+		}
+	}
+	out := TruncateRunes(strings.TrimSpace(strings.Join(parts, "\n\n")), SessionStartContextCap)
+
+	r.firedMu.Lock()
+	delete(r.inflight, key)
+	if out != "" {
+		r.fired[key] = true
+	}
+	r.firedMu.Unlock()
+	return out
+}
+
+// runSessionHandler runs one SessionStart handler and returns its context
+// contribution ("" = none). The output contract differs from tool events
+// on purpose: exit-0 plain stdout IS model-visible context here (there is
+// no tool result to protect), alongside JSON additionalContext. Exit 2
+// cannot block a session start — it is a warn-and-continue error like any
+// other failure (on_failure:block is rejected on SessionStart at Validate,
+// so every error here is fail-open by construction).
+func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) string {
+	timeout := h.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeoutSeconds
+	}
+	stdin, err := json.Marshal(p)
+	if err != nil {
+		r.warnf("hooks: SessionStart %q payload error: %v", displayName(h), err)
+		return ""
+	}
+	stdout, stderr, timedOut, runErr := runCommand(ctx, time.Duration(timeout)*time.Second, h.Command, hookEnv(EventSessionStart, p), p.CWD, stdin)
+	name := displayName(h)
+	if timedOut {
+		r.warnf("hooks: SessionStart %q timed out after %ds", name, timeout)
+		return ""
+	}
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			r.warnf("hooks: SessionStart %q exec failed: %v", name, runErr)
+			return ""
+		}
+	}
+	if exitCode != 0 {
+		msg := TruncateRunes(strings.TrimSpace(string(stderr)), 200)
+		if msg == "" {
+			msg = fmt.Sprintf("exit %d", exitCode)
+		}
+		r.warnf("hooks: SessionStart %q failed open (%s)", name, msg)
+		return ""
+	}
+	trimmed := bytes.TrimSpace(stdout)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	if trimmed[0] != '{' {
+		return string(trimmed)
+	}
+	ctxOut, err := sessionContextFromStdout(stdout)
+	if err != nil {
+		r.warnf("hooks: SessionStart %q emitted invalid JSON: %v", name, err)
+		return ""
+	}
+	return ctxOut
+}
+
+// sessionContextFromStdout extracts SessionStart context from exit-0
+// output: plain text passes through verbatim; JSON yields additionalContext.
+// ("", nil) for empty output.
+func sessionContextFromStdout(stdout []byte) (string, error) {
+	trimmed := bytes.TrimSpace(stdout)
+	if len(trimmed) == 0 {
+		return "", nil
+	}
+	if trimmed[0] != '{' {
+		return string(trimmed), nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(trimmed, &m); err != nil {
+		return "", err
+	}
+	return joinContext(firstStrList(subMap(m, "hookSpecificOutput", "hook_specific_output"), "additionalContext", "additional_context")), nil
 }
 
 // blockResult is the model-legible denial returned as the tool result so the

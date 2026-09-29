@@ -211,10 +211,11 @@ concatenated, not replaced.
 
 ## Non-goals (deferred, tracked in tasks.md)
 
-- **Project-scope hooks** (`.hakase/hooks.json`) and the content-hash trust
-  store + explicit-accept gate (Codex model). Phase 2. This cut is
-  user-scope-only specifically so the trust machinery can be built correctly
-  rather than shipped broken like Gemini's.
+- ~~**Project-scope hooks** (`.hakase/hooks.json`) and the content-hash trust
+  store + explicit-accept gate (Codex model)~~ — **shipped in Phase 2**
+  (HK-101..HK-105 below). This cut was user-scope-only specifically so the
+  trust machinery could be built correctly rather than shipped broken like
+  Gemini's.
 - `SessionStart` / `SessionEnd` / `Stop` / `PreCompact` / `UserPromptSubmit`
   events. `SessionStart` in particular needs a non-ADK injection point (no
   `llmagent` callback) — separable, useful, but not in the first cut.
@@ -235,3 +236,134 @@ concatenated, not replaced.
 - [ ] Invalid hook config (bad regex, non-command type, bad `on_failure`) fails
       config load with an actionable error.
 - [ ] `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test` green.
+
+---
+
+# Phase 2: project-scope hooks + content-hash trust + SessionStart
+
+Governing issue: amurru/hakase#20 (Tier-2 backlog item 3). Trust model:
+Codex CLI's **content-hash** trust, NOT Gemini CLI's fingerprint-and-approve
+(that one is known-broken — gemini-cli#27900: forgeable `name:command` key,
+self-filling trust store, warning that does not gate → one-click shell from
+a cloned repo). CVE-class bugs this phase designs against: forgeable trust
+keys (CVE-2026-40068), warning-without-gate (gemini #27900), trust prompt
+too late (CVE-2025-59536), sandbox-writes-settings persistence
+(CVE-2026-25725).
+
+## Decisions
+
+- **Project file lives at `<project-root>/.hakase/hooks.json`**, root from
+  `project.FindRoot` (the `.git` walk). No configurable path: a configurable
+  path is trust confusion with no user benefit.
+- **Project files can only ADD hooks.** Their shape is
+  `{PreToolUse, PostToolUse, SessionStart}` — no `enabled` master switch, no
+  way to disable user hooks or the trust gate. Unknown keys (including
+  `enabled`) are load-time errors. This is the managed-tier-lite property:
+  lower (less-trusted) tiers cannot switch off higher tiers.
+- **Untrusted project hooks never execute — they are skipped with a loud
+  warning pointing at `hakase hooks trust`.** Not a dialog, not a warning
+  that proceeds: a gate. Trust key = content fingerprint (`sha256:` over
+  resolved argv + local script bytes), stored in `~/.hakase/hooks-trust.json`
+  (0600). Rewriting a script body changes the fingerprint → trust lapses →
+  skipped again until re-trusted. There is no auto-trust path anywhere.
+- **Per-turn root resolution.** The web server hosts many projects in one
+  process, so the project layer resolves per tool call from
+  `project.RootFrom(ctx)` (mtime-cached per root), not once at SetupRunner.
+  The trust store is likewise re-read per check behind an mtime cache, so a
+  mid-session `hakase hooks trust` takes effect on the next tool call
+  without a restart.
+- **User layer runs first, then project.** Deny-wins makes order irrelevant
+  to the outcome; user-first makes the user's own policy win the reason
+  text.
+- **Hook files are write-protected from the agent.** `~/.hakase/hooks-trust.json`
+  joins `sensitiveFilePaths()` (same coverage as `channels.json`); any
+  `*/.hakase/hooks.json` is write-denied in `ResolveScopedPath` (reads stay
+  allowed — transparency). This is the CVE-2026-25725 control: sandboxed
+  code must not buy host-privilege persistence by editing hook config.
+- **SessionStart matchers must be empty** (non-empty = config error). There
+  is no meaningful match target at session start; failing loud beats a
+  matcher that silently never fires (the Goose bare-`*` lesson).
+- **SessionStart output contract differs from tool events**: exit-0 plain
+  stdout IS model-visible context here (Claude parity — there is no tool
+  result to protect), alongside JSON `additionalContext`. Exit 2 cannot
+  block a session start; it is a warn-and-continue hook error.
+
+## Specs
+
+### Spec HK-101: project file loading (`internal/hooks/project.go`)
+
+- `ProjectHooksPath(root)` = `<root>/.hakase/hooks.json`.
+- `ProjectFile{PreToolUse, PostToolUse, SessionStart []Group}` with strict
+  unmarshal (unknown keys AND `enabled` rejected), then `Validate()`
+  (same handler rules; `on_failure:block` rejected on PostToolUse AND
+  SessionStart — only meaningful on PreToolUse; non-empty SessionStart
+  matcher rejected).
+- Symlink-escape guard: `EvalSymlinks` on the file must stay under `root`.
+- Relative `command[0]` resolves against `root` (documented); absolute
+  kept as-is. Missing files are NOT a load error (fail-open at runtime
+  warns per `on_failure`, same as user hooks).
+
+### Spec HK-102: trust store (`internal/hooks/trust.go`)
+
+- `~/.hakase/hooks-trust.json` (0600, `OpenDefaultTrustStore`), atomic
+  rename writes under a `.lock` flock (same discipline as the audit log).
+- Entry: `{fingerprint, name, event, matcher, command[], first_seen,
+  trusted_at}`. `Trusted(fp)` behind an mtime cache (mid-session trust
+  works without restart). `Trust`/`Untrust`/`List`/`FindByPrefix`.
+- Fingerprint reuse: `Handler.Fingerprint()` (argv + script bytes, never
+  the name).
+
+### Spec HK-103: layered runner
+
+- `Config` gains `SessionStart []Group` (validated; unknown-key list
+  extended) and `Project{Enabled *bool}` (default true) + env
+  `HAKASE_HOOKS_PROJECT_ENABLED` + accessor `ProjectHooksEnabled`.
+- `Runner.SetTrustStore(TrustChecker)`; nil store = all project handlers
+  untrusted (safe default, keeps existing unit tests meaningful).
+- `CheckPreToolUse`/`CheckPostToolUse`: user layer first, then the
+  per-ctx project layer (mtime-cached per root); project handlers run only
+  when trusted, else skipped with a once-per-fingerprint warn naming
+  `hakase hooks trust`.
+- `RunSessionStart(ctx) string`: user + trusted-project SessionStart
+  groups, once per hakase session (fallback TaskID, then once per process
+  for session-less surfaces), rollback-friendly empty return (mirrors
+  `reserveMemory`/`rollbackMemory` so mid-session trust grants fire later).
+
+### Spec HK-104: SessionStart injection
+
+- `HistoryBuilder` gains a second provider slot (`SetSessionStartProvider`
+  + reserve/rollback, mirroring the memory slot) spliced at the head
+  alongside the memory block (hook block first).
+- `internal/agent/hooks_session.go`: `wireHookSessionStart(cfg, hb,
+  runner)` — no-op unless the runner can ever fire SessionStart (user
+  groups or project layer enabled).
+
+### Spec HK-105: sandbox + CLI
+
+- Sandbox: `hooks-trust.json` in `sensitiveFilePaths()`; write-deny for
+  `*/.hakase/hooks.json` in `ResolveScopedPath` (pre-join and post-resolve,
+  mirroring the existing double check). Reads allowed.
+- CLI: `hooks list` shows both layers with `[trusted]`/`[UNTRUSTED]`
+  status; `hooks trust [prefix...|--all] [--yes]` (prints full argv +
+  script preview, interactive y/N confirm); `hooks untrust <prefix>`;
+  `hooks test <name|prefix>` dry-runs one handler with a sample payload
+  and prints the verdict (executes the command — prints a loud warning
+  for untrusted project hooks, eyes-open review).
+
+## Phase-2 definition of done
+
+- [ ] A cloned repo's `.hakase/hooks.json` `SessionStart` + `PreToolUse`
+      hooks are SKIPPED with actionable warnings; nothing executes.
+- [ ] After `hakase hooks trust`, the same hooks fire on the next tool call
+      (no restart); rewriting the script body lapses trust (skipped again).
+- [ ] The agent cannot write `*/.hakase/hooks.json` or
+      `~/.hakase/hooks-trust.json` via file tools.
+- [ ] A trusted SessionStart hook's stdout reaches the model's first turn
+      exactly once per session.
+- [ ] Full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).
+
+## Explicitly deferred (not in Phase 2)
+
+- A full MDM/managed tier (no MDM infra exists in hakase; the
+  project-cannot-disable-user property above is the enforceable subset).
+- Per-hook `if` prefilters, `http`/`mcp_tool` handler types, shell strings.
