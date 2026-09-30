@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -54,16 +55,22 @@ func DryRun(event string, h Handler) DryRunResult {
 			res.HookErr = "exit " + strconv.Itoa(res.ExitCode)
 			return res
 		}
-		ctxOut, err := sessionContextFromStdout(stdout)
+		ctxOut, ignored, err := sessionContextFromStdout(stdout)
 		if err != nil {
 			res.HookErr = "invalid JSON: " + err.Error()
 			return res
 		}
 		res.Context = ctxOut
+		if ignored {
+			res.Context = strings.TrimSpace(res.Context + "\n\n[note: updatedInput ignored by v1]")
+		}
 		return res
 	}
 	v := parseExit(timeout, res.ExitCode, stdout, stderr)
 	res.Blocked, res.Reason, res.Context, res.HookErr = v.block, v.reason, v.additionalContext, v.hookErr
+	if v.ignoredUpdate {
+		res.Context = strings.TrimSpace(res.Context + "\n\n[note: updatedInput ignored by v1]")
+	}
 	return res
 }
 

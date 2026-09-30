@@ -349,6 +349,28 @@ func TestMissingBinaryFailsOpen(t *testing.T) {
 	}
 }
 
+// TestUpdatedInputWarns pins the v1 limitation: a hook returning
+// updatedInput (arg rewriting, Claude feature) is ignored, but loudly —
+// the warn log names it instead of silently dropping a ported hook's
+// rewrite.
+func TestUpdatedInputWarns(t *testing.T) {
+	v := parseExit(30, 0, []byte(`{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"ls"}}}`), nil)
+	if v.hookErr != "" || v.block {
+		t.Fatalf("allow+updatedInput = %+v, want clean allow with flag", v)
+	}
+	if !v.ignoredUpdate {
+		t.Error("updatedInput must set ignoredUpdate")
+	}
+	v = parseExit(30, 0, []byte(`{"decision":"block","updated_input":{}}`), nil)
+	if !v.block || !v.ignoredUpdate {
+		t.Errorf("block+updated_input = %+v, want block with flag", v)
+	}
+	v = parseExit(30, 0, []byte(`{"hookSpecificOutput":{}}`), nil)
+	if v.ignoredUpdate {
+		t.Error("no updatedInput must leave the flag clear")
+	}
+}
+
 // TestUserStyleGuardScript emulates the canonical user hook: a PreToolUse
 // guard that reads tool_input from stdin and denies dangerous commands
 // while allowing everything else. Written the way a user would write it

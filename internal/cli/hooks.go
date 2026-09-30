@@ -208,6 +208,9 @@ func runHooksTrust(args []string) int {
 		return 1
 	}
 	r.SetTrustStore(hooks.OpenDefaultTrustStore())
+	if cfg, cerr := config.LoadConfig(config.ResolveConfigPath("config.json")); cerr == nil && cfg.Hooks.Project.Enabled != nil && !*cfg.Hooks.Project.Enabled {
+		fmt.Fprintln(os.Stderr, "warning: project layer disabled in config (hooks.project.enabled:false); new trust entries stay inert until it is re-enabled")
+	}
 	root := cliProjectRoot()
 	if root == "" {
 		fmt.Fprintln(os.Stderr, "hakase: no project root (not under a git checkout); nothing to trust")

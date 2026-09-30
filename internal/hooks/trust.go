@@ -240,7 +240,7 @@ func (s *TrustStore) readLocked() (map[string]TrustEntry, time.Time, int64, erro
 	}
 	var disk trustDisk
 	if err := json.Unmarshal(data, &disk); err != nil {
-		return nil, time.Time{}, 0, fmt.Errorf("invalid trust store %s: %v (delete it to start over, or restore from backup)", s.path, err)
+		return nil, time.Time{}, 0, fmt.Errorf("invalid trust store %s: %v (delete the file to start over)", s.path, err)
 	}
 	for fp, e := range disk.Hooks {
 		e.Fingerprint = fp // the map key is authoritative

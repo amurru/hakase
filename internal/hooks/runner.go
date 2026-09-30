@@ -648,10 +648,13 @@ func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) st
 	if trimmed[0] != '{' {
 		return string(trimmed)
 	}
-	ctxOut, err := sessionContextFromStdout(stdout)
+	ctxOut, ignored, err := sessionContextFromStdout(stdout)
 	if err != nil {
 		r.warnf("hooks: SessionStart %q emitted invalid JSON: %v", name, err)
 		return ""
+	}
+	if ignored {
+		r.warnf("hooks: SessionStart %q returned updatedInput, which is ignored (v1 has no arg-rewrite plumbing)", name)
 	}
 	return ctxOut
 }
@@ -659,19 +662,23 @@ func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) st
 // sessionContextFromStdout extracts SessionStart context from exit-0
 // output: plain text passes through verbatim; JSON yields additionalContext.
 // ("", nil) for empty output.
-func sessionContextFromStdout(stdout []byte) (string, error) {
+func sessionContextFromStdout(stdout []byte) (string, bool, error) {
 	trimmed := bytes.TrimSpace(stdout)
 	if len(trimmed) == 0 {
-		return "", nil
+		return "", false, nil
 	}
 	if trimmed[0] != '{' {
-		return string(trimmed), nil
+		return string(trimmed), false, nil
 	}
 	var m map[string]any
 	if err := json.Unmarshal(trimmed, &m); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return joinContext(firstStrList(subMap(m, "hookSpecificOutput", "hook_specific_output"), "additionalContext", "additional_context")), nil
+	ignored := hasKey(m, "updatedInput", "updated_input")
+	if hso := subMap(m, "hookSpecificOutput", "hook_specific_output"); hso != nil && hasKey(hso, "updatedInput", "updated_input") {
+		ignored = true
+	}
+	return joinContext(firstStrList(subMap(m, "hookSpecificOutput", "hook_specific_output"), "additionalContext", "additional_context")), ignored, nil
 }
 
 // blockResult is the model-legible denial returned as the tool result so the
@@ -704,6 +711,10 @@ type verdict struct {
 	reason            string
 	additionalContext string
 	hookErr           string
+	// ignoredUpdate is true when the hook returned updatedInput: v1 has no
+	// arg-rewrite plumbing, so the field is dropped. Callers warn rather
+	// than failing, so a Claude-ported hook degrades loudly, not silently.
+	ignoredUpdate bool
 }
 
 // runHandler execs one handler (argv, no shell) with the payload on stdin
@@ -719,7 +730,11 @@ func (r *Runner) runHandler(ctx context.Context, event string, h Handler, p payl
 		return verdict{hookErr: fmt.Sprintf("cannot marshal hook payload: %v", err)}
 	}
 	stdout, stderr, timedOut, runErr := runCommand(ctx, time.Duration(timeout)*time.Second, h.Command, hookEnv(event, p), p.CWD, stdin)
-	return parseVerdict(timeout, stdout, stderr, timedOut, runErr)
+	v := parseVerdict(timeout, stdout, stderr, timedOut, runErr)
+	if v.ignoredUpdate {
+		r.warnf("hooks: %q returned updatedInput, which is ignored (v1 has no arg-rewrite plumbing)", displayName(h))
+	}
+	return v
 }
 
 // runCommand execs argv with env, dir, and stdin, bounded by timeout. It
@@ -862,6 +877,14 @@ func parseSuccessOutput(stdout []byte) verdict {
 	if v.reason == "" {
 		v.reason = firstStr(m, "reason", "stopReason", "stop_reason")
 	}
+	// updatedInput (arg rewriting) is not plumbed in v1: flag it so the
+	// caller warns instead of silently dropping a Claude-ported hook's
+	// rewrite.
+	if hasKey(m, "updatedInput", "updated_input") {
+		v.ignoredUpdate = true
+	} else if hso := subMap(m, "hookSpecificOutput", "hook_specific_output"); hso != nil && hasKey(hso, "updatedInput", "updated_input") {
+		v.ignoredUpdate = true
+	}
 	if c, ok := m["continue"].(bool); ok && !c && !v.block {
 		// continue:false with no explicit decision stops the run; on a gate
 		// event that is a block.
@@ -884,6 +907,17 @@ func subMap(m map[string]any, keys ...string) map[string]any {
 		}
 	}
 	return nil
+}
+
+// hasKey reports whether any of keys is present in m (value may be nil;
+// presence is what matters for unsupported-field detection).
+func hasKey(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func firstStr(m map[string]any, keys ...string) string {
