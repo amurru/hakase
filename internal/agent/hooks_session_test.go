@@ -10,9 +10,10 @@ import (
 	"google.golang.org/adk/v2/agent"
 )
 
-// TestWireHookSessionStartNoop covers the guard rails: nil runners never
-// install a provider, and a runner with no session source (no user groups
-// AND the project layer disabled) leaves the builder untouched.
+// TestWireHookSessionStartNoop covers the guard rail: nil runners never
+// install a provider. Any NON-nil runner installs one — even with no
+// groups today — because Reload may add SessionStart groups later
+// (spec HK-110); an empty render rolls back and injects nothing.
 func TestWireHookSessionStartNoop(t *testing.T) {
 	hb := hctx.NewHistoryBuilder(nil)
 	wireHookSessionStart(hb, nil)
@@ -25,14 +26,12 @@ func TestWireHookSessionStartNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	wireHookSessionStart(hb, empty)
-	// Group-less but project-layered: a project SessionStart file may
-	// appear — or be trusted — mid-process, so the provider installs.
 	if hb.SessionStartProvider() == nil {
-		t.Error("project-capable runner must install a provider")
+		t.Error("non-nil runner must install a provider (Reload may add groups later)")
 	}
 
-	// Tool-only user hooks plus a DISABLED project layer: SessionStart can
-	// never fire from anywhere.
+	// Tool-only user hooks plus a DISABLED project layer: still installs
+	// (the user layer may gain SessionStart groups via Reload).
 	off := false
 	toolOnly, err := hooks.NewRunner(hooks.Config{
 		PreToolUse: []hooks.Group{{Hooks: []hooks.Handler{{Command: []string{"/bin/true"}}}}},
@@ -43,8 +42,8 @@ func TestWireHookSessionStartNoop(t *testing.T) {
 	}
 	hb2 := hctx.NewHistoryBuilder(nil)
 	wireHookSessionStart(hb2, toolOnly)
-	if hb2.SessionStartProvider() != nil {
-		t.Error("runner with no session source must not install a provider")
+	if hb2.SessionStartProvider() == nil {
+		t.Error("non-nil runner must install a provider")
 	}
 }
 
@@ -85,14 +84,16 @@ func TestWireHookUserPromptNoop(t *testing.T) {
 	if hb.UserPromptProvider() != nil {
 		t.Error("nil runner must not install a provider")
 	}
+	// Non-nil but group-less: installs anyway (Reload may add prompt
+	// groups later); empty renders roll back.
 	off := false
 	nowhere, err := hooks.NewRunner(hooks.Config{Project: hooks.ProjectConfig{Enabled: &off}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wireHookUserPrompt(hb, nowhere)
-	if hb.UserPromptProvider() != nil {
-		t.Error("runner with no prompt source must not install a provider")
+	if hb.UserPromptProvider() == nil {
+		t.Error("non-nil runner must install a provider")
 	}
 }
 

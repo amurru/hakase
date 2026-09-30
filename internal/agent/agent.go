@@ -114,12 +114,15 @@ func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
 }
 
 // hookToolCallbacks adapts a hooks Runner to the ADK tool-callback slices
-// for llmagent.Config. A nil or disabled runner yields nil slices (ADK
-// ranges fine over nil), so call sites wire unconditionally. Shared by
-// SetupRunner's four prebuilt agents and delegate.go's per-delegation
-// sub-agents, which would otherwise bypass the user's PreToolUse gate.
+// for llmagent.Config. A nil runner yields nil slices (a nil receiver
+// cannot serve calls); a DISABLED runner still gets the pair, which
+// no-ops (allow/nil-out), so enabling hooks or adding the first hook via
+// Reload takes effect without rebuilding the agents (spec HK-110).
+// Shared by SetupRunner's four prebuilt agents and delegate.go's
+// per-delegation sub-agents, which would otherwise bypass the user's
+// PreToolUse gate.
 func hookToolCallbacks(r *hooks.Runner) ([]llmagent.BeforeToolCallback, []llmagent.AfterToolCallback) {
-	if r == nil || !r.Enabled() {
+	if r == nil {
 		return nil, nil
 	}
 	return []llmagent.BeforeToolCallback{makeHookBeforeToolCallback(r)},

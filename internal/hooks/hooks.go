@@ -77,6 +77,17 @@ type Handler struct {
 	// "block" is only meaningful on PreToolUse; Config.Validate rejects it
 	// on PostToolUse handlers.
 	OnFailure string `json:"on_failure,omitempty"`
+	// Enabled tri-state: nil (default) = on; explicit false skips the
+	// handler on every event without executing it. Toggling never affects
+	// the content fingerprint (Fingerprint hashes argv + script bytes
+	// only), so disable/enable never lapses trust.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether the handler may execute. Nil (unset) means
+// on, matching the Enabled/ProjectConfig tri-state pattern.
+func (h Handler) IsEnabled() bool {
+	return h.Enabled == nil || *h.Enabled
 }
 
 // Group pairs a tool-name matcher with the handlers to run, in order.

@@ -449,3 +449,117 @@ scripts. Full MDM tier stays deferred.
       and revokes with prefix matching.
 - [ ] `docs/hooks/usage.md` + example scripts cover all four events.
 - [ ] Full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).
+
+---
+
+# Phase 4 (management arc): CRUD + reload
+
+Close the management gap: user-layer hooks are currently config-file-only
+to create/edit/remove/disable, and the user layer compiles once at
+`SetupRunner`, so live processes would ignore edits. This phase adds
+per-hook `enabled`, in-place runner reload, and full CRUD on web, TUI,
+and CLI. Trust (project layer) already reloads live via the store's
+mtime cache and is untouched.
+
+## Decisions
+
+- **In-place reload, never pointer swap.** Tool callbacks and
+  HistoryBuilder providers capture the `*Runner`; swapping
+  `deps.HooksRunner` would strand them. `Runner.Reload(cfg)` swaps the
+  compiled groups under an RWMutex instead, so every holder sees the new
+  set with no agent churn and no lock at the `Deps` level.
+- **Always wire, even when disabled.** Setup wires tool callbacks and
+  history providers unconditionally; a disabled/empty runner no-ops
+  (nil-in/nil-out callbacks, empty renders rolled back). Otherwise
+  enabling hooks — or adding the first hook — could never take effect
+  without a restart. Behavior when disabled is unchanged.
+- **`enabled` never affects the fingerprint.** Trust hashes argv +
+  script bytes only, so toggling a hook never lapses trust (and
+  toggling can never smuggle a command change past review).
+- **CRUD targets the user layer only.** Project files are repo-owned;
+  editing them from the UI would dirty the user's checkout — project
+  hooks stay trust-managed (list/trust/untrust). Same for all three
+  surfaces.
+- **One shared mutation core.** `internal/hooks/manage.go` implements
+  pure `Config` ops (add/remove/set-enabled/update/master) with
+  fingerprint-prefix resolution; CLI, web, and TUI are thin adapters
+  doing transport + reload. Validation reuses `Config.Validate`, so a
+  bad edit fails before anything hits disk.
+- **Map-surgery writes.** The helper loads the raw JSON map, replaces
+  only the `hooks` key, and writes atomically — unknown top-level keys
+  survive (a typed round-trip would drop them). Key order normalizes
+  (same property the web `PUT /api/config` already has).
+- **Reload propagation by process.** In-process edits (web, TUI) call
+  `agent.ReloadUserHooks` directly with the validated config. External
+  `hakase hooks ...` edits reload a running server via SIGHUP
+  (re-read from disk); otherwise they apply on restart. The CLI says
+  which happened... (it cannot know: it prints the SIGHUP hint).
+- **SessionStart once-keys survive reload.** The `fired` map is not part
+  of the swapped state, so reloading mid-session never refires
+  SessionStart into an ongoing session. A newly added SessionStart hook
+  fires on the NEXT session, not the current one.
+
+## Specs
+
+### Spec HK-109: per-hook `enabled` (`Handler.Enabled`)
+
+- `Handler.Enabled *bool` (tri-state, nil = on — the `Enabled`/
+  `ProjectConfig` pattern). `Fingerprint()` unchanged (argv + script
+  bytes; add a pinning test). Unknown-key strictness covers the new
+  key like any other.
+- Disabled handlers never execute (all four events, both layers),
+  still list (as `[disabled]`), still resolve by prefix, still dry-run.
+  Disabling is not trust: fingerprints and trust entries are untouched.
+
+### Spec HK-110: in-place reload (`Runner.Reload`)
+
+- `Reload(cfg Config) error`: `ApplyDefaults` + `Validate`, compile,
+  swap `pre/post/session/prompt` + project-layer flag under write
+  lock. Trust store, log func, `fired`/`inflight` maps persist. An
+  invalid config fails reload with the old set intact (fail-closed
+  edit, loudly).
+- All check/run methods hold the read lock for a consistent snapshot;
+  `-race` clean under concurrent check + reload.
+- `hookToolCallbacks` always returns the pair (nil runner still yields
+  nil slices — a nil receiver cannot serve calls); HistoryBuilder
+  providers always install (nil runner still installs nothing).
+  Disabled/empty behavior is byte-identical to before.
+
+### Spec HK-111: mutation core (`internal/hooks/manage.go`)
+
+- Ops on `*Config`: `AddUserHook(event, matcher, Handler)`,
+  `RemoveUserHook(prefix)`, `SetUserHookEnabled(prefix, bool)`,
+  `UpdateUserHook(prefix, fields)` (matcher/name/timeout/on_failure/
+  command; fingerprint resolved BEFORE mutation), `SetMasterEnabled`.
+  Prefix resolution searches user-layer handlers only; zero/ambiguous
+  matches are errors naming the fix.
+- `WriteUserHooks(configPath, mutate) (Config, error)`: map-surgery
+  write described above; returns the validated new block for the
+  caller to reload.
+- `agent.ReloadUserHooks(cfg) error` (in-process) and SIGHUP reload
+  from disk (serve + TUI processes).
+
+### Spec HK-112: surface parity
+
+- CLI: `hooks add <Event> [--matcher R] [--name N] [--timeout S]
+  [--on-failure allow|block] -- <cmd...>`; `hooks rm <prefix>`;
+  `hooks enable|disable <prefix>`; `hooks on|off` (master). Prints the
+  SIGHUP hint for running servers.
+- Web: `POST /api/hooks/user/{add,remove,set-enabled,update}` +
+  `POST /api/hooks/master`; each mutates, reloads, and returns the
+  refreshed list DTO. HooksView: master toggle, per-hook enable
+  switch, remove button, add form (one-arg-per-line command), edit
+  form. `hooks` stays OUT of generic `PUT /api/config` editable keys
+  (that path cannot reload — it would lie about state).
+- TUI: `/hooks` subcommands `trust/untrust/enable/disable/rm/on/off/
+  add/update/test/list` (prefix-addressed, same review + confirm for
+  trust); in-process reload, no signal needed.
+
+## Phase-4 definition of done
+
+- [ ] Add/enable/disable/remove a user hook from each surface; the next
+      tool call / prompt honors it with no restart.
+- [ ] Toggling a hook never lapses its trust; editing the command does
+      not affect project trust (user layer is untrusted-by-construction).
+- [ ] External CLI edits apply to a running server after SIGHUP.
+- [ ] Full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).

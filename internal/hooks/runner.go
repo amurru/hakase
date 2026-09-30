@@ -43,9 +43,16 @@ func (g compiledGroup) matches(toolName string) bool {
 // Runner is disabled and every Check method is a no-op on it, so call sites
 // never need a nil check.
 type Runner struct {
-	log  func(string)
-	pre  []compiledGroup
-	post []compiledGroup
+	log func(string)
+	// cfgMu guards the compiled user-layer groups and projectEnabled:
+	// Reload swaps them in place (holders keep the *Runner), so every
+	// reader snapshots the slice headers under RLock. Slices are never
+	// mutated after publish, so lock-free iteration after the copy is
+	// safe. Trust store, log func, and fired/inflight maps persist
+	// across reloads (a reload never refires SessionStart).
+	cfgMu sync.RWMutex
+	pre   []compiledGroup
+	post  []compiledGroup
 	// session holds the user-layer SessionStart groups.
 	session []compiledGroup
 	// prompt holds the user-layer UserPromptSubmit groups.
@@ -103,45 +110,84 @@ func compileGroups(groups []Group) []compiledGroup {
 // NewRunner validates cfg (bad regex/type/on_failure fail here, so a bad
 // block fails startup via LoadConfig, never silently) and compiles matchers.
 // An explicitly disabled or group-less config yields a disabled runner.
+// The runner is reloadable in place (Reload); holders keep the pointer.
 func NewRunner(cfg Config) (*Runner, error) {
 	c := cfg
 	c.ApplyDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	r := &Runner{projectEnabled: Enabled(&c) && ProjectLayerEnabled(&c)}
+	pre, post, session, prompt, projectEnabled, err := compileAll(c)
+	if err != nil {
+		return nil, err
+	}
+	return &Runner{pre: pre, post: post, session: session, prompt: prompt, projectEnabled: projectEnabled}, nil
+}
+
+// compileAll compiles every validated group list. compileGroup cannot fail
+// after Validate; the error return keeps NewRunner/Reload fail-closed on
+// the impossible (loud, never a half-loaded set).
+func compileAll(c Config) (pre, post, session, prompt []compiledGroup, projectEnabled bool, err error) {
+	projectEnabled = Enabled(&c) && ProjectLayerEnabled(&c)
 	if !Enabled(&c) {
-		return r, nil
+		return nil, nil, nil, nil, projectEnabled, nil
 	}
-	for _, g := range c.PreToolUse {
-		cg, err := compileGroup(g)
-		if err != nil {
-			return nil, err
+	compile := func(groups []Group) ([]compiledGroup, error) {
+		var out []compiledGroup
+		for _, g := range groups {
+			cg, err := compileGroup(g)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, cg)
 		}
-		r.pre = append(r.pre, cg)
+		return out, nil
 	}
-	for _, g := range c.PostToolUse {
-		cg, err := compileGroup(g)
-		if err != nil {
-			return nil, err
-		}
-		r.post = append(r.post, cg)
+	if pre, err = compile(c.PreToolUse); err != nil {
+		return nil, nil, nil, nil, false, err
 	}
-	for _, g := range c.SessionStart {
-		cg, err := compileGroup(g)
-		if err != nil {
-			return nil, err
-		}
-		r.session = append(r.session, cg)
+	if post, err = compile(c.PostToolUse); err != nil {
+		return nil, nil, nil, nil, false, err
 	}
-	for _, g := range c.UserPromptSubmit {
-		cg, err := compileGroup(g)
-		if err != nil {
-			return nil, err
-		}
-		r.prompt = append(r.prompt, cg)
+	if session, err = compile(c.SessionStart); err != nil {
+		return nil, nil, nil, nil, false, err
 	}
-	return r, nil
+	if prompt, err = compile(c.UserPromptSubmit); err != nil {
+		return nil, nil, nil, nil, false, err
+	}
+	return pre, post, session, prompt, projectEnabled, nil
+}
+
+// Reload swaps the runner's compiled user-layer set for cfg's, in place:
+// every existing holder (tool callbacks, history providers, web API) sees
+// the new set with no restart and no pointer swap. Trust store, log func,
+// and SessionStart once-keys persist. An invalid cfg fails the reload with
+// the old set intact — the edit fails loudly, the session keeps running.
+func (r *Runner) Reload(cfg Config) error {
+	if r == nil {
+		return fmt.Errorf("hooks: cannot reload a nil runner")
+	}
+	c := cfg
+	c.ApplyDefaults()
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	pre, post, session, prompt, projectEnabled, err := compileAll(c)
+	if err != nil {
+		return err
+	}
+	r.cfgMu.Lock()
+	r.pre, r.post, r.session, r.prompt, r.projectEnabled = pre, post, session, prompt, projectEnabled
+	r.cfgMu.Unlock()
+	return nil
+}
+
+// userGroups snapshots the compiled user-layer groups under RLock. Slices
+// are never mutated after publish, so callers iterate lock-free.
+func (r *Runner) userGroups() (pre, post, session, prompt []compiledGroup) {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return r.pre, r.post, r.session, r.prompt
 }
 
 func compileGroup(g Group) (compiledGroup, error) {
@@ -181,25 +227,47 @@ func (r *Runner) SetTrustStore(s TrustChecker) {
 // Enabled reports whether any hook group is loaded. A disabled runner's
 // Check methods return allow/passthrough without spawning anything.
 func (r *Runner) Enabled() bool {
-	return r != nil && (len(r.pre) > 0 || len(r.post) > 0 || len(r.session) > 0 || len(r.prompt) > 0)
+	if r == nil {
+		return false
+	}
+	pre, post, session, prompt := r.userGroups()
+	return len(pre) > 0 || len(post) > 0 || len(session) > 0 || len(prompt) > 0
 }
 
 // HasSessionStart reports whether a SessionStart event could ever fire:
 // user groups exist, or the project layer is enabled (a project file may
 // appear — or be trusted — mid-process).
 func (r *Runner) HasSessionStart() bool {
-	return r != nil && (len(r.session) > 0 || r.projectEnabled)
+	if r == nil {
+		return false
+	}
+	_, _, session, _ := r.userGroups()
+	return len(session) > 0 || r.getProjectEnabled()
 }
 
 // HasUserPrompt reports whether a UserPromptSubmit event could ever fire
 // (same project-layer reasoning as HasSessionStart).
 func (r *Runner) HasUserPrompt() bool {
-	return r != nil && (len(r.prompt) > 0 || r.projectEnabled)
+	if r == nil {
+		return false
+	}
+	_, _, _, prompt := r.userGroups()
+	return len(prompt) > 0 || r.getProjectEnabled()
+}
+
+// getProjectEnabled reads the project-layer flag under RLock.
+func (r *Runner) getProjectEnabled() bool {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return r.projectEnabled
 }
 
 // Snapshot describes one loaded handler for `hakase hooks list` and the
 // Phase-2 trust store. Fingerprint is content-addressed (see Fingerprint).
 type Snapshot struct {
+	// Enabled mirrors Handler.IsEnabled: false handlers list but never
+	// execute (spec HK-109).
+	Enabled     bool
 	Event       string
 	Matcher     string
 	Name        string
@@ -219,25 +287,26 @@ func (r *Runner) Snapshots() []Snapshot {
 	if r == nil {
 		return nil
 	}
+	pre, post, session, prompt := r.userGroups()
 	var out []Snapshot
-	for _, g := range r.pre {
+	for _, g := range pre {
 		for _, h := range g.handlers {
-			out = append(out, Snapshot{Event: EventPreToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
+			out = append(out, Snapshot{Event: EventPreToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true, Enabled: h.IsEnabled()})
 		}
 	}
-	for _, g := range r.post {
+	for _, g := range post {
 		for _, h := range g.handlers {
-			out = append(out, Snapshot{Event: EventPostToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
+			out = append(out, Snapshot{Event: EventPostToolUse, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true, Enabled: h.IsEnabled()})
 		}
 	}
-	for _, g := range r.session {
+	for _, g := range session {
 		for _, h := range g.handlers {
-			out = append(out, Snapshot{Event: EventSessionStart, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
+			out = append(out, Snapshot{Event: EventSessionStart, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true, Enabled: h.IsEnabled()})
 		}
 	}
-	for _, g := range r.prompt {
+	for _, g := range prompt {
 		for _, h := range g.handlers {
-			out = append(out, Snapshot{Event: EventUserPromptSubmit, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
+			out = append(out, Snapshot{Event: EventUserPromptSubmit, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true, Enabled: h.IsEnabled()})
 		}
 	}
 	return out
@@ -248,7 +317,7 @@ func (r *Runner) Snapshots() []Snapshot {
 // Used by `hakase hooks list`; the agent path uses projectGroups instead
 // (ctx-rooted, mtime-cached).
 func (r *Runner) ProjectSnapshots(root string) []Snapshot {
-	if r == nil || !r.projectEnabled || strings.TrimSpace(root) == "" {
+	if r == nil || !r.getProjectEnabled() || strings.TrimSpace(root) == "" {
 		return nil
 	}
 	f, err := LoadProjectFile(root)
@@ -260,7 +329,7 @@ func (r *Runner) ProjectSnapshots(root string) []Snapshot {
 		for _, g := range groups {
 			for _, h := range g.Hooks {
 				fp := h.Fingerprint()
-				out = append(out, Snapshot{Event: event, Matcher: g.Matcher, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: fp, Layer: "project", Trusted: r.isTrusted(fp)})
+				out = append(out, Snapshot{Event: event, Matcher: g.Matcher, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: fp, Layer: "project", Trusted: r.isTrusted(fp), Enabled: h.IsEnabled()})
 			}
 		}
 	}
@@ -354,13 +423,14 @@ func (r *Runner) CheckPreToolUse(ctx context.Context, toolName string, toolInput
 		return false, nil
 	}
 	p := buildPayload(ctx, EventPreToolUse, toolName, toolInput, nil)
-	if blocked, res := r.runPreGroups(ctx, p, r.pre, toolName); blocked {
+	pre, _, _, _ := r.userGroups()
+	if blocked, res := r.runPreGroups(ctx, p, pre, toolName); blocked {
 		return true, res
 	}
 	// Project layer: each handler runs only when its content fingerprint
 	// is trusted; anything else is skipped loudly and the tool proceeds.
-	pre, _, _, _ := r.projectGroups(ctx)
-	for _, g := range pre {
+	pPre, _, _, _ := r.projectGroups(ctx)
+	for _, g := range pPre {
 		if !g.matches(toolName) {
 			continue
 		}
@@ -394,7 +464,11 @@ func (r *Runner) runPreGroups(ctx context.Context, p payload, groups []compiledG
 }
 
 // stepPre runs one PreToolUse handler: block=true stops the whole chain.
+// Disabled handlers are skipped without executing (spec HK-109).
 func (r *Runner) stepPre(ctx context.Context, p payload, h Handler, toolName string) (bool, map[string]any) {
+	if !h.IsEnabled() {
+		return false, nil
+	}
 	v := r.runHandler(ctx, EventPreToolUse, h, p)
 	switch {
 	case v.block:
@@ -431,8 +505,9 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 		return nil
 	}
 	p := buildPayload(ctx, EventPostToolUse, toolName, toolInput, toolResult)
+	_, post, _, _ := r.userGroups()
 	var contexts []string
-	for _, g := range r.post {
+	for _, g := range post {
 		if !g.matches(toolName) {
 			continue
 		}
@@ -441,8 +516,8 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 		}
 	}
 	// Project layer, trust-gated like PreToolUse.
-	_, post, _, _ := r.projectGroups(ctx)
-	for _, g := range post {
+	_, pPost, _, _ := r.projectGroups(ctx)
+	for _, g := range pPost {
 		if !g.matches(toolName) {
 			continue
 		}
@@ -473,8 +548,11 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 
 // stepPost runs one PostToolUse handler, appending any context to dst.
 // Hook errors are fail-open by construction (Validate rejects
-// on_failure:block off PreToolUse).
+// on_failure:block off PreToolUse). Disabled handlers are skipped.
 func (r *Runner) stepPost(ctx context.Context, p payload, h Handler, dst *[]string) {
+	if !h.IsEnabled() {
+		return
+	}
 	v := r.runHandler(ctx, EventPostToolUse, h, p)
 	if v.hookErr != "" {
 		r.warnf("hooks: PostToolUse %q failed open: %s", displayName(h), v.hookErr)
@@ -531,7 +609,7 @@ func safeProjectRoot(ctx context.Context) string {
 // restart; a broken file warns (once per root per mtime) and yields
 // nothing, never breaking the user's own hooks.
 func (r *Runner) projectGroups(ctx context.Context) (pre, post, sess, prmpt []compiledGroup) {
-	if r == nil || !r.projectEnabled {
+	if r == nil || !r.getProjectEnabled() {
 		return nil, nil, nil, nil
 	}
 	root := safeProjectRoot(ctx)
@@ -593,7 +671,8 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 
 	p := buildPayload(ctx, EventSessionStart, "", nil, nil)
 	var parts []string
-	for _, g := range r.session {
+	_, _, userSession, _ := r.userGroups()
+	for _, g := range userSession {
 		for _, h := range g.handlers {
 			if c := r.runPromptHandler(ctx, EventSessionStart, p, h); c != "" {
 				parts = append(parts, c)
@@ -637,7 +716,8 @@ func (r *Runner) RunUserPromptSubmit(ctx context.Context, promptText string) str
 	p := buildPayload(ctx, EventUserPromptSubmit, "", nil, nil)
 	p.Prompt = promptText
 	var parts []string
-	for _, g := range r.prompt {
+	_, _, _, userPrompt := r.userGroups()
+	for _, g := range userPrompt {
 		for _, h := range g.handlers {
 			if c := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); c != "" {
 				parts = append(parts, c)
@@ -669,6 +749,9 @@ func (r *Runner) RunUserPromptSubmit(ctx context.Context, promptText string) str
 // (on_failure:block is rejected on them at Validate, so every error here
 // is fail-open by construction).
 func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, h Handler) string {
+	if !h.IsEnabled() {
+		return ""
+	}
 	timeout := h.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeoutSeconds

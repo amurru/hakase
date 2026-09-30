@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -442,4 +443,140 @@ func TestHookPayloadContent(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339Nano, ts); err != nil {
 		t.Errorf("timestamp %q is not RFC3339Nano: %v", ts, err)
 	}
+}
+
+// TestDisabledHandlersNeverExecute pins HK-109: explicit enabled:false
+// skips the handler on PreToolUse without spawning it (missing binary
+// would fail open loudly if executed — silence proves the skip).
+func TestDisabledHandlersNeverExecute(t *testing.T) {
+	off := false
+	r, err := NewRunner(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{"/nonexistent-dir-12345/no-such-hook"}, Enabled: &off},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warns []string
+	r.SetLog(func(s string) { warns = append(warns, s) })
+	if blocked, _ := r.CheckPreToolUse(context.Background(), "t", nil); blocked {
+		t.Error("disabled hook must not block")
+	}
+	for _, w := range warns {
+		if strings.Contains(w, "no-such-hook") {
+			t.Errorf("disabled hook must not execute (warned: %q)", w)
+		}
+	}
+	if snaps := r.Snapshots(); len(snaps) != 1 || snaps[0].Enabled {
+		t.Errorf("disabled hook must still list as disabled: %+v", snaps)
+	}
+}
+
+// TestEnabledFingerprintUnchanged pins the HK-109 trust property:
+// toggling enabled must not change the content fingerprint, so
+// disable/enable can never lapse (or smuggle past) trust.
+func TestEnabledFingerprintUnchanged(t *testing.T) {
+	base := Handler{Command: []string{"/bin/true"}}
+	off := false
+	on := true
+	disabled := Handler{Command: []string{"/bin/true"}, Enabled: &off}
+	enabled := Handler{Command: []string{"/bin/true"}, Enabled: &on}
+	if fp := disabled.Fingerprint(); fp != base.Fingerprint() {
+		t.Errorf("disabled fingerprint %s != base %s", fp, base.Fingerprint())
+	}
+	if fp := enabled.Fingerprint(); fp != base.Fingerprint() {
+		t.Errorf("enabled fingerprint %s != base %s", fp, base.Fingerprint())
+	}
+	var nilH, offH, onH Handler
+	offH.Enabled = &off
+	onH.Enabled = &on
+	if !nilH.IsEnabled() || offH.IsEnabled() || !onH.IsEnabled() {
+		t.Error("IsEnabled must default on, honor explicit false/true")
+	}
+}
+
+// TestReloadSwapsGroups pins HK-110: Reload replaces the compiled set in
+// place (same pointer), the new set fires, and the old set stops.
+func TestReloadSwapsGroups(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	r, err := NewRunner(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/sh", "-c", "exit 2"}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := r.CheckPreToolUse(context.Background(), "t", nil); !blocked {
+		t.Fatal("old set must block before reload")
+	}
+	if err := r.Reload(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/true"}},
+	}}}}); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if blocked, _ := r.CheckPreToolUse(context.Background(), "t", nil); blocked {
+		t.Error("old set must stop firing after reload")
+	}
+	if !r.Enabled() {
+		t.Error("reloaded runner with groups must be enabled")
+	}
+}
+
+// TestReloadInvalidKeepsOldSet pins the fail-closed edit: a bad config
+// fails reload loudly and the previous set keeps serving.
+func TestReloadInvalidKeepsOldSet(t *testing.T) {
+	r, err := NewRunner(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/true"}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := Config{PreToolUse: []Group{{Matcher: "[invalid", Hooks: []Handler{
+		{Command: []string{"/bin/true"}},
+	}}}}
+	if err := r.Reload(bad); err == nil {
+		t.Fatal("invalid reload must fail")
+	}
+	if !r.Enabled() || len(r.Snapshots()) != 1 {
+		t.Error("old set must stay intact after failed reload")
+	}
+	if err := r.Reload(Config{}); err != nil {
+		t.Fatalf("reload to empty: %v", err)
+	}
+	if r.Enabled() {
+		t.Error("empty reload must disable the runner")
+	}
+}
+
+// TestReloadConcurrent is the -race pin for HK-110: checks racing a
+// reload must never observe a torn set.
+func TestReloadConcurrent(t *testing.T) {
+	r, err := NewRunner(Config{PreToolUse: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/true"}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 25; j++ {
+				_, _ = r.CheckPreToolUse(context.Background(), "t", nil)
+				_ = r.Snapshots()
+				_ = r.Enabled()
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 10; j++ {
+			_ = r.Reload(Config{PostToolUse: []Group{{Hooks: []Handler{
+				{Command: []string{"/bin/true"}},
+			}}}})
+		}
+	}()
+	wg.Wait()
 }

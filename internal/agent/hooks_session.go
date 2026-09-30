@@ -15,19 +15,22 @@ import (
 // SessionStart handlers from a cloned repo stay skipped, never executed:
 // an unopenable store trusts nothing.
 func wireHookSessionStart(hb *hctx.HistoryBuilder, runner *hooks.Runner) {
-	if hb == nil || runner == nil || !runner.HasSessionStart() {
+	if hb == nil || runner == nil {
 		return
 	}
+	// Always installed (spec HK-110): an empty render rolls back and
+	// injects nothing, so a runner that gains SessionStart groups via
+	// Reload fires without rebuilding the history builder.
 	hb.SetSessionStartProvider(func(ctx agent.Context) string {
 		return runner.RunSessionStart(ctx)
 	})
 }
 
 // wireHookUserPrompt attaches the UserPromptSubmit renderer, extracting the
-// current prompt text for the payload. No-op unless the runner could ever
-// fire (user groups or project layer enabled).
+// current prompt text for the payload. Always installed unless the runner
+// is nil (same HK-110 reasoning as wireHookSessionStart).
 func wireHookUserPrompt(hb *hctx.HistoryBuilder, runner *hooks.Runner) {
-	if hb == nil || runner == nil || !runner.HasUserPrompt() {
+	if hb == nil || runner == nil {
 		return
 	}
 	hb.SetUserPromptProvider(func(ctx agent.Context) string {

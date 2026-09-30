@@ -152,3 +152,35 @@ Spec: Phase-3 section in [spec.md](spec.md) (HK-106..HK-108). Guide:
       the 26 MB mermaid tarball (`pnpm install --fetch-timeout
       600000 --fetch-retries 5 --fetch-retry-maxtimeout 300000`); the
       chunk-size warning on `elk` is pre-existing.
+
+## Phase 4 (management arc) — CRUD + reload
+
+Spec: Phase-4 section in [spec.md](spec.md) (HK-109..HK-112).
+
+- [ ] **T7.1 [BE]** `Handler.Enabled *bool` (nil = on), Validate +
+      strict-keys coverage, fingerprint-unchanged pinning test,
+      `[disabled]` in CLI list / snapshots. Spec: HK-109.
+- [ ] **T7.2 [BE]** in-place `Runner.Reload` under RWMutex (trust/log/
+      fired persist; invalid reload keeps old set); always-wire
+      callbacks + always-install providers; update the nil/disabled
+      wiring tests to the new contract. Spec: HK-110.
+- [ ] **T7.3 [BE]** `internal/hooks/manage.go` pure ops + prefix
+      resolution (user layer only) + map-surgery `WriteUserHooks`
+      (unknown keys survive; returns validated block); `agent.
+      ReloadUserHooks` + SIGHUP reload in serve/TUI processes.
+      Spec: HK-111.
+- [ ] **T7.4 [BE]** CLI `hooks add/rm/enable/disable/on/off` (+ SIGHUP
+      hint). Spec: HK-112.
+- [ ] **T7.5 [BE+FE]** web `POST /api/hooks/user/*` + `/master`
+      (mutate → reload → refreshed DTO) with handler tests; HooksView
+      master toggle, enable switches, remove, add/edit forms;
+      `hooks.test.ts` coverage for new wrappers. Spec: HK-112.
+- [ ] **T7.6 [BE]** TUI `/hooks` subcommands (`trust/untrust/enable/
+      disable/rm/on/off/add/update/test/list`) reusing manage.go +
+      the CLI review/confirm; in-process reload. Spec: HK-112.
+- [ ] **T7.7 [DOCS]** `usage.md` management section, spec/tasks boxes,
+      `config.json.example` enabled-flag sample.
+- [ ] **T7.8 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
+      `go test ./...`, `-race` on hooks/agent/context, windows
+      cross-compile, `pnpm test` + `pnpm build`, e2e CRUD cycle
+      (add → fires → disable → skipped → SIGHUP reload).

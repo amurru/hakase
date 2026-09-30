@@ -153,27 +153,36 @@ func TestHookAfterToolFailedPassthrough(t *testing.T) {
 }
 
 // TestHookToolCallbacksSharedHelper pins the contract delegate.go relies on:
-// nil/disabled runners yield nil callback slices (ADK ranges fine over nil),
-// and an enabled runner yields callbacks that actually enforce the gate.
-// This is what keeps delegate_task sub-agents from bypassing PreToolUse.
+// a nil runner yields nil callback slices (a nil receiver cannot serve
+// calls); any NON-nil runner — even disabled — yields callbacks, so a
+// later Reload takes effect without rebuilding agents (spec HK-110). The
+// disabled pair no-ops; the enabled pair enforces the gate.
 func TestHookToolCallbacksSharedHelper(t *testing.T) {
 	if before, after := hookToolCallbacks(nil); before != nil || after != nil {
 		t.Error("nil runner must yield nil callbacks")
 	}
 	disabled := hookTestRunner(t, hooks.Config{})
-	if before, after := hookToolCallbacks(disabled); before != nil || after != nil {
-		t.Error("disabled runner must yield nil callbacks")
+	before, after := hookToolCallbacks(disabled)
+	if len(before) != 1 || len(after) != 1 {
+		t.Fatalf("disabled runner must still yield one callback each (no-op pair), got %d/%d", len(before), len(after))
+	}
+	ctx := agent.NewContext(&agent.ContextMock{})
+	if res, err := before[0](ctx, &fakeHookTool{name: "system_exec"}, nil); res != nil || err != nil {
+		t.Errorf("disabled before-callback must allow (nil,nil), got %v/%v", res, err)
+	}
+	if res, err := after[0](ctx, &fakeHookTool{name: "x"}, nil, map[string]any{}, nil); res != nil || err != nil {
+		t.Errorf("disabled after-callback must pass through (nil,nil), got %v/%v", res, err)
 	}
 
 	sh := hookTestShell(t)
 	enabled := hookTestRunner(t, hooks.Config{PreToolUse: []hooks.Group{{Hooks: []hooks.Handler{{
 		Command: []string{sh, "-c", "exit 2"},
 	}}}}})
-	before, after := hookToolCallbacks(enabled)
+	before, after = hookToolCallbacks(enabled)
 	if len(before) != 1 || len(after) != 1 {
 		t.Fatalf("enabled runner must yield one callback each, got %d/%d", len(before), len(after))
 	}
-	ctx := agent.NewContext(&agent.ContextMock{})
+	ctx = agent.NewContext(&agent.ContextMock{})
 	res, err := before[0](ctx, &fakeHookTool{name: "system_exec"}, nil)
 	if err != nil {
 		t.Fatalf("callback err: %v", err)
