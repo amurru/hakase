@@ -27,9 +27,10 @@ func ProjectHooksPath(root string) string {
 // repo can never disable the user's hooks or the trust gate (the
 // managed-tier-lite property). Unknown keys are load-time errors.
 type ProjectFile struct {
-	PreToolUse   []Group `json:"PreToolUse,omitempty"`
-	PostToolUse  []Group `json:"PostToolUse,omitempty"`
-	SessionStart []Group `json:"SessionStart,omitempty"`
+	PreToolUse       []Group `json:"PreToolUse,omitempty"`
+	PostToolUse      []Group `json:"PostToolUse,omitempty"`
+	SessionStart     []Group `json:"SessionStart,omitempty"`
+	UserPromptSubmit []Group `json:"UserPromptSubmit,omitempty"`
 }
 
 // UnmarshalJSON rejects unknown keys (including "enabled") so a project
@@ -46,9 +47,9 @@ func (f *ProjectFile) UnmarshalJSON(data []byte) error {
 	}
 	for k := range raw {
 		switch k {
-		case "PreToolUse", "PostToolUse", "SessionStart":
+		case "PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit":
 		default:
-			return fmt.Errorf("invalid project hooks.%s: unknown key (project files hold only PreToolUse, PostToolUse, SessionStart)", k)
+			return fmt.Errorf("invalid project hooks.%s: unknown key (project files hold only PreToolUse, PostToolUse, SessionStart, UserPromptSubmit)", k)
 		}
 	}
 	*f = ProjectFile(p)
@@ -75,6 +76,11 @@ func (f *ProjectFile) Validate() error {
 			return err
 		}
 	}
+	for i := range f.UserPromptSubmit {
+		if err := f.UserPromptSubmit[i].validate(fmt.Sprintf("project.UserPromptSubmit[%d]", i), EventUserPromptSubmit); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -92,11 +98,14 @@ func (f *ProjectFile) ApplyDefaults() {
 	for i := range f.SessionStart {
 		f.SessionStart[i].applyDefaults()
 	}
+	for i := range f.UserPromptSubmit {
+		f.UserPromptSubmit[i].applyDefaults()
+	}
 }
 
 // Empty reports whether the file carries no groups at all.
 func (f *ProjectFile) Empty() bool {
-	return f == nil || (len(f.PreToolUse) == 0 && len(f.PostToolUse) == 0 && len(f.SessionStart) == 0)
+	return f == nil || (len(f.PreToolUse) == 0 && len(f.PostToolUse) == 0 && len(f.SessionStart) == 0 && len(f.UserPromptSubmit) == 0)
 }
 
 // LoadProjectFile reads and validates the project hooks file for root.
@@ -158,4 +167,5 @@ func (f *ProjectFile) resolveRelativeCommands(root string) {
 	resolve(f.PreToolUse)
 	resolve(f.PostToolUse)
 	resolve(f.SessionStart)
+	resolve(f.UserPromptSubmit)
 }

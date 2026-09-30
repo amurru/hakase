@@ -2510,6 +2510,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// SessionStart hooks (docs/hooks/spec.md HK-104): no-op unless the
 	// runner could ever fire (user groups or project layer enabled).
 	wireHookSessionStart(historyBuilder, hooksRunner)
+	// UserPromptSubmit hooks (spec HK-106): same gating, per-prompt.
+	wireHookUserPrompt(historyBuilder, hooksRunner)
 
 	// Orchestrator toolsets: MCP manager plus the web search fallback when
 	// enabled. A nil manager element is omitted (ADK would panic).

@@ -143,3 +143,21 @@ func TestHooksSessionStartValidation(t *testing.T) {
 		t.Errorf("session defaults not applied: %+v", h)
 	}
 }
+
+func TestHooksUserPromptSubmitValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"provider":"openai","model_name":"m","api_key":"k","hooks":{"UserPromptSubmit":[{"matcher":"x","hooks":[{"command":["/bin/true"]}]}]}}`
+	if err := writeFileForTest(t, path, body); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unconditionally") {
+		t.Fatalf("load = %v, want UserPromptSubmit-matcher error", err)
+	}
+	body = `{"provider":"openai","model_name":"m","api_key":"k","hooks":{"UserPromptSubmit":[{"hooks":[{"command":["/bin/true"],"on_failure":"block"}]}]}}`
+	if err := writeFileForTest(t, path, body); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "PreToolUse") {
+		t.Fatalf("load = %v, want fail-closed rejection", err)
+	}
+}

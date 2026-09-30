@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -244,6 +245,78 @@ func TestSessionStartPlainStdoutIsContext(t *testing.T) {
 	}
 	if got := r.RunSessionStart(projectCtx(t, t.TempDir(), "s")); got != "hello-project" {
 		t.Errorf("plain stdout = %q, want verbatim context", got)
+	}
+}
+
+func TestUserPromptSubmitFiresEveryPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	user := Config{UserPromptSubmit: []Group{{Hooks: []Handler{{Command: []string{"/bin/sh", "-c", "echo per-prompt"}}}}}}
+	user.ApplyDefaults()
+	r, err := NewRunner(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.HasUserPrompt() {
+		t.Fatal("prompt groups must advertise UserPromptSubmit")
+	}
+	ctx := projectCtx(t, t.TempDir(), "s")
+	// No once-keying at the runner level: every prompt fires (the caller
+	// keys on prompt identity).
+	for i := 0; i < 2; i++ {
+		if got := r.RunUserPromptSubmit(ctx, "hello"); got != "per-prompt" {
+			t.Fatalf("fire %d = %q, want context", i, got)
+		}
+	}
+}
+
+func TestUserPromptSubmitPayloadCarriesPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	dump := filepath.Join(t.TempDir(), "stdin.json")
+	// Build the dump path into argv without shell interpolation hazards:
+	// filepath entries under TempDir contain no spaces on supported platforms.
+	user := Config{UserPromptSubmit: []Group{{Hooks: []Handler{{Command: []string{"/bin/sh", "-c", "cat > " + dump}}}}}}
+	user.ApplyDefaults()
+	r, err := NewRunner(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.RunUserPromptSubmit(projectCtx(t, t.TempDir(), "s"), "summarize this"); got != "" {
+		t.Fatalf("dumping hook = %q, want empty", got)
+	}
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("hook stdin: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("stdin JSON: %v", err)
+	}
+	if got["hook_event_name"] != "UserPromptSubmit" || got["prompt"] != "summarize this" {
+		t.Errorf("payload = %v, want event + prompt text", got)
+	}
+}
+
+func TestUserPromptSubmitProjectTrustGated(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	root := t.TempDir()
+	r := layeredRunner(t, Config{}, root,
+		`{"UserPromptSubmit":[{"hooks":[{"command":["/bin/sh","-c","echo projctx"]}]}]}`,
+		mapTrust{})
+	ctx := projectCtx(t, root, "s")
+	if got := r.RunUserPromptSubmit(ctx, "hi"); got != "" {
+		t.Errorf("untrusted project prompt hook = %q, want empty", got)
+	}
+	for _, s := range r.ProjectSnapshots(root) {
+		r.trust.(mapTrust)[s.Fingerprint] = true
+	}
+	if got := r.RunUserPromptSubmit(ctx, "hi"); got != "projctx" {
+		t.Errorf("trusted project prompt hook = %q, want context", got)
 	}
 }
 

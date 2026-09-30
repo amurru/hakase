@@ -50,7 +50,7 @@ func DryRun(event string, h Handler) DryRunResult {
 	if res.HookErr != "" {
 		return res
 	}
-	if event == EventSessionStart {
+	if event == EventSessionStart || event == EventUserPromptSubmit {
 		if res.ExitCode != 0 {
 			res.HookErr = "exit " + strconv.Itoa(res.ExitCode)
 			return res
@@ -104,6 +104,8 @@ func samplePayload(event string) payload {
 		p.ToolName = "system_exec"
 		p.ToolInput = map[string]any{"command": "echo hook-test"}
 		p.ToolResponse = map[string]any{"ok": true}
+	case EventUserPromptSubmit:
+		p.Prompt = "summarize the working tree"
 	}
 	return p
 }

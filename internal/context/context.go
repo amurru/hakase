@@ -3,6 +3,7 @@ package context
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -51,6 +52,15 @@ type HistoryBuilder struct {
 	hookProvider func(ctx agent.Context) string
 	hookSeen     map[string]bool
 	hookMu       sync.Mutex
+
+	// UserPromptSubmit hooks (docs/hooks/spec.md HK-106): promptProvider
+	// renders per-prompt context (""); promptSeen keys on
+	// sessionID:last-user-sequence so every NEW user prompt fires once
+	// while mid-turn model calls (same messages) do not re-fire. Empty
+	// renders roll back like the slots above. Guarded by promptMu.
+	promptProvider func(ctx agent.Context) string
+	promptSeen     map[string]bool
+	promptMu       sync.Mutex
 
 	// Token estimates of the rendered project-context block and the git
 	// workspace snapshot that are folded into the system prompt
@@ -179,6 +189,60 @@ func (h *HistoryBuilder) rollbackSessionStart(sessionID string) {
 	delete(h.hookSeen, sessionID)
 }
 
+// SetUserPromptProvider attaches the UserPromptSubmit-hooks block renderer
+// (SetupRunner). Same once-per-key contract as the slots above, keyed by
+// promptKey (session + latest user sequence).
+func (h *HistoryBuilder) SetUserPromptProvider(fn func(ctx agent.Context) string) {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	h.promptProvider = fn
+	if h.promptSeen == nil {
+		h.promptSeen = make(map[string]bool)
+	}
+}
+
+// UserPromptProvider returns the attached renderer (nil when hooks cannot
+// fire UserPromptSubmit).
+func (h *HistoryBuilder) UserPromptProvider() func(ctx agent.Context) string {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	return h.promptProvider
+}
+
+// reserveUserPrompt atomically claims one prompt key; rollbackUserPrompt
+// releases an empty render. Mirrors reserveMemory/rollbackMemory.
+func (h *HistoryBuilder) reserveUserPrompt(key string) bool {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	if h.promptProvider == nil || h.promptSeen[key] {
+		return false
+	}
+	h.promptSeen[key] = true
+	return true
+}
+
+func (h *HistoryBuilder) rollbackUserPrompt(key string) {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	delete(h.promptSeen, key)
+}
+
+// promptKey identifies the latest user prompt for per-prompt hook firing:
+// session id plus the sequence of the last user-role message (0 when the
+// session has no user history yet). A new prompt appends a message, so the
+// key changes exactly when a new prompt lands; mid-turn model calls share
+// the key and do not re-fire.
+func promptKey(session *sesspkg.Session) string {
+	var seq int64
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if session.Messages[i].Role == "user" {
+			seq = session.Messages[i].Sequence
+			break
+		}
+	}
+	return session.ID + ":" + strconv.FormatInt(seq, 10)
+}
+
 // SetLogFunc installs a logger (usually the TUI log pane) for compaction
 // status messages.
 func (h *HistoryBuilder) SetLogFunc(f func(format string, args ...any)) {
@@ -248,12 +312,25 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 			h.rollbackSessionStart(session.ID)
 		}
 	}
+	// UserPromptSubmit hooks: per-prompt reservation on the latest user
+	// message, spliced ahead of everything (the turn's freshest signal).
+	var promptContent *genai.Content
+	if pkey := promptKey(session); h.reserveUserPrompt(pkey) {
+		if block := h.promptProvider(ctx); block != "" {
+			promptContent = genai.NewContentFromText("HOOK PROMPT CONTEXT:\n"+block, genai.RoleUser)
+		} else {
+			h.rollbackUserPrompt(pkey)
+		}
+	}
 	defer func() {
 		if memoryContent != nil {
 			req.Contents = append([]*genai.Content{memoryContent}, req.Contents...)
 		}
 		if hookContent != nil {
 			req.Contents = append([]*genai.Content{hookContent}, req.Contents...)
+		}
+		if promptContent != nil {
+			req.Contents = append([]*genai.Content{promptContent}, req.Contents...)
 		}
 	}()
 

@@ -25,12 +25,14 @@ import (
 )
 
 // Lifecycle events. PreToolUse/PostToolUse fire around tool calls;
-// SessionStart fires once per session (see RunSessionStart). Anything else
-// in config is a load-time error.
+// SessionStart fires once per session (see RunSessionStart);
+// UserPromptSubmit fires on every user prompt (see RunUserPromptSubmit).
+// Anything else in config is a load-time error.
 const (
-	EventPreToolUse   = "PreToolUse"
-	EventPostToolUse  = "PostToolUse"
-	EventSessionStart = "SessionStart"
+	EventPreToolUse       = "PreToolUse"
+	EventPostToolUse      = "PostToolUse"
+	EventSessionStart     = "SessionStart"
+	EventUserPromptSubmit = "UserPromptSubmit"
 )
 
 // Handler defaults and limits.
@@ -101,6 +103,10 @@ type Config struct {
 	// injected into the first turn. Matchers must be empty (no meaningful
 	// match target exists at session start).
 	SessionStart []Group `json:"SessionStart,omitempty"`
+	// UserPromptSubmit groups run on every user prompt; their
+	// stdout/context is prepended to the turn. Matchers must be empty
+	// (Claude parity: the event carries no matcher target).
+	UserPromptSubmit []Group `json:"UserPromptSubmit,omitempty"`
 	// Project tunes the project layer (<root>/.hakase/hooks.json).
 	Project ProjectConfig `json:"project,omitempty"`
 }
@@ -127,6 +133,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	for i := range c.SessionStart {
 		c.SessionStart[i].applyDefaults()
+	}
+	for i := range c.UserPromptSubmit {
+		c.UserPromptSubmit[i].applyDefaults()
 	}
 }
 
@@ -168,13 +177,18 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	for i := range c.UserPromptSubmit {
+		if err := c.UserPromptSubmit[i].validate(fmt.Sprintf("hooks.UserPromptSubmit[%d]", i), EventUserPromptSubmit); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (g *Group) validate(where string, event string) error {
 	if g.Matcher != "" {
-		if event == EventSessionStart {
-			return fmt.Errorf("invalid %s.matcher %q: SessionStart handlers run unconditionally; a matcher would silently never fire", where, g.Matcher)
+		if event == EventSessionStart || event == EventUserPromptSubmit {
+			return fmt.Errorf("invalid %s.matcher %q: %s handlers run unconditionally; a matcher would silently never fire", where, g.Matcher, event)
 		}
 		if _, err := regexp.Compile(g.Matcher); err != nil {
 			return fmt.Errorf("invalid %s.matcher %q: %v", where, g.Matcher, err)
@@ -224,9 +238,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	for k := range raw {
 		switch k {
-		case "enabled", "PreToolUse", "PostToolUse", "SessionStart", "project":
+		case "enabled", "PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "project":
 		default:
-			return fmt.Errorf("invalid hooks.%s: unknown key (want one of enabled, PreToolUse, PostToolUse, SessionStart, project)", k)
+			return fmt.Errorf("invalid hooks.%s: unknown key (want one of enabled, PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, project)", k)
 		}
 	}
 	*c = Config(p)

@@ -78,3 +78,47 @@ func TestWireHookSessionStartInstalls(t *testing.T) {
 		t.Errorf("provider = %q, want the hook output", got)
 	}
 }
+
+func TestWireHookUserPromptNoop(t *testing.T) {
+	hb := hctx.NewHistoryBuilder(nil)
+	wireHookUserPrompt(hb, nil)
+	if hb.UserPromptProvider() != nil {
+		t.Error("nil runner must not install a provider")
+	}
+	off := false
+	nowhere, err := hooks.NewRunner(hooks.Config{Project: hooks.ProjectConfig{Enabled: &off}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireHookUserPrompt(hb, nowhere)
+	if hb.UserPromptProvider() != nil {
+		t.Error("runner with no prompt source must not install a provider")
+	}
+}
+
+func TestWireHookUserPromptInstalls(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	hb := hctx.NewHistoryBuilder(nil)
+	r, err := hooks.NewRunner(hooks.Config{
+		UserPromptSubmit: []hooks.Group{{Hooks: []hooks.Handler{{Command: []string{"/bin/sh", "-c", "echo per-prompt"}}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireHookUserPrompt(hb, r)
+	prov := hb.UserPromptProvider()
+	if prov == nil {
+		t.Fatal("prompt-capable runner must install a provider")
+	}
+	ctx := agent.NewContext(&agent.ContextMock{})
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("provider panicked on mock context: %v", rec)
+		}
+	}()
+	if got := prov(ctx); got != "per-prompt" {
+		t.Errorf("provider = %q, want the hook output", got)
+	}
+}

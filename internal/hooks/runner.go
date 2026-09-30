@@ -48,6 +48,8 @@ type Runner struct {
 	post []compiledGroup
 	// session holds the user-layer SessionStart groups.
 	session []compiledGroup
+	// prompt holds the user-layer UserPromptSubmit groups.
+	prompt []compiledGroup
 	// projectEnabled gates the project layer (<root>/.hakase/hooks.json).
 	projectEnabled bool
 	// trust gates project handlers. Nil means trust nothing (safe default:
@@ -81,6 +83,7 @@ type projectCacheEntry struct {
 	pre     []compiledGroup
 	post    []compiledGroup
 	session []compiledGroup
+	prompt  []compiledGroup
 }
 
 // compileGroups compiles validated groups (compile cannot fail after
@@ -131,6 +134,13 @@ func NewRunner(cfg Config) (*Runner, error) {
 		}
 		r.session = append(r.session, cg)
 	}
+	for _, g := range c.UserPromptSubmit {
+		cg, err := compileGroup(g)
+		if err != nil {
+			return nil, err
+		}
+		r.prompt = append(r.prompt, cg)
+	}
 	return r, nil
 }
 
@@ -171,7 +181,7 @@ func (r *Runner) SetTrustStore(s TrustChecker) {
 // Enabled reports whether any hook group is loaded. A disabled runner's
 // Check methods return allow/passthrough without spawning anything.
 func (r *Runner) Enabled() bool {
-	return r != nil && (len(r.pre) > 0 || len(r.post) > 0 || len(r.session) > 0)
+	return r != nil && (len(r.pre) > 0 || len(r.post) > 0 || len(r.session) > 0 || len(r.prompt) > 0)
 }
 
 // HasSessionStart reports whether a SessionStart event could ever fire:
@@ -179,6 +189,12 @@ func (r *Runner) Enabled() bool {
 // appear — or be trusted — mid-process).
 func (r *Runner) HasSessionStart() bool {
 	return r != nil && (len(r.session) > 0 || r.projectEnabled)
+}
+
+// HasUserPrompt reports whether a UserPromptSubmit event could ever fire
+// (same project-layer reasoning as HasSessionStart).
+func (r *Runner) HasUserPrompt() bool {
+	return r != nil && (len(r.prompt) > 0 || r.projectEnabled)
 }
 
 // Snapshot describes one loaded handler for `hakase hooks list` and the
@@ -219,6 +235,11 @@ func (r *Runner) Snapshots() []Snapshot {
 			out = append(out, Snapshot{Event: EventSessionStart, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
 		}
 	}
+	for _, g := range r.prompt {
+		for _, h := range g.handlers {
+			out = append(out, Snapshot{Event: EventUserPromptSubmit, Matcher: g.raw, Name: h.Name, Command: h.Command, Timeout: h.Timeout, OnFailure: h.OnFailure, Fingerprint: h.Fingerprint(), Layer: "user", Trusted: true})
+		}
+	}
 	return out
 }
 
@@ -246,6 +267,7 @@ func (r *Runner) ProjectSnapshots(root string) []Snapshot {
 	collect(EventPreToolUse, f.PreToolUse)
 	collect(EventPostToolUse, f.PostToolUse)
 	collect(EventSessionStart, f.SessionStart)
+	collect(EventUserPromptSubmit, f.UserPromptSubmit)
 	return out
 }
 
@@ -255,9 +277,10 @@ type payload struct {
 	HookEventName string         `json:"hook_event_name"`
 	SessionID     string         `json:"session_id,omitempty"`
 	InvocationID  string         `json:"invocation_id,omitempty"`
-	ToolName      string         `json:"tool_name"`
+	ToolName      string         `json:"tool_name,omitempty"`
 	ToolInput     map[string]any `json:"tool_input,omitempty"`
 	ToolResponse  map[string]any `json:"tool_response,omitempty"`
+	Prompt        string         `json:"prompt,omitempty"`
 	CWD           string         `json:"cwd,omitempty"`
 	Timestamp     string         `json:"timestamp"`
 }
@@ -336,7 +359,7 @@ func (r *Runner) CheckPreToolUse(ctx context.Context, toolName string, toolInput
 	}
 	// Project layer: each handler runs only when its content fingerprint
 	// is trusted; anything else is skipped loudly and the tool proceeds.
-	pre, _, _ := r.projectGroups(ctx)
+	pre, _, _, _ := r.projectGroups(ctx)
 	for _, g := range pre {
 		if !g.matches(toolName) {
 			continue
@@ -418,7 +441,7 @@ func (r *Runner) CheckPostToolUse(ctx context.Context, toolName string, toolInpu
 		}
 	}
 	// Project layer, trust-gated like PreToolUse.
-	_, post, _ := r.projectGroups(ctx)
+	_, post, _, _ := r.projectGroups(ctx)
 	for _, g := range post {
 		if !g.matches(toolName) {
 			continue
@@ -507,18 +530,18 @@ func safeProjectRoot(ctx context.Context) string {
 // Results are mtime-cached per root so edits take effect without a
 // restart; a broken file warns (once per root per mtime) and yields
 // nothing, never breaking the user's own hooks.
-func (r *Runner) projectGroups(ctx context.Context) (pre, post, sess []compiledGroup) {
+func (r *Runner) projectGroups(ctx context.Context) (pre, post, sess, prmpt []compiledGroup) {
 	if r == nil || !r.projectEnabled {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	root := safeProjectRoot(ctx)
 	if root == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	path := ProjectHooksPath(root)
 	fi, err := os.Stat(path)
 	if err != nil {
-		return nil, nil, nil // absent (or transient stat failure): skip quietly
+		return nil, nil, nil, nil // absent (or transient stat failure): skip quietly
 	}
 	r.projMu.Lock()
 	defer r.projMu.Unlock()
@@ -526,20 +549,20 @@ func (r *Runner) projectGroups(ctx context.Context) (pre, post, sess []compiledG
 		r.projCache = map[string]projectCacheEntry{}
 	}
 	if e, ok := r.projCache[root]; ok && e.mtime.Equal(fi.ModTime()) && e.size == fi.Size() {
-		return e.pre, e.post, e.session
+		return e.pre, e.post, e.session, e.prompt
 	}
 	f, err := LoadProjectFile(root)
 	if err != nil {
 		r.warnf("hooks: ignoring broken project hooks %s: %v (`hakase hooks test` diagnoses it)", path, err)
 		r.projCache[root] = projectCacheEntry{mtime: fi.ModTime(), size: fi.Size()}
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if f == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
-	e := projectCacheEntry{mtime: fi.ModTime(), size: fi.Size(), pre: compileGroups(f.PreToolUse), post: compileGroups(f.PostToolUse), session: compileGroups(f.SessionStart)}
+	e := projectCacheEntry{mtime: fi.ModTime(), size: fi.Size(), pre: compileGroups(f.PreToolUse), post: compileGroups(f.PostToolUse), session: compileGroups(f.SessionStart), prompt: compileGroups(f.UserPromptSubmit)}
 	r.projCache[root] = e
-	return e.pre, e.post, e.session
+	return e.pre, e.post, e.session, e.prompt
 }
 
 // RunSessionStart runs SessionStart handlers once per session and returns
@@ -572,12 +595,12 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 	var parts []string
 	for _, g := range r.session {
 		for _, h := range g.handlers {
-			if c := r.runSessionHandler(ctx, p, h); c != "" {
+			if c := r.runPromptHandler(ctx, EventSessionStart, p, h); c != "" {
 				parts = append(parts, c)
 			}
 		}
 	}
-	_, _, sess := r.projectGroups(ctx)
+	_, _, sess, _ := r.projectGroups(ctx)
 	for _, g := range sess {
 		for _, h := range g.handlers {
 			fp := h.Fingerprint()
@@ -585,7 +608,7 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 				r.warnUntrustedOnce(fp, displayName(h))
 				continue
 			}
-			if c := r.runSessionHandler(ctx, p, h); c != "" {
+			if c := r.runPromptHandler(ctx, EventSessionStart, p, h); c != "" {
 				parts = append(parts, c)
 			}
 		}
@@ -601,27 +624,64 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 	return out
 }
 
-// runSessionHandler runs one SessionStart handler and returns its context
-// contribution ("" = none). The output contract differs from tool events
-// on purpose: exit-0 plain stdout IS model-visible context here (there is
-// no tool result to protect), alongside JSON additionalContext. Exit 2
-// cannot block a session start — it is a warn-and-continue error like any
-// other failure (on_failure:block is rejected on SessionStart at Validate,
-// so every error here is fail-open by construction).
-func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) string {
+// RunUserPromptSubmit runs UserPromptSubmit handlers for one user prompt
+// and returns the context to prepend to the turn ("" = nothing). Unlike
+// SessionStart there is no once-keying here: the caller (HistoryBuilder)
+// keys on the prompt identity so every new prompt fires. The prompt text
+// rides the payload for hooks that react to its content; exit-2 cannot
+// block a prompt (warn-and-continue, like SessionStart).
+func (r *Runner) RunUserPromptSubmit(ctx context.Context, promptText string) string {
+	if r == nil || !r.HasUserPrompt() {
+		return ""
+	}
+	p := buildPayload(ctx, EventUserPromptSubmit, "", nil, nil)
+	p.Prompt = promptText
+	var parts []string
+	for _, g := range r.prompt {
+		for _, h := range g.handlers {
+			if c := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); c != "" {
+				parts = append(parts, c)
+			}
+		}
+	}
+	_, _, _, prmpt := r.projectGroups(ctx)
+	for _, g := range prmpt {
+		for _, h := range g.handlers {
+			fp := h.Fingerprint()
+			if !r.isTrusted(fp) {
+				r.warnUntrustedOnce(fp, displayName(h))
+				continue
+			}
+			if c := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); c != "" {
+				parts = append(parts, c)
+			}
+		}
+	}
+	return TruncateRunes(strings.TrimSpace(strings.Join(parts, "\n\n")), SessionStartContextCap)
+}
+
+// runPromptHandler runs one SessionStart/UserPromptSubmit handler and
+// returns its context contribution ("" = none). The output contract
+// differs from tool events on purpose: exit-0 plain stdout IS
+// model-visible context here (there is no tool result to protect),
+// alongside JSON additionalContext. Exit 2 cannot block these events —
+// it is a warn-and-continue error like any other failure
+// (on_failure:block is rejected on them at Validate, so every error here
+// is fail-open by construction).
+func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, h Handler) string {
 	timeout := h.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeoutSeconds
 	}
 	stdin, err := json.Marshal(p)
 	if err != nil {
-		r.warnf("hooks: SessionStart %q payload error: %v", displayName(h), err)
+		r.warnf("hooks: %s %q payload error: %v", event, displayName(h), err)
 		return ""
 	}
-	stdout, stderr, timedOut, runErr := runCommand(ctx, time.Duration(timeout)*time.Second, h.Command, hookEnv(EventSessionStart, p), p.CWD, stdin)
+	stdout, stderr, timedOut, runErr := runCommand(ctx, time.Duration(timeout)*time.Second, h.Command, hookEnv(event, p), p.CWD, stdin)
 	name := displayName(h)
 	if timedOut {
-		r.warnf("hooks: SessionStart %q timed out after %ds", name, timeout)
+		r.warnf("hooks: %s %q timed out after %ds", event, name, timeout)
 		return ""
 	}
 	exitCode := 0
@@ -629,7 +689,7 @@ func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) st
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			r.warnf("hooks: SessionStart %q exec failed: %v", name, runErr)
+			r.warnf("hooks: %s %q exec failed: %v", event, name, runErr)
 			return ""
 		}
 	}
@@ -638,7 +698,7 @@ func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) st
 		if msg == "" {
 			msg = fmt.Sprintf("exit %d", exitCode)
 		}
-		r.warnf("hooks: SessionStart %q failed open (%s)", name, msg)
+		r.warnf("hooks: %s %q failed open (%s)", event, name, msg)
 		return ""
 	}
 	trimmed := bytes.TrimSpace(stdout)
@@ -650,11 +710,11 @@ func (r *Runner) runSessionHandler(ctx context.Context, p payload, h Handler) st
 	}
 	ctxOut, ignored, err := sessionContextFromStdout(stdout)
 	if err != nil {
-		r.warnf("hooks: SessionStart %q emitted invalid JSON: %v", name, err)
+		r.warnf("hooks: %s %q emitted invalid JSON: %v", event, name, err)
 		return ""
 	}
 	if ignored {
-		r.warnf("hooks: SessionStart %q returned updatedInput, which is ignored (v1 has no arg-rewrite plumbing)", name)
+		r.warnf("hooks: %s %q returned updatedInput, which is ignored (v1 has no arg-rewrite plumbing)", event, name)
 	}
 	return ctxOut
 }

@@ -22,3 +22,19 @@ func wireHookSessionStart(hb *hctx.HistoryBuilder, runner *hooks.Runner) {
 		return runner.RunSessionStart(ctx)
 	})
 }
+
+// wireHookUserPrompt attaches the UserPromptSubmit renderer, extracting the
+// current prompt text for the payload. No-op unless the runner could ever
+// fire (user groups or project layer enabled).
+func wireHookUserPrompt(hb *hctx.HistoryBuilder, runner *hooks.Runner) {
+	if hb == nil || runner == nil || !runner.HasUserPrompt() {
+		return
+	}
+	hb.SetUserPromptProvider(func(ctx agent.Context) string {
+		var text string
+		if uc := ctx.UserContent(); uc != nil {
+			text = hctx.ContentText(uc)
+		}
+		return runner.RunUserPromptSubmit(ctx, text)
+	})
+}

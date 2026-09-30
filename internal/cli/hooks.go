@@ -91,18 +91,22 @@ func runHooksList() int {
 		state = "disabled (hooks.enabled:false)"
 	}
 	snaps := r.Snapshots()
-	var pre, post, sess int
+	var pre, post, sess, prmpt int
 	for _, s := range snaps {
 		switch s.Event {
 		case hooks.EventPreToolUse:
 			pre++
 		case hooks.EventPostToolUse:
 			post++
+		case hooks.EventSessionStart:
+			sess++
+		case hooks.EventUserPromptSubmit:
+			prmpt++
 		default:
 			sess++
 		}
 	}
-	fmt.Printf("hooks: %s (%d PreToolUse, %d PostToolUse, %d SessionStart)\n", state, pre, post, sess)
+	fmt.Printf("hooks: %s (%d PreToolUse, %d PostToolUse, %d SessionStart, %d UserPromptSubmit)\n", state, pre, post, sess, prmpt)
 	if len(snaps) == 0 {
 		fmt.Println("user: no hooks configured")
 	} else {
@@ -513,8 +517,10 @@ func findHookHandler(r *hooks.Runner, root string, m hooks.Snapshot) (*hooks.Han
 				groups = f.PreToolUse
 			case hooks.EventPostToolUse:
 				groups = f.PostToolUse
-			default:
+			case hooks.EventSessionStart:
 				groups = f.SessionStart
+			default:
+				groups = f.UserPromptSubmit
 			}
 			if h := matchFP(groups); h != nil {
 				return h, m.Event
@@ -535,8 +541,10 @@ func findHookHandler(r *hooks.Runner, root string, m hooks.Snapshot) (*hooks.Han
 		groups = cfg.Hooks.PreToolUse
 	case hooks.EventPostToolUse:
 		groups = cfg.Hooks.PostToolUse
-	default:
+	case hooks.EventSessionStart:
 		groups = cfg.Hooks.SessionStart
+	default:
+		groups = cfg.Hooks.UserPromptSubmit
 	}
 	return matchFP(groups), m.Event
 }
