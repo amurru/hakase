@@ -92,6 +92,18 @@ var builtinCommands = []SlashCommand{
 		},
 	},
 	{
+		Name:        "hooks",
+		Description: "List user and project tool-lifecycle hooks with trust status (trust changes via `hakase hooks trust`)",
+		Usage:       "/hooks",
+		Run: func(m *AppModel, args string) tea.Cmd {
+			if RunHooksCommand == nil {
+				m.AppendLog("hooks browser is wired by the main binary; not available in this context")
+				return nil
+			}
+			return RunHooksCommand(m, args)
+		},
+	},
+	{
 		Name:        "exit",
 		Aliases:     []string{"quit"},
 		Description: "Exit hakase",

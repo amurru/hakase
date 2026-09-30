@@ -225,6 +225,7 @@ func runTUI() {
 	tui.CurrentHistoryBuilder = deps.HistoryBuilder
 	tui.RunBoardCommand = runBoardCommand
 	tui.RunMCPCommand = runMCPCommand
+	tui.RunHooksCommand = runHooksCommand
 	tui.RunSidekickCommand = func(m *tui.AppModel, args string) tea.Cmd {
 		return runSidekickCommand(m, args, runtime)
 	}
