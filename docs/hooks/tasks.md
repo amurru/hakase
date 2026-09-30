@@ -146,9 +146,9 @@ Spec: Phase-3 section in [spec.md](spec.md) (HK-106..HK-108). Guide:
       UserPromptSubmit sample. Spec: HK-106..108.
 - [x] **T6.6 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
       `go test ./...` (36/36), `-race` on hooks/agent, windows
-      cross-compile, e2e trust lifecycle. `pnpm test`/`vue-tsc` could
-      not fully run on this host (npm registry timeouts left
-      devDeps incomplete; `vue-tsc -b` reports only the pre-existing
-      missing `vite/client` + `node` type libs, nothing in the new
-      files) — this arc DOES touch `webui/`, so CI is the backstop
-      before merge.
+      cross-compile, e2e trust lifecycle, `pnpm test` (110/110 incl.
+      the new `hooks.test.ts`) + `pnpm build` (`vue-tsc -b` + vite).
+      Note: the sandbox network needed `--fetch-timeout 600000` for
+      the 26 MB mermaid tarball (`pnpm install --fetch-timeout
+      600000 --fetch-retries 5 --fetch-retry-maxtimeout 300000`); the
+      chunk-size warning on `elk` is pre-existing.
