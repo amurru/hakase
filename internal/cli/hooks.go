@@ -11,12 +11,19 @@
 //	                                      - review pending project hooks (bare = list pending)
 //	hakase hooks untrust <prefix>         - revoke trust
 //	hakase hooks test <name|prefix>       - dry-run one handler, print the verdict
+//	hakase hooks add <Event> [--matcher R] [--name N] [--timeout S]
+//	                 [--on-failure allow|block] -- <command...>
+//	                                      - add a user hook (takes effect via SIGHUP/restart)
+//	hakase hooks rm <prefix>              - remove a user hook by fingerprint prefix
+//	hakase hooks enable|disable <prefix>  - flip one user hook (never affects trust)
+//	hakase hooks on|off                   - master hooks.enabled switch
 package cli
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +51,14 @@ func RunHooksCLI(args []string) int {
 		return runHooksUntrust(args[1:])
 	case "test":
 		return runHooksTest(args[1:])
+	case "add":
+		return runHooksAdd(args[1:])
+	case "rm", "remove":
+		return runHooksRemove(args[1:])
+	case "enable", "disable":
+		return runHooksSetEnabled(args[0], args[1:])
+	case "on", "off":
+		return runHooksMaster(args[0])
 	default:
 		fmt.Fprintf(os.Stderr, "hakase: unknown hooks subcommand %q\n\n", args[0])
 		hooksUsage()
@@ -58,6 +73,11 @@ func hooksUsage() {
 	fmt.Fprintln(os.Stderr, "  list                            show configured hooks, fingerprints, trust status")
 	fmt.Fprintln(os.Stderr, "  trust [--all] [--yes] [prefix]  review pending project hooks and trust them")
 	fmt.Fprintln(os.Stderr, "  untrust <prefix>                revoke trust for a fingerprint prefix")
+	fmt.Fprintln(os.Stderr, "  test <name|prefix>              dry-run one handler with a sample payload")
+	fmt.Fprintln(os.Stderr, "  add <Event> [flags] -- <cmd..>  add a user hook (--matcher/--name/--timeout/--on-failure)")
+	fmt.Fprintln(os.Stderr, "  rm <prefix>                     remove a user hook by fingerprint prefix")
+	fmt.Fprintln(os.Stderr, "  enable|disable <prefix>         flip one user hook (never affects trust)")
+	fmt.Fprintln(os.Stderr, "  on|off                          master hooks.enabled switch")
 	fmt.Fprintln(os.Stderr, "  test <name|prefix>              dry-run one handler with a sample payload")
 }
 
@@ -135,6 +155,9 @@ func formatSnapshot(s hooks.Snapshot) string {
 		} else {
 			status = " [UNTRUSTED - skipped until trusted]"
 		}
+	}
+	if !s.Enabled {
+		status += " [disabled]"
 	}
 	return fmt.Sprintf("%s %q %s [%s] timeout=%ds on_failure=%s %s%s",
 		s.Event, matcher, name, strings.Join(s.Command, " "),
@@ -547,4 +570,124 @@ func findHookHandler(r *hooks.Runner, root string, m hooks.Snapshot) (*hooks.Han
 		groups = cfg.Hooks.UserPromptSubmit
 	}
 	return matchFP(groups), m.Event
+}
+
+// sighupHint reminds that a running server (web/TUI, another process) only
+// picks config edits up via SIGHUP; in-process surfaces reload directly.
+const sighupHint = "note: running servers pick this up on SIGHUP (`pkill -HUP hakase`); otherwise it applies on restart"
+
+// mutateUserHooks runs mutate against the resolved config file, prints the
+// SIGHUP hint on success, and maps errors to exit 1.
+func mutateUserHooks(mutate func(*hooks.Config) error) int {
+	path := config.ResolveConfigPath("config.json")
+	if _, err := hooks.WriteUserHooks(path, mutate); err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: %v\n", err)
+		return 1
+	}
+	fmt.Println(sighupHint)
+	return 0
+}
+
+// runHooksAdd implements `hooks add <Event> [flags] -- <command...>`.
+// Flags precede the `--` separator; everything after is the argv verbatim
+// (so commands starting with `-` need no escaping).
+func runHooksAdd(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "hakase: usage: hooks add <Event> [--matcher R] [--name N] [--timeout S] [--on-failure allow|block] -- <command...>")
+		return 2
+	}
+	event := args[0]
+	var matcher, name, onFailure string
+	timeout := 0
+	rest := args[1:]
+	i := 0
+	for ; i < len(rest); i++ {
+		a := rest[i]
+		if a == "--" {
+			break
+		}
+		val := func() string {
+			if i+1 >= len(rest) {
+				return ""
+			}
+			i++
+			return rest[i]
+		}
+		switch a {
+		case "--matcher":
+			matcher = val()
+		case "--name":
+			name = val()
+		case "--timeout":
+			n, err := strconv.Atoi(val())
+			if err != nil || n < 0 {
+				fmt.Fprintf(os.Stderr, "hakase: bad --timeout value (want non-negative seconds)\n")
+				return 2
+			}
+			timeout = n
+		case "--on-failure":
+			onFailure = val()
+		default:
+			fmt.Fprintf(os.Stderr, "hakase: unknown hooks add flag %q\n", a)
+			return 2
+		}
+	}
+	if i >= len(rest) || rest[i] != "--" {
+		fmt.Fprintln(os.Stderr, "hakase: hooks add needs `--` before the command argv")
+		return 2
+	}
+	argv := rest[i+1:]
+	if len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "hakase: hooks add needs a non-empty command argv after `--`")
+		return 2
+	}
+	h := hooks.Handler{Name: name, Command: argv, Timeout: timeout, OnFailure: onFailure}
+	return mutateUserHooks(func(c *hooks.Config) error {
+		if err := hooks.AddUserHook(c, event, matcher, h); err != nil {
+			return err
+		}
+		fmt.Printf("added %s hook %q [%s]\n", event, name, strings.Join(argv, " "))
+		return nil
+	})
+}
+
+// runHooksRemove implements `hooks rm <prefix>`.
+func runHooksRemove(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "hakase: usage: hooks rm <fingerprint-prefix>")
+		return 2
+	}
+	return mutateUserHooks(func(c *hooks.Config) error {
+		snap, err := hooks.RemoveUserHook(c, args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("removed %s hook %q [%s]\n", snap.Event, snap.Name, strings.Join(snap.Command, " "))
+		return nil
+	})
+}
+
+// runHooksSetEnabled implements `hooks enable|disable <prefix>`.
+func runHooksSetEnabled(sub string, args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintf(os.Stderr, "hakase: usage: hooks %s <fingerprint-prefix>\n", sub)
+		return 2
+	}
+	return mutateUserHooks(func(c *hooks.Config) error {
+		snap, err := hooks.SetUserHookEnabled(c, args[0], sub == "enable")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%sd %s hook %q (trust unaffected)\n", sub, snap.Event, snap.Name)
+		return nil
+	})
+}
+
+// runHooksMaster implements `hooks on|off` (master hooks.enabled switch).
+func runHooksMaster(sub string) int {
+	return mutateUserHooks(func(c *hooks.Config) error {
+		hooks.SetMasterEnabled(c, sub == "on")
+		fmt.Printf("hooks %s\n", sub)
+		return nil
+	})
 }

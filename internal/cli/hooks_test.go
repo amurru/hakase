@@ -225,3 +225,75 @@ func TestScriptPreviewSuppressesBinaries(t *testing.T) {
 		t.Errorf("script preview = %q, want the body", got)
 	}
 }
+
+func TestHooksAddRmCycle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HAKASE_HOME", home)
+	writeHooksTestConfig(t, home, `{"provider":"openai","model_name":"m","api_key":"k"}`)
+
+	if code := RunHooksCLI([]string{"add", "PreToolUse", "--matcher", "^system_exec$", "--name", "cyc", "--", "/bin/true"}); code != 0 {
+		t.Fatalf("hooks add: exit %d, want 0", code)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"cyc"`) {
+		t.Errorf("config must contain the added hook: %s", raw)
+	}
+	// Fingerprint prefix of /bin/true: resolve via list is stdout-only,
+	// so re-derive through the runner like the trust tests do.
+	_, r, err := loadHooksRunner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps := r.Snapshots()
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snaps))
+	}
+	fp := snaps[0].Fingerprint
+	if code := RunHooksCLI([]string{"disable", fp[:16]}); code != 0 {
+		t.Fatalf("hooks disable: exit %d", code)
+	}
+	if code := RunHooksCLI([]string{"enable", fp[:16]}); code != 0 {
+		t.Fatalf("hooks enable: exit %d", code)
+	}
+	if code := RunHooksCLI([]string{"rm", fp[:16]}); code != 0 {
+		t.Fatalf("hooks rm: exit %d", code)
+	}
+	_, r, err = loadHooksRunner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Snapshots()) != 0 {
+		t.Error("hook must be gone after rm")
+	}
+}
+
+func TestHooksAddValidation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HAKASE_HOME", home)
+	writeHooksTestConfig(t, home, `{"provider":"openai","model_name":"m","api_key":"k"}`)
+
+	if code := RunHooksCLI([]string{"add", "Nope", "--", "/bin/true"}); code == 0 {
+		t.Error("bad event must fail")
+	}
+	if code := RunHooksCLI([]string{"add", "PreToolUse", "/bin/true"}); code == 0 {
+		t.Error("missing -- separator must fail")
+	}
+	if code := RunHooksCLI([]string{"add", "PreToolUse", "--"}); code == 0 {
+		t.Error("empty argv must fail")
+	}
+	if code := RunHooksCLI([]string{"rm", "sha256:zzz"}); code == 0 {
+		t.Error("unknown prefix must fail")
+	}
+	if code := RunHooksCLI([]string{"off"}); code != 0 {
+		t.Fatalf("hooks off: exit %d", code)
+	}
+	if code := RunHooksCLI([]string{"list"}); code != 0 {
+		t.Fatalf("hooks list after off: exit %d", code)
+	}
+	if code := RunHooksCLI([]string{"on"}); code != 0 {
+		t.Fatalf("hooks on: exit %d", code)
+	}
+}
