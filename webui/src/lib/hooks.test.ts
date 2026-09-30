@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  addUserHook,
   fetchHooks,
+  removeUserHooks,
+  setHooksMaster,
+  setUserHooksEnabled,
   shortFingerprint,
   trustHooks,
   trustLabel,
   untrustHooks,
+  updateUserHook,
   type HooksList,
 } from './hooks'
 
@@ -38,6 +43,7 @@ describe('hooks api wrappers', () => {
           fingerprint: 'sha256:abc123',
           layer: 'user',
           trusted: true,
+          enabled: true,
         },
       ],
     }
@@ -84,5 +90,54 @@ describe('hooks api wrappers', () => {
     expect(trustLabel({ layer: 'user', trusted: true })).toBe('own config')
     expect(trustLabel({ layer: 'project', trusted: true })).toBe('trusted')
     expect(trustLabel({ layer: 'project', trusted: false })).toBe('untrusted')
+  })
+})
+
+describe('hooks user management wrappers', () => {
+  it('addUserHook POSTs the new hook', async () => {
+    const list: HooksList = { enabled: true, user: [] }
+    const f = stubFetch(list)
+    const add = {
+      event: 'PreToolUse',
+      matcher: '^system_exec$',
+      name: 'n',
+      command: ['/bin/true'],
+      timeout: 30,
+      on_failure: 'allow',
+    }
+    await expect(addUserHook(add)).resolves.toEqual(list)
+    const [, opts] = f.mock.calls[0] as [string, RequestInit & { body?: unknown }]
+    expect(f.mock.calls[0][0]).toBe('/api/hooks/user/add')
+    expect(JSON.parse(opts.body as string)).toEqual(add)
+  })
+
+  it('removeUserHooks POSTs fingerprints', async () => {
+    const list: HooksList = { enabled: true, user: [] }
+    const f = stubFetch(list)
+    await expect(removeUserHooks(['sha256:abc'])).resolves.toEqual(list)
+    expect(f.mock.calls[0][0]).toBe('/api/hooks/user/remove')
+  })
+
+  it('setUserHooksEnabled POSTs fingerprints with the flag', async () => {
+    const list: HooksList = { enabled: true, user: [] }
+    const f = stubFetch(list)
+    await expect(setUserHooksEnabled(['sha256:abc'], false)).resolves.toEqual(list)
+    const [, opts] = f.mock.calls[0] as [string, RequestInit & { body?: unknown }]
+    expect(f.mock.calls[0][0]).toBe('/api/hooks/user/set-enabled')
+    expect(JSON.parse(opts.body as string)).toEqual({ fingerprints: ['sha256:abc'], enabled: false })
+  })
+
+  it('updateUserHook POSTs the patch', async () => {
+    const list: HooksList = { enabled: true, user: [] }
+    const f = stubFetch(list)
+    await expect(updateUserHook({ fingerprint: 'sha256:abc', name: 'n2' })).resolves.toEqual(list)
+    expect(f.mock.calls[0][0]).toBe('/api/hooks/user/update')
+  })
+
+  it('setHooksMaster POSTs the flag', async () => {
+    const list: HooksList = { enabled: false, user: [] }
+    const f = stubFetch(list)
+    await expect(setHooksMaster(false)).resolves.toEqual(list)
+    expect(f.mock.calls[0][0]).toBe('/api/hooks/master')
   })
 })

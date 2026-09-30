@@ -13,6 +13,7 @@ export interface HookSnapshot {
   fingerprint: string
   layer: 'user' | 'project'
   trusted: boolean
+  enabled: boolean
 }
 
 export interface HooksProject {
@@ -41,6 +42,45 @@ export function trustHooks(fingerprints: string[], sessionId?: string): Promise<
 
 export function untrustHooks(fingerprints: string[]): Promise<{ changed: string[] }> {
   return apiPost<{ changed: string[] }>('/hooks/untrust', { fingerprints })
+}
+
+export interface UserHookAdd {
+  event: string
+  matcher: string
+  name: string
+  command: string[]
+  timeout: number
+  on_failure: string
+}
+
+export interface UserHookUpdate {
+  fingerprint: string
+  matcher?: string
+  name?: string
+  command?: string[]
+  timeout?: number
+  on_failure?: string
+  enabled?: boolean
+}
+
+export function addUserHook(add: UserHookAdd): Promise<HooksList> {
+  return apiPost<HooksList>('/hooks/user/add', add)
+}
+
+export function removeUserHooks(fingerprints: string[]): Promise<HooksList> {
+  return apiPost<HooksList>('/hooks/user/remove', { fingerprints })
+}
+
+export function setUserHooksEnabled(fingerprints: string[], enabled: boolean): Promise<HooksList> {
+  return apiPost<HooksList>('/hooks/user/set-enabled', { fingerprints, enabled })
+}
+
+export function updateUserHook(update: UserHookUpdate): Promise<HooksList> {
+  return apiPost<HooksList>('/hooks/user/update', update)
+}
+
+export function setHooksMaster(enabled: boolean): Promise<HooksList> {
+  return apiPost<HooksList>('/hooks/master', { enabled })
 }
 
 export function shortFingerprint(fp: string): string {
