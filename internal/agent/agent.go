@@ -86,6 +86,27 @@ func HooksRunner() *hooks.Runner {
 	return deps.HooksRunner
 }
 
+// ReloadUserHooks swaps the process-wide runner's compiled set for cfg's,
+// in place (spec HK-111): web/TUI CRUD calls this after a validated
+// config mutation so the next tool call and prompt honor it with no
+// restart. SIGHUP calls ReloadUserHooksFromDisk for external CLI edits.
+func ReloadUserHooks(cfg hooks.Config) error {
+	if deps == nil || deps.HooksRunner == nil {
+		return fmt.Errorf("hooks: runner not initialized")
+	}
+	return deps.HooksRunner.Reload(cfg)
+}
+
+// ReloadUserHooksFromDisk re-reads the hooks block from the resolved
+// config file and reloads the runner (SIGHUP path for external edits).
+func ReloadUserHooksFromDisk() error {
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
+	if err != nil {
+		return fmt.Errorf("hooks: cannot reload config: %v", err)
+	}
+	return ReloadUserHooks(cfg.Hooks)
+}
+
 // hookResultStr reads a string field from a hook block result for audit
 // logging. Block results always carry "hook" and "error" (see
 // hooks.blockResult); anything else yields "" rather than panicking.

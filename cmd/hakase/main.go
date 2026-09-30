@@ -285,6 +285,9 @@ func runTUI() {
 		deps.HistoryBuilder.SetPendingQueue(m.PendingQueue())
 	}
 
+	// External `hakase hooks ...` edits reload via SIGHUP (spec HK-111).
+	installHooksReloadOnHup()
+
 	// Wire cron job lifecycle events to the TUI. This MUST happen before
 	// the cron scheduler (started in SetupRunner) fires any jobs.
 	cli.CronJobNotify = func(status, jobID, name, summary, outputPath string) {
