@@ -303,7 +303,7 @@ func (m *AppModel) commandMenuView() string {
 		maxContent = 20
 	}
 
-	maxLines := 8
+	maxLines := max(8, len(builtinCommands))
 	var lines []string
 	for i, c := range filtered {
 		if i >= maxLines {

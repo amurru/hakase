@@ -76,6 +76,16 @@ func buildSidekickConfig(cfg *config.Config) *config.Config {
 	return &sk
 }
 
+// HooksRunner returns the process-wide hooks runner built by SetupRunner,
+// or nil before setup / when hooks are unwired. Used by surfaces that
+// render hook state outside the agent loop (web hooks API).
+func HooksRunner() *hooks.Runner {
+	if deps == nil {
+		return nil
+	}
+	return deps.HooksRunner
+}
+
 // hookResultStr reads a string field from a hook block result for audit
 // logging. Block results always carry "hook" and "error" (see
 // hooks.blockResult); anything else yields "" rather than panicking.

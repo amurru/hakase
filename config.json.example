@@ -210,6 +210,19 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "name": "prompt-context",
+            "type": "command",
+            "command": ["/home/you/.hakase/hooks/prompt-context.sh"],
+            "timeout": 30,
+            "on_failure": "allow"
+          }
+        ]
+      }
+    ],
     "project": {
       "enabled": true
     }

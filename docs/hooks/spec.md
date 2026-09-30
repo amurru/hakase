@@ -256,10 +256,10 @@ too late (CVE-2025-59536), sandbox-writes-settings persistence
   `project.FindRoot` (the `.git` walk). No configurable path: a configurable
   path is trust confusion with no user benefit.
 - **Project files can only ADD hooks.** Their shape is
-  `{PreToolUse, PostToolUse, SessionStart}` — no `enabled` master switch, no
-  way to disable user hooks or the trust gate. Unknown keys (including
-  `enabled`) are load-time errors. This is the managed-tier-lite property:
-  lower (less-trusted) tiers cannot switch off higher tiers.
+  `{PreToolUse, PostToolUse, SessionStart, UserPromptSubmit}` — no `enabled`
+  master switch, no way to disable user hooks or the trust gate. Unknown keys
+  (including `enabled`) are load-time errors. This is the managed-tier-lite
+  property: lower (less-trusted) tiers cannot switch off higher tiers.
 - **Untrusted project hooks never execute — they are skipped with a loud
   warning pointing at `hakase hooks trust`.** Not a dialog, not a warning
   that proceeds: a gate. Trust key = content fingerprint (`sha256:` over
@@ -293,11 +293,11 @@ too late (CVE-2025-59536), sandbox-writes-settings persistence
 ### Spec HK-101: project file loading (`internal/hooks/project.go`)
 
 - `ProjectHooksPath(root)` = `<root>/.hakase/hooks.json`.
-- `ProjectFile{PreToolUse, PostToolUse, SessionStart []Group}` with strict
+- `ProjectFile{PreToolUse, PostToolUse, SessionStart, UserPromptSubmit []Group}` with strict
   unmarshal (unknown keys AND `enabled` rejected), then `Validate()`
-  (same handler rules; `on_failure:block` rejected on PostToolUse AND
-  SessionStart — only meaningful on PreToolUse; non-empty SessionStart
-  matcher rejected).
+  (same handler rules; `on_failure:block` rejected on PostToolUse,
+  SessionStart, AND UserPromptSubmit — only meaningful on PreToolUse;
+  non-empty SessionStart/UserPromptSubmit matcher rejected).
 - Symlink-escape guard: `EvalSymlinks` on the file must stay under `root`.
 - Relative `command[0]` resolves against `root` (documented); absolute
   kept as-is. Missing files are NOT a load error (fail-open at runtime
@@ -367,3 +367,85 @@ too late (CVE-2025-59536), sandbox-writes-settings persistence
 - A full MDM/managed tier (no MDM infra exists in hakase; the
   project-cannot-disable-user property above is the enforceable subset).
 - Per-hook `if` prefilters, `http`/`mcp_tool` handler types, shell strings.
+
+---
+
+# Phase 3 (gap-fill arc): UserPromptSubmit + surfaces + guide
+
+Closes the gaps Phase 2 left open: the fourth lifecycle event
+(`UserPromptSubmit`), read-only surfaces in the TUI and web UI (trust
+changes stay in the CLI / web API), and the user guide with example
+scripts. Full MDM tier stays deferred.
+
+## Decisions
+
+- **UserPromptSubmit fires on every user prompt, via the HistoryBuilder.**
+  The injection point is the `HistoryBuilder` prompt slot (keyed on
+  session message `Sequence`), not the agent run loop: every surface
+  (TUI, web, cron) funnels prompts through history building, while the
+  run loop is bypassed by some surfaces. Matchers must be empty (Claude
+  parity — the event carries no matcher target); `on_failure:block` is
+  rejected (prompt hooks observe, they never gate).
+- **The prompt payload carries the text.** `prompt` rides the stdin JSON
+  so hooks can react to content (e.g. inject repo context for certain
+  topics). Exit-0 plain stdout IS model-visible context (same contract
+  as SessionStart); exit 2 is warn-and-continue, never a block.
+- **TUI `/hooks` is read-only; web gets list + trust/untrust.**
+  The TUI browser lists both layers with trust status (trust changes
+  stay in `hakase hooks trust`, where the review UI and y/N confirm
+  live). The web API exposes `GET /api/hooks`, `POST /api/hooks/trust`,
+  `POST /api/hooks/untrust` behind auth, with a Hooks settings page;
+  trust requires each fingerprint to match a CURRENT project handler
+  (unique prefix) or the whole request fails.
+- **`updatedInput` is ignored loudly.** v1 has no arg-rewrite plumbing,
+  so a hook returning `updatedInput` gets a warn log (runner),
+  `[note: updatedInput ignored by v1]` (dry-run), never silent drop —
+  a Claude-ported hook degrades loudly, not silently.
+
+## Specs
+
+### Spec HK-106: UserPromptSubmit (`Runner.RunUserPromptSubmit`, HistoryBuilder prompt slot)
+
+- `Config`/`ProjectFile` gain `UserPromptSubmit []Group` (validated;
+  unknown-key lists extended; non-empty matcher and `on_failure:block`
+  rejected).
+- `Runner.RunUserPromptSubmit(ctx, promptText) string`: user + trusted-
+  project groups, NO once-keying at the runner level (every prompt
+  fires); caller keys on prompt identity. Payload carries `prompt`.
+- `HistoryBuilder` prompt slot (`SetUserPromptProvider` +
+  reserve/rollback, mirroring the memory/session slots) keyed on
+  `sessionID:last-user-sequence`: every NEW user prompt fires once,
+  mid-turn model calls do not re-fire. Spliced ahead of the
+  session/memory blocks (the turn's freshest signal).
+- `wireHookUserPrompt` in `internal/agent` (no-op unless the runner
+  could ever fire); CLI `list`/`test` cover the event.
+
+### Spec HK-107: surfaces (TUI `/hooks`, web API + UI)
+
+- TUI `/hooks` (via the `RunHooksCommand` func var, existing `/mcp`
+  pattern): read-only user + project layers with trust status, cwd
+  project resolution. Trust changes direct to the CLI.
+- Web `GET /api/hooks[?session_id=...]` (user hooks + project layer
+  for the session-bound checkout, server-cwd fallback),
+  `POST /api/hooks/trust|untrust` (prefix matching, all-or-nothing on
+  unmatched). Frontend `HooksView` + nav entry + `lib/hooks.ts`
+  wrappers with vitest coverage.
+- `agent.HooksRunner()` accessor + `agentrun.ProjectRoot(sessionID)`
+  power the web API; untrusted hooks never execute on any surface.
+
+### Spec HK-108: loud-degradation warnings
+
+- `updatedInput`/`updated_input` (top level or under
+  `hookSpecificOutput`) sets `verdict.ignoredUpdate`: runner warns,
+  dry-run annotates. SessionStart shares the path.
+- `hakase hooks trust` warns when the project layer is disabled in
+  config (new trust entries stay inert until re-enabled).
+
+## Phase-3 definition of done
+
+- [ ] A UserPromptSubmit hook's stdout reaches every new turn exactly
+      once per prompt (not re-fired mid-turn, refired on next prompt).
+- [ ] TUI `/hooks` lists both layers; web Hooks page lists, trusts,
+      and revokes with prefix matching.
+- [ ] `docs/hooks/usage.md` + example scripts cover all four events.
+- [ ] Full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).

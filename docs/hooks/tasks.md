@@ -116,3 +116,39 @@ fingerprint — see gemini-cli#27900). Spec: Phase-2 section in
       windows cross-compile). `pnpm test` could not run on this host (npm
       registry fetch times out; pre-existing environmental issue, same as
       the Phase-1 note). Zero `webui/` files touched — CI is the backstop.
+
+## Phase 3 (gap-fill arc) — UserPromptSubmit + surfaces + guide
+
+Spec: Phase-3 section in [spec.md](spec.md) (HK-106..HK-108). Guide:
+[usage.md](usage.md) + `examples/` scripts.
+
+- [x] **T6.1 [BE]** `updatedInput` loud-degradation: `ignoredUpdate` flag
+      on the verdict, runner warn + dry-run annotation; SessionStart
+      shares the path (`sessionContextFromStdout` triple return).
+      Trust-disabled warning in `hakase hooks trust`; corrupt-store
+      wording fix. Spec: HK-108.
+- [x] **T6.2 [BE]** `UserPromptSubmit` event: config/project shape +
+      validation (empty matcher, no `on_failure:block`), layered runner
+      (`RunUserPromptSubmit`, no once-keying, `prompt` payload field),
+      `HistoryBuilder` per-prompt slot keyed on message Sequence,
+      `wireHookUserPrompt` agent wiring, CLI `list`/`test` coverage.
+      Spec: HK-106.
+- [x] **T6.3 [BE]** TUI `/hooks` read-only browser (`RunHooksCommand`
+      func var, `hooksTUIReport` pure report fn); web API (`GET /hooks`,
+      `POST /hooks/trust|untrust`, `agent.HooksRunner()` accessor,
+      `agentrun.ProjectRoot`). Spec: HK-107.
+- [x] **T6.4 [FE]** web Hooks page (`HooksView`, nav, `lib/hooks.ts`
+      wrappers + `hooks.test.ts` vitest coverage).
+      Spec: HK-107.
+- [x] **T6.5 [DOCS]** `usage.md` user guide, four verified example
+      scripts (`no-rm-rf`, `log-tool`, `session-start`,
+      `prompt-context`), spec Phase-3 section, `config.json.example`
+      UserPromptSubmit sample. Spec: HK-106..108.
+- [x] **T6.6 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
+      `go test ./...` (36/36), `-race` on hooks/agent, windows
+      cross-compile, e2e trust lifecycle. `pnpm test`/`vue-tsc` could
+      not fully run on this host (npm registry timeouts left
+      devDeps incomplete; `vue-tsc -b` reports only the pre-existing
+      missing `vite/client` + `node` type libs, nothing in the new
+      files) — this arc DOES touch `webui/`, so CI is the backstop
+      before merge.

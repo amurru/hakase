@@ -90,6 +90,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterMediaRoutes(r)
 		// Audio transcription / dictation route
 		handlers.RegisterTranscribeRoutes(r)
+		// Tool-lifecycle hooks: inspect layers, review/trust project hooks.
+		handlers.RegisterHooksRoutes(r, sessionSvc)
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html.
