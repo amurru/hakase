@@ -38,6 +38,7 @@ type HookSnapshotDTO struct {
 	Fingerprint string   `json:"fingerprint"`
 	Layer       string   `json:"layer"`
 	Trusted     bool     `json:"trusted"`
+	Enabled     bool     `json:"enabled"`
 }
 
 // HooksProjectDTO is the project layer for one root.
@@ -65,11 +66,48 @@ type HooksTrustDTO struct {
 	Changed []string `json:"changed"`
 }
 
+// HooksUserAddRequest is POST /api/hooks/user/add.
+type HooksUserAddRequest struct {
+	Event     string   `json:"event"`
+	Matcher   string   `json:"matcher"`
+	Name      string   `json:"name"`
+	Command   []string `json:"command"`
+	Timeout   int      `json:"timeout"`
+	OnFailure string   `json:"on_failure"`
+}
+
+// HooksUserSetEnabledRequest is POST /api/hooks/user/set-enabled.
+type HooksUserSetEnabledRequest struct {
+	Fingerprints []string `json:"fingerprints"`
+	Enabled      bool     `json:"enabled"`
+}
+
+// HooksUserUpdateRequest is POST /api/hooks/user/update. Pointer fields
+// distinguish "absent" (leave alone) from zero values; Command nil means
+// unchanged (an explicit empty argv is rejected, never a wipe).
+type HooksUserUpdateRequest struct {
+	Fingerprint string   `json:"fingerprint"`
+	Matcher     *string  `json:"matcher"`
+	Name        *string  `json:"name"`
+	Command     []string `json:"command"`
+	Timeout     *int     `json:"timeout"`
+	OnFailure   *string  `json:"on_failure"`
+	Enabled     *bool    `json:"enabled"`
+}
+
+// HooksMasterRequest is POST /api/hooks/master.
+type HooksMasterRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 // HooksAPI serves hook inspection and trust over HTTP.
 type HooksAPI struct {
-	runner      *hooks.Runner
-	enabled     bool
-	store       *hooks.TrustStore
+	runner  *hooks.Runner
+	enabled bool
+	store   *hooks.TrustStore
+	// reload swaps the live runner after a validated config mutation.
+	// Production wires hakaseagent.ReloadUserHooks; tests inject a fake.
+	reload      func(hooks.Config) error
 	resolveRoot func(sessionID string) string
 }
 
@@ -93,6 +131,7 @@ func RegisterHooksRoutes(r HooksRouter, sessions *hakasesession.SessionService) 
 		runner:  runner,
 		enabled: enabled,
 		store:   store,
+		reload:  hakaseagent.ReloadUserHooks,
 		resolveRoot: func(sessionID string) string {
 			if sessionID != "" {
 				if root := driver.ProjectRoot(sessionID); root != "" {
@@ -108,19 +147,28 @@ func RegisterHooksRoutes(r HooksRouter, sessions *hakasesession.SessionService) 
 	r.Get("/hooks", api.List)
 	r.Post("/hooks/trust", api.Trust)
 	r.Post("/hooks/untrust", api.Untrust)
+	r.Post("/hooks/user/add", api.UserAdd)
+	r.Post("/hooks/user/remove", api.UserRemove)
+	r.Post("/hooks/user/set-enabled", api.UserSetEnabled)
+	r.Post("/hooks/user/update", api.UserUpdate)
+	r.Post("/hooks/master", api.Master)
 }
 
 func toSnapshotDTO(s hooks.Snapshot) HookSnapshotDTO {
 	return HookSnapshotDTO{
 		Event: s.Event, Matcher: s.Matcher, Name: s.Name, Command: s.Command,
 		Timeout: s.Timeout, OnFailure: s.OnFailure, Fingerprint: s.Fingerprint,
-		Layer: s.Layer, Trusted: s.Trusted,
+		Layer: s.Layer, Trusted: s.Trusted, Enabled: s.Enabled,
 	}
 }
 
 // List handles GET /api/hooks[?session_id=...] - user hooks plus the
 // project layer (with trust status) for the resolved root.
 func (api *HooksAPI) List(w http.ResponseWriter, r *http.Request) {
+	writeHooksJSON(w, api.buildListDTO(r.URL.Query().Get("session_id")))
+}
+
+func (api *HooksAPI) buildListDTO(sessionID string) HooksListDTO {
 	dto := HooksListDTO{Enabled: api.enabled, User: make([]HookSnapshotDTO, 0)}
 	if api.runner != nil {
 		for _, s := range api.runner.Snapshots() {
@@ -129,7 +177,7 @@ func (api *HooksAPI) List(w http.ResponseWriter, r *http.Request) {
 	}
 	root := ""
 	if api.resolveRoot != nil {
-		root = api.resolveRoot(r.URL.Query().Get("session_id"))
+		root = api.resolveRoot(sessionID)
 	}
 	if root != "" && api.runner != nil {
 		if path := hooks.ProjectHooksPath(root); path != "" {
@@ -142,7 +190,150 @@ func (api *HooksAPI) List(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeHooksJSON(w, dto)
+	return dto
+}
+
+// mutateUserHook applies a user-layer mutation to the resolved config
+// file, reloads the live runner, and answers with the refreshed list.
+// The whole chain is one unit: a reload failure (impossible after a
+// validated write, but guarded anyway) is a 500, never a silent split
+// between disk and the running agent. CRUD targets the user layer only
+// (spec HK-111): project files are repo-owned, trust-managed.
+func (api *HooksAPI) mutateUserHook(w http.ResponseWriter, r *http.Request, mutate func(*hooks.Config) error) {
+	path := resolveConfigPath("config.json")
+	if path == "" {
+		writeHooksError(w, http.StatusInternalServerError, "no config path resolves")
+		return
+	}
+	block, err := hooks.WriteUserHooks(path, mutate)
+	if err != nil {
+		writeHooksError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := api.reload(block); err != nil {
+		writeHooksError(w, http.StatusInternalServerError, fmt.Sprintf("saved, but live reload failed: %v", err))
+		return
+	}
+	var sessionID string
+	if r.URL != nil {
+		sessionID = r.URL.Query().Get("session_id")
+	}
+	writeHooksJSON(w, api.buildListDTO(sessionID))
+}
+
+// UserAdd handles POST /api/hooks/user/add - append one user hook.
+func (api *HooksAPI) UserAdd(w http.ResponseWriter, r *http.Request) {
+	var req HooksUserAddRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeHooksError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Command) == 0 {
+		writeHooksError(w, http.StatusBadRequest, "command must be a non-empty argv array")
+		return
+	}
+	api.mutateUserHook(w, r, func(c *hooks.Config) error {
+		return hooks.AddUserHook(c, req.Event, req.Matcher, hooks.Handler{
+			Name: req.Name, Command: req.Command, Timeout: req.Timeout, OnFailure: req.OnFailure,
+		})
+	})
+}
+
+// UserRemove handles POST /api/hooks/user/remove - delete user hooks by
+// fingerprint prefix (reuses HooksTrustRequest; session_id is ignored,
+// the user layer is process-global).
+func (api *HooksAPI) UserRemove(w http.ResponseWriter, r *http.Request) {
+	var req HooksTrustRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeHooksError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Fingerprints) == 0 {
+		writeHooksError(w, http.StatusBadRequest, "fingerprints must be non-empty")
+		return
+	}
+	api.mutateUserHook(w, r, func(c *hooks.Config) error {
+		for _, fp := range req.Fingerprints {
+			if _, err := hooks.RemoveUserHook(c, fp); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// UserSetEnabled handles POST /api/hooks/user/set-enabled - flip user
+// hooks without touching fingerprints (trust unaffected, HK-109).
+func (api *HooksAPI) UserSetEnabled(w http.ResponseWriter, r *http.Request) {
+	var req HooksUserSetEnabledRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeHooksError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Fingerprints) == 0 {
+		writeHooksError(w, http.StatusBadRequest, "fingerprints must be non-empty")
+		return
+	}
+	api.mutateUserHook(w, r, func(c *hooks.Config) error {
+		for _, fp := range req.Fingerprints {
+			if _, err := hooks.SetUserHookEnabled(c, fp, req.Enabled); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// UserUpdate handles POST /api/hooks/user/update - patch one user hook's
+// fields (absent fields are left alone; the target resolves by its
+// CURRENT fingerprint before mutation).
+func (api *HooksAPI) UserUpdate(w http.ResponseWriter, r *http.Request) {
+	var req HooksUserUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeHooksError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(req.Fingerprint) == "" {
+		writeHooksError(w, http.StatusBadRequest, "fingerprint must be non-empty")
+		return
+	}
+	api.mutateUserHook(w, r, func(c *hooks.Config) error {
+		_, err := hooks.UpdateUserHook(c, req.Fingerprint, hooks.HookUpdate{
+			Matcher: req.Matcher, Name: req.Name, Command: req.Command,
+			Timeout: req.Timeout, OnFailure: req.OnFailure, Enabled: req.Enabled,
+		})
+		return err
+	})
+}
+
+// Master handles POST /api/hooks/master - flip the top-level
+// hooks.enabled switch (spec HK-112). The cached enabled flag follows
+// the mutation so the list DTO stays truthful.
+func (api *HooksAPI) Master(w http.ResponseWriter, r *http.Request) {
+	var req HooksMasterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeHooksError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	path := resolveConfigPath("config.json")
+	if path == "" {
+		writeHooksError(w, http.StatusInternalServerError, "no config path resolves")
+		return
+	}
+	block, err := hooks.WriteUserHooks(path, func(c *hooks.Config) error {
+		hooks.SetMasterEnabled(c, req.Enabled)
+		return nil
+	})
+	if err != nil {
+		writeHooksError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := api.reload(block); err != nil {
+		writeHooksError(w, http.StatusInternalServerError, fmt.Sprintf("saved, but live reload failed: %v", err))
+		return
+	}
+	api.enabled = req.Enabled
+	writeHooksJSON(w, api.buildListDTO(r.URL.Query().Get("session_id")))
 }
 
 // Trust handles POST /api/hooks/trust - trust exactly the listed
