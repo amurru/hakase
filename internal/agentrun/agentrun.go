@@ -116,6 +116,22 @@ func (t *projectRunTracker) CountOn(projectID string) int {
 	return t.count[projectID]
 }
 
+// ProjectRoot resolves the checkout dir for a session bound to a
+// registered project, or "" when the session is unbound, the binding is
+// unusable, or no registry is loaded. Used by surfaces that need the
+// per-session project scope outside a run (e.g. the web hooks API); runs
+// themselves resolve this inline in RunTurn.
+func (d *Driver) ProjectRoot(sessionID string) string {
+	if d == nil {
+		return ""
+	}
+	p := d.boundProject(sessionID)
+	if p == nil || registry.Current == nil {
+		return ""
+	}
+	return registry.Current.Store().CheckoutDir(*p)
+}
+
 // boundProject resolves the registered project a chat session is bound to
 // (session.project_id, project-registry DP-7). Returns nil when the session is
 // unbound or the binding is unusable (entry missing, or not in status ready),

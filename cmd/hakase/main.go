@@ -225,6 +225,7 @@ func runTUI() {
 	tui.CurrentHistoryBuilder = deps.HistoryBuilder
 	tui.RunBoardCommand = runBoardCommand
 	tui.RunMCPCommand = runMCPCommand
+	tui.RunHooksCommand = runHooksCommand
 	tui.RunSidekickCommand = func(m *tui.AppModel, args string) tea.Cmd {
 		return runSidekickCommand(m, args, runtime)
 	}
@@ -283,6 +284,9 @@ func runTUI() {
 	if deps.HistoryBuilder != nil {
 		deps.HistoryBuilder.SetPendingQueue(m.PendingQueue())
 	}
+
+	// External `hakase hooks ...` edits reload via SIGHUP (spec HK-111).
+	installHooksReloadOnHup()
 
 	// Wire cron job lifecycle events to the TUI. This MUST happen before
 	// the cron scheduler (started in SetupRunner) fires any jobs.

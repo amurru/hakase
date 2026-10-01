@@ -433,6 +433,9 @@ func runServer(args []string, serveSPA bool) int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// External `hakase hooks ...` edits reload via SIGHUP (spec HK-111).
+	installHooksReloadOnHup()
+
 	select {
 	case err := <-done:
 		stopChannels()

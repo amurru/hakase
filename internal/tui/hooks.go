@@ -28,6 +28,10 @@ var RunBoardCommand func(m *AppModel, args string) tea.Cmd
 // mcp_slash.go.
 var RunMCPCommand func(m *AppModel, args string) tea.Cmd
 
+// RunHooksCommand is the slash command handler for /hooks (list, trust,
+// and user-layer CRUD), wired by root's hooks_slash.go.
+var RunHooksCommand func(m *AppModel, args string) tea.Cmd
+
 // RunSidekickCommand is the slash command handler for /sidekick, wired by
 // root's slash_commands.go. It offloads a direct question to the sidekick
 // model and surfaces the answer as a chat message.

@@ -92,6 +92,18 @@ var builtinCommands = []SlashCommand{
 		},
 	},
 	{
+		Name:        "hooks",
+		Description: "Manage tool-lifecycle hooks: list, trust, enable/disable, add/update/remove (`/hooks help` for subcommands)",
+		Usage:       "/hooks [list|trust|enable|disable|add|update|rm|on|off|test]",
+		Run: func(m *AppModel, args string) tea.Cmd {
+			if RunHooksCommand == nil {
+				m.AppendLog("hooks browser is wired by the main binary; not available in this context")
+				return nil
+			}
+			return RunHooksCommand(m, args)
+		},
+	},
+	{
 		Name:        "exit",
 		Aliases:     []string{"quit"},
 		Description: "Exit hakase",
@@ -291,7 +303,7 @@ func (m *AppModel) commandMenuView() string {
 		maxContent = 20
 	}
 
-	maxLines := 8
+	maxLines := max(8, len(builtinCommands))
 	var lines []string
 	for i, c := range filtered {
 		if i >= maxLines {

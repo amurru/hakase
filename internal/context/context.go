@@ -3,6 +3,7 @@ package context
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -41,6 +42,25 @@ type HistoryBuilder struct {
 	memoryProvider func(ctx agent.Context) string
 	memorySeen     map[string]bool
 	memoryMu       sync.Mutex
+
+	// SessionStart hooks (docs/hooks/spec.md HK-104): hookProvider renders
+	// the one-shot SessionStart context block ("" = nothing to inject);
+	// hookSeen tracks served sessions. Mirrors the memory slot exactly,
+	// including the rollback-on-empty behavior (a mid-session trust grant
+	// re-arms a later call). Wired in SetupRunner; nil when hooks cannot
+	// fire SessionStart. Guarded by hookMu.
+	hookProvider func(ctx agent.Context) (string, bool)
+	hookSeen     map[string]bool
+	hookMu       sync.Mutex
+
+	// UserPromptSubmit hooks (docs/hooks/spec.md HK-106): promptProvider
+	// renders per-prompt context (""); promptSeen keys on
+	// sessionID:last-user-sequence so every NEW user prompt fires once
+	// while mid-turn model calls (same messages) do not re-fire. Empty
+	// renders roll back like the slots above. Guarded by promptMu.
+	promptProvider func(ctx agent.Context) (string, bool)
+	promptSeen     map[string]bool
+	promptMu       sync.Mutex
 
 	// Token estimates of the rendered project-context block and the git
 	// workspace snapshot that are folded into the system prompt
@@ -131,6 +151,98 @@ func (h *HistoryBuilder) rollbackMemory(sessionID string) {
 	delete(h.memorySeen, sessionID)
 }
 
+// SetSessionStartProvider attaches the SessionStart-hooks block renderer
+// (SetupRunner). Same once-per-session contract as SetMemoryProvider.
+func (h *HistoryBuilder) SetSessionStartProvider(fn func(ctx agent.Context) (string, bool)) {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	h.hookProvider = fn
+	if h.hookSeen == nil {
+		h.hookSeen = make(map[string]bool)
+	}
+}
+
+// SessionStartProvider returns the attached renderer (nil when hooks cannot
+// fire SessionStart).
+func (h *HistoryBuilder) SessionStartProvider() func(ctx agent.Context) (string, bool) {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	return h.hookProvider
+}
+
+// reserveSessionStart atomically claims the session's one-shot hook
+// injection; rollbackSessionStart releases an empty render. Mirrors
+// reserveMemory/rollbackMemory.
+func (h *HistoryBuilder) reserveSessionStart(sessionID string) bool {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	if h.hookProvider == nil || h.hookSeen[sessionID] {
+		return false
+	}
+	h.hookSeen[sessionID] = true
+	return true
+}
+
+func (h *HistoryBuilder) rollbackSessionStart(sessionID string) {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	delete(h.hookSeen, sessionID)
+}
+
+// SetUserPromptProvider attaches the UserPromptSubmit-hooks block renderer
+// (SetupRunner). Same once-per-key contract as the slots above, keyed by
+// promptKey (session + latest user sequence).
+func (h *HistoryBuilder) SetUserPromptProvider(fn func(ctx agent.Context) (string, bool)) {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	h.promptProvider = fn
+	if h.promptSeen == nil {
+		h.promptSeen = make(map[string]bool)
+	}
+}
+
+// UserPromptProvider returns the attached renderer (nil when hooks cannot
+// fire UserPromptSubmit).
+func (h *HistoryBuilder) UserPromptProvider() func(ctx agent.Context) (string, bool) {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	return h.promptProvider
+}
+
+// reserveUserPrompt atomically claims one prompt key; rollbackUserPrompt
+// releases an empty render. Mirrors reserveMemory/rollbackMemory.
+func (h *HistoryBuilder) reserveUserPrompt(key string) bool {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	if h.promptProvider == nil || h.promptSeen[key] {
+		return false
+	}
+	h.promptSeen[key] = true
+	return true
+}
+
+func (h *HistoryBuilder) rollbackUserPrompt(key string) {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	delete(h.promptSeen, key)
+}
+
+// promptKey identifies the latest user prompt for per-prompt hook firing:
+// session id plus the sequence of the last user-role message (0 when the
+// session has no user history yet). A new prompt appends a message, so the
+// key changes exactly when a new prompt lands; mid-turn model calls share
+// the key and do not re-fire.
+func promptKey(session *sesspkg.Session) string {
+	var seq int64
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if session.Messages[i].Role == "user" {
+			seq = session.Messages[i].Sequence
+			break
+		}
+	}
+	return session.ID + ":" + strconv.FormatInt(seq, 10)
+}
+
 // SetLogFunc installs a logger (usually the TUI log pane) for compaction
 // status messages.
 func (h *HistoryBuilder) SetLogFunc(f func(format string, args ...any)) {
@@ -190,9 +302,38 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 			h.rollbackMemory(session.ID)
 		}
 	}
+	// SessionStart hooks: same one-shot reservation, spliced AHEAD of the
+	// memory block (hook context is the freshest per-session signal).
+	var hookContent *genai.Content
+	if h.reserveSessionStart(session.ID) {
+		// Roll back only when nothing ran: a silent-but-executed hook
+		// must not re-fire on the next model call, while an all-skipped
+		// slot (untrusted/disabled) stays armed for later grants.
+		if block, ran := h.hookProvider(ctx); block != "" {
+			hookContent = genai.NewContentFromText("HOOK SESSIONSTART CONTEXT:\n"+block, genai.RoleUser)
+		} else if !ran {
+			h.rollbackSessionStart(session.ID)
+		}
+	}
+	// UserPromptSubmit hooks: per-prompt reservation on the latest user
+	// message, spliced ahead of everything (the turn's freshest signal).
+	var promptContent *genai.Content
+	if pkey := promptKey(session); h.reserveUserPrompt(pkey) {
+		if block, ran := h.promptProvider(ctx); block != "" {
+			promptContent = genai.NewContentFromText("HOOK PROMPT CONTEXT:\n"+block, genai.RoleUser)
+		} else if !ran {
+			h.rollbackUserPrompt(pkey)
+		}
+	}
 	defer func() {
 		if memoryContent != nil {
 			req.Contents = append([]*genai.Content{memoryContent}, req.Contents...)
+		}
+		if hookContent != nil {
+			req.Contents = append([]*genai.Content{hookContent}, req.Contents...)
+		}
+		if promptContent != nil {
+			req.Contents = append([]*genai.Content{promptContent}, req.Contents...)
 		}
 	}()
 

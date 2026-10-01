@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/env"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
@@ -73,6 +74,94 @@ func buildSidekickConfig(cfg *config.Config) *config.Config {
 	}
 	sk.FallbackProviders = nil
 	return &sk
+}
+
+// HooksRunner returns the process-wide hooks runner built by SetupRunner,
+// or nil before setup / when hooks are unwired. Used by surfaces that
+// render hook state outside the agent loop (web hooks API).
+func HooksRunner() *hooks.Runner {
+	if deps == nil {
+		return nil
+	}
+	return deps.HooksRunner
+}
+
+// ReloadUserHooks swaps the process-wide runner's compiled set for cfg's,
+// in place (spec HK-111): web/TUI CRUD calls this after a validated
+// config mutation so the next tool call and prompt honor it with no
+// restart. SIGHUP calls ReloadUserHooksFromDisk for external CLI edits.
+func ReloadUserHooks(cfg hooks.Config) error {
+	if deps == nil || deps.HooksRunner == nil {
+		return fmt.Errorf("hooks: runner not initialized")
+	}
+	return deps.HooksRunner.Reload(cfg)
+}
+
+// ReloadUserHooksFromDisk re-reads the hooks block from the resolved
+// config file and reloads the runner (SIGHUP path for external edits).
+func ReloadUserHooksFromDisk() error {
+	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
+	if err != nil {
+		return fmt.Errorf("hooks: cannot reload config: %v", err)
+	}
+	return ReloadUserHooks(cfg.Hooks)
+}
+
+// hookResultStr reads a string field from a hook block result for audit
+// logging. Block results always carry "hook" and "error" (see
+// hooks.blockResult); anything else yields "" rather than panicking.
+func hookResultStr(result map[string]any, key string) string {
+	if result == nil {
+		return ""
+	}
+	s, _ := result[key].(string)
+	return s
+}
+
+// makeHookBeforeToolCallback adapts a hooks Runner to ADK's
+// BeforeToolCallback: a hook denial becomes the tool result (skipping
+// tool.Run) and is recorded on the audit trail; anything else allows.
+// A disabled runner allows everything. Named (not inline) so wiring tests
+// can drive the exact production path.
+func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
+	return func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+		blocked, result := r.CheckPreToolUse(ctx, t.Name(), args)
+		if blocked {
+			AuditHookBlock(t.Name(), hookResultStr(result, "hook"), hookResultStr(result, "error"), interfaces.SessionIDFromCtx(ctx))
+			return result, nil
+		}
+		return nil, nil
+	}
+}
+
+// hookToolCallbacks adapts a hooks Runner to the ADK tool-callback slices
+// for llmagent.Config. A nil runner yields nil slices (a nil receiver
+// cannot serve calls); a DISABLED runner still gets the pair, which
+// no-ops (allow/nil-out), so enabling hooks or adding the first hook via
+// Reload takes effect without rebuilding the agents (spec HK-110).
+// Shared by SetupRunner's four prebuilt agents and delegate.go's
+// per-delegation sub-agents, which would otherwise bypass the user's
+// PreToolUse gate.
+func hookToolCallbacks(r *hooks.Runner) ([]llmagent.BeforeToolCallback, []llmagent.AfterToolCallback) {
+	if r == nil {
+		return nil, nil
+	}
+	return []llmagent.BeforeToolCallback{makeHookBeforeToolCallback(r)},
+		[]llmagent.AfterToolCallback{makeHookAfterToolCallback(r)}
+}
+
+// AfterToolCallback: collected PostToolUse context overrides the result,
+// otherwise the tool result passes through. Named for the same reason.
+// makeHookAfterToolCallback adapts a hooks Runner to ADK's
+// AfterToolCallback: collected PostToolUse context overrides the result,
+// otherwise the tool result passes through. Named for the same reason.
+func makeHookAfterToolCallback(r *hooks.Runner) llmagent.AfterToolCallback {
+	return func(ctx agent.Context, t tool.Tool, args, result map[string]any, runErr error) (map[string]any, error) {
+		if override := r.CheckPostToolUse(ctx, t.Name(), args, result, runErr); override != nil {
+			return override, nil
+		}
+		return nil, nil
+	}
 }
 
 // askSidekickInput is the argument schema for the ask_sidekick tool.
@@ -2143,6 +2232,27 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Apply the configured thinking level to every agent sharing this model.
 	genCfg := BuildGenerationConfig(cfg.ThinkingLevel)
 
+	// Tool-lifecycle hooks (docs/hooks/spec.md HK-004): one runner built
+	// from cfg.Hooks, adapted to ADK tool callbacks on all four agents so
+	// every tool call (built-in, MCP, git, fileops) passes the user's
+	// PreToolUse/PostToolUse handlers. A group-less or disabled config
+	// yields a no-op runner, so default runs are byte-identical. The
+	// per-tool approval gate still runs underneath when a hook allows.
+	hooksRunner, err := hooks.NewRunner(cfg.Hooks)
+	if err != nil {
+		return nil, fmt.Errorf("hooks: %w", err)
+	}
+	if log != nil {
+		hooksRunner.SetLog(func(msg string) { log(msg) })
+	}
+	// Content-hash trust for the project layer (spec HK-102/HK-103): an
+	// unopenable store trusts nothing, so cloned-repo hooks stay skipped.
+	hooksRunner.SetTrustStore(hooks.OpenDefaultTrustStore())
+	// Publish the runner for the delegate_task path, whose sub-agents are
+	// built per-delegation in delegate.go (long after SetupRunner returns).
+	deps.HooksRunner = hooksRunner
+	hookBeforeTool, hookAfterTool := hookToolCallbacks(hooksRunner)
+
 	// Build toolsets slice for the researcher agent (MCP manager only when present).
 	var researcherToolsets []tool.Toolset
 	if mcpManager != nil {
@@ -2172,7 +2282,11 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 	})
+
+	// Code Inpterpreter agent/ data analyst
 
 	// Code Inpterpreter agent/ data analyst
 	pythonTool, err := createPythonTool(log)
@@ -2249,6 +2363,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 	})
 	if err != nil {
 		return nil, err
@@ -2293,6 +2409,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 	})
 	if err != nil {
 		return nil, err
@@ -2423,6 +2541,12 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		orchestratorTools = append(orchestratorTools, memoryTools...)
 	}
 
+	// SessionStart hooks (docs/hooks/spec.md HK-104): no-op unless the
+	// runner could ever fire (user groups or project layer enabled).
+	wireHookSessionStart(historyBuilder, hooksRunner)
+	// UserPromptSubmit hooks (spec HK-106): same gating, per-prompt.
+	wireHookUserPrompt(historyBuilder, hooksRunner)
+
 	// Orchestrator toolsets: MCP manager plus the web search fallback when
 	// enabled. A nil manager element is omitted (ADK would panic).
 	orchestratorToolsets := make([]tool.Toolset, 0, 2)
@@ -2460,6 +2584,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			ToolResultGuard,
 		},
 		AfterModelCallbacks: makeSidekickWatcher(sk, cfg),
+		BeforeToolCallbacks: hookBeforeTool,
+		AfterToolCallbacks:  hookAfterTool,
 		Tools:               orchestratorTools,
 		Toolsets:            orchestratorToolsets,
 		SubAgents: []agent.Agent{
