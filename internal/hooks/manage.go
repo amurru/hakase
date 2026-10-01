@@ -48,7 +48,7 @@ type userRef struct {
 // the user layer is own-config, so there is no forgery surface.
 func resolveUserHook(c *Config, sel string) (userRef, Handler, error) {
 	if strings.TrimSpace(sel) == "" {
-		return userRef{}, Handler{}, fmt.Errorf("fingerprint prefix must be non-empty")
+		return userRef{}, Handler{}, fmt.Errorf("hook selector must be non-empty (name or fingerprint prefix)")
 	}
 	type cand struct {
 		ref  userRef

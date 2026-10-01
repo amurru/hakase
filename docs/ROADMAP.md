@@ -45,7 +45,9 @@ open issue). Per-item notes live there; ordered by expected value:
 
 1. **Hooks system** — shipped (user-scope `PreToolUse`/`PostToolUse` +
    project-scope `.hakase/hooks.json` with content-hash trust +
-   `SessionStart`). Design: `docs/hooks/`. Trust model is **Codex's
+   `SessionStart`, then `UserPromptSubmit` per-prompt context, per-hook
+   `enabled` with live in-place reload, and full CRUD on CLI / web /
+   TUI). Design: `docs/hooks/`. Trust model is **Codex's
    content-hash**, not Gemini CLI's fingerprint-and-approve (that one is
    known-broken — gemini-cli#27900).
 2. **Hybrid retrieval for knowledge** — optional embeddings fused with BM25

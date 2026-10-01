@@ -14,8 +14,8 @@
 //	hakase hooks add <Event> [--matcher R] [--name N] [--timeout S]
 //	                 [--on-failure allow|block] -- <command...>
 //	                                      - add a user hook (takes effect via SIGHUP/restart)
-//	hakase hooks rm <prefix>              - remove a user hook by fingerprint prefix
-//	hakase hooks enable|disable <prefix>  - flip one user hook (never affects trust)
+//	hakase hooks rm <name|prefix>          - remove a user hook
+//	hakase hooks enable|disable <name|prefix> - flip one user hook (never affects trust)
 //	hakase hooks on|off                   - master hooks.enabled switch
 package cli
 
@@ -74,8 +74,8 @@ func hooksUsage() {
 	fmt.Fprintln(os.Stderr, "  untrust <prefix>                revoke trust for a fingerprint prefix")
 	fmt.Fprintln(os.Stderr, "  test <name|prefix>              dry-run one handler with a sample payload")
 	fmt.Fprintln(os.Stderr, "  add <Event> [flags] -- <cmd..>  add a user hook (--matcher/--name/--timeout/--on-failure)")
-	fmt.Fprintln(os.Stderr, "  rm <prefix>                     remove a user hook by fingerprint prefix")
-	fmt.Fprintln(os.Stderr, "  enable|disable <prefix>         flip one user hook (never affects trust)")
+	fmt.Fprintln(os.Stderr, "  rm <name|prefix>                 remove a user hook")
+	fmt.Fprintln(os.Stderr, "  enable|disable <name|prefix>     flip one user hook (never affects trust)")
 	fmt.Fprintln(os.Stderr, "  on|off                          master hooks.enabled switch")
 	fmt.Fprintln(os.Stderr, "  test <name|prefix>              dry-run one handler with a sample payload")
 }
@@ -568,7 +568,7 @@ func runHooksAdd(args []string) int {
 // runHooksRemove implements `hooks rm <prefix>`.
 func runHooksRemove(args []string) int {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "hakase: usage: hooks rm <fingerprint-prefix>")
+		fmt.Fprintln(os.Stderr, "hakase: usage: hooks rm <name|fingerprint-prefix>")
 		return 2
 	}
 	return mutateUserHooks(func(c *hooks.Config) error {
@@ -584,7 +584,7 @@ func runHooksRemove(args []string) int {
 // runHooksSetEnabled implements `hooks enable|disable <prefix>`.
 func runHooksSetEnabled(sub string, args []string) int {
 	if len(args) != 1 {
-		fmt.Fprintf(os.Stderr, "hakase: usage: hooks %s <fingerprint-prefix>\n", sub)
+		fmt.Fprintf(os.Stderr, "hakase: usage: hooks %s <name|fingerprint-prefix>\n", sub)
 		return 2
 	}
 	return mutateUserHooks(func(c *hooks.Config) error {

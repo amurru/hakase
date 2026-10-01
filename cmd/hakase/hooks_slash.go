@@ -115,7 +115,7 @@ func hooksListCmd(log func(string)) tea.Cmd {
 	return nil
 }
 
-// hooksTUIReport renders the read-only hooks browser: user layer plus the
+// hooksTUIReport renders the hooks list view: user layer plus the
 // project layer for root. Pure (no AppModel) so cmd tests can drive it.
 func hooksTUIReport(configPath, root string) ([]string, error) {
 	cfg, err := config.LoadConfig(configPath)
@@ -323,7 +323,7 @@ func mutateAndReload(log func(string), cfgPath string, mutate func(*hooks.Config
 
 func hooksSetEnabledCmd(log func(string), enable bool, args []string) tea.Cmd {
 	if len(args) != 1 {
-		log("usage: /hooks enable|disable <fingerprint-prefix>")
+		log("usage: /hooks enable|disable <name|fingerprint-prefix>")
 		return nil
 	}
 	st, err := loadTUIHooks()
@@ -357,12 +357,12 @@ func hooksRemoveCmd(log func(string), args []string) tea.Cmd {
 		} else if prefix == "" {
 			prefix = a
 		} else {
-			log("usage: /hooks rm <fingerprint-prefix> [--yes]")
+			log("usage: /hooks rm <name|fingerprint-prefix> [--yes]")
 			return nil
 		}
 	}
 	if prefix == "" {
-		log("usage: /hooks rm <fingerprint-prefix> [--yes]")
+		log("usage: /hooks rm <name|fingerprint-prefix> [--yes]")
 		return nil
 	}
 	st, err := loadTUIHooks()

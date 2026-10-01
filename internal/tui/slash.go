@@ -94,7 +94,7 @@ var builtinCommands = []SlashCommand{
 	{
 		Name:        "hooks",
 		Description: "Manage tool-lifecycle hooks: list, trust, enable/disable, add/update/remove (`/hooks help` for subcommands)",
-		Usage:       "/hooks",
+		Usage:       "/hooks [list|trust|enable|disable|add|update|rm|on|off|test]",
 		Run: func(m *AppModel, args string) tea.Cmd {
 			if RunHooksCommand == nil {
 				m.AppendLog("hooks browser is wired by the main binary; not available in this context")
