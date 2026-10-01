@@ -180,7 +180,10 @@ Spec: Phase-4 section in [spec.md](spec.md) (HK-109..HK-112).
       the CLI review/confirm; in-process reload. Spec: HK-112.
 - [x] **T7.7 [DOCS]** `usage.md` management section, spec/tasks boxes,
       `config.json.example` enabled-flag sample.
-- [ ] **T7.8 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
+- [x] **T7.8 [QA]** Full suite green: `gofmt -l`, `go vet ./...`,
       `go test ./...`, `-race` on hooks/agent/context, windows
-      cross-compile, `pnpm test` + `pnpm build`, e2e CRUD cycle
-      (add → fires → disable → skipped → SIGHUP reload).
+      cross-compile, `pnpm test` (115/115) + `pnpm build`, e2e CRUD
+      cycle via real binary (add → `test` BLOCK → disable by name →
+      `[disabled]` in list → rm → empty). Unified name+prefix
+      resolution (e2e caught CRUD rejecting names while `test`
+      accepted them).
