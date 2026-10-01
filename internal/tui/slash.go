@@ -93,7 +93,7 @@ var builtinCommands = []SlashCommand{
 	},
 	{
 		Name:        "hooks",
-		Description: "List user and project tool-lifecycle hooks with trust status (trust changes via `hakase hooks trust`)",
+		Description: "Manage tool-lifecycle hooks: list, trust, enable/disable, add/update/remove (`/hooks help` for subcommands)",
 		Usage:       "/hooks",
 		Run: func(m *AppModel, args string) tea.Cmd {
 			if RunHooksCommand == nil {
