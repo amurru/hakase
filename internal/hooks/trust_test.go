@@ -3,6 +3,7 @@ package hooks
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,12 @@ func TestTrustReloadsExternalWrites(t *testing.T) {
 }
 
 func TestTrustFilePerms0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows ACLs have no Unix mode bits (Go reports 0666/0444);
+		// the 0600 intent is covered by the sensitiveFilePaths deny
+		// list instead. Nothing to assert here.
+		t.Skip("unix permission bits do not exist on windows")
+	}
 	path := filepath.Join(t.TempDir(), "hooks-trust.json")
 	s := OpenTrustStore(path)
 	if err := s.Trust(TrustEntry{Fingerprint: "sha256:perm"}); err != nil {

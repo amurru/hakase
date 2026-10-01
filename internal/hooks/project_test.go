@@ -125,3 +125,24 @@ func TestProjectHooksPath(t *testing.T) {
 		t.Errorf("path = %q", got)
 	}
 }
+
+// TestLoadProjectFileAliasedRoot pins the escape-guard fix: when the root
+// itself arrives through an alias (symlinked dir, Windows 8.3 short name),
+// a hooks file inside it must still load. Comparing a resolved file
+// against an unresolved root false-positived on Windows CI (RUNNER~1 vs
+// runneradmin) and broke every project-layer test there.
+func TestLoadProjectFileAliasedRoot(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, `{"PreToolUse":[{"hooks":[{"command":["/bin/true"]}]}]}`)
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	f, err := LoadProjectFile(alias)
+	if err != nil {
+		t.Fatalf("aliased root must load: %v", err)
+	}
+	if f == nil || len(f.PreToolUse) != 1 {
+		t.Fatalf("file = %+v, want 1 pre group", f)
+	}
+}

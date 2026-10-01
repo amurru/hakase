@@ -129,11 +129,18 @@ func LoadProjectFile(root string) (*ProjectFile, error) {
 	// under the project root. A repo that symlinks .hakase/hooks.json at
 	// /tmp/evil does not get its hooks loaded (CVE-2026-40068 class:
 	// trust-relevant paths must not be attacker-redirectable).
+	// Both sides resolve first: temp dirs routinely carry aliases
+	// (Windows 8.3 short names, symlinked /tmp on macOS), and comparing
+	// a resolved file against an unresolved root false-positives.
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project hooks %s: %v", path, err)
 	}
-	if rel, err := filepath.Rel(root, resolved); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	resolvedRoot := root
+	if rr, err := filepath.EvalSymlinks(root); err == nil {
+		resolvedRoot = rr
+	}
+	if rel, err := filepath.Rel(resolvedRoot, resolved); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("project hooks %s escapes the project root (resolves to %s)", path, resolved)
 	}
 	var f ProjectFile
