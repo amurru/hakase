@@ -126,8 +126,38 @@ disable your hooks or the trust gate. The agent itself cannot write
 hook files (sandbox write-deny), so sandboxed code cannot buy
 persistence by editing them.
 
-Review in the UI instead: `/hooks` in the TUI (read-only browser) or
-the Hooks settings page in the web UI (list, trust, revoke).
+## Managing your own hooks
+
+User-layer hooks support full CRUD on all three surfaces — CLI, web
+Hooks page, and TUI `/hooks` — and edits apply **live, no restart**:
+the runner recompiles in place (trust store, log, and SessionStart
+once-keys persist; a bad edit fails loudly with the old set intact).
+
+```sh
+hakase hooks add PreToolUse --matcher '^system_exec$' --name no-rm-rf -- /home/you/.hakase/hooks/no-rm-rf.sh
+hakase hooks enable|disable <prefix>  # flip one hook; never affects trust
+hakase hooks rm <prefix>              # remove one hook
+hakase hooks on|off                   # master hooks.enabled switch
+```
+
+Per-hook `"enabled": false` skips the handler on every event without
+executing it; the hook still lists (as `[disabled]`) and still dry-runs.
+Toggling never changes the content fingerprint, so enable/disable can
+neither lapse nor smuggle past trust. Management targets the user layer
+only — project hooks stay trust-managed (list/trust/untrust), since
+editing a repo-owned file from the UI would dirty your checkout.
+
+```sh
+/hooks trust <prefix> --yes      # TUI: review first, --yes to record
+/hooks add PreToolUse --name n -- /bin/true
+/hooks update <prefix> --disable --timeout 10
+/hooks test <name|prefix>        # TUI dry-run, same verdict printer
+```
+
+External `hakase hooks ...` edits (a separate process) reach a running
+server via SIGHUP (`pkill -HUP hakase`, re-reads from disk); in-process
+web/TUI edits reload directly. Trust grants need neither — the store is
+mtime-cached and lands on the next tool call either way.
 
 ## Example scripts
 

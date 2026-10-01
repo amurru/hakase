@@ -40,38 +40,51 @@ type userRef struct {
 	hi    int
 }
 
-// resolveUserHook finds the single user-layer handler whose fingerprint
-// starts with prefix. Zero matches or ambiguous prefixes are errors that
-// name the fix (same all-or-nothing discipline as the trust API: never
-// guess which hook the operator meant).
-func resolveUserHook(c *Config, prefix string) (userRef, Handler, error) {
-	if strings.TrimSpace(prefix) == "" {
+// resolveUserHook finds the single user-layer handler for sel, using the
+// shared MatchSelector discipline (exact name, then substring, then
+// fingerprint prefix) over user-layer snapshots. Zero matches or
+// ambiguous selectors are errors that name the fix: never guess which
+// hook the operator meant. Names are safe to match here (unlike trust):
+// the user layer is own-config, so there is no forgery surface.
+func resolveUserHook(c *Config, sel string) (userRef, Handler, error) {
+	if strings.TrimSpace(sel) == "" {
 		return userRef{}, Handler{}, fmt.Errorf("fingerprint prefix must be non-empty")
 	}
-	var matches []userRef
-	var first Handler
+	type cand struct {
+		ref  userRef
+		snap Snapshot
+	}
+	var cands []cand
 	for _, event := range userEvents {
 		groups, _ := groupsOf(c, event)
 		for gi := range *groups {
 			for hi := range (*groups)[gi].Hooks {
 				h := (*groups)[gi].Hooks[hi]
-				if strings.HasPrefix(h.Fingerprint(), prefix) {
-					matches = append(matches, userRef{event: event, gi: gi, hi: hi})
-					if len(matches) == 1 {
-						first = h
-					}
-				}
+				cands = append(cands, cand{
+					ref:  userRef{event: event, gi: gi, hi: hi},
+					snap: Snapshot{Event: event, Name: h.Name, Fingerprint: h.Fingerprint()},
+				})
 			}
 		}
 	}
-	switch len(matches) {
-	case 0:
-		return userRef{}, Handler{}, fmt.Errorf("no user hook matches %q", prefix)
-	case 1:
-		return matches[0], first, nil
-	default:
-		return userRef{}, Handler{}, fmt.Errorf("%q is ambiguous (%d matches); use a longer prefix", prefix, len(matches))
+	snaps := make([]Snapshot, len(cands))
+	for i, cd := range cands {
+		snaps[i] = cd.snap
 	}
+	matched := MatchSelector(snaps, sel)
+	if len(matched) == 0 {
+		return userRef{}, Handler{}, fmt.Errorf("no user hook matches %q", sel)
+	}
+	if len(matched) > 1 {
+		return userRef{}, Handler{}, fmt.Errorf("%q is ambiguous (%d matches); use a longer prefix", sel, len(matched))
+	}
+	for _, cd := range cands {
+		if cd.snap.Fingerprint == matched[0].Fingerprint {
+			groups, _ := groupsOf(c, cd.ref.event)
+			return cd.ref, (*groups)[cd.ref.gi].Hooks[cd.ref.hi], nil
+		}
+	}
+	return userRef{}, Handler{}, fmt.Errorf("no user hook matches %q", sel)
 }
 
 // AddUserHook appends h to event's groups (new group when no trailing

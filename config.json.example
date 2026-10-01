@@ -191,7 +191,8 @@
             "type": "command",
             "command": ["/home/you/.hakase/hooks/no-rm-rf.sh"],
             "timeout": 30,
-            "on_failure": "allow"
+            "on_failure": "allow",
+            "enabled": true
           }
         ]
       }

@@ -128,3 +128,27 @@ func TestMasterEnabled(t *testing.T) {
 		t.Error("master on must enable")
 	}
 }
+
+func TestResolveByName(t *testing.T) {
+	var c Config
+	if err := AddUserHook(&c, EventPreToolUse, "", Handler{Name: "my-guard", Command: []string{"/bin/true"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddUserHook(&c, EventPreToolUse, "", Handler{Name: "other", Command: []string{"/bin/false"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Exact name resolves (same discipline as `hooks test`).
+	ref, h, err := resolveUserHook(&c, "my-guard")
+	if err != nil || h.Name != "my-guard" || ref.event != EventPreToolUse {
+		t.Errorf("name resolve = %+v %+v, %v", ref, h, err)
+	}
+	// Substring shared by both names is ambiguous.
+	if _, _, err := resolveUserHook(&c, "r"); err == nil {
+		t.Error("shared substring must be ambiguous")
+	}
+	// Fingerprint prefix still resolves.
+	fp := c.PreToolUse[0].Hooks[0].Fingerprint()
+	if _, h, err := resolveUserHook(&c, fp[:16]); err != nil || h.Name != "my-guard" {
+		t.Errorf("prefix resolve = %+v, %v", h, err)
+	}
+}
