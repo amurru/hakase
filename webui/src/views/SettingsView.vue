@@ -1133,6 +1133,7 @@ onMounted(loadConfig)
                   <Label for="media_audio_provider">Audio provider</Label>
                   <select id="media_audio_provider" v-model="form.media_audio_provider" :disabled="!writable" class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="off">off</option>
+                    <option value="piper">piper (local TTS)</option>
                   </select>
                 </div>
               </div>

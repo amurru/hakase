@@ -26,8 +26,8 @@ func TestMediaConfigDefaults(t *testing.T) {
 	if cfg.AudioProvider != "off" {
 		t.Errorf("AudioProvider default = %q, want off", cfg.AudioProvider)
 	}
-	if len(cfg.Order) != 3 || cfg.Order[0] != "openai" {
-		t.Errorf("Order default = %v, want [openai fal pil]", cfg.Order)
+	if len(cfg.Order) != 4 || cfg.Order[0] != "openai" || cfg.Order[3] != "piper" {
+		t.Errorf("Order default = %v, want [openai fal pil piper]", cfg.Order)
 	}
 	if cfg.OutputDir != "outputs/media" {
 		t.Errorf("OutputDir = %q, want outputs/media", cfg.OutputDir)
@@ -85,6 +85,10 @@ func TestMediaConfigValidate(t *testing.T) {
 	cfg.AudioProvider = "elevenlabs"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("elevenlabs audio should be valid: %v", err)
+	}
+	cfg.AudioProvider = "piper"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("piper audio should be valid: %v", err)
 	}
 	cfg.AudioProvider = "off"
 	cfg.MaxConcurrent = -1

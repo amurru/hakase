@@ -92,6 +92,30 @@ Legend: `[BE]` Go backend, `[FE]` frontend, `[QA]` test/docs. Status: TODO unles
 
 ---
 
+## Phase 5 - Piper TTS audio provider (MG-012, closes the audio track)
+
+- [x] **T5.1 [BE]** `internal/media/piper.go`: `piperProvider`
+      (`Capabilities{Audio:true}`), `GenerateAudio` via
+      `speech.PiperTTS` (Allocate `.ogg`, voice-label model,
+      `audio/ogg`, `<audio controls>` markdown). `AudioRequest`
+      4000-char cap. Registry `"piper"` factory + `SetTTSConfig`,
+      `isHealthy` static voice check, default order gains piper,
+      audio-auto error names piper. Config accepts `piper`
+      (default stays `off`). `setupMedia` passes
+      `cfg.TextToSpeech`. Spec: MG-012.
+- [x] **T5.2 [BE]** `generate_audio` real implementation (config
+      preference like video, 120s timeout, semaphore, manifest,
+      verbatim `off` message preserved). Spec: MG-012.
+- [x] **T5.3 [QA]** provider/tool/config/registry tests (unhealthy
+      paths verbatim, Availability error without binary, no piper in
+      CI). Manual sign-off with piper binary + voice: 10KB `.ogg`
+      via `Resolve("audio")` → `GenerateAudio` → store (+ model
+      label, `<audio controls>` markdown). Spec: MG-012.
+- [x] **T5.4 [DOCS]** CHANGELOG, roadmap Tier-2 item 5, fixtures
+      table row for `generate_audio` piper path. Spec: MG-012.
+- [x] **T5.5 [QA]** Full suite green (`gofmt`, `vet`,
+      `go test ./...`, `pnpm test` 115/115 + `pnpm build`).
+
 ## Phase 4 - Hardening (MG-011)
 
 - [ ] **T4.1 [QA]** Complete `docs/media-generation/fixtures.md`: mock payloads for all providers plus live captures, **in this order**:

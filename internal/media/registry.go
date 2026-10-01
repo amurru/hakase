@@ -13,9 +13,14 @@ import (
 // generate_video tool layer.
 const videoNoProviderMsg = "video generation requires a provider: configure an OpenAI-compatible router with video support (media.openai_video_key / openai_video_base_url, e.g. OpenRouter), or set fal_key (HAKASE_FAL_KEY) with media.video_provider fal"
 
+// audioOffMsg is the verbatim actionable error when audio generation is
+// switched off. Shared by the registry-adjacent tool layer.
+const audioOffMsg = "audio generation is off: set media.audio_provider to piper with a text_to_speech default voice"
+
 // Registry resolves providers by name or auto order, with semaphore concurrency control.
 type Registry struct {
 	cfg       config.MediaConfig
+	tts       config.TTSConfig
 	log       LogFunc
 	store     *Store
 	providers map[string]Provider
@@ -82,10 +87,40 @@ func NewRegistry(cfg config.MediaConfig, log LogFunc, store *Store) (*Registry, 
 			r.sem["pil"] = make(chan struct{}, max)
 		}
 	}
+	// Piper TTS is (re)built by SetTTSConfig, which carries the voices and
+	// binary paths from top-level text_to_speech (outside MediaConfig).
+	// A zero TTS config still registers the provider: resolution health
+	// gates on the default voice, and synthesis fails actionably.
+	r.setPiperProvider(log, store)
 	return r, nil
 }
 
-// Get returns a provider by explicit name.
+// SetTTSConfig supplies the top-level text_to_speech config and (re)builds
+// the piper provider entry against it. Called by setupMedia after
+// NewRegistry; tests call it directly to simulate configured voices.
+func (r *Registry) SetTTSConfig(tts config.TTSConfig) {
+	r.tts = tts
+	r.setPiperProvider(r.log, r.store)
+}
+
+func (r *Registry) setPiperProvider(log LogFunc, store *Store) {
+	p, err := newPiperProvider(r.cfg, r.tts, log, store)
+	if err != nil {
+		if log != nil {
+			log(fmt.Sprintf("WARN [media] provider piper init failed: %v", err))
+		}
+		return
+	}
+	r.providers["piper"] = p
+	max := r.cfg.MaxConcurrent
+	if max == 0 {
+		max = 2
+	}
+	if max < 1 {
+		max = 1
+	}
+	r.sem["piper"] = make(chan struct{}, max)
+}
 func (r *Registry) Get(name string) (Provider, bool) {
 	p, ok := r.providers[name]
 	return p, ok
@@ -107,7 +142,7 @@ func (r *Registry) ResolveForProvider(kind string, providerHint string) (Provide
 		if !supportsKind(p.Capabilities(), kind) {
 			return nil, fmt.Errorf("provider %q does not support %s", providerHint, kind)
 		}
-		if !isHealthy(p.Name(), kind, r.cfg) {
+		if !r.isHealthy(p.Name(), kind) {
 			return nil, fmt.Errorf("provider %q is not configured (missing key)", providerHint)
 		}
 		return p, nil
@@ -121,7 +156,7 @@ func (r *Registry) ResolveForProvider(kind string, providerHint string) (Provide
 		if !supportsKind(p.Capabilities(), kind) {
 			continue
 		}
-		if !isHealthy(p.Name(), kind, r.cfg) {
+		if !r.isHealthy(p.Name(), kind) {
 			continue
 		}
 		return p, nil
@@ -131,8 +166,7 @@ func (r *Registry) ResolveForProvider(kind string, providerHint string) (Provide
 		return nil, errors.New(videoNoProviderMsg)
 	}
 	if kind == "audio" {
-		// Distinguish off vs unconfigured? Spec says audio_provider off -> stub message handled in tools.go
-		return nil, fmt.Errorf("audio generation is not wired in this build: openai TTS is planned for v2")
+		return nil, fmt.Errorf("no audio provider configured: set media.audio_provider to piper with a text_to_speech default voice (local Piper TTS)")
 	}
 	// For image, pil guarantee should have prevented this.
 	if kind == "image" {
@@ -161,7 +195,8 @@ func supportsKind(c Capabilities, kind string) bool {
 // requested kind. Health is per kind: a video-only OpenAI credential (e.g.
 // only openai_video_key set) must make the provider resolvable for video even
 // though it cannot serve images.
-func isHealthy(name, kind string, cfg config.MediaConfig) bool {
+func (r *Registry) isHealthy(name, kind string) bool {
+	cfg := r.cfg
 	switch name {
 	case "pil":
 		return true
@@ -176,6 +211,11 @@ func isHealthy(name, kind string, cfg config.MediaConfig) bool {
 		}
 	case "fal":
 		return cfg.FalKey != ""
+	case "piper":
+		// Static only (no shell-outs at resolve time): a configured
+		// default voice means synthesis is plausibly available; a
+		// missing binary or voice file fails actionably at Generate.
+		return r.tts.Voices["default"] != ""
 	default:
 		return false
 	}

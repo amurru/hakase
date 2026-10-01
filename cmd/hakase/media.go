@@ -28,6 +28,8 @@ func setupMedia(cfg *config.Config, deps *agent.Deps, logFn interfaces.LogFunc) 
 		reg = nil
 		util.DebugEvent("media_disabled", "error", err.Error())
 		logFn(fmt.Sprintf("WARN [media] disabled: %v", err))
+	} else {
+		reg.SetTTSConfig(cfg.TextToSpeech)
 	}
 	deps.CreateMediaToolsFn = func(l interfaces.LogFunc) ([]tool.Tool, error) {
 		return media.CreateMediaTools(reg, media.LogFunc(l))

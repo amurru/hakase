@@ -359,3 +359,60 @@ Design notes for the future implementer:
 - [x] Guardrails are specific (CSP untouched by design, sandbox paths named, redact rules named, env-var convention named).
 - [x] Sequence respects dependencies.
 - [x] An engineer unfamiliar with the project could execute any spec standalone (see tasks.md sizing).
+
+## Phase 5 — Piper TTS audio provider (MG-012, closes the audio track)
+
+Tier-2 item 5 remainder: Piper TTS ships via the Telegram bridge but
+`generate_audio` is a stub and Piper is not routed through the media
+registry. This phase wires the existing `speech.PiperTTS` in as a
+first-class audio provider — no new synthesis code, no new deps.
+
+### Spec MG-012: piper audio provider + `generate_audio`
+
+- `internal/media/piper.go`: `piperProvider` implements `Provider`
+  (`Name()=="piper"`, `Capabilities{Audio:true}`, image/video return
+  "does not support" like the other single-kind providers).
+  `GenerateAudio` validates the request, builds `speech.PiperTTS` from
+  the registry's TTS config, synthesizes (OGG/Opus bytes), and stores
+  via `Allocate(".ogg")` + `Write`. Result: `Provider:"piper"`,
+  `Model:` the voice label used (onnx basename), `MimeType:
+  "audio/ogg"`, `Markdown:` `<audio controls src="...">` (same
+  renderer convention as video's `<video controls>`).
+- `voice` maps to Piper's lang/voice selector (per-language voice,
+  script detection, default fallback — `voiceFor` semantics); empty
+  means default voice. Text limits mirror the tool input (required,
+  1–4000 chars via `AudioRequest.Validate` extension: cap length at
+  4000 like the prompt rule).
+- Registry: `"piper"` factory + `SetTTSConfig` (piper needs voices and
+  binary paths that live in top-level `text_to_speech`, outside
+  `MediaConfig`; `setupMedia` passes `cfg.TextToSpeech`). `isHealthy`
+  for piper+audio is static (default voice configured) — binary
+  presence stays a runtime `Availability()` error so resolve never
+  shells out. Default `Order` gains `"piper"` (filtered by kind
+  everywhere else). The audio-auto no-provider error names piper and
+  the `audio_provider` switch.
+- Config: `AudioProvider` accepts `"piper"` (`"openai"`/`"elevenlabs"`
+  stay accepted-but-unwired forward-compat). Default stays `"off"`.
+- Tool: `generate_audio` resolves via `ResolveForProvider("audio",
+  hint)` with the same config-preference pattern as video
+  (`audio_provider` wins over auto; explicit `"off"` keeps the verbatim
+  off message), 120s default timeout (per-kind like image), semaphore,
+  manifest entry (`generate_audio`, prompt=text), full result mapping.
+- Web `/api/media/status` needs no change (generic resolve already
+  covers audio); `resolved_audio` reports `piper` when healthy.
+- Tests: factory registration + capabilities, unhealthy resolve paths
+  (off/unconfigured verbatim strings), `GenerateAudio` without
+  binary/voice returns the actionable `Availability` error (no piper
+  binary in CI — success path covered by manual sign-off below),
+  config validation accepts `piper`, tool-level off message verbatim.
+- Manual sign-off (piper binary + voice required): `generate_audio`
+  with `audio_provider: piper` produces a playable `.ogg` in the
+  store + manifest line; Telegram voice replies unchanged
+  (regression: existing speech tests + one manual voice note).
+
+## Phase-5 definition of done
+
+- [ ] `audio_provider: piper` + configured default voice resolves and
+      synthesizes end-to-end (manual sign-off above).
+- [ ] `off`/unconfigured paths keep their verbatim actionable errors.
+- [ ] Full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).

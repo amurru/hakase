@@ -56,9 +56,10 @@ open issue). Per-item notes live there; ordered by expected value:
    `PushHandler` seams exist; Telegram proves the flow.
 4. **Durable human-in-the-loop resume** — move off the classic `Runner` onto
    the ADK graph workflow engine (interrupt/resume across restarts).
-5. **Audio generation** — partially addressed: Piper TTS ships via the
-   Telegram bridge; `generate_audio` is still a stub and Piper is not routed
-   through the media registry. Worth splitting if picked up.
+5. **Audio generation** — shipped: Piper TTS is routed through the
+   media registry as the `piper` audio provider, and `generate_audio`
+   synthesizes end-to-end (`audio_provider: piper` + `text_to_speech`
+   default voice). Design: `docs/media-generation/spec.md` MG-012.
 
 - `docs/git-tools/tasks.md` T7.x remainder: `git_remote` management,
   `git_rebase`/`git_merge`, `git_commit --amend`/signing.

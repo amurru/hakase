@@ -165,6 +165,7 @@ Record per capture: request body sent, response body (redacted/truncated), resul
 | `generate_video` no provider | verbatim requires-provider error | TODO |
 | `generate_video` with fal | `.mp4` + `<video controls>` | TODO |
 | `generate_audio` off / wired-later | verbatim stub messages | TODO |
+| `generate_audio` piper, local voices | 10KB `.ogg` + `<audio controls>`, manifest line | 2026-10-02 |
 | `GET /api/media/status` no auth | 401 | TODO |
 | `GET /api/media/status` auth | resolved fields, zero raw keys | TODO |
 | Traversal attempt on Store | rejected | TODO |

@@ -158,7 +158,7 @@
     "image_provider": "auto",
     "video_provider": "auto",
     "audio_provider": "off",
-    "order": ["openai", "fal", "pil"],
+    "order": ["openai", "fal", "pil", "piper"],
     "max_concurrent": 4,
     "timeout_seconds": 120,
     "output_dir": "outputs/media",
