@@ -11,6 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"amurru/hakase/internal/util"
 )
 
 // userEvents is the fixed resolution order for prefix matching.
@@ -78,8 +81,14 @@ func resolveUserHook(c *Config, sel string) (userRef, Handler, error) {
 	if len(matched) > 1 {
 		return userRef{}, Handler{}, fmt.Errorf("%q is ambiguous (%d matches); use a longer prefix", sel, len(matched))
 	}
+	// Reverse lookup keys on the full triple, not the fingerprint alone:
+	// two handlers can share argv+script (same fingerprint) across events
+	// or names, and the first-fingerprint-wins mapping would operate on
+	// the wrong hook. A triple collision means fully identical handlers,
+	// which MatchSelector already reports as ambiguous above.
+	want := matched[0]
 	for _, cd := range cands {
-		if cd.snap.Fingerprint == matched[0].Fingerprint {
+		if cd.snap.Event == want.Event && cd.snap.Name == want.Name && cd.snap.Fingerprint == want.Fingerprint {
 			groups, _ := groupsOf(c, cd.ref.event)
 			return cd.ref, (*groups)[cd.ref.gi].Hooks[cd.ref.hi], nil
 		}
@@ -252,17 +261,63 @@ func WriteUserHooks(configPath string, mutate func(*Config) error) (Config, erro
 		return Config{}, fmt.Errorf("cannot encode config: %v", err)
 	}
 	final = append(final, '\n')
-	if dir := filepath.Dir(configPath); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return Config{}, err
+	return block, writeFileLocked(configPath, final)
+}
+
+// userHooksMu serializes in-process WriteUserHooks callers (two web
+// requests, TUI + web); the adjacent .lock flock serializes against
+// external `hakase hooks ...` processes. Same discipline as the trust
+// store.
+var userHooksMu sync.Mutex
+
+// writeFileLocked atomically replaces configPath via a unique temp file
+// under an exclusive flock. The temp file inherits the existing file's
+// mode (config.json holds API keys and tokens — a fixed 0644 would flip
+// a 0600 file world-readable); missing files default to 0600.
+func writeFileLocked(configPath string, data []byte) error {
+	userHooksMu.Lock()
+	defer userHooksMu.Unlock()
+	dir := filepath.Dir(configPath)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
 		}
 	}
-	tmp := configPath + ".tmp"
-	if err := os.WriteFile(tmp, final, 0o644); err != nil {
-		return Config{}, err
+	lock, err := os.OpenFile(configPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("lock config: %v", err)
 	}
-	if err := os.Rename(tmp, configPath); err != nil {
-		return Config{}, err
+	if err := util.FlockExclusive(lock); err != nil {
+		_ = lock.Close()
+		return fmt.Errorf("lock config: %v", err)
 	}
-	return block, nil
+	defer func() {
+		_ = util.FlockUnlock(lock)
+		_ = lock.Close()
+	}()
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(configPath); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("write config: %v", err)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Chmod(mode)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write config: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write config: %v", err)
+	}
+	_ = os.Chmod(tmpName, mode)
+	if err := os.Rename(tmpName, configPath); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write config: %v", err)
+	}
+	return nil
 }

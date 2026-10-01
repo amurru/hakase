@@ -146,3 +146,50 @@ func TestLoadProjectFileAliasedRoot(t *testing.T) {
 		t.Fatalf("file = %+v, want 1 pre group", f)
 	}
 }
+
+// TestInterpreterFormScriptCovered pins the trust property: a hook that
+// runs a script through an interpreter (["/bin/sh", "guard.sh"]) must
+// change fingerprint when the SCRIPT body changes, even though argv[0]
+// and the argv strings do not.
+func TestInterpreterFormScriptCovered(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "guard.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Command: []string{"/bin/sh", script}}
+	before := h.Fingerprint()
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if after := h.Fingerprint(); after == before {
+		t.Error("rewriting the interpreter-form script body must change the fingerprint")
+	}
+}
+
+// TestBareCommandsStayOnPath pins the PATH behavior: bare argv[0] names
+// must NOT be joined onto the project root (that manufactures a
+// non-existent path and the hook fails open instead of running), while
+// relative path-like elements still anchor at the root.
+func TestBareCommandsStayOnPath(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, `{"PreToolUse":[{"hooks":[
+		{"name":"bare","command":["python3","hook.py"]},
+		{"name":"pathed","command":["scripts/guard.sh"]}
+	]}]}`)
+	f, err := LoadProjectFile(root)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := f.PreToolUse[0].Hooks[0].Command[0]; got != "python3" {
+		t.Errorf("bare command = %q, want PATH lookup untouched", got)
+	}
+	// hook.py has no separator and names no file under root: untouched.
+	if got := f.PreToolUse[0].Hooks[0].Command[1]; got != "hook.py" {
+		t.Errorf("bare argv element = %q, want untouched", got)
+	}
+	want := filepath.Join(root, "scripts", "guard.sh")
+	if got := f.PreToolUse[0].Hooks[1].Command[0]; got != want {
+		t.Errorf("pathed command = %q, want %q", got, want)
+	}
+}

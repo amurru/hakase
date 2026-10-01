@@ -14,7 +14,7 @@ func TestSessionStartHookInjectsOncePerSession(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_hook_1", "one")
 	b.SetMemoryProvider(func(ctx agent.Context) string { return "AUTO MEMORY BLOCK" })
-	b.SetSessionStartProvider(func(ctx agent.Context) string { return "HOOK CTX" })
+	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) { return "HOOK CTX", true })
 
 	texts := runMemoryCallback(t, b, "task_hook_1")
 	if len(texts) == 0 || !strings.HasPrefix(texts[0], "HOOK SESSIONSTART CONTEXT:") {
@@ -34,10 +34,12 @@ func TestSessionStartHookEmptyRollsBack(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_hook_late", "late")
 	block := ""
-	b.SetSessionStartProvider(func(ctx agent.Context) string {
+	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
 		called := block
 		block = "HOOK CTX"
-		return called
+		// Empty first render reports nothing-ran so the slot rolls back
+		// and stays eligible (e.g. mid-session trust grant).
+		return called, called != ""
 	})
 
 	for _, txt := range runMemoryCallback(t, b, "task_hook_late") {
@@ -66,9 +68,9 @@ func TestUserPromptFiresPerPromptNotPerCall(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	sess := newMemorySession(t, svc, "task_prompt_1", "one")
 	calls := 0
-	b.SetUserPromptProvider(func(ctx agent.Context) string {
+	b.SetUserPromptProvider(func(ctx agent.Context) (string, bool) {
 		calls++
-		return "PROMPT CTX"
+		return "PROMPT CTX", true
 	})
 
 	texts := runMemoryCallback(t, b, "task_prompt_1")
@@ -107,5 +109,24 @@ func TestUserPromptNilProviderNoop(t *testing.T) {
 		if strings.Contains(txt, "HOOK PROMPT") {
 			t.Fatalf("nil prompt provider must not inject: %v", txt)
 		}
+	}
+}
+
+// TestSilentHookDoesNotRefire pins the rollback-on-empty fix at the
+// builder level: a provider that ran but rendered nothing (ran=true)
+// must not be re-invoked on later calls — only a nothing-ran render
+// (ran=false) rolls the slot back.
+func TestSilentHookDoesNotRefire(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	newMemorySession(t, svc, "task_hook_silent", "one")
+	calls := 0
+	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
+		calls++
+		return "", true
+	})
+	runMemoryCallback(t, b, "task_hook_silent")
+	runMemoryCallback(t, b, "task_hook_silent")
+	if calls != 1 {
+		t.Errorf("silent provider invoked %d times, want exactly 1", calls)
 	}
 }

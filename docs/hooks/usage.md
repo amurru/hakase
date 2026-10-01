@@ -96,7 +96,7 @@ How the runner interprets the run:
 |---|---|
 | Exit 0, empty/plain stdout | Allow (tool events) / no context (session/prompt events) |
 | Exit 0, plain stdout on SessionStart/UserPromptSubmit | Injected as model-visible context |
-| Exit 0, JSON with `hookSpecificOutput.additionalContext` | Context appended (all events) |
+| Exit 0, JSON with `hookSpecificOutput.additionalContext` | Context appended (all events — with two exceptions below) |
 | Exit 0, JSON `permissionDecision: deny` / `decision: block` | Block (PreToolUse only) |
 | Exit 2 | Block (PreToolUse) / warn-and-continue (everything else) |
 | Other non-zero, timeout, missing binary | Hook error: `on_failure` decides |
@@ -104,6 +104,17 @@ How the runner interprets the run:
 `updatedInput` (arg rewriting) is **not** supported in v1: a hook that
 returns it is ignored with a loud warning, so Claude-ported hooks
 degrade visibly instead of silently.
+
+Two delivery exceptions (do not rely on context the model never
+receives):
+
+- **PreToolUse allow path**: when the call is allowed, there is no ADK
+  channel for extra context (the callback can only allow or skip the
+  tool), so `additionalContext` goes to the warn log, not the model.
+- **PostToolUse on a failed tool**: the override is suppressed so the
+  tool error reaches the model intact (an override would convert the
+  failure into a success); the undelivered context goes to the warn
+  log instead of vanishing.
 
 ## Project hooks + trust
 

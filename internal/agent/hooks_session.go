@@ -21,7 +21,7 @@ func wireHookSessionStart(hb *hctx.HistoryBuilder, runner *hooks.Runner) {
 	// Always installed (spec HK-110): an empty render rolls back and
 	// injects nothing, so a runner that gains SessionStart groups via
 	// Reload fires without rebuilding the history builder.
-	hb.SetSessionStartProvider(func(ctx agent.Context) string {
+	hb.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
 		return runner.RunSessionStart(ctx)
 	})
 }
@@ -33,7 +33,7 @@ func wireHookUserPrompt(hb *hctx.HistoryBuilder, runner *hooks.Runner) {
 	if hb == nil || runner == nil {
 		return
 	}
-	hb.SetUserPromptProvider(func(ctx agent.Context) string {
+	hb.SetUserPromptProvider(func(ctx agent.Context) (string, bool) {
 		var text string
 		if uc := ctx.UserContent(); uc != nil {
 			text = hctx.ContentText(uc)

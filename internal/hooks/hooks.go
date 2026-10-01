@@ -280,17 +280,25 @@ func Enabled(c *Config) bool {
 
 // Fingerprint content-addresses one handler for display (`hakase hooks
 // list`) and for the Phase-2 trust store: the hash covers the resolved argv
-// plus the bytes of a local script when argv[0] is a file on disk. It is
-// NEVER the handler name: an attacker who can rewrite a script body while
-// keeping its name must change the fingerprint (gemini-cli#27900).
+// plus the bytes of EVERY argv element that is an existing regular file on
+// disk — not just argv[0]. Interpreter-form hooks (["/bin/sh",
+// "scripts/guard.sh"]) are covered: rewriting the script body changes the
+// fingerprint even though the interpreter path and argv strings do not
+// (the gemini-cli#27900 property). Non-file elements (flags, bare names,
+// FIFOs, directories) contribute their literal strings only. It is NEVER
+// the handler name: an attacker who can rewrite a script body while
+// keeping its name must change the fingerprint.
 func (h *Handler) Fingerprint() string {
 	sum := sha256.New()
 	for _, a := range h.Command {
 		sum.Write([]byte(a))
 		sum.Write([]byte{0})
 	}
-	if len(h.Command) > 0 {
-		if f, err := os.Open(h.Command[0]); err == nil {
+	for _, a := range h.Command {
+		if fi, err := os.Stat(a); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if f, err := os.Open(a); err == nil {
 			// ReadFull (not a single Read): a short read must not produce
 			// a run-dependent fingerprint for the same file.
 			buf := make([]byte, maxScriptHashBytes)
@@ -301,6 +309,8 @@ func (h *Handler) Fingerprint() string {
 	}
 	return "sha256:" + hex.EncodeToString(sum.Sum(nil))
 }
+
+// TruncateRunes caps s at n runes (hook output is attacker-influenced only
 
 // TruncateRunes caps s at n runes (hook output is attacker-influenced only
 // in the project-scope future, but bounded reasons keep audit/model text

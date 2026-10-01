@@ -580,3 +580,24 @@ func TestReloadConcurrent(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestTimeoutKillsBackgroundedGrandchild pins the pipe-holder fix: a hook
+// that backgrounds a long sleep and exits must still resolve at the hook
+// timeout (plus a small WaitDelay grace), not when the grandchild exits.
+// Without group-kill + WaitDelay, Wait blocks on the inherited stdout pipe
+// until the grandchild dies.
+func TestTimeoutKillsBackgroundedGrandchild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group kill is unix-only")
+	}
+	start := time.Now()
+	_, _, timedOut, _ := runCommand(context.Background(), 2*time.Second,
+		[]string{"/bin/sh", "-c", "sleep 30 &"}, nil, "", nil)
+	elapsed := time.Since(start)
+	if !timedOut {
+		t.Error("backgrounded sleep must still trip the hook timeout")
+	}
+	if elapsed > 15*time.Second {
+		t.Errorf("hook run took %v, want bounded by timeout+WaitDelay", elapsed)
+	}
+}

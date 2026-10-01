@@ -73,7 +73,7 @@ func TestWireHookSessionStartInstalls(t *testing.T) {
 			t.Fatalf("provider panicked on mock context: %v", rec)
 		}
 	}()
-	if got := prov(ctx); got != "wired" {
+	if got, ran := prov(ctx); got != "wired" || !ran {
 		t.Errorf("provider = %q, want the hook output", got)
 	}
 }
@@ -119,7 +119,7 @@ func TestWireHookUserPromptInstalls(t *testing.T) {
 			t.Fatalf("provider panicked on mock context: %v", rec)
 		}
 	}()
-	if got := prov(ctx); got != "per-prompt" {
+	if got, ran := prov(ctx); got != "per-prompt" || !ran {
 		t.Errorf("provider = %q, want the hook output", got)
 	}
 }

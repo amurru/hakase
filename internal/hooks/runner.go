@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,11 @@ type Runner struct {
 	prompt []compiledGroup
 	// projectEnabled gates the project layer (<root>/.hakase/hooks.json).
 	projectEnabled bool
+	// master mirrors the top-level hooks.enabled switch. Readers (web
+	// list DTO) consult it per-request instead of a cached copy, so
+	// external edits (CLI + SIGHUP) and the master endpoint never show
+	// stale state, and no request-mutated field races.
+	master bool
 	// trust gates project handlers. Nil means trust nothing (safe default:
 	// every project handler is skipped).
 	trust TrustChecker
@@ -121,7 +127,19 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{pre: pre, post: post, session: session, prompt: prompt, projectEnabled: projectEnabled}, nil
+	return &Runner{pre: pre, post: post, session: session, prompt: prompt, projectEnabled: projectEnabled, master: Enabled(&c)}, nil
+}
+
+// MasterEnabled reports the top-level hooks.enabled switch behind the
+// compiled set. Web surfaces read it per-request (no cached copies that
+// race or go stale across SIGHUP reloads).
+func (r *Runner) MasterEnabled() bool {
+	if r == nil {
+		return false
+	}
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return r.master
 }
 
 // compileAll compiles every validated group list. compileGroup cannot fail
@@ -178,6 +196,7 @@ func (r *Runner) Reload(cfg Config) error {
 	}
 	r.cfgMu.Lock()
 	r.pre, r.post, r.session, r.prompt, r.projectEnabled = pre, post, session, prompt, projectEnabled
+	r.master = Enabled(&c)
 	r.cfgMu.Unlock()
 	return nil
 }
@@ -644,14 +663,16 @@ func (r *Runner) projectGroups(ctx context.Context) (pre, post, sess, prmpt []co
 }
 
 // RunSessionStart runs SessionStart handlers once per session and returns
-// the context to inject ("" = nothing). The once-per-session claim mirrors
-// HistoryBuilder's reserve/rollback: an empty result unmarks the session,
-// so a later call — e.g. after a mid-session `hakase hooks trust` — can
-// still fire. Session-less surfaces share the "process" key (fire once per
-// process).
-func (r *Runner) RunSessionStart(ctx context.Context) string {
+// the context to inject ("" = nothing) plus whether any handler EXECUTED.
+// The once-key marks the session served when handlers ran — even with empty
+// output — so a silent hook does not re-fire on every model call. Only the
+// nothing-ran case (all candidates skipped as untrusted/disabled) stays
+// eligible, preserving the mid-session trust-grant path. HistoryBuilder
+// mirrors this with reserve/rollback on its own key. Session-less surfaces
+// share the "process" key (fire once per process).
+func (r *Runner) RunSessionStart(ctx context.Context) (string, bool) {
 	if r == nil || !r.HasSessionStart() {
-		return ""
+		return "", false
 	}
 	key := safeSessionID(ctx)
 	if key == "" {
@@ -664,18 +685,22 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 	}
 	if r.fired[key] || r.inflight[key] {
 		r.firedMu.Unlock()
-		return ""
+		return "", true
 	}
 	r.inflight[key] = true
 	r.firedMu.Unlock()
 
 	p := buildPayload(ctx, EventSessionStart, "", nil, nil)
 	var parts []string
+	ran := false
 	_, _, userSession, _ := r.userGroups()
 	for _, g := range userSession {
 		for _, h := range g.handlers {
-			if c := r.runPromptHandler(ctx, EventSessionStart, p, h); c != "" {
-				parts = append(parts, c)
+			if c, ok := r.runPromptHandler(ctx, EventSessionStart, p, h); ok {
+				ran = true
+				if c != "" {
+					parts = append(parts, c)
+				}
 			}
 		}
 	}
@@ -687,8 +712,11 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 				r.warnUntrustedOnce(fp, displayName(h))
 				continue
 			}
-			if c := r.runPromptHandler(ctx, EventSessionStart, p, h); c != "" {
-				parts = append(parts, c)
+			if c, ok := r.runPromptHandler(ctx, EventSessionStart, p, h); ok {
+				ran = true
+				if c != "" {
+					parts = append(parts, c)
+				}
 			}
 		}
 	}
@@ -696,11 +724,11 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 
 	r.firedMu.Lock()
 	delete(r.inflight, key)
-	if out != "" {
+	if ran {
 		r.fired[key] = true
 	}
 	r.firedMu.Unlock()
-	return out
+	return out, ran
 }
 
 // RunUserPromptSubmit runs UserPromptSubmit handlers for one user prompt
@@ -709,18 +737,22 @@ func (r *Runner) RunSessionStart(ctx context.Context) string {
 // keys on the prompt identity so every new prompt fires. The prompt text
 // rides the payload for hooks that react to its content; exit-2 cannot
 // block a prompt (warn-and-continue, like SessionStart).
-func (r *Runner) RunUserPromptSubmit(ctx context.Context, promptText string) string {
+func (r *Runner) RunUserPromptSubmit(ctx context.Context, promptText string) (string, bool) {
 	if r == nil || !r.HasUserPrompt() {
-		return ""
+		return "", false
 	}
 	p := buildPayload(ctx, EventUserPromptSubmit, "", nil, nil)
 	p.Prompt = promptText
 	var parts []string
+	ran := false
 	_, _, _, userPrompt := r.userGroups()
 	for _, g := range userPrompt {
 		for _, h := range g.handlers {
-			if c := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); c != "" {
-				parts = append(parts, c)
+			if c, ok := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); ok {
+				ran = true
+				if c != "" {
+					parts = append(parts, c)
+				}
 			}
 		}
 	}
@@ -732,25 +764,27 @@ func (r *Runner) RunUserPromptSubmit(ctx context.Context, promptText string) str
 				r.warnUntrustedOnce(fp, displayName(h))
 				continue
 			}
-			if c := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); c != "" {
-				parts = append(parts, c)
+			if c, ok := r.runPromptHandler(ctx, EventUserPromptSubmit, p, h); ok {
+				ran = true
+				if c != "" {
+					parts = append(parts, c)
+				}
 			}
 		}
 	}
-	return TruncateRunes(strings.TrimSpace(strings.Join(parts, "\n\n")), SessionStartContextCap)
+	return TruncateRunes(strings.TrimSpace(strings.Join(parts, "\n\n")), SessionStartContextCap), ran
 }
 
-// runPromptHandler runs one SessionStart/UserPromptSubmit handler and
-// returns its context contribution ("" = none). The output contract
-// differs from tool events on purpose: exit-0 plain stdout IS
-// model-visible context here (there is no tool result to protect),
-// alongside JSON additionalContext. Exit 2 cannot block these events —
-// it is a warn-and-continue error like any other failure
-// (on_failure:block is rejected on them at Validate, so every error here
-// is fail-open by construction).
-func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, h Handler) string {
+// runPromptHandler runs one SessionStart/UserPromptSubmit handler. It
+// returns the context contribution ("" = none) and whether the handler
+// EXECUTED: disabled handlers report ran=false so callers keep the slot
+// armed (an enable-later must still fire). Every execution counts, even
+// empty or failed output — otherwise a hook that ran cleanly with no
+// output would re-fire on every model call (rollback-on-empty would
+// mistake "ran silent" for "nothing ran").
+func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, h Handler) (string, bool) {
 	if !h.IsEnabled() {
-		return ""
+		return "", false
 	}
 	timeout := h.Timeout
 	if timeout <= 0 {
@@ -759,13 +793,13 @@ func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, 
 	stdin, err := json.Marshal(p)
 	if err != nil {
 		r.warnf("hooks: %s %q payload error: %v", event, displayName(h), err)
-		return ""
+		return "", true
 	}
 	stdout, stderr, timedOut, runErr := runCommand(ctx, time.Duration(timeout)*time.Second, h.Command, hookEnv(event, p), p.CWD, stdin)
 	name := displayName(h)
 	if timedOut {
 		r.warnf("hooks: %s %q timed out after %ds", event, name, timeout)
-		return ""
+		return "", true
 	}
 	exitCode := 0
 	if runErr != nil {
@@ -773,7 +807,7 @@ func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, 
 			exitCode = exitErr.ExitCode()
 		} else {
 			r.warnf("hooks: %s %q exec failed: %v", event, name, runErr)
-			return ""
+			return "", true
 		}
 	}
 	if exitCode != 0 {
@@ -782,24 +816,24 @@ func (r *Runner) runPromptHandler(ctx context.Context, event string, p payload, 
 			msg = fmt.Sprintf("exit %d", exitCode)
 		}
 		r.warnf("hooks: %s %q failed open (%s)", event, name, msg)
-		return ""
+		return "", true
 	}
 	trimmed := bytes.TrimSpace(stdout)
 	if len(trimmed) == 0 {
-		return ""
+		return "", true
 	}
 	if trimmed[0] != '{' {
-		return string(trimmed)
+		return string(trimmed), true
 	}
 	ctxOut, ignored, err := sessionContextFromStdout(stdout)
 	if err != nil {
 		r.warnf("hooks: %s %q emitted invalid JSON: %v", event, name, err)
-		return ""
+		return "", true
 	}
 	if ignored {
 		r.warnf("hooks: %s %q returned updatedInput, which is ignored (v1 has no arg-rewrite plumbing)", event, name)
 	}
-	return ctxOut
+	return ctxOut, true
 }
 
 // sessionContextFromStdout extracts SessionStart context from exit-0
@@ -906,6 +940,22 @@ func runCommand(parent context.Context, timeout time.Duration, argv []string, en
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	setProcessGroup(cmd)
+	// Kill the whole process group on cancel/timeout, not just the direct
+	// child: with piped (non-file) stdout/stderr, Wait blocks until every
+	// holder of the pipe exits, so a backgrounded grandchild (`sh -c
+	// "task &"`, a daemonizing script) would otherwise stall Run()
+	// unboundedly past the deadline. WaitDelay bounds the stall: after the
+	// kill, pipes force-close so Wait returns.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if runtime.GOOS != "windows" {
+			killProcessGroup(cmd.Process.Pid)
+		}
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = env
 	if dir != "" {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {

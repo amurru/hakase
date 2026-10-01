@@ -63,6 +63,21 @@ type mapTrust map[string]bool
 
 func (m mapTrust) Trusted(fp string) bool { return m[fp] }
 
+// runSessionStart unwraps RunSessionStart's (output, ran) pair for the
+// legacy single-value assertions; tests that pin the ran flag call the
+// runner method directly.
+func runSessionStart(t *testing.T, r *Runner, ctx context.Context) string {
+	t.Helper()
+	out, _ := r.RunSessionStart(ctx)
+	return out
+}
+
+func runUserPrompt(t *testing.T, r *Runner, ctx context.Context, prompt string) string {
+	t.Helper()
+	out, _ := r.RunUserPromptSubmit(ctx, prompt)
+	return out
+}
+
 func TestProjectHookSkippedWhenUntrusted(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-spawn tests are unix-only")
@@ -220,15 +235,15 @@ func TestSessionStartFiresOnce(t *testing.T) {
 		t.Fatal("session groups must advertise SessionStart")
 	}
 	ctx := projectCtx(t, t.TempDir(), "sess-1")
-	if got := r.RunSessionStart(ctx); got != "projctx" {
+	if got := runSessionStart(t, r, ctx); got != "projctx" {
 		t.Errorf("first fire = %q, want injected context", got)
 	}
-	if got := r.RunSessionStart(ctx); got != "" {
+	if got := runSessionStart(t, r, ctx); got != "" {
 		t.Errorf("second fire = %q, want empty (once per session)", got)
 	}
 	// A different session fires independently.
 	ctx2 := projectCtx(t, t.TempDir(), "sess-2")
-	if got := r.RunSessionStart(ctx2); got != "projctx" {
+	if got := runSessionStart(t, r, ctx2); got != "projctx" {
 		t.Errorf("other session = %q, want independent fire", got)
 	}
 }
@@ -243,7 +258,7 @@ func TestSessionStartPlainStdoutIsContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := r.RunSessionStart(projectCtx(t, t.TempDir(), "s")); got != "hello-project" {
+	if got := runSessionStart(t, r, projectCtx(t, t.TempDir(), "s")); got != "hello-project" {
 		t.Errorf("plain stdout = %q, want verbatim context", got)
 	}
 }
@@ -265,7 +280,7 @@ func TestUserPromptSubmitFiresEveryPrompt(t *testing.T) {
 	// No once-keying at the runner level: every prompt fires (the caller
 	// keys on prompt identity).
 	for i := 0; i < 2; i++ {
-		if got := r.RunUserPromptSubmit(ctx, "hello"); got != "per-prompt" {
+		if got := runUserPrompt(t, r, ctx, "hello"); got != "per-prompt" {
 			t.Fatalf("fire %d = %q, want context", i, got)
 		}
 	}
@@ -284,7 +299,7 @@ func TestUserPromptSubmitPayloadCarriesPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := r.RunUserPromptSubmit(projectCtx(t, t.TempDir(), "s"), "summarize this"); got != "" {
+	if got := runUserPrompt(t, r, projectCtx(t, t.TempDir(), "s"), "summarize this"); got != "" {
 		t.Fatalf("dumping hook = %q, want empty", got)
 	}
 	raw, err := os.ReadFile(dump)
@@ -309,13 +324,13 @@ func TestUserPromptSubmitProjectTrustGated(t *testing.T) {
 		`{"UserPromptSubmit":[{"hooks":[{"command":["/bin/sh","-c","echo projctx"]}]}]}`,
 		mapTrust{})
 	ctx := projectCtx(t, root, "s")
-	if got := r.RunUserPromptSubmit(ctx, "hi"); got != "" {
+	if got := runUserPrompt(t, r, ctx, "hi"); got != "" {
 		t.Errorf("untrusted project prompt hook = %q, want empty", got)
 	}
 	for _, s := range r.ProjectSnapshots(root) {
 		r.trust.(mapTrust)[s.Fingerprint] = true
 	}
-	if got := r.RunUserPromptSubmit(ctx, "hi"); got != "projctx" {
+	if got := runUserPrompt(t, r, ctx, "hi"); got != "projctx" {
 		t.Errorf("trusted project prompt hook = %q, want context", got)
 	}
 }
@@ -333,15 +348,17 @@ func TestSessionStartExit2WarnsAndRollsBack(t *testing.T) {
 	var warns []string
 	r.SetLog(func(s string) { warns = append(warns, s) })
 	ctx := projectCtx(t, t.TempDir(), "s")
-	if got := r.RunSessionStart(ctx); got != "" {
+	if got := runSessionStart(t, r, ctx); got != "" {
 		t.Errorf("exit-2 SessionStart must inject nothing, got %q", got)
 	}
 	if len(warns) == 0 {
 		t.Error("exit-2 SessionStart must warn")
 	}
-	// Empty result rolls back: still eligible (a fixed hook fires later).
-	if got := r.RunSessionStart(ctx); got != "" {
-		t.Errorf("rolled-back session must stay eligible, got %q", got)
+	// The failed run still marks the session served: retrying a broken
+	// hook on every model call would warn (and block up to the timeout)
+	// on every turn instead of failing once loudly.
+	if out, ran := r.RunSessionStart(ctx); out != "" || !ran {
+		t.Errorf("post-error call = (%q, %v), want (\"\", true)", out, ran)
 	}
 }
 
@@ -354,7 +371,7 @@ func TestSessionStartProjectTrustGated(t *testing.T) {
 		`{"SessionStart":[{"hooks":[{"name":"evil-start","command":["/bin/sh","-c","echo pwned"]}]}]}`,
 		mapTrust{})
 	ctx := projectCtx(t, root, "sess-p")
-	if got := r.RunSessionStart(ctx); got != "" {
+	if got := runSessionStart(t, r, ctx); got != "" {
 		t.Errorf("untrusted project SessionStart must inject nothing, got %q", got)
 	}
 	// The empty result must NOT mark the session fired: a mid-session trust
@@ -362,10 +379,75 @@ func TestSessionStartProjectTrustGated(t *testing.T) {
 	for _, s := range r.ProjectSnapshots(root) {
 		r.trust.(mapTrust)[s.Fingerprint] = true
 	}
-	if got := r.RunSessionStart(ctx); got != "pwned" {
+	if got := runSessionStart(t, r, ctx); got != "pwned" {
 		t.Errorf("post-trust fire = %q, want the context", got)
 	}
-	if got := r.RunSessionStart(ctx); got != "" {
+	if got := runSessionStart(t, r, ctx); got != "" {
 		t.Errorf("second post-trust fire = %q, want empty", got)
+	}
+}
+
+// TestSilentHookRunsOnce pins the rollback-on-empty fix: a hook that
+// executes successfully but emits no output must NOT re-fire on later
+// model calls (the old code mistook "ran silent" for "nothing ran" and
+// re-executed — with side effects and latency — every call). Only the
+// nothing-ran case (all candidates skipped) stays eligible.
+func TestSilentHookRunsOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	marker := filepath.Join(t.TempDir(), "ran.log")
+	user := Config{SessionStart: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/sh", "-c", "echo x >> " + marker}},
+	}}}}
+	user.ApplyDefaults()
+	r, err := NewRunner(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := projectCtx(t, t.TempDir(), "silent-1")
+	if out, ran := r.RunSessionStart(ctx); out != "" || !ran {
+		t.Fatalf("first call = (%q, %v), want (\"\", true)", out, ran)
+	}
+	if out, ran := r.RunSessionStart(ctx); out != "" || !ran {
+		t.Fatalf("second call = (%q, %v), want (\"\", true) served", out, ran)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), "x"); n != 1 {
+		t.Errorf("hook executed %d times, want exactly 1", n)
+	}
+}
+
+// TestSkippedSlotStaysEligible pins the other half: untrusted and disabled
+// handlers do NOT count as ran, so a mid-session trust grant (or enable)
+// fires on the next call.
+func TestSkippedSlotStaysEligible(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-spawn tests are unix-only")
+	}
+	off := false
+	user := Config{SessionStart: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/sh", "-c", "echo ctx"}, Enabled: &off},
+	}}}}
+	user.ApplyDefaults()
+	r, err := NewRunner(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := projectCtx(t, t.TempDir(), "skip-1")
+	if out, ran := r.RunSessionStart(ctx); out != "" || ran {
+		t.Fatalf("disabled-only call = (%q, %v), want (\"\", false)", out, ran)
+	}
+	on := true
+	if err := r.Reload(Config{SessionStart: []Group{{Hooks: []Handler{
+		{Command: []string{"/bin/sh", "-c", "echo ctx"}, Enabled: &on},
+	}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if out, ran := r.RunSessionStart(ctx); out != "ctx" || !ran {
+		t.Errorf("post-enable call = (%q, %v), want (\"ctx\", true)", out, ran)
 	}
 }

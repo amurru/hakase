@@ -331,9 +331,13 @@ func hooksSetEnabledCmd(log func(string), enable bool, args []string) tea.Cmd {
 		log(fmt.Sprintf("hooks: %v", err))
 		return nil
 	}
-	matched, err := hooks.MatchFingerprints(st.runner.Snapshots(), args)
-	if err != nil {
-		log(fmt.Sprintf("hooks: %v", err))
+	matched := hooks.MatchSelector(st.runner.Snapshots(), args[0])
+	if len(matched) == 0 {
+		log(fmt.Sprintf("hooks: no user hook matches %q", args[0]))
+		return nil
+	}
+	if len(matched) > 1 {
+		log(fmt.Sprintf("hooks: %q is ambiguous (%d matches); use a longer prefix", args[0], len(matched)))
 		return nil
 	}
 	snap := matched[0]
@@ -370,9 +374,13 @@ func hooksRemoveCmd(log func(string), args []string) tea.Cmd {
 		log(fmt.Sprintf("hooks: %v", err))
 		return nil
 	}
-	matched, err := hooks.MatchFingerprints(st.runner.Snapshots(), []string{prefix})
-	if err != nil {
-		log(fmt.Sprintf("hooks: %v", err))
+	matched := hooks.MatchSelector(st.runner.Snapshots(), prefix)
+	if len(matched) == 0 {
+		log(fmt.Sprintf("hooks: no user hook matches %q", prefix))
+		return nil
+	}
+	if len(matched) > 1 {
+		log(fmt.Sprintf("hooks: %q is ambiguous (%d matches); use a longer prefix", prefix, len(matched)))
 		return nil
 	}
 	snap := matched[0]
@@ -443,8 +451,20 @@ func hooksUpdateCmd(log func(string), args []string) tea.Cmd {
 }
 
 func hooksTestCmd(log func(string), args []string) tea.Cmd {
-	if len(args) != 1 {
-		log("usage: /hooks test <hook-name|fingerprint-prefix>")
+	sel := ""
+	yes := false
+	for _, a := range args {
+		if a == "--yes" {
+			yes = true
+		} else if sel == "" {
+			sel = a
+		} else {
+			log("usage: /hooks test <hook-name|fingerprint-prefix> [--yes]")
+			return nil
+		}
+	}
+	if sel == "" {
+		log("usage: /hooks test <hook-name|fingerprint-prefix> [--yes]")
 		return nil
 	}
 	st, err := loadTUIHooks()
@@ -456,13 +476,13 @@ func hooksTestCmd(log func(string), args []string) tea.Cmd {
 	if st.root != "" {
 		cands = append(cands, st.runner.ProjectSnapshots(st.root)...)
 	}
-	matched := hooks.MatchSelector(cands, args[0])
+	matched := hooks.MatchSelector(cands, sel)
 	if len(matched) == 0 {
-		log(fmt.Sprintf("no hook matches %q", args[0]))
+		log(fmt.Sprintf("no hook matches %q", sel))
 		return nil
 	}
 	if len(matched) > 1 {
-		log(fmt.Sprintf("%q is ambiguous (%d matches):", args[0], len(matched)))
+		log(fmt.Sprintf("%q is ambiguous (%d matches):", sel, len(matched)))
 		for _, s := range matched {
 			log(fmt.Sprintf("  [%s] %s %q %s", s.Layer, s.Event, s.Name, s.Fingerprint))
 		}
@@ -474,13 +494,13 @@ func hooksTestCmd(log func(string), args []string) tea.Cmd {
 		var ok bool
 		h, ok = hooks.LookupUserHandler(&st.cfg.Hooks, snap.Event, snap.Fingerprint)
 		if !ok {
-			log(fmt.Sprintf("cannot resolve hook %q", args[0]))
+			log(fmt.Sprintf("cannot resolve hook %q", sel))
 			return nil
 		}
 	} else {
 		f, ferr := hooks.LoadProjectFile(st.root)
 		if ferr != nil || f == nil {
-			log(fmt.Sprintf("cannot resolve hook %q", args[0]))
+			log(fmt.Sprintf("cannot resolve hook %q", sel))
 			return nil
 		}
 		groups := map[string][]hooks.Group{
@@ -496,11 +516,13 @@ func hooksTestCmd(log func(string), args []string) tea.Cmd {
 			}
 		}
 		if !found {
-			log(fmt.Sprintf("cannot resolve hook %q", args[0]))
+			log(fmt.Sprintf("cannot resolve hook %q", sel))
 			return nil
 		}
-		if !snap.Trusted {
-			log("WARNING: this project hook is UNTRUSTED — dry-running executes its command.")
+		if !snap.Trusted && !yes {
+			printTrustReview(log, snap)
+			log("re-run with --yes to dry-run this UNTRUSTED hook")
+			return nil
 		}
 	}
 	res := hooks.DryRun(snap.Event, h)

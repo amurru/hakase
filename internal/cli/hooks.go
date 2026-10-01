@@ -408,8 +408,13 @@ func runHooksUntrust(args []string) int {
 }
 
 func runHooksTest(args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: hakase hooks test <hook-name|fingerprint-prefix>")
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintln(os.Stderr, "Usage: hakase hooks test <hook-name|fingerprint-prefix> [--yes]")
+		return 2
+	}
+	yes := len(args) == 2 && args[1] == "--yes"
+	if len(args) == 2 && !yes {
+		fmt.Fprintf(os.Stderr, "hakase: unknown hooks test flag %q (only --yes)\n", args[1])
 		return 2
 	}
 	_, r, err := loadHooksRunner()
@@ -448,8 +453,13 @@ func runHooksTest(args []string) int {
 		fmt.Fprintf(os.Stderr, "hakase: cannot resolve hook %q\n", sel)
 		return 1
 	}
-	if m.Layer == "project" && !m.Trusted {
-		fmt.Println("WARNING: this project hook is UNTRUSTED — dry-running executes its command. Review the preview above first.")
+	if m.Layer == "project" && !m.Trusted && !yes {
+		// Dry-running executes the command: an untrusted project hook
+		// needs the same explicit accept as trust itself. Print the
+		// review and stop; --yes re-runs eyes-open.
+		printTrustCandidate(m)
+		fmt.Println("re-run with --yes to dry-run this UNTRUSTED hook")
+		return 0
 	}
 	res := hooks.DryRun(event, *h)
 	fmt.Printf("hook [%s] %s %q\n", m.Layer, event, m.Name)

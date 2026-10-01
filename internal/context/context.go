@@ -49,7 +49,7 @@ type HistoryBuilder struct {
 	// including the rollback-on-empty behavior (a mid-session trust grant
 	// re-arms a later call). Wired in SetupRunner; nil when hooks cannot
 	// fire SessionStart. Guarded by hookMu.
-	hookProvider func(ctx agent.Context) string
+	hookProvider func(ctx agent.Context) (string, bool)
 	hookSeen     map[string]bool
 	hookMu       sync.Mutex
 
@@ -58,7 +58,7 @@ type HistoryBuilder struct {
 	// sessionID:last-user-sequence so every NEW user prompt fires once
 	// while mid-turn model calls (same messages) do not re-fire. Empty
 	// renders roll back like the slots above. Guarded by promptMu.
-	promptProvider func(ctx agent.Context) string
+	promptProvider func(ctx agent.Context) (string, bool)
 	promptSeen     map[string]bool
 	promptMu       sync.Mutex
 
@@ -153,7 +153,7 @@ func (h *HistoryBuilder) rollbackMemory(sessionID string) {
 
 // SetSessionStartProvider attaches the SessionStart-hooks block renderer
 // (SetupRunner). Same once-per-session contract as SetMemoryProvider.
-func (h *HistoryBuilder) SetSessionStartProvider(fn func(ctx agent.Context) string) {
+func (h *HistoryBuilder) SetSessionStartProvider(fn func(ctx agent.Context) (string, bool)) {
 	h.hookMu.Lock()
 	defer h.hookMu.Unlock()
 	h.hookProvider = fn
@@ -164,7 +164,7 @@ func (h *HistoryBuilder) SetSessionStartProvider(fn func(ctx agent.Context) stri
 
 // SessionStartProvider returns the attached renderer (nil when hooks cannot
 // fire SessionStart).
-func (h *HistoryBuilder) SessionStartProvider() func(ctx agent.Context) string {
+func (h *HistoryBuilder) SessionStartProvider() func(ctx agent.Context) (string, bool) {
 	h.hookMu.Lock()
 	defer h.hookMu.Unlock()
 	return h.hookProvider
@@ -192,7 +192,7 @@ func (h *HistoryBuilder) rollbackSessionStart(sessionID string) {
 // SetUserPromptProvider attaches the UserPromptSubmit-hooks block renderer
 // (SetupRunner). Same once-per-key contract as the slots above, keyed by
 // promptKey (session + latest user sequence).
-func (h *HistoryBuilder) SetUserPromptProvider(fn func(ctx agent.Context) string) {
+func (h *HistoryBuilder) SetUserPromptProvider(fn func(ctx agent.Context) (string, bool)) {
 	h.promptMu.Lock()
 	defer h.promptMu.Unlock()
 	h.promptProvider = fn
@@ -203,7 +203,7 @@ func (h *HistoryBuilder) SetUserPromptProvider(fn func(ctx agent.Context) string
 
 // UserPromptProvider returns the attached renderer (nil when hooks cannot
 // fire UserPromptSubmit).
-func (h *HistoryBuilder) UserPromptProvider() func(ctx agent.Context) string {
+func (h *HistoryBuilder) UserPromptProvider() func(ctx agent.Context) (string, bool) {
 	h.promptMu.Lock()
 	defer h.promptMu.Unlock()
 	return h.promptProvider
@@ -306,9 +306,12 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 	// memory block (hook context is the freshest per-session signal).
 	var hookContent *genai.Content
 	if h.reserveSessionStart(session.ID) {
-		if block := h.hookProvider(ctx); block != "" {
+		// Roll back only when nothing ran: a silent-but-executed hook
+		// must not re-fire on the next model call, while an all-skipped
+		// slot (untrusted/disabled) stays armed for later grants.
+		if block, ran := h.hookProvider(ctx); block != "" {
 			hookContent = genai.NewContentFromText("HOOK SESSIONSTART CONTEXT:\n"+block, genai.RoleUser)
-		} else {
+		} else if !ran {
 			h.rollbackSessionStart(session.ID)
 		}
 	}
@@ -316,9 +319,9 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 	// message, spliced ahead of everything (the turn's freshest signal).
 	var promptContent *genai.Content
 	if pkey := promptKey(session); h.reserveUserPrompt(pkey) {
-		if block := h.promptProvider(ctx); block != "" {
+		if block, ran := h.promptProvider(ctx); block != "" {
 			promptContent = genai.NewContentFromText("HOOK PROMPT CONTEXT:\n"+block, genai.RoleUser)
-		} else {
+		} else if !ran {
 			h.rollbackUserPrompt(pkey)
 		}
 	}

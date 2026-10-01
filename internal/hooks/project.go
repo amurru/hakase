@@ -157,17 +157,36 @@ func LoadProjectFile(root string) (*ProjectFile, error) {
 
 // resolveRelativeCommands anchors relative script paths at the project
 // root, so a project hook means the same thing regardless of the process
-// cwd. Absolute paths are kept as-is. Missing targets are NOT a load
-// error: exec fails open at runtime per on_failure, same as user hooks.
+// cwd. Absolute paths are kept as-is. Bare command names (no separator,
+// not an existing file under root) are left for PATH lookup: joining
+// "python3" onto the root would manufacture a non-existent path and the
+// hook would fail open instead of running. Elements that resolve to an
+// existing regular file under root are absolutized (interpreter-form
+// argv[1:] included), which is exec-equivalent — hook processes run with
+// Dir=root — and lets Fingerprint hash every script body. Missing targets
+// are NOT a load error: exec fails open at runtime per on_failure, same
+// as user hooks.
 func (f *ProjectFile) resolveRelativeCommands(root string) {
 	resolve := func(groups []Group) {
 		for gi := range groups {
 			for hi := range groups[gi].Hooks {
 				cmd := groups[gi].Hooks[hi].Command
-				if len(cmd) == 0 || filepath.IsAbs(cmd[0]) {
-					continue
+				for i, a := range cmd {
+					if a == "" || filepath.IsAbs(a) {
+						continue
+					}
+					if i > 0 && !isPathLike(a) {
+						continue
+					}
+					if !isPathLike(a) {
+						// Bare argv[0]: anchor only when it names a real
+						// file under root, else PATH lookup.
+						if fi, err := os.Stat(filepath.Join(root, a)); err != nil || !fi.Mode().IsRegular() {
+							continue
+						}
+					}
+					cmd[i] = filepath.Join(root, a)
 				}
-				cmd[0] = filepath.Join(root, cmd[0])
 			}
 		}
 	}
@@ -175,4 +194,10 @@ func (f *ProjectFile) resolveRelativeCommands(root string) {
 	resolve(f.PostToolUse)
 	resolve(f.SessionStart)
 	resolve(f.UserPromptSubmit)
+}
+
+// isPathLike reports whether s looks like a path rather than a bare
+// command name or flag value.
+func isPathLike(s string) bool {
+	return strings.ContainsAny(s, `/\`)
 }

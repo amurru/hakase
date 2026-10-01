@@ -169,7 +169,11 @@ func (api *HooksAPI) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *HooksAPI) buildListDTO(sessionID string) HooksListDTO {
-	dto := HooksListDTO{Enabled: api.enabled, User: make([]HookSnapshotDTO, 0)}
+	enabled := api.enabled
+	if api.runner != nil {
+		enabled = api.runner.MasterEnabled()
+	}
+	dto := HooksListDTO{Enabled: enabled, User: make([]HookSnapshotDTO, 0)}
 	if api.runner != nil {
 		for _, s := range api.runner.Snapshots() {
 			dto.User = append(dto.User, toSnapshotDTO(s))
@@ -332,7 +336,6 @@ func (api *HooksAPI) Master(w http.ResponseWriter, r *http.Request) {
 		writeHooksError(w, http.StatusInternalServerError, fmt.Sprintf("saved, but live reload failed: %v", err))
 		return
 	}
-	api.enabled = req.Enabled
 	writeHooksJSON(w, api.buildListDTO(r.URL.Query().Get("session_id")))
 }
 
