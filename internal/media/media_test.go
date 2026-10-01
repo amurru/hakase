@@ -720,8 +720,9 @@ func TestToolsErrorStrings(t *testing.T) {
 	if _, err := reg.Resolve("video"); err == nil || err.Error() != videoNoProviderMsg {
 		t.Fatalf("video error string mismatch: %v", err)
 	}
-	// Audio is a v1 stub with a fixed not-wired message.
-	const wantAudio = "audio generation is not wired in this build: openai TTS is planned for v2"
+	// Audio resolves through piper when a default voice is configured,
+	// else the verbatim actionable message.
+	const wantAudio = "no audio provider configured: set media.audio_provider to piper with a text_to_speech default voice (local Piper TTS)"
 	if _, err := reg.Resolve("audio"); err == nil || err.Error() != wantAudio {
 		t.Fatalf("audio error string mismatch: got %v, want %q", err, wantAudio)
 	}

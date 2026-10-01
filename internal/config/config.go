@@ -975,7 +975,7 @@ func (c *MediaConfig) ApplyDefaults() {
 		c.AudioProvider = "off"
 	}
 	if len(c.Order) == 0 {
-		c.Order = []string{"openai", "fal", "pil"}
+		c.Order = []string{"openai", "fal", "pil", "piper"}
 	}
 	if c.OutputDir == "" {
 		c.OutputDir = "outputs/media"
@@ -1012,9 +1012,9 @@ func (c *MediaConfig) Validate() error {
 	if !validVideo[c.VideoProvider] {
 		return fmt.Errorf("invalid media.video_provider %q: must be one of auto, openai, fal, off", c.VideoProvider)
 	}
-	validAudio := map[string]bool{"off": true, "openai": true, "elevenlabs": true}
+	validAudio := map[string]bool{"off": true, "openai": true, "elevenlabs": true, "piper": true}
 	if !validAudio[c.AudioProvider] {
-		return fmt.Errorf("invalid media.audio_provider %q: must be one of off, openai, elevenlabs", c.AudioProvider)
+		return fmt.Errorf("invalid media.audio_provider %q: must be one of off, openai, elevenlabs, piper", c.AudioProvider)
 	}
 	if c.MaxConcurrent < 0 {
 		return fmt.Errorf("invalid media.max_concurrent %d: must be >= 0", c.MaxConcurrent)

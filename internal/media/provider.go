@@ -107,6 +107,9 @@ func (r AudioRequest) Validate() error {
 	if strings.TrimSpace(r.Text) == "" {
 		return fmt.Errorf("text is required")
 	}
+	if len([]rune(r.Text)) > 4000 {
+		return fmt.Errorf("text is too long (%d chars, max 4000)", len([]rune(r.Text)))
+	}
 	return nil
 }
 
