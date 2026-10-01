@@ -23,7 +23,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -345,42 +344,15 @@ func shortFP(fp string) string {
 func printTrustCandidate(s hooks.Snapshot) {
 	fmt.Printf("- %s matcher=%q name=%q\n  argv: %s\n  timeout=%ds on_failure=%s\n  fingerprint: %s\n",
 		s.Event, s.Matcher, s.Name, strings.Join(s.Command, " "), s.Timeout, s.OnFailure, s.Fingerprint)
-	if preview := scriptPreview(s.Command); preview != "" {
+	if preview := hooks.ScriptPreview(s.Command); preview != "" {
 		fmt.Printf("  script preview:\n%s\n", preview)
 	}
 }
 
-// scriptPreview returns the first lines of a local hook script (2KB cap),
-// or "" when argv[0] is not a readable file. Binaries are suppressed:
-// previewing the interpreter of a `sh -c` wrapper as ELF garbage would
-// bury the actual inline script (already visible in argv).
+// scriptPreview renders a local hook script for trust review (shared
+// helper in the hooks package; the CLI keeps no local copy).
 func scriptPreview(argv []string) string {
-	if len(argv) == 0 {
-		return ""
-	}
-	data, err := os.ReadFile(argv[0])
-	if err != nil {
-		return ""
-	}
-	if len(data) > 2048 {
-		data = data[:2048]
-	}
-	for _, b := range data {
-		if b == 0 {
-			return "    | [binary file, preview suppressed]"
-		}
-	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) > 15 {
-		lines = append(lines[:15], "… (truncated)")
-	}
-	var b strings.Builder
-	for _, l := range lines {
-		b.WriteString("    | ")
-		b.WriteString(l)
-		b.WriteString("\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
+	return hooks.ScriptPreview(argv)
 }
 
 // confirmPrompt asks y/N on stdout; EOF/non-tty counts as "no".
@@ -499,24 +471,10 @@ func runHooksTest(args []string) int {
 	return 0
 }
 
-// matchTestSelector matches by exact name, then unique name substring, then
-// fingerprint prefix.
+// matchTestSelector resolves a test selector (shared helper in the hooks
+// package: exact name, then substring, then fingerprint prefix).
 func matchTestSelector(cands []hooks.Snapshot, sel string) []hooks.Snapshot {
-	var exact, sub []hooks.Snapshot
-	for _, c := range cands {
-		if c.Name != "" && c.Name == sel {
-			exact = append(exact, c)
-		} else if c.Name != "" && strings.Contains(c.Name, sel) {
-			sub = append(sub, c)
-		}
-	}
-	if len(exact) > 0 {
-		return exact
-	}
-	if len(sub) > 0 {
-		return sub
-	}
-	return matchSnapshots(cands, sel)
+	return hooks.MatchSelector(cands, sel)
 }
 
 // findHookHandler maps a snapshot back to its runnable definition.
@@ -589,64 +547,20 @@ func mutateUserHooks(mutate func(*hooks.Config) error) int {
 }
 
 // runHooksAdd implements `hooks add <Event> [flags] -- <command...>`.
-// Flags precede the `--` separator; everything after is the argv verbatim
-// (so commands starting with `-` need no escaping).
+// Flag syntax is shared with the TUI (hooks.ParseAddArgs); everything
+// after `--` is the argv verbatim.
 func runHooksAdd(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "hakase: usage: hooks add <Event> [--matcher R] [--name N] [--timeout S] [--on-failure allow|block] -- <command...>")
+	parsed, err := hooks.ParseAddArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: %v\n", err)
 		return 2
 	}
-	event := args[0]
-	var matcher, name, onFailure string
-	timeout := 0
-	rest := args[1:]
-	i := 0
-	for ; i < len(rest); i++ {
-		a := rest[i]
-		if a == "--" {
-			break
-		}
-		val := func() string {
-			if i+1 >= len(rest) {
-				return ""
-			}
-			i++
-			return rest[i]
-		}
-		switch a {
-		case "--matcher":
-			matcher = val()
-		case "--name":
-			name = val()
-		case "--timeout":
-			n, err := strconv.Atoi(val())
-			if err != nil || n < 0 {
-				fmt.Fprintf(os.Stderr, "hakase: bad --timeout value (want non-negative seconds)\n")
-				return 2
-			}
-			timeout = n
-		case "--on-failure":
-			onFailure = val()
-		default:
-			fmt.Fprintf(os.Stderr, "hakase: unknown hooks add flag %q\n", a)
-			return 2
-		}
-	}
-	if i >= len(rest) || rest[i] != "--" {
-		fmt.Fprintln(os.Stderr, "hakase: hooks add needs `--` before the command argv")
-		return 2
-	}
-	argv := rest[i+1:]
-	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "hakase: hooks add needs a non-empty command argv after `--`")
-		return 2
-	}
-	h := hooks.Handler{Name: name, Command: argv, Timeout: timeout, OnFailure: onFailure}
+	h := hooks.Handler{Name: parsed.Name, Command: parsed.Argv, Timeout: parsed.Timeout, OnFailure: parsed.OnFailure}
 	return mutateUserHooks(func(c *hooks.Config) error {
-		if err := hooks.AddUserHook(c, event, matcher, h); err != nil {
+		if err := hooks.AddUserHook(c, parsed.Event, parsed.Matcher, h); err != nil {
 			return err
 		}
-		fmt.Printf("added %s hook %q [%s]\n", event, name, strings.Join(argv, " "))
+		fmt.Printf("added %s hook %q [%s]\n", parsed.Event, parsed.Name, strings.Join(parsed.Argv, " "))
 		return nil
 	})
 }
