@@ -8,6 +8,7 @@ require (
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/atotto/clipboard v0.1.4
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/doug/termtex v0.0.0-20260626010055-e3e21f41b38e

@@ -55,8 +55,11 @@ open issue). Per-item notes live there; ordered by expected value:
    via reciprocal rank fusion, default off to preserve
    zero-dependency (`hybrid_search` + `knowledge_embed_model`).
    Design: `docs/hybrid-retrieval/` (HR-001..HR-008).
-3. **Second channel transport** (Discord/Slack) — the `channel.Channel` +
-   `PushHandler` seams exist; Telegram proves the flow.
+3. **Second channel transport** — shipped (Discord): DM-only v1
+   bot over the gateway websocket (discordgo, no privileged intents),
+   mirroring Telegram's auth/runs/gates/push on the shared service.
+   Design: `docs/discord/` (DC-001..DC-013). Guilds/voice/Slack stay
+   future options.
 4. **Durable human-in-the-loop resume** — move off the classic `Runner` onto
    the ADK graph workflow engine (interrupt/resume across restarts).
 5. **Audio generation** — shipped: Piper TTS is routed through the

@@ -94,6 +94,12 @@
       "bot_token": "",
       "allowed_user_ids": [],
       "pairing_code": ""
+    },
+    "discord": {
+      "enabled": false,
+      "bot_token": "",
+      "allowed_user_ids": [],
+      "pairing_code": ""
     }
   },
   "vision_model": "",
