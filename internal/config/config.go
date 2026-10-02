@@ -584,6 +584,10 @@ type ChannelsConfig struct {
 	EnableCronScheduler bool `json:"enable_cron_scheduler,omitempty"`
 	// Telegram configures the Telegram bot channel. See TelegramChannelConfig.
 	Telegram TelegramChannelConfig `json:"telegram,omitempty"`
+	// Discord configures the Discord DM bot channel. See
+	// DiscordChannelConfig. Off unless explicitly enabled with a token,
+	// same as Telegram; both transports can run at once.
+	Discord DiscordChannelConfig `json:"discord,omitempty"`
 }
 
 // TelegramChannelConfig configures the Telegram bot transport. Follows the
@@ -606,6 +610,29 @@ type TelegramChannelConfig struct {
 	// Pins pins the user's prompt message for the duration of each Telegram
 	// run and unpins it at completion (Hermes-style turn marker). Default off.
 	Pins bool `json:"pins,omitempty"`
+}
+
+// DiscordChannelConfig configures the Discord DM bot transport. Mirrors
+// TelegramChannelConfig: Enabled is a *bool so "absent" stays
+// distinguishable from "false", and the feature is off unless explicitly
+// enabled with a token. v1 is DM-only (spec DC-001); guild messages are
+// dropped, so no privileged intents are needed.
+type DiscordChannelConfig struct {
+	// Enabled toggles the Discord channel. nil/absent = disabled.
+	Enabled *bool `json:"enabled,omitempty"`
+	// BotToken is the bot token from the Discord Developer Portal
+	// (application → Bot → Token). May also come from the
+	// HAKASE_DISCORD_BOT_TOKEN environment variable (env wins).
+	BotToken string `json:"bot_token,omitempty"`
+	// AllowedUserIDs statically allowlists Discord user IDs as decimal
+	// snowflakes (deny-by-default; Developer Portal → ... → copy User ID
+	// with developer mode on). When empty, users pair at runtime via
+	// `pair <code>` with the pairing code printed on the server console
+	// (or `hakase channels pair-code`). Snowflakes must fit int64.
+	AllowedUserIDs []int64 `json:"allowed_user_ids,omitempty"`
+	// PairingCode optionally fixes a static pairing code for scripted setups
+	// instead of the generated rotating code. Stored plaintext, like api_key.
+	PairingCode string `json:"pairing_code,omitempty"`
 }
 
 // Default values for the speech blocks.
@@ -757,15 +784,47 @@ func (c *TTSConfig) Validate() error {
 // ApplyDefaults fills zero values with channel defaults. Call after load.
 func (c *ChannelsConfig) ApplyDefaults() {
 	c.Telegram.ApplyDefaults()
+	c.Discord.ApplyDefaults()
 }
 
 // Validate checks ChannelsConfig.
 func (c *ChannelsConfig) Validate() error {
-	return c.Telegram.Validate()
+	if err := c.Telegram.Validate(); err != nil {
+		return err
+	}
+	return c.Discord.Validate()
 }
 
 // ApplyDefaults normalizes the Telegram channel config.
 func (c *TelegramChannelConfig) ApplyDefaults() {
+}
+
+// ApplyDefaults normalizes the Discord channel config.
+func (c *DiscordChannelConfig) ApplyDefaults() {
+}
+
+// Validate errors when the Discord channel is explicitly enabled without a
+// bot token, or when an allowlisted snowflake is not a valid int64.
+func (c *DiscordChannelConfig) Validate() error {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.BotToken) == "" {
+		return fmt.Errorf("channels.discord: enabled but bot_token is empty (set bot_token or HAKASE_DISCORD_BOT_TOKEN, or disable with enabled:false)")
+	}
+	for _, id := range c.AllowedUserIDs {
+		if id <= 0 {
+			return fmt.Errorf("channels.discord: allowed_user_ids holds invalid snowflake %d (must be a positive int64)", id)
+		}
+	}
+	return nil
+}
+
+// EnabledWithToken reports whether the Discord channel should actually start:
+// explicitly enabled AND carrying a non-empty token. This is the single
+// source of truth consumed by the web bootstrap and tests.
+func (c *DiscordChannelConfig) EnabledWithToken() bool {
+	return c != nil && c.Enabled != nil && *c.Enabled && strings.TrimSpace(c.BotToken) != ""
 }
 
 // Validate errors when the Telegram channel is explicitly enabled without a
@@ -1066,6 +1125,8 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_SIDEKICK_API_KEY") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != "" ||
+		os.Getenv("HAKASE_DISCORD_ENABLED") != "" ||
+		os.Getenv("HAKASE_DISCORD_BOT_TOKEN") != "" ||
 		os.Getenv("HAKASE_MEMORY_ENABLED") != "" ||
 		os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS") != "" ||
 		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != "" ||
@@ -1342,6 +1403,17 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Channels.Telegram.BotToken = v
+	}
+	// Discord channel env overrides (mirrors the Telegram pattern).
+	if v := os.Getenv("HAKASE_DISCORD_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_DISCORD_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Channels.Discord.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_DISCORD_BOT_TOKEN"); v != "" {
+		cfg.Channels.Discord.BotToken = v
 	}
 	cfg.Channels.ApplyDefaults()
 	if err := cfg.Channels.Validate(); err != nil {

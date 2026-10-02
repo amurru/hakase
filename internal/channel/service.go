@@ -37,12 +37,14 @@ type Deps struct {
 // run manager, the shared agent-turn driver, and the registered transports.
 // Start runs the router and every channel; Stop cancels them and waits.
 type Service struct {
-	deps    Deps
-	log     LogFunc
-	store   *state.Store
-	runs    *RunManager
-	driver  *agentrun.Driver
-	entries []entry
+	deps     Deps
+	log      LogFunc
+	store    *state.Store
+	runs     *RunManager
+	driver   *agentrun.Driver
+	drivers  map[string]*agentrun.Driver
+	driverMu sync.Mutex
+	entries  []entry
 
 	cancel     context.CancelFunc
 	registerMu sync.Mutex
@@ -70,12 +72,16 @@ func NewService(d Deps) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	defDriver := agentrun.NewForTransport(d.Runner, d.Sessions, "telegram")
 	return &Service{
 		deps:   d,
 		log:    logFn,
 		store:  store,
 		runs:   NewRunManager(),
-		driver: agentrun.NewForTransport(d.Runner, d.Sessions, "telegram"),
+		driver: defDriver,
+		drivers: map[string]*agentrun.Driver{
+			"telegram": defDriver,
+		},
 	}, nil
 }
 
@@ -86,8 +92,23 @@ func (s *Service) Store() *state.Store { return s.store }
 // Runs exposes the per-chat run manager.
 func (s *Service) Runs() *RunManager { return s.runs }
 
-// Driver exposes the shared agent-turn driver.
+// Driver exposes the shared agent-turn driver (the default telegram-labeled
+// one; transports should prefer DriverFor with their own Name()).
 func (s *Service) Driver() *agentrun.Driver { return s.driver }
+
+// DriverFor returns the agent-turn driver labeled for the given transport,
+// creating it on first use. Run spans carry the label, so traces attribute
+// each transport correctly when several run on one Service.
+func (s *Service) DriverFor(transport string) *agentrun.Driver {
+	s.driverMu.Lock()
+	defer s.driverMu.Unlock()
+	if d, ok := s.drivers[transport]; ok {
+		return d
+	}
+	d := agentrun.NewForTransport(s.deps.Runner, s.deps.Sessions, transport)
+	s.drivers[transport] = d
+	return d
+}
 
 // Bridge exposes the host SSE bridge. Transports mirror their runs' events
 // onto it (the same stream the web chat handler publishes) so any session can

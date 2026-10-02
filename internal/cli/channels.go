@@ -4,7 +4,7 @@
 //
 //	hakase channels status              - show paired users and chat bindings
 //	hakase channels pair-code           - print (generating if needed) a pairing code
-//	hakase channels revoke <user-id>    - unpair a user (telegram:<id>)
+//	hakase channels revoke <user-id>    - unpair a user (telegram:<id> or discord:<id>)
 package cli
 
 import (
@@ -50,14 +50,14 @@ func channelsUsage() {
 	fmt.Fprintln(os.Stderr, "Subcommands:")
 	fmt.Fprintln(os.Stderr, "  status              show paired users and chat bindings")
 	fmt.Fprintln(os.Stderr, "  pair-code           print (generating if needed) a pairing code")
-	fmt.Fprintln(os.Stderr, "  revoke <user-id>    unpair a Telegram user")
+	fmt.Fprintln(os.Stderr, "  revoke <user-id>    unpair a user (bare ID or channel:id)")
 }
 
 func runChannelsStatus(store *state.Store) int {
 	st := store.Get()
 	fmt.Printf("Channel state: %s\n", store.Path())
 	if len(st.PairedUsers) == 0 {
-		fmt.Println("Paired users: none (deny-by-default; enable the Telegram channel in config to start pairing)")
+		fmt.Println("Paired users: none (deny-by-default; enable a channel in config to start pairing)")
 	} else {
 		fmt.Printf("Paired users (%d):\n", len(st.PairedUsers))
 		for _, u := range st.PairedUsers {
@@ -96,6 +96,7 @@ func runChannelsPairCode(store *state.Store) int {
 	}
 	fmt.Printf("Pairing code: %s (valid %d minutes)\n", code, int(time.Until(expires).Minutes()+0.5))
 	fmt.Println("In Telegram, send this to your bot as: /start " + code)
+	fmt.Println("In Discord, DM this to your bot as: pair " + code)
 	return 0
 }
 
