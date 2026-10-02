@@ -196,6 +196,21 @@ type Config struct {
 	// OR-matched and fused with Reciprocal Rank Fusion; on failure or
 	// timeout it falls back silently to plain substring search.
 	SearchExpansion bool `json:"search_expansion,omitempty"`
+	// HybridSearch fuses dense embeddings with BM25 via Reciprocal Rank
+	// Fusion for search_knowledge (spec docs/hybrid-retrieval/spec.md
+	// HR-005). Default false: when off, search behavior is byte-identical
+	// to plain BM25 search and no embedding endpoint is ever contacted.
+	HybridSearch bool `json:"hybrid_search,omitempty"`
+	// KnowledgeEmbedModel names the embedding model used for hybrid
+	// search (e.g. "nomic-embed-text" on Ollama, "text-embedding-3-small"
+	// on OpenAI). Empty = hybrid search unavailable (search degrades to
+	// BM25); HybridSearch=true with no model fails config load.
+	KnowledgeEmbedModel string `json:"knowledge_embed_model,omitempty"`
+	// KnowledgeEmbedBaseURL optionally overrides the endpoint used for the
+	// embedding model. When empty, the primary base_url is used. Needed
+	// when the primary provider is gemini (native Gemini embeddings are
+	// out of scope) - e.g. a local Ollama at http://localhost:11434/v1.
+	KnowledgeEmbedBaseURL string `json:"knowledge_embed_base_url,omitempty"`
 	// Media configures pluggable media generation (image/video/audio).
 	Media MediaConfig `json:"media,omitempty"`
 	// Sidekick tunes the optional second-LLM "sidekick" agent (side-process
@@ -1243,6 +1258,19 @@ func LoadConfig(filePath string) (*Config, error) {
 		}
 		cfg.SearchExpansion = b
 	}
+	if v := os.Getenv("HAKASE_HYBRID_SEARCH"); v != "" {
+		b, err := parseEnvBool("HAKASE_HYBRID_SEARCH", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.HybridSearch = b
+	}
+	if v := os.Getenv("HAKASE_KNOWLEDGE_EMBED_MODEL"); v != "" {
+		cfg.KnowledgeEmbedModel = v
+	}
+	if v := os.Getenv("HAKASE_KNOWLEDGE_EMBED_BASE_URL"); v != "" {
+		cfg.KnowledgeEmbedBaseURL = v
+	}
 	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
 		b, err := parseEnvBool("HAKASE_DEBUG", v)
 		if err != nil {
@@ -1470,6 +1498,18 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if cfg.Media.OpenAIImageBaseURL == "" && cfg.BaseURL != "" {
 		cfg.Media.OpenAIImageBaseURL = cfg.BaseURL
+	}
+
+	// Hybrid search validation (spec HR-003): static misconfig fails fast
+	// at load; runtime endpoint failures degrade to BM25 at search time.
+	if cfg.HybridSearch && strings.TrimSpace(cfg.KnowledgeEmbedModel) == "" {
+		return nil, fmt.Errorf("hybrid_search requires knowledge_embed_model")
+	}
+	if strings.TrimSpace(cfg.KnowledgeEmbedModel) != "" &&
+		cfg.Provider == "gemini" &&
+		strings.TrimSpace(cfg.KnowledgeEmbedBaseURL) == "" &&
+		strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, fmt.Errorf("knowledge_embed_model with the gemini provider requires knowledge_embed_base_url (native Gemini embeddings are not supported; use an OpenAI-compatible endpoint such as Ollama)")
 	}
 
 	return &cfg, nil

@@ -256,7 +256,47 @@ const knowledgeLogEmoji = "📚 [knowledge]"
 // as a []tool.Tool slice ready to append to an ADK agent's tool list.
 // dir is the knowledge directory path; if empty, "./knowledge" is used.
 // Each handler builds a fresh index at call time.
+// buildSearchOutput renders scored notes into tool output (snippet per
+// note, sanitized). Shared by the BM25/expansion and hybrid paths so both
+// surfaces stay identical.
+func buildSearchOutput(query string, scored []ScoredKnowledgeNote) SearchKnowledgeOutput {
+	var results []KnowledgeSearchResult
+	for _, s := range scored {
+		n := s.Note
+		snippet := FirstSnippet(n.Body, query)
+		results = append(results, KnowledgeSearchResult{
+			Title:   n.Frontmatter.Title,
+			Slug:    n.Slug,
+			Summary: n.Frontmatter.Summary,
+			Tags:    n.Frontmatter.Tags,
+			Updated: n.Frontmatter.Updated,
+			Status:  n.Frontmatter.Status,
+			Snippet: hctx.SanitizeContextContent(snippet),
+		})
+	}
+	return SearchKnowledgeOutput{Results: results}
+}
+
 func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool.Tool, error) {
+	return CreateKnowledgeToolsWithOptions(log, dir, SearchOptions{Expansion: searchExpansion})
+}
+
+// SearchOptions tunes knowledge search behavior. Expansion enables HyDE-lite
+// LLM query expansion; Hybrid fuses dense embeddings with BM25 via RRF
+// (spec docs/hybrid-retrieval/spec.md HR-005) using EmbedModel for sidecar
+// drift detection. Zero value = plain BM25 search, byte-identical to the
+// pre-hybrid behavior. EmbedFn (package var, set in setupRunner) must be
+// non-nil for the dense branch; otherwise hybrid degrades to BM25.
+type SearchOptions struct {
+	Expansion  bool
+	Hybrid     bool
+	EmbedModel string
+}
+
+// CreateKnowledgeToolsWithOptions builds the knowledge tools with full
+// search options. CreateKnowledgeTools is the expansion-only wrapper.
+func CreateKnowledgeToolsWithOptions(log LogFunc, dir string, opts SearchOptions) ([]tool.Tool, error) {
+	searchExpansion := opts.Expansion
 	var tools []tool.Tool
 
 	// 1. save_knowledge
@@ -472,7 +512,7 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 	// 3. search_knowledge
 	searchTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "search_knowledge",
-		Description: "Search knowledge notes by case-insensitive substring over title, aliases, tags, summary, and body, ranked by relevance (BM25; title matches outrank body matches). Optional tag filter requires ALL tags to match. When search_expansion is enabled in config, the query is expanded via the summarization model into alternative phrasings (HyDE-lite) and results are fused.",
+		Description: "Search knowledge notes by case-insensitive substring over title, aliases, tags, summary, and body, ranked by relevance (BM25; title matches outrank body matches). Optional tag filter requires ALL tags to match. When search_expansion is enabled in config, the query is expanded via the summarization model into alternative phrasings (HyDE-lite) and results are fused. When hybrid_search is enabled with an embedding model, dense vector similarity fuses with BM25 via Reciprocal Rank Fusion so paraphrase queries recall notes with no token overlap.",
 	}, func(ctx agent.Context, input SearchKnowledgeInput) (out SearchKnowledgeOutput, err error) {
 		_, span := tracing.StartRetrieval(ctx)
 		defer func() { tracing.EndRetrieval(span, err, len(out.Results)) }()
@@ -483,6 +523,15 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 		idx, err := GetKnowledgeIndex(dir)
 		if err != nil {
 			return SearchKnowledgeOutput{}, fmt.Errorf("building index: %w", err)
+		}
+
+		// Hybrid path: BM25 + dense fused via RRF (degrades to BM25 when
+		// embeddings are unavailable). The expansion path below stays
+		// BM25-only per phase: expansion phrasings are not embedded.
+		var scored []ScoredKnowledgeNote
+		if opts.Hybrid {
+			scored = HybridSearch(ctx, log, dir, idx, input.Query, input.Tags, input.IncludeArchived, true, opts.EmbedModel)
+			return buildSearchOutput(input.Query, scored), nil
 		}
 
 		// Collect the scored result sets for each query phrasing. Without
@@ -501,7 +550,6 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 			}
 		}
 
-		var scored []ScoredKnowledgeNote
 		switch {
 		case len(sets) == 0:
 			scored = nil // no matches
@@ -511,22 +559,7 @@ func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool
 			scored = fuseRRF(sets)
 		}
 
-		var results []KnowledgeSearchResult
-		for _, s := range scored {
-			n := s.Note
-			snippet := FirstSnippet(n.Body, input.Query)
-			results = append(results, KnowledgeSearchResult{
-				Title:   n.Frontmatter.Title,
-				Slug:    n.Slug,
-				Summary: n.Frontmatter.Summary,
-				Tags:    n.Frontmatter.Tags,
-				Updated: n.Frontmatter.Updated,
-				Status:  n.Frontmatter.Status,
-				Snippet: hctx.SanitizeContextContent(snippet),
-			})
-		}
-
-		return SearchKnowledgeOutput{Results: results}, nil
+		return buildSearchOutput(input.Query, scored), nil
 	})
 	if err != nil {
 		return nil, err

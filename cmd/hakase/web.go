@@ -259,7 +259,11 @@ func runServer(args []string, serveSPA bool) int {
 		},
 
 		CreateKnowledgeToolsFn: func(logFn interfaces.LogFunc, dir string, expansion bool) ([]tool.Tool, error) {
-			return knowledge.CreateKnowledgeTools(knowledge.LogFunc(logFn), dir, expansion)
+			return knowledge.CreateKnowledgeToolsWithOptions(knowledge.LogFunc(logFn), dir, knowledge.SearchOptions{
+				Expansion:  expansion,
+				Hybrid:     cfg.HybridSearch,
+				EmbedModel: cfg.KnowledgeEmbedModel,
+			})
 		},
 
 		CreateCronjobToolFn: func(logFn interfaces.LogFunc) (tool.Tool, error) {
