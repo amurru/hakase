@@ -6,6 +6,7 @@ import (
 	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/sidekick"
@@ -2155,6 +2156,26 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			return nil, fmt.Errorf("query expansion response did not parse")
 		}
 		return parsed, nil
+	}
+
+	// Dense-embedding seam for hybrid knowledge search (spec HR-005,
+	// docs/hybrid-retrieval/spec.md): when an embedding model is
+	// configured, note/query vectors come from the OpenAI-compatible
+	// embeddings endpoint (primary base_url or knowledge_embed_base_url
+	// override, primary api_key). Unset (CLI/tests, no embed model) means
+	// search degrades to BM25-only. Assigned directly like the skill
+	// EvolveMutateFn bridge below, not left to each main entrypoint.
+	if cfg.KnowledgeEmbedModel != "" {
+		embedBase := cfg.KnowledgeEmbedBaseURL
+		if embedBase == "" {
+			embedBase = cfg.BaseURL
+		}
+		embedProvider := &OpenAIProvider{BaseURL: embedBase}
+		embedModel := cfg.KnowledgeEmbedModel
+		embedKey := cfg.APIKey
+		knowledge.EmbedFn = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return embedProvider.EmbedTexts(ctx, embedKey, embedBase, embedModel, texts)
+		}
 	}
 
 	// Evolver mutator (plan Phase 3b): proposes a fix for a failing skill

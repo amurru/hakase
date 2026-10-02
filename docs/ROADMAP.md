@@ -50,8 +50,11 @@ open issue). Per-item notes live there; ordered by expected value:
    TUI). Design: `docs/hooks/`. Trust model is **Codex's
    content-hash**, not Gemini CLI's fingerprint-and-approve (that one is
    known-broken — gemini-cli#27900).
-2. **Hybrid retrieval for knowledge** — optional embeddings fused with BM25
-   via reciprocal rank fusion, default off to preserve zero-dependency.
+2. **Hybrid retrieval for knowledge** — shipped: optional dense
+   embeddings (OpenAI-compatible endpoint or Ollama) fused with BM25
+   via reciprocal rank fusion, default off to preserve
+   zero-dependency (`hybrid_search` + `knowledge_embed_model`).
+   Design: `docs/hybrid-retrieval/` (HR-001..HR-008).
 3. **Second channel transport** (Discord/Slack) — the `channel.Channel` +
    `PushHandler` seams exist; Telegram proves the flow.
 4. **Durable human-in-the-loop resume** — move off the classic `Runner` onto

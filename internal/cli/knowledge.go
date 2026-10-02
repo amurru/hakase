@@ -8,9 +8,11 @@
 package cli
 
 import (
+	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/skill"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -231,6 +233,7 @@ func runKnowledgeSearch(args []string) int {
 	var dir string
 	var tags []string
 	var query string
+	var hybrid bool
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		next := func() (string, bool) {
@@ -242,8 +245,11 @@ func runKnowledgeSearch(args []string) int {
 		}
 		switch {
 		case arg == "-h" || arg == "--help":
-			fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b]")
+			fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b] [--hybrid]")
+			fmt.Fprintln(os.Stderr, "  --hybrid fuses dense embeddings with BM25 via RRF (needs knowledge_embed_model in config)")
 			return 0
+		case arg == "--hybrid":
+			hybrid = true
 		case arg == "--dir":
 			v, ok := next()
 			if !ok {
@@ -264,12 +270,12 @@ func runKnowledgeSearch(args []string) int {
 			tags = splitTags(strings.TrimPrefix(arg, "--tags="))
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(os.Stderr, "unknown flag %q\n\n", arg)
-			fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b]")
+			fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b] [--hybrid]")
 			return 2
 		default:
 			if query != "" {
 				fmt.Fprintf(os.Stderr, "unexpected positional argument %q\n\n", arg)
-				fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b]")
+				fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b] [--hybrid]")
 				return 2
 			}
 			query = arg
@@ -277,12 +283,39 @@ func runKnowledgeSearch(args []string) int {
 	}
 	if query == "" {
 		fmt.Fprintln(os.Stderr, "search requires a query")
-		fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b]")
+		fmt.Fprintln(os.Stderr, "Usage: hakase knowledge search <query> [--dir <path>] [--tags a,b] [--hybrid]")
 		return 2
 	}
 
 	if dir == "" {
 		dir = loadKnowledgeDir()
+	}
+
+	// Hybrid mode builds the embedding seam in-process from the loaded
+	// config (same closure as the agent path). Without an embed model the
+	// flag is a loud error, not a silent BM25 run.
+	embedModel := ""
+	if hybrid {
+		cfg, err := config.LoadConfig("config.json")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: --hybrid needs config.json: %v\n", err)
+			return 1
+		}
+		if cfg.KnowledgeEmbedModel == "" {
+			fmt.Fprintln(os.Stderr, "error: --hybrid needs knowledge_embed_model in config")
+			return 1
+		}
+		base := cfg.KnowledgeEmbedBaseURL
+		if base == "" {
+			base = cfg.BaseURL
+		}
+		provider := &agent.OpenAIProvider{BaseURL: base}
+		model := cfg.KnowledgeEmbedModel
+		key := cfg.APIKey
+		knowledge.EmbedFn = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return provider.EmbedTexts(ctx, key, base, model, texts)
+		}
+		embedModel = cfg.KnowledgeEmbedModel
 	}
 
 	idx, err := knowledge.GetKnowledgeIndex(dir)
@@ -291,7 +324,9 @@ func runKnowledgeSearch(args []string) int {
 		return 1
 	}
 
-	results := knowledge.SearchKnowledgeScored(idx, query, tags, false)
+	results := knowledge.HybridSearch(context.Background(), func(m string) {
+		fmt.Fprintln(os.Stderr, m)
+	}, dir, idx, query, tags, false, hybrid, embedModel)
 	if len(results) == 0 {
 		fmt.Println("No results found.")
 		return 0
@@ -323,6 +358,8 @@ func runKnowledgeBench(args []string) int {
 	fs.StringVar(&dirFlag, "dir", "", "knowledge directory path")
 	fs.StringVar(&evalFlag, "eval", "", "bench set file (default: <knowledge_dir>/bench.json)")
 	fs.IntVar(&kFlag, "k", 5, "recall depth k (per-query k in the eval file overrides this)")
+	var hybridFlag bool
+	fs.BoolVar(&hybridFlag, "hybrid", false, "also score the hybrid BM25+dense path (needs knowledge_embed_model in config)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -373,67 +410,114 @@ func runKnowledgeBench(args []string) int {
 	var totalRecall, totalMRR float64
 	recallCount, mrrCount := 0, 0
 
-	for _, q := range set.Queries {
-		k := q.K
-		if k <= 0 {
-			k = kFlag
-		}
-		scored := knowledge.SearchKnowledgeScored(idx, q.Query, nil, false)
+	// score runs one retrieval path over the bench set and prints its
+	// table. BM25 always runs; hybrid runs second when --hybrid builds
+	// the embedding seam, so the delta is visible in one invocation.
+	score := func(label string, search func(q string) []knowledge.ScoredKnowledgeNote) bool {
+		results = results[:0]
+		totalRecall, totalMRR = 0, 0
+		recallCount, mrrCount = 0, 0
+		for _, q := range set.Queries {
+			k := q.K
+			if k <= 0 {
+				k = kFlag
+			}
+			scored := search(q.Query)
 
-		// Expected set, lowercased for matching.
-		expected := make(map[string]bool, len(q.Expected))
-		for _, e := range q.Expected {
-			expected[strings.ToLower(e)] = true
-		}
-		if len(expected) == 0 {
-			fmt.Fprintf(os.Stderr, "warning: query %q has no expected slugs; skipping\n", q.Query)
-			continue
-		}
+			// Expected set, lowercased for matching.
+			expected := make(map[string]bool, len(q.Expected))
+			for _, e := range q.Expected {
+				expected[strings.ToLower(e)] = true
+			}
+			if len(expected) == 0 {
+				fmt.Fprintf(os.Stderr, "warning: query %q has no expected slugs; skipping\n", q.Query)
+				continue
+			}
 
-		topK := scored
-		if len(topK) > k {
-			topK = topK[:k]
-		}
-		var hits []string
-		matched := 0
-		rr := 0.0
-		for rank, s := range topK {
-			if expected[s.Note.Slug] {
-				matched++
-				hits = append(hits, s.Note.Slug)
-				if rr == 0 {
-					rr = 1.0 / float64(rank+1)
+			topK := scored
+			if len(topK) > k {
+				topK = topK[:k]
+			}
+			var hits []string
+			matched := 0
+			rr := 0.0
+			for rank, s := range topK {
+				if expected[s.Note.Slug] {
+					matched++
+					hits = append(hits, s.Note.Slug)
+					if rr == 0 {
+						rr = 1.0 / float64(rank+1)
+					}
 				}
 			}
+			recall := float64(matched) / float64(len(expected))
+			results = append(results, queryResult{
+				query: q.Query, k: k, recall: recall, mrr: rr, matched: matched, hits: hits,
+			})
+			totalRecall += recall
+			recallCount++
+			totalMRR += rr
+			mrrCount++
 		}
-		recall := float64(matched) / float64(len(expected))
-		results = append(results, queryResult{
-			query: q.Query, k: k, recall: recall, mrr: rr, matched: matched, hits: hits,
-		})
-		totalRecall += recall
-		recallCount++
-		totalMRR += rr
-		mrrCount++
+
+		if recallCount == 0 {
+			fmt.Fprintln(os.Stderr, "no benchmark queries ran")
+			return false
+		}
+
+		fmt.Printf("Knowledge search benchmark [%s] (eval: %s, corpus: %d notes)\n", label, evalPath, len(idx.BySlug))
+		fmt.Println()
+		for _, r := range results {
+			fmt.Printf("  q: %s\n", r.query)
+			fmt.Printf("     recall@%d: %.2f (%d/%d expected found)%s\n", r.k, r.recall, r.matched, len(r.hits), "")
+			if len(r.hits) > 0 {
+				fmt.Printf("     hits: %s\n", strings.Join(r.hits, ", "))
+			}
+			fmt.Printf("     MRR: %.3f\n", r.mrr)
+		}
+		fmt.Println()
+		fmt.Printf("  Averages: recall@k %.2f  |  MRR %.3f  |  queries %d\n",
+			totalRecall/float64(recallCount), totalMRR/float64(mrrCount), recallCount)
+		return true
 	}
 
-	if recallCount == 0 {
-		fmt.Fprintln(os.Stderr, "no benchmark queries ran")
+	if !score("BM25", func(q string) []knowledge.ScoredKnowledgeNote {
+		return knowledge.SearchKnowledgeScored(idx, q, nil, false)
+	}) {
 		return 1
 	}
 
-	fmt.Printf("Knowledge search benchmark (eval: %s, corpus: %d notes)\n", evalPath, len(idx.BySlug))
-	fmt.Println()
-	for _, r := range results {
-		fmt.Printf("  q: %s\n", r.query)
-		fmt.Printf("     recall@%d: %.2f (%d/%d expected found)%s\n", r.k, r.recall, r.matched, len(r.hits), "")
-		if len(r.hits) > 0 {
-			fmt.Printf("     hits: %s\n", strings.Join(r.hits, ", "))
+	// Hybrid comparison table: same seam construction as `search --hybrid`.
+	// Endpoint-gated (loud error, never silent) so CI stays BM25-only.
+	if hybridFlag {
+		cfg, err := config.LoadConfig("config.json")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: --hybrid needs config.json: %v\n", err)
+			return 1
 		}
-		fmt.Printf("     MRR: %.3f\n", r.mrr)
+		if cfg.KnowledgeEmbedModel == "" {
+			fmt.Fprintln(os.Stderr, "error: --hybrid needs knowledge_embed_model in config")
+			return 1
+		}
+		base := cfg.KnowledgeEmbedBaseURL
+		if base == "" {
+			base = cfg.BaseURL
+		}
+		provider := &agent.OpenAIProvider{BaseURL: base}
+		model := cfg.KnowledgeEmbedModel
+		key := cfg.APIKey
+		knowledge.EmbedFn = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return provider.EmbedTexts(ctx, key, base, model, texts)
+		}
+		fmt.Println()
+		if !score("hybrid", func(q string) []knowledge.ScoredKnowledgeNote {
+			return knowledge.HybridSearch(context.Background(), func(m string) {
+				fmt.Fprintln(os.Stderr, m)
+			}, dir, idx, q, nil, false, true, model)
+		}) {
+			return 1
+		}
 	}
-	fmt.Println()
-	fmt.Printf("  Averages: recall@k %.2f  |  MRR %.3f  |  queries %d\n",
-		totalRecall/float64(recallCount), totalMRR/float64(mrrCount), recallCount)
 	return 0
 }
 
