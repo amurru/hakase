@@ -561,8 +561,8 @@ func InvalidateKnowledgeCache(dir string) {
 
 // ------------------- query expansion (Phase 3d-4) ---------------------------
 
-// ExpandQueryFn is the model-backed query-expansion callback, set in
-// setupRunner alongside EnrichKnowledgeFn (same provider stack: the
+// ExpandQueryFn is the model-backed query-expansion callback, assigned by
+// wireKnowledgeModelSeams in SetupRunner (same provider stack: the
 // configured summary model, falling back to the primary). It returns 2-3
 // rephrasings of the query (paraphrase + hypothetical answer, HyDE-lite).
 // nil means expansion is unavailable (CLI/tests) and plain search is used.
@@ -1164,10 +1164,11 @@ type KnowledgeEnrichment struct {
 	Metadata map[string]string `json:"metadata"`
 }
 
-// EnrichKnowledgeFn is the model-backed enrichment callback, set in
-// setupRunner with access to the configured summary model (falling back to
-// the primary model). When nil (CLI, tests, headless runs without a model),
-// save_knowledge uses only the deterministic extractors.
+// EnrichKnowledgeFn is the model-backed enrichment callback, assigned by
+// wireKnowledgeModelSeams in SetupRunner with access to the configured
+// summary model (falling back to the primary model). When nil (CLI, tests,
+// headless runs without a model), save_knowledge uses only the
+// deterministic extractors.
 var EnrichKnowledgeFn func(ctx context.Context, prompt string) (string, error)
 
 // knowledgeEnrichTemplate instructs the model to return strict JSON.

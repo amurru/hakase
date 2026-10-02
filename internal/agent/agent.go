@@ -2135,28 +2135,12 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}
 	}
 
-	// Model-backed knowledge enrichment: save_knowledge asks the same
-	// cheap/weak model (falling back to the primary) to produce structured
-	// summary/excerpt/tags/aliases/related/metadata data in a strict JSON
-	// shape. save_knowledge falls back to deterministic extraction when this
-	// callback is unset (CLI, tests) or the call fails.
-	deps.EnrichKnowledgeFn = ModelPromptFn
-
-	// HyDE-lite query expansion for search_knowledge (config-gated,
-	// plan Phase 3d-4): the same model rephrases the query into alternative
-	// phrasings. Falls back to plain search when unset (CLI/tests) or when
-	// the call fails/times out (handled by expandSearchQuery).
-	deps.ExpandQueryFn = func(ctx context.Context, query string) ([]string, error) {
-		raw, err := ModelPromptFn(ctx, deps.BuildQueryExpansionPromptFn(query))
-		if err != nil {
-			return nil, err
-		}
-		parsed := deps.ParseQueryExpansionsFn(raw)
-		if parsed == nil {
-			return nil, fmt.Errorf("query expansion response did not parse")
-		}
-		return parsed, nil
-	}
+	// Model-backed knowledge enrichment + HyDE-lite query expansion
+	// (spec KS-002, docs/knowledge-seams/spec.md): the knowledge tools
+	// read the knowledge package vars, so SetupRunner assigns them here
+	// directly. Falls back to deterministic paths when unset (CLI/tests)
+	// or when the call fails/times out (handled by the consumers).
+	wireKnowledgeModelSeams(ModelPromptFn, deps.BuildQueryExpansionPromptFn, deps.ParseQueryExpansionsFn)
 
 	// Dense-embedding seam for hybrid knowledge search (spec HR-005,
 	// docs/hybrid-retrieval/spec.md): when an embedding model is

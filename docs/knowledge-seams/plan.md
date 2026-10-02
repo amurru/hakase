@@ -10,14 +10,15 @@ A1. New `internal/agent/knowledge_seams.go`: `buildExpandQueryFn`
     (string, error)`, `buildPrompt func(string) string`,
     `parse func(string) []string` — returning the expansion closure
     (body moved verbatim from the `SetupRunner` inline closure).
-    `ModelPromptFn` is a plain func, not a var, so the helper must take
-    it as a parameter for tests to stub it.
-A2. `SetupRunner` calls `wireKnowledgeModelSeams(deps)` (new, same
-    file): assigns `knowledge.EnrichKnowledgeFn = ModelPromptFn`,
-    `knowledge.ExpandQueryFn = buildExpandQueryFn(ModelPromptFn,
+    `ModelPromptFn` is a plain func, not a var, so it must travel as
+    a parameter for tests to substitute a stub. `wireKnowledgeModelSeams`
+    takes the same three functions (not the whole `Deps` — keeps unit
+    tests light) and assigns both `knowledge` package vars directly.
+A2. `SetupRunner` calls
+    `wireKnowledgeModelSeams(ModelPromptFn,
     deps.BuildQueryExpansionPromptFn, deps.ParseQueryExpansionsFn)`.
-    Direct package-var assignment — the `EmbedFn` precedent — never a
-    Deps field.
+    Direct package-var assignment — the `EmbedFn`/`EvolveMutateFn`
+    precedent — never a Deps field.
 A3. Delete dead `Deps.EnrichKnowledgeFn` / `Deps.ExpandQueryFn`
     (repo-wide zero readers) + correct the two `knowledge.go` doc
     comments to name the helper.
@@ -26,14 +27,12 @@ A3. Delete dead `Deps.EnrichKnowledgeFn` / `Deps.ExpandQueryFn`
 
 B1. Unit: `buildExpandQueryFn` with a stub prompt returning a canned
     JSON array → closure returns 3 phrasings; stub returning garbage →
-    closure errors (fail-open preserved upstream). `EnrichKnowledgeFn`
-    assignment: after `wireKnowledgeModelSeams`-equivalent call with
-    stub deps... (helper takes no ModelPromptFn stub seam — see A1:
-    pass prompt explicitly so tests inject failures without models).
-B2. Bridge regression test: with stub prompt/build/parse fns,
-    `knowledge.ExpandSearchQuery` returns expanded phrasings after
-    wiring (fails on today's code — package var stays nil). Save the
-    pre-fix run as the red proof.
+    closure errors (fail-open preserved upstream); nil parse → error.
+B2. Bridge regression test — the test today's suite lacks: wire with
+    stub prompt/build/parse, then `knowledge.ExpandSearchQuery`
+    returns expanded phrasings (exercises the production path
+    helper → package var → consumer, which no existing test touches).
+    Restore `knowledge.*` vars after each test (parallel-suite safe).
 B3. Live smoke (manual, recorded in tasks): real binary,
     `search_expansion: true`, one search → audit/log shows the
     expansion model call; `save_knowledge` → enriched frontmatter

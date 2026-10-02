@@ -43,17 +43,43 @@ pre-migration behavior — see cost note); no CLI changes (CLI stays
 model-free, deterministic paths only); no sleep/web changes (both are
 BM25/deterministic by design).
 
-## KS-004 Cost note (explicit, decision required at review)
+## KS-004 Cost decision (evaluated, closed)
 
-Re-enabling enrichment is NOT behavior-free: `save_knowledge` will make
-one model call per save (summary model else primary), where today it
-pays zero. That was the pre-migration behavior and the documented
-contract ("asks the same cheap/weak model... with deterministic
-extraction as fallback"), but operators have lived 7 weeks without the
-cost. Expansion cost is opt-in (`search_expansion`, default off) and
-needs no decision. If review balks at unconditional enrichment, the
-fallback is a `knowledge_enrichment: false` kill-switch — not specced
-here; say so at plan review.
+Re-enabling enrichment costs one model call per `save_knowledge`
+(summary model else primary). Measured against the code, not estimated:
+input is capped — note content truncated to 4000 chars (~1000 tokens)
+plus at most 60 candidate lines of title/slug/summary (~1800 tokens)
+plus template (~300 tokens) — worst case ~3000 in / ~200 out tokens,
+typically far less, on the cheapest configured model. Saves happen a
+handful of times per session at most: sub-cent per save, noise against
+any real session. Decision: restore unconditionally (pre-migration
+behavior, documented contract). A `knowledge_enrichment` kill-switch
+was considered and rejected — an unnecessary knob for noise-level
+cost; the fail-open fallback already covers outages. Expansion cost is
+opt-in (`search_expansion`, default off) and needs no decision.
+
+## KS-006 Evaluation record (Oct 2026, pre-implementation review)
+
+- Sibling sweep: every other `Deps` callback field has live readers
+  (`NewMCPServerManagerFn`, `DiscoverMarkdownSkillsFn`,
+  `CreateKnowledgeToolsFn`, `CreateCronjobToolFn`,
+  `StartCronSchedulerFn`, `Build/ParseQueryExpansion*Fn`,
+  `ResolveVisionProviderFn`, `CreateMediaToolsFn` — all ≥1 reader);
+  `skill.EvolveMutateFn` is assigned directly in `SetupRunner` (the
+  healthy pattern). The two knowledge seams are the sole outliers.
+- Alternative rejected: threading the callbacks through
+  `CreateKnowledgeTools` parameters instead of package vars. The
+  consumers (`ExpandSearchQuery`, `modelEnrichKnowledge`) read the
+  package vars, as do tests and the sleep-adjacent paths; re-plumbing
+  them would churn 3 bridges + tool signatures for zero benefit.
+- `EmbedFn` (hybrid retrieval) evaluated and left unchanged: already
+  directly assigned, conditional by design, no defect.
+- Deletion safety: repo-wide grep shows zero readers of the two
+  `Deps` fields including tests — deletion cannot break callers.
+- Concurrency: assignment happens once per process inside
+  `SetupRunner`; no re-assignment path exists (SIGHUP reload does not
+  touch these). Reads are concurrent tool calls against a stable
+  func value — safe; `-race` in QA confirms.
 
 ## KS-005 Failure semantics (unchanged)
 
