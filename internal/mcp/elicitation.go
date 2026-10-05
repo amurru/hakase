@@ -132,7 +132,7 @@ func handleURLElicitation(params *mcp.ElicitParams, sessionID string) (*mcp.Elic
 		if question == "" {
 			question = "The MCP server asks you to open this link:"
 		}
-		go g.AskClarify(interfaces.ClarifyRequest{
+		go g.AskClarify(context.Background(), interfaces.ClarifyRequest{
 			Question:  question + "\n" + params.URL,
 			SessionID: sessionID,
 		})
@@ -208,7 +208,7 @@ func handleConfirmElicitation(server string, params *mcp.ElicitParams, sessionID
 	if g == nil {
 		return &mcp.ElicitResult{Action: "decline"}, nil
 	}
-	approved, err := g.AskApproval(interfaces.ApprovalRequest{
+	approved, err := g.AskApproval(context.Background(), interfaces.ApprovalRequest{
 		Tool:      "mcp_" + config.SanitizeMCPServerName(server),
 		Command:   params.Message,
 		Risk:      "unknown",
@@ -241,7 +241,7 @@ func handleFieldElicitation(params *mcp.ElicitParams, sessionID, name string, pr
 			choices = append(choices, fmt.Sprint(e))
 		}
 	}
-	resp, err := g.AskClarify(interfaces.ClarifyRequest{
+	resp, err := g.AskClarify(context.Background(), interfaces.ClarifyRequest{
 		Question:  question,
 		Choices:   choices,
 		SessionID: sessionID,

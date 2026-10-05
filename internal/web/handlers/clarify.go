@@ -6,6 +6,7 @@ package handlers
 import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -45,10 +46,11 @@ func (g *WebClarifyGate) promptSession(reqSession string) string {
 	return g.sessionID
 }
 
-// AskClarify blocks until the user answers or the expiry deadline is reached.
-// Emits an SSE clarify prompt, registers a response channel, and waits.
-// On timeout, emits clarify_timeout SSE event and returns ClarifyResponse{TimedOut: true}.
-func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+// AskClarify blocks until the user answers, the context is canceled
+// (e.g. /stop), or the expiry deadline is reached. Emits an SSE clarify
+// prompt, registers a response channel, and waits. On timeout, emits
+// clarify_timeout SSE event and returns ClarifyResponse{TimedOut: true}.
+func (g *WebClarifyGate) AskClarify(ctx context.Context, req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
 	clarifyID := "clar_" + uuid.New().String()
 	resp := make(chan interfaces.ClarifyResponse, 1)
 
@@ -68,7 +70,7 @@ func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.C
 		req.MultiSelect,
 	)
 
-	// Wait for response or timeout.
+	// Wait for response, context cancellation, or timeout.
 	expiry := g.ClarifyExpiry()
 	select {
 	case response := <-resp:
@@ -77,6 +79,12 @@ func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.C
 		delete(g.pending, clarifyID)
 		g.mu.Unlock()
 		return response, nil
+	case <-ctx.Done():
+		// Context canceled (e.g. /stop): clean up and return.
+		g.mu.Lock()
+		delete(g.pending, clarifyID)
+		g.mu.Unlock()
+		return interfaces.ClarifyResponse{Canceled: true}, ctx.Err()
 	case <-time.After(expiry):
 		// Timeout: emit clarify_timeout SSE event, return TimedOut response.
 		g.mu.Lock()

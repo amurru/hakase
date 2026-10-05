@@ -5,6 +5,7 @@ package tui
 
 import (
 	"amurru/hakase/internal/agent"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -545,7 +546,7 @@ func TestWaitForClarifyReturnsResponse(t *testing.T) {
 	resp := make(chan agent.ClarifyResponse, 1)
 	go func() { resp <- agent.ClarifyResponse{Answer: []string{"yes"}} }()
 
-	r := waitForClarify(resp, 5*time.Second)
+	r := waitForClarify(context.Background(), resp, 5*time.Second)
 	if len(r.Answer) != 1 || r.Answer[0] != "yes" {
 		t.Errorf("expected Answer=[yes], got %v", r.Answer)
 	}
@@ -555,7 +556,7 @@ func TestWaitForClarifyReturnsCanceled(t *testing.T) {
 	resp := make(chan agent.ClarifyResponse, 1)
 	go func() { resp <- agent.ClarifyResponse{Canceled: true} }()
 
-	r := waitForClarify(resp, 5*time.Second)
+	r := waitForClarify(context.Background(), resp, 5*time.Second)
 	if !r.Canceled {
 		t.Error("expected Canceled=true")
 	}
@@ -563,8 +564,22 @@ func TestWaitForClarifyReturnsCanceled(t *testing.T) {
 
 func TestWaitForClarifyTimeout(t *testing.T) {
 	resp := make(chan agent.ClarifyResponse, 1)
-	r := waitForClarify(resp, 10*time.Millisecond)
+	r := waitForClarify(context.Background(), resp, 10*time.Millisecond)
 	if !r.TimedOut {
 		t.Error("expected TimedOut=true on expiry")
+	}
+}
+
+func TestWaitForClarifyContextCancel(t *testing.T) {
+	resp := make(chan agent.ClarifyResponse, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate /stop before waiting
+	start := time.Now()
+	r := waitForClarify(ctx, resp, 300*time.Second)
+	if !r.Canceled {
+		t.Error("expected Canceled=true on context cancel")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("waitForClarify did not unblock promptly on context cancel")
 	}
 }

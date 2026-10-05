@@ -535,7 +535,7 @@ func getVenvPython(log LogFunc) (string, error) {
 // sessionID is the hakase session of the asking run (possibly empty); it is
 // attached to the approval prompt so transports can route it (gate prompt
 // routing).
-func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) error {
+func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string, sessionID string) error {
 	sandboxMode := "off"
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
@@ -560,7 +560,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) e
 	// nil sandbox, "" (missing), or "ask": require approval (fail closed).
 	// Source: "direct" for the root orchestrator. Delegation source tracking
 	// is out of scope for the initial implementation.
-	approved, aerr := ApproveExec(ApprovalRequest{
+	approved, aerr := ApproveExec(ctx, ApprovalRequest{
 		Tool:      "python_interpreter",
 		Command:   util.TruncateStr(code),
 		Risk:      "high",
@@ -604,7 +604,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		// Harmful-command protection gate: runs BEFORE getVenvPython so
 		// denied code never triggers venv creation side effects.
-		if err := checkPythonGate(deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
+		if err := checkPythonGate(ctx, deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
 			return PythonExecOutput{}, err
 		}
 

@@ -13,6 +13,7 @@ import (
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/vision"
+	"context"
 	"time"
 
 	"google.golang.org/adk/v2/model"
@@ -38,8 +39,8 @@ func init() {
 	}
 
 	// Sandbox hook: approval. Wires through to the agent's approval gate.
-	sandbox.ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
-		return hakaseagent.ApproveExec(hakaseagent.ApprovalRequest{
+	sandbox.ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
+		return hakaseagent.ApproveExec(ctx, hakaseagent.ApprovalRequest{
 			Tool:      req.Tool,
 			Command:   req.Command,
 			Args:      req.Args,

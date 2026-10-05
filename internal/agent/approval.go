@@ -2,6 +2,7 @@ package agent
 
 import (
 	"amurru/hakase/internal/interfaces"
+	"context"
 	"fmt"
 	"time"
 )
@@ -21,7 +22,7 @@ func ApprovalExpiry() time.Duration {
 
 // ApproveExec wraps the interactive approval gate. When the gate is nil
 // (headless mode / not yet wired), fails closed.
-func ApproveExec(req ApprovalRequest) (bool, error) {
+func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
 	if rt == nil {
 		return false, fmt.Errorf("no approval mechanism available (headless mode)")
 	}
@@ -29,5 +30,5 @@ func ApproveExec(req ApprovalRequest) (bool, error) {
 	if g == nil {
 		return false, fmt.Errorf("no approval mechanism available (headless mode)")
 	}
-	return g.AskApproval(req)
+	return g.AskApproval(ctx, req)
 }

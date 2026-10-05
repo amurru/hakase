@@ -115,7 +115,8 @@ func (g *Gates) elicit(ctx context.Context, sessionID string, params *mcp.Elicit
 
 // AskApproval resolves one approval request. Mode allow/deny short-circuit;
 // interactive mode elicits the client. Fail-closed on every failure path.
-func (g *Gates) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+// The timeout is derived from ctx so run cancellation (/stop) propagates.
+func (g *Gates) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	switch g.approvalC.Mode {
 	case "allow":
 		return true, nil
@@ -130,7 +131,7 @@ func (g *Gates) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
 	message := fmt.Sprintf("hakase wants to execute %s (risk: %s)\n\n%s\n\nReason: %s",
 		req.Tool, req.Risk, command, req.Reason)
 
-	ctx, cancel := context.WithTimeout(context.Background(), g.ApprovalExpiry())
+	ctx, cancel := context.WithTimeout(ctx, g.ApprovalExpiry())
 	defer cancel()
 	res, err := g.elicit(ctx, req.SessionID, &mcp.ElicitParams{
 		Message: message,
@@ -161,7 +162,8 @@ func (g *Gates) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
 
 // AskClarify resolves one mid-run question. Choices become an enum (or an
 // array of enum items under multi-select); free text otherwise.
-func (g *Gates) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+// The timeout is derived from ctx so run cancellation (/stop) propagates.
+func (g *Gates) AskClarify(ctx context.Context, req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
 	props := map[string]any{}
 	required := []string{"answer"}
 	switch {
@@ -186,7 +188,7 @@ func (g *Gates) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyRes
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), g.ClarifyExpiry())
+	ctx, cancel := context.WithTimeout(ctx, g.ClarifyExpiry())
 	defer cancel()
 	res, err := g.elicit(ctx, req.SessionID, &mcp.ElicitParams{
 		Message:         req.Question,

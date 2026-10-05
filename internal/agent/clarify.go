@@ -3,6 +3,7 @@ package agent
 import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/util"
+	"context"
 	"fmt"
 	"time"
 
@@ -54,7 +55,7 @@ func clarifyTimeout() time.Duration {
 
 // askClarify wraps the interactive clarify gate. When the gate is nil
 // (headless mode / not yet wired), fails closed.
-func askClarify(req ClarifyRequest) (ClarifyResponse, error) {
+func askClarify(ctx context.Context, req ClarifyRequest) (ClarifyResponse, error) {
 	if rt == nil {
 		return ClarifyResponse{}, fmt.Errorf("no clarify mechanism available (headless mode)")
 	}
@@ -62,7 +63,7 @@ func askClarify(req ClarifyRequest) (ClarifyResponse, error) {
 	if g == nil {
 		return ClarifyResponse{}, fmt.Errorf("no clarify mechanism available (headless mode)")
 	}
-	ifaceResp, err := g.AskClarify(interfaces.ClarifyRequest{
+	ifaceResp, err := g.AskClarify(ctx, interfaces.ClarifyRequest{
 		Question:    req.Question,
 		Choices:     req.Choices,
 		MultiSelect: req.MultiSelect,
@@ -84,7 +85,7 @@ func registerClarifyTool() (tool.Tool, error) {
 		Name:        "clarify",
 		Description: "Ask the user a question mid-task when you need input you cannot infer. Pass up to 4 answer options in 'choices', omit for an open-ended question.",
 	}, func(ctx agent.Context, input ClarifyInput) (ClarifyOutput, error) {
-		resp, err := askClarify(ClarifyRequest{
+		resp, err := askClarify(ctx, ClarifyRequest{
 			Question:    input.Question,
 			Choices:     input.Choices,
 			MultiSelect: input.MultiSelect,

@@ -3,6 +3,7 @@ package agent
 import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ type mockApprovalGate struct {
 	expiryFunc  func() time.Duration
 }
 
-func (m *mockApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+func (m *mockApprovalGate) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	if m.approveFunc != nil {
 		return m.approveFunc(req)
 	}
@@ -51,7 +52,7 @@ func TestApproveExecNilAskApprovalFailsClosed(t *testing.T) {
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if approved {
 		t.Error("ApproveExec returned true when rt is nil, want false")
 	}
@@ -81,7 +82,7 @@ func TestApproveExecWithStub(t *testing.T) {
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if !approved {
 		t.Error("ApproveExec returned false when stub returns true")
 	}
@@ -108,7 +109,7 @@ func TestApproveExecWithStubDeny(t *testing.T) {
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if approved {
 		t.Error("ApproveExec returned true when stub returns false")
 	}
@@ -139,7 +140,7 @@ func TestApproveExecPropagatesRequest(t *testing.T) {
 		ExpiresAt: time.Now().Add(30 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if !approved || err != nil {
 		t.Fatalf("ApproveExec returned (%v, %v)", approved, err)
 	}

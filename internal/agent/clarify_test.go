@@ -3,6 +3,7 @@ package agent
 import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
+	"context"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ type mockClarifyGate struct {
 	expiryFunc func() time.Duration
 }
 
-func (m *mockClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+func (m *mockClarifyGate) AskClarify(ctx context.Context, req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
 	if m.askFunc != nil {
 		return m.askFunc(req)
 	}
@@ -48,7 +49,7 @@ func TestClarifyExecNilAskClarifyFailsClosed(t *testing.T) {
 	rt = nil
 	t.Cleanup(func() { rt = saved })
 
-	resp, err := askClarify(ClarifyRequest{
+	resp, err := askClarify(context.Background(), ClarifyRequest{
 		Question: "What should I do?",
 		Choices:  []string{"A", "B"},
 	})
@@ -70,7 +71,7 @@ func TestClarifyExecWithStub(t *testing.T) {
 	})
 	t.Cleanup(func() { rt = saved })
 
-	resp, err := askClarify(ClarifyRequest{
+	resp, err := askClarify(context.Background(), ClarifyRequest{
 		Question: "What should I do?",
 		Choices:  []string{"A", "B"},
 	})
@@ -92,7 +93,7 @@ func TestClarifyExecWithStubCanceled(t *testing.T) {
 	})
 	t.Cleanup(func() { rt = saved })
 
-	resp, err := askClarify(ClarifyRequest{
+	resp, err := askClarify(context.Background(), ClarifyRequest{
 		Question: "What should I do?",
 		Choices:  []string{"A", "B"},
 	})
@@ -114,7 +115,7 @@ func TestClarifyExecWithStubTimedOut(t *testing.T) {
 	})
 	t.Cleanup(func() { rt = saved })
 
-	resp, err := askClarify(ClarifyRequest{
+	resp, err := askClarify(context.Background(), ClarifyRequest{
 		Question: "What should I do?",
 	})
 	if err != nil {
@@ -142,7 +143,7 @@ func TestClarifyExecPropagatesRequest(t *testing.T) {
 		Choices:     []string{"A", "B", "C"},
 		MultiSelect: false,
 	}
-	resp, err := askClarify(req)
+	resp, err := askClarify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("askClarify returned error: %v", err)
 	}

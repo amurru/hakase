@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +36,7 @@ func TestWebApprovalGate_AskApproval_Approved(t *testing.T) {
 	}
 	done := make(chan bool, 1)
 	go func() {
-		approved, err := gate.AskApproval(req)
+		approved, err := gate.AskApproval(context.Background(), req)
 		if err != nil {
 			t.Errorf("AskApproval error: %v", err)
 		}
@@ -113,7 +114,7 @@ func TestWebApprovalGate_AskApproval_Denied(t *testing.T) {
 	}
 	done := make(chan bool, 1)
 	go func() {
-		approved, _ := gate.AskApproval(req)
+		approved, _ := gate.AskApproval(context.Background(), req)
 		done <- approved
 	}()
 
@@ -171,7 +172,7 @@ func TestWebApprovalGate_Timeout(t *testing.T) {
 	}
 	done := make(chan bool, 1)
 	go func() {
-		approved, _ := gate.AskApproval(req)
+		approved, _ := gate.AskApproval(context.Background(), req)
 		done <- approved
 	}()
 
@@ -244,7 +245,7 @@ func TestWebClarifyGate_AskClarify_Choices(t *testing.T) {
 	}
 	done := make(chan interfaces.ClarifyResponse, 1)
 	go func() {
-		resp, _ := gate.AskClarify(req)
+		resp, _ := gate.AskClarify(context.Background(), req)
 		done <- resp
 	}()
 
@@ -309,7 +310,7 @@ func TestWebClarifyGate_AskClarify_FreeText(t *testing.T) {
 	}
 	done := make(chan interfaces.ClarifyResponse, 1)
 	go func() {
-		resp, _ := gate.AskClarify(req)
+		resp, _ := gate.AskClarify(context.Background(), req)
 		done <- resp
 	}()
 
@@ -366,7 +367,7 @@ func TestWebClarifyGate_Timeout(t *testing.T) {
 	}
 	done := make(chan interfaces.ClarifyResponse, 1)
 	go func() {
-		resp, _ := gate.AskClarify(req)
+		resp, _ := gate.AskClarify(context.Background(), req)
 		done <- resp
 	}()
 
@@ -436,5 +437,61 @@ func TestWebClarifyGate_MissingBody(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing choices/answer, got %d", w.Code)
+	}
+}
+
+// TestWebApprovalGate_AskApproval_ContextCancel verifies Phase 1
+// (ctx-aware gates): canceling the run context unblocks a pending
+// approval immediately instead of waiting for the expiry window.
+func TestWebApprovalGate_AskApproval_ContextCancel(t *testing.T) {
+	bridge := sse.NewEventBridge()
+	gate := NewWebApprovalGate(bridge, "test-session", interfaces.ApprovalConfig{ExpirySeconds: 300})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := gate.AskApproval(ctx, interfaces.ApprovalRequest{Tool: "system_exec", Command: "rm -rf /"})
+		done <- err
+	}()
+
+	cancel() // simulate /stop
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected context error on cancel, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskApproval did not unblock on context cancel (waited for expiry instead)")
+	}
+}
+
+// TestWebClarifyGate_AskClarify_ContextCancel verifies the same for
+// clarify: cancellation unblocks promptly with a Canceled response.
+func TestWebClarifyGate_AskClarify_ContextCancel(t *testing.T) {
+	bridge := sse.NewEventBridge()
+	gate := NewWebClarifyGate(bridge, "test-session", interfaces.ClarifyConfig{ExpirySeconds: 300})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		resp interfaces.ClarifyResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := gate.AskClarify(ctx, interfaces.ClarifyRequest{Question: "continue?"})
+		done <- result{resp, err}
+	}()
+
+	cancel() // simulate /stop
+	select {
+	case r := <-done:
+		if r.err == nil {
+			t.Fatal("expected context error on cancel, got nil")
+		}
+		if !r.resp.Canceled {
+			t.Error("expected Canceled=true on context cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskClarify did not unblock on context cancel (waited for expiry instead)")
 	}
 }

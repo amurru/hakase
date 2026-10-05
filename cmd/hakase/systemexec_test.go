@@ -7,6 +7,7 @@ package main
 import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func withPathsSandbox(t *testing.T, dir string, readRoots []string) {
 func withApproval(t *testing.T, approved bool) {
 	t.Helper()
 	saved := sandbox.ApproveFunc
-	sandbox.ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
+	sandbox.ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 		return approved, nil
 	}
 	t.Cleanup(func() { sandbox.ApproveFunc = saved })

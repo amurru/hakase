@@ -7,6 +7,7 @@ package handlers
 import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -46,11 +47,12 @@ func (g *WebApprovalGate) promptSession(reqSession string) string {
 	return g.sessionID
 }
 
-// AskApproval blocks until the user approves/denies or the expiry deadline
-// is reached. Emits an SSE approval prompt, registers a response channel,
-// and waits. On timeout, emits approval_timeout SSE event and returns false
+// AskApproval blocks until the user approves/denies, the context is
+// canceled (e.g. /stop), or the expiry deadline is reached. Emits an
+// SSE approval prompt, registers a response channel, and waits. On
+// timeout, emits approval_timeout SSE event and returns false
 // (fail-closed).
-func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+func (g *WebApprovalGate) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	approvalID := "appr_" + uuid.New().String()
 	resp := make(chan bool, 1)
 
@@ -71,7 +73,7 @@ func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, err
 		req.Command,
 	)
 
-	// Wait for response or timeout.
+	// Wait for response, context cancellation, or timeout.
 	expiry := g.ApprovalExpiry()
 	select {
 	case approved := <-resp:
@@ -80,6 +82,12 @@ func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, err
 		delete(g.pending, approvalID)
 		g.mu.Unlock()
 		return approved, nil
+	case <-ctx.Done():
+		// Context canceled (e.g. /stop): clean up and return.
+		g.mu.Lock()
+		delete(g.pending, approvalID)
+		g.mu.Unlock()
+		return false, ctx.Err()
 	case <-time.After(expiry):
 		// Timeout: emit approval_timeout SSE event, fail-closed (deny).
 		g.mu.Lock()

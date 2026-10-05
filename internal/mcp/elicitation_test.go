@@ -115,7 +115,7 @@ type fakeApprovalGate struct {
 	got     []interfaces.ApprovalRequest
 }
 
-func (f *fakeApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+func (f *fakeApprovalGate) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	f.got = append(f.got, req)
 	return f.approve, f.err
 }
@@ -134,7 +134,7 @@ type fakeClarifyGate struct {
 	got  []interfaces.ClarifyRequest
 }
 
-func (f *fakeClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+func (f *fakeClarifyGate) AskClarify(ctx context.Context, req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.got = append(f.got, req)
