@@ -387,6 +387,16 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 
 	genCfg := BuildGenerationConfig("")
 
+	// Tool-lifecycle hooks ride delegated runs too: without these, a
+	// delegate_task sub-agent's tool calls would bypass the user's
+	// PreToolUse gate. Nil/disabled runner yields nil callbacks, i.e.
+	// unchanged behaviour (see hookToolCallbacks).
+	var hookBefore []llmagent.BeforeToolCallback
+	var hookAfter []llmagent.AfterToolCallback
+	if deps != nil {
+		hookBefore, hookAfter = hookToolCallbacks(deps.HooksRunner)
+	}
+
 	subAgent, err := llmagent.New(llmagent.Config{
 		Name:                  fmt.Sprintf("delegate_%s", agentLabel),
 		Description:           fmt.Sprintf("Delegated sub-agent for %s tasks", agentLabel),
@@ -396,6 +406,8 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, ToolResultGuard},
+		BeforeToolCallbacks:   hookBefore,
+		AfterToolCallbacks:    hookAfter,
 	})
 	if err != nil {
 		reporter.finish("failed", err, "")

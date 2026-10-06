@@ -72,6 +72,7 @@ var allowedExts = map[string]bool{
 	".webm": true,
 	".mp3":  true,
 	".wav":  true,
+	".ogg":  true,
 }
 
 // Allocate returns a new path <root>/<ulid><ext> for the given extension.

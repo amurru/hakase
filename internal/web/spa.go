@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"io"
 	"log"
 	"mime"
@@ -49,7 +50,8 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterProjectRoutes(r)
 		// Chat (SSE streaming + message endpoint - task 21)
 		if bridge != nil && runner != nil && runtime != nil && sessionSvc != nil {
-			handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)
+			chatAPI := handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)
+			wireResumeBackend(chatAPI, approvalGate, clarifyGate)
 		}
 		// Approval/Clarify response endpoints (task 22)
 		if approvalGate != nil {
@@ -90,12 +92,46 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		handlers.RegisterMediaRoutes(r)
 		// Audio transcription / dictation route
 		handlers.RegisterTranscribeRoutes(r)
+		// Tool-lifecycle hooks: inspect layers, review/trust project hooks.
+		handlers.RegisterHooksRoutes(r, sessionSvc)
 	})
 
 	// SPA handler: serves static assets with cache control, falls back to index.html.
 	// Only mounted when assets are provided (nil = API-only mode, skip SPA).
 	if assets != nil {
 		r.Get("/*", spaHandler(assets))
+	}
+}
+
+// wireResumeBackend connects the durable-resume answer path
+// (docs/durable-resume/plan.md Phase 7): re-emitted prompts resolve
+// through the ChatAPI resume backend, and pending gate prompts are
+// re-emitted at startup behind AutoResumeOnStartup. Nil-tolerant:
+// without gates there is nothing to wire.
+func wireResumeBackend(chatAPI *handlers.ChatAPI, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate) {
+	if chatAPI == nil {
+		return
+	}
+	if approvalGate != nil {
+		approvalGate.SetResumeBackend(chatAPI)
+	}
+	if clarifyGate != nil {
+		clarifyGate.SetResumeBackend(chatAPI)
+	}
+	var autoResume bool
+	if cfg, err := config.LoadConfig("config.json"); err == nil {
+		autoResume = cfg.DurableResume.AutoResumeOnStartup
+	}
+	if !autoResume {
+		return
+	}
+	n, err := chatAPI.ResurrectInterruptedPrompts(context.Background())
+	if err != nil {
+		log.Printf("resume: resurrect on startup failed: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("resume: re-emitted %d interrupted gate prompt(s)", n)
 	}
 }
 

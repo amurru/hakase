@@ -301,7 +301,7 @@ func TestApprovalUIWaitForApprovalReturnsTrue(t *testing.T) {
 	resp := make(chan bool, 1)
 	go func() { resp <- true }()
 
-	ok := waitForApproval(resp, 5*time.Second)
+	ok := waitForApproval(context.Background(), resp, 5*time.Second)
 	if !ok {
 		t.Error("expected true when channel receives true")
 	}
@@ -311,7 +311,7 @@ func TestApprovalUIWaitForApprovalReturnsFalse(t *testing.T) {
 	resp := make(chan bool, 1)
 	go func() { resp <- false }()
 
-	ok := waitForApproval(resp, 5*time.Second)
+	ok := waitForApproval(context.Background(), resp, 5*time.Second)
 	if ok {
 		t.Error("expected false when channel receives false")
 	}
@@ -319,7 +319,7 @@ func TestApprovalUIWaitForApprovalReturnsFalse(t *testing.T) {
 
 func TestApprovalUIWaitForApprovalTimeoutAutoDeny(t *testing.T) {
 	resp := make(chan bool, 1)
-	ok := waitForApproval(resp, 10*time.Millisecond)
+	ok := waitForApproval(context.Background(), resp, 10*time.Millisecond)
 	if ok {
 		t.Error("expected false (auto-deny) on expiry")
 	}
@@ -331,7 +331,7 @@ func TestApprovalUINoProgramFailsClosed(t *testing.T) {
 	m := makeModel()
 	m.program = nil // simulate headless: no TUI program wired
 
-	approved, err := m.AskApproval(interfaces.ApprovalRequest{
+	approved, err := m.AskApproval(context.Background(), interfaces.ApprovalRequest{
 		Tool: "system_exec", Command: "ls", Risk: "LOW", Reason: "test",
 	})
 	if approved {
@@ -378,4 +378,18 @@ func safeHead(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func TestApprovalUIWaitForApprovalContextCancel(t *testing.T) {
+	resp := make(chan bool, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate /stop before waiting
+	start := time.Now()
+	ok := waitForApproval(ctx, resp, 300*time.Second)
+	if ok {
+		t.Error("expected false on context cancel")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("waitForApproval did not unblock promptly on context cancel")
+	}
 }

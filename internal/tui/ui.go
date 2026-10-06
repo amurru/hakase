@@ -2840,10 +2840,12 @@ func (m *AppModel) copySelection() {
 // waitForApproval blocks on the response channel until the user answers or the
 // expiry timer fires. Returns false (auto-deny) on expiry. Extracted so the
 // select logic is unit-testable without a tea.Program.
-func waitForApproval(resp chan bool, expiry time.Duration) bool {
+func waitForApproval(ctx context.Context, resp chan bool, expiry time.Duration) bool {
 	select {
 	case ok := <-resp:
 		return ok
+	case <-ctx.Done():
+		return false
 	case <-time.After(expiry):
 		return false
 	}

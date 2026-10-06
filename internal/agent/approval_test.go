@@ -3,6 +3,8 @@ package agent
 import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
+	hakasesession "amurru/hakase/internal/session"
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -15,7 +17,7 @@ type mockApprovalGate struct {
 	expiryFunc  func() time.Duration
 }
 
-func (m *mockApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+func (m *mockApprovalGate) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	if m.approveFunc != nil {
 		return m.approveFunc(req)
 	}
@@ -51,7 +53,7 @@ func TestApproveExecNilAskApprovalFailsClosed(t *testing.T) {
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if approved {
 		t.Error("ApproveExec returned true when rt is nil, want false")
 	}
@@ -81,7 +83,7 @@ func TestApproveExecWithStub(t *testing.T) {
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if !approved {
 		t.Error("ApproveExec returned false when stub returns true")
 	}
@@ -108,7 +110,7 @@ func TestApproveExecWithStubDeny(t *testing.T) {
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if approved {
 		t.Error("ApproveExec returned true when stub returns false")
 	}
@@ -139,7 +141,7 @@ func TestApproveExecPropagatesRequest(t *testing.T) {
 		ExpiresAt: time.Now().Add(30 * time.Second),
 	}
 
-	approved, err := ApproveExec(req)
+	approved, err := ApproveExec(context.Background(), req)
 	if !approved || err != nil {
 		t.Fatalf("ApproveExec returned (%v, %v)", approved, err)
 	}
@@ -191,5 +193,74 @@ func TestApprovalExpiryZeroFallsBack(t *testing.T) {
 	d := ApprovalExpiry()
 	if d != 60*time.Second {
 		t.Errorf("ApprovalExpiry() = %v, want 60s (fallback)", d)
+	}
+}
+
+func TestApproveExecRecordsPauseWhileBlocked(t *testing.T) {
+	preg, err := hakasesession.NewPauseRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewPauseRegistry: %v", err)
+	}
+	savedDeps, savedRt := deps, rt
+	deps = &Deps{PauseRegistry: preg}
+	rt = &Runtime{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	rt.SetApprovalGate(&mockApprovalGate{
+		approveFunc: func(req interfaces.ApprovalRequest) (bool, error) {
+			close(entered)
+			<-release
+			return true, nil
+		},
+	})
+	t.Cleanup(func() { deps, rt = savedDeps, savedRt })
+
+	done := make(chan bool, 1)
+	go func() {
+		ok, _ := ApproveExec(context.Background(), ApprovalRequest{
+			Tool: "system_exec", Command: "rm -rf /tmp/x",
+			Risk: "HIGH", Source: "direct", SessionID: "sess-1",
+			ExpiresAt: time.Now().Add(60 * time.Second),
+		})
+		done <- ok
+	}()
+
+	<-entered
+	recs, err := preg.ListForSession("sess-1")
+	if err != nil {
+		t.Fatalf("ListForSession: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records while blocked = %d, want 1", len(recs))
+	}
+	if recs[0].Gate != hakasesession.PauseGateApproval {
+		t.Errorf("gate = %q", recs[0].Gate)
+	}
+
+	close(release)
+	if !<-done {
+		t.Error("expected approval")
+	}
+	recs, err = preg.ListForSession("sess-1")
+	if err != nil {
+		t.Fatalf("ListForSession after resolve: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("records after resolve = %d, want 0", len(recs))
+	}
+}
+
+func TestApproveExecNilRegistryUnaffected(t *testing.T) {
+	savedDeps, savedRt := deps, rt
+	deps = &Deps{} // no PauseRegistry
+	rt = &Runtime{}
+	rt.SetApprovalGate(&mockApprovalGate{
+		approveFunc: func(req interfaces.ApprovalRequest) (bool, error) { return true, nil },
+	})
+	t.Cleanup(func() { deps, rt = savedDeps, savedRt })
+
+	ok, err := ApproveExec(context.Background(), ApprovalRequest{Tool: "system_exec"})
+	if !ok || err != nil {
+		t.Errorf("ApproveExec without registry = (%v, %v)", ok, err)
 	}
 }

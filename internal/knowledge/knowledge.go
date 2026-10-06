@@ -422,6 +422,28 @@ func SearchKnowledge(idx *KnowledgeIndex, query string, tags []string, includeAr
 	return out
 }
 
+// notePassesGate reports whether a note passes the hard search filters:
+// archived exclusion and the tag ALL-match. Shared by the BM25 and dense
+// branches so hybrid fusion compares identically gated sets.
+func notePassesGate(note *KnowledgeNote, tags []string, includeArchived bool) bool {
+	if !includeArchived && note.Frontmatter.Status == "archived" {
+		return false
+	}
+	for _, t := range tags {
+		found := false
+		for _, nt := range note.Frontmatter.Tags {
+			if strings.EqualFold(nt, t) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // SearchKnowledgeScored is the relevance-ranked form of SearchKnowledge: the
 // same substring + tag gating, but returning each match with its BM25 score.
 // Used by the knowledge bench and by query expansion (which fuses several
@@ -430,24 +452,9 @@ func SearchKnowledgeScored(idx *KnowledgeIndex, query string, tags []string, inc
 	query = strings.ToLower(query)
 	var results []KnowledgeNote
 
-noteloop:
 	for _, note := range idx.BySlug {
-		if !includeArchived && note.Frontmatter.Status == "archived" {
+		if !notePassesGate(note, tags, includeArchived) {
 			continue
-		}
-
-		// Tag filter: note must have ALL requested tags.
-		for _, t := range tags {
-			found := false
-			for _, nt := range note.Frontmatter.Tags {
-				if strings.EqualFold(nt, t) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue noteloop
-			}
 		}
 
 		// Substring match across searchable fields.
@@ -549,12 +556,13 @@ func GetKnowledgeIndex(dir string) (*KnowledgeIndex, error) {
 // after any note write so the next read rebuilds from disk.
 func InvalidateKnowledgeCache(dir string) {
 	knowledgeIndexCache.Delete(KnowledgeDir(dir))
+	invalidateVectorCache(dir)
 }
 
 // ------------------- query expansion (Phase 3d-4) ---------------------------
 
-// ExpandQueryFn is the model-backed query-expansion callback, set in
-// setupRunner alongside EnrichKnowledgeFn (same provider stack: the
+// ExpandQueryFn is the model-backed query-expansion callback, assigned by
+// wireKnowledgeModelSeams in SetupRunner (same provider stack: the
 // configured summary model, falling back to the primary). It returns 2-3
 // rephrasings of the query (paraphrase + hypothetical answer, HyDE-lite).
 // nil means expansion is unavailable (CLI/tests) and plain search is used.
@@ -1156,10 +1164,11 @@ type KnowledgeEnrichment struct {
 	Metadata map[string]string `json:"metadata"`
 }
 
-// EnrichKnowledgeFn is the model-backed enrichment callback, set in
-// setupRunner with access to the configured summary model (falling back to
-// the primary model). When nil (CLI, tests, headless runs without a model),
-// save_knowledge uses only the deterministic extractors.
+// EnrichKnowledgeFn is the model-backed enrichment callback, assigned by
+// wireKnowledgeModelSeams in SetupRunner with access to the configured
+// summary model (falling back to the primary model). When nil (CLI, tests,
+// headless runs without a model), save_knowledge uses only the
+// deterministic extractors.
 var EnrichKnowledgeFn func(ctx context.Context, prompt string) (string, error)
 
 // knowledgeEnrichTemplate instructs the model to return strict JSON.

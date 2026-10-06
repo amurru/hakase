@@ -31,7 +31,7 @@ func stubOperatorGate(t *testing.T) *[]interfaces.ApprovalRequest {
 	sandbox.EvaluateCommandFunc = func(sb *sandbox.SandboxConfig, command string, args []string) sandbox.GateDecision {
 		return sandbox.GateDecision{Action: sandbox.ActionAsk, Risk: sandbox.RiskMedium, Reason: "test: gate asks"}
 	}
-	sandbox.ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
+	sandbox.ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 		*seen = append(*seen, req)
 		return true, nil
 	}

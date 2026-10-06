@@ -19,6 +19,7 @@ import (
 	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/auth"
 	"amurru/hakase/internal/channel"
+	"amurru/hakase/internal/channel/discord"
 	"amurru/hakase/internal/channel/state"
 	"amurru/hakase/internal/channel/telegram"
 	"amurru/hakase/internal/cli"
@@ -190,7 +191,7 @@ func runServer(args []string, serveSPA bool) int {
 	// Channels enabled? Approvals/clarifications may then be answered from a
 	// phone, where sub-minute expiry is unanswerable (Hermes uses 600s).
 	// Clamp to >=300s so the gates stay answerable over a chat round-trip.
-	if cfg.Channels.Telegram.EnabledWithToken() {
+	if cfg.Channels.Telegram.EnabledWithToken() || cfg.Channels.Discord.EnabledWithToken() {
 		if cfg.Approval.ExpirySeconds > 0 && cfg.Approval.ExpirySeconds < minChannelGateExpirySeconds {
 			log.Printf("web: channels enabled - approval expiry raised %ds -> %ds", cfg.Approval.ExpirySeconds, minChannelGateExpirySeconds)
 			cfg.Approval.ExpirySeconds = minChannelGateExpirySeconds
@@ -259,7 +260,11 @@ func runServer(args []string, serveSPA bool) int {
 		},
 
 		CreateKnowledgeToolsFn: func(logFn interfaces.LogFunc, dir string, expansion bool) ([]tool.Tool, error) {
-			return knowledge.CreateKnowledgeTools(knowledge.LogFunc(logFn), dir, expansion)
+			return knowledge.CreateKnowledgeToolsWithOptions(knowledge.LogFunc(logFn), dir, knowledge.SearchOptions{
+				Expansion:  expansion,
+				Hybrid:     cfg.HybridSearch,
+				EmbedModel: cfg.KnowledgeEmbedModel,
+			})
 		},
 
 		CreateCronjobToolFn: func(logFn interfaces.LogFunc) (tool.Tool, error) {
@@ -370,12 +375,14 @@ func runServer(args []string, serveSPA bool) int {
 		log.Printf("web: channel state unavailable: %v", err)
 	}
 
-	// Communication channels (Telegram et al.): start inside this process so
-	// they share the runner, gates, bridge, sessions, and cron registry.
+	// Communication channels (Telegram, Discord): start inside this process
+	// so they share the runner, gates, bridge, sessions, and cron registry.
 	// Fail-soft: a bad token logs loudly but never kills the web server.
+	// One Service runs every enabled transport (each gets its own driver
+	// label and goroutine).
 	stopChannels := func() {}
 	var chanRunning func() bool
-	if cfg.Channels.Telegram.EnabledWithToken() {
+	if cfg.Channels.Telegram.EnabledWithToken() || cfg.Channels.Discord.EnabledWithToken() {
 		chanSvc, err := channel.NewService(channel.Deps{
 			Bridge:   bridge,
 			Runner:   runner,
@@ -387,22 +394,37 @@ func runServer(args []string, serveSPA bool) int {
 		if err != nil {
 			log.Printf("web: channel service unavailable: %v", err)
 		} else {
-			tg, err := telegram.New(telegram.Deps{
-				Service:      chanSvc,
-				Config:       cfg.Channels.Telegram,
-				SpeechToText: cfg.SpeechToText,
-				TextToSpeech: cfg.TextToSpeech,
-				Log:          func(format string, args ...any) { log.Printf("telegram: "+format, args...) },
-			})
-			if err != nil {
-				log.Printf("web: telegram channel disabled: %v", err)
-			} else {
-				chanSvc.Register(tg, tg)
-				chanSvc.Start()
-				log.Printf("web: telegram channel started")
-				chanRunning = chanSvc.IsRunning
-				stopChannels = func() { chanSvc.Stop(5 * time.Second) }
+			if cfg.Channels.Telegram.EnabledWithToken() {
+				tg, err := telegram.New(telegram.Deps{
+					Service:      chanSvc,
+					Config:       cfg.Channels.Telegram,
+					SpeechToText: cfg.SpeechToText,
+					TextToSpeech: cfg.TextToSpeech,
+					Log:          func(format string, args ...any) { log.Printf("telegram: "+format, args...) },
+				})
+				if err != nil {
+					log.Printf("web: telegram channel disabled: %v", err)
+				} else {
+					chanSvc.Register(tg, tg)
+					log.Printf("web: telegram channel started")
+				}
 			}
+			if cfg.Channels.Discord.EnabledWithToken() {
+				dc, err := discord.New(discord.Deps{
+					Service: chanSvc,
+					Config:  cfg.Channels.Discord,
+					Log:     func(format string, args ...any) { log.Printf("discord: "+format, args...) },
+				})
+				if err != nil {
+					log.Printf("web: discord channel disabled: %v", err)
+				} else {
+					chanSvc.Register(dc, dc)
+					log.Printf("web: discord channel started")
+				}
+			}
+			chanSvc.Start()
+			chanRunning = chanSvc.IsRunning
+			stopChannels = func() { chanSvc.Stop(5 * time.Second) }
 		}
 	}
 
@@ -432,6 +454,9 @@ func runServer(args []string, serveSPA bool) int {
 	// Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// External `hakase hooks ...` edits reload via SIGHUP (spec HK-111).
+	installHooksReloadOnHup()
 
 	select {
 	case err := <-done:

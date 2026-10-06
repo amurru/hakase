@@ -163,6 +163,18 @@ func TestRunKnowledgeSearch(t *testing.T) {
 	if code := RunKnowledgeCLI([]string{"search", "--dir", dir}); code != 2 {
 		t.Errorf("search no query: expected exit code 2, got %d", code)
 	}
+
+	// --hybrid without an embedding endpoint is a loud error (exit 1),
+	// never a silent BM25 run. knowledge.EmbedFn must stay nil so later
+	// tests are unaffected.
+	oldEmbed := knowledge.EmbedFn
+	defer func() { knowledge.EmbedFn = oldEmbed }()
+	if code := RunKnowledgeCLI([]string{"search", "quantum", "--dir", dir, "--hybrid"}); code != 1 {
+		t.Errorf("search --hybrid without config: expected exit code 1, got %d", code)
+	}
+	if knowledge.EmbedFn != nil {
+		t.Error("failed --hybrid must not install an EmbedFn")
+	}
 }
 
 func TestRunKnowledgeLint(t *testing.T) {

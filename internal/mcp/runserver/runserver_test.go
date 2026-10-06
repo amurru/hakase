@@ -561,7 +561,7 @@ func TestGatesMapping(t *testing.T) {
 	ask := func(g *Gates, b *gateBroker, sessionID string) (bool, error) {
 		g.attach(sessionID, b)
 		defer g.detach(sessionID, b)
-		return g.AskApproval(interfaces.ApprovalRequest{
+		return g.AskApproval(context.Background(), interfaces.ApprovalRequest{
 			Tool: "system_exec", Command: "rm -rf /tmp/x", Risk: "high", Reason: "cleanup", SessionID: sessionID,
 		})
 	}
@@ -597,21 +597,21 @@ func TestGatesMapping(t *testing.T) {
 	})
 	t.Run("allow mode short-circuits", func(t *testing.T) {
 		g := NewGates(interfaces.ApprovalConfig{Mode: "allow"}, interfaces.ClarifyConfig{})
-		ok, err := g.AskApproval(interfaces.ApprovalRequest{Tool: "system_exec"})
+		ok, err := g.AskApproval(context.Background(), interfaces.ApprovalRequest{Tool: "system_exec"})
 		if err != nil || !ok {
 			t.Fatalf("allow mode = (%v, %v)", ok, err)
 		}
 	})
 	t.Run("deny mode short-circuits", func(t *testing.T) {
 		g := NewGates(interfaces.ApprovalConfig{Mode: "deny"}, interfaces.ClarifyConfig{})
-		ok, err := g.AskApproval(interfaces.ApprovalRequest{Tool: "system_exec"})
+		ok, err := g.AskApproval(context.Background(), interfaces.ApprovalRequest{Tool: "system_exec"})
 		if err != nil || ok {
 			t.Fatalf("deny mode = (%v, %v)", ok, err)
 		}
 	})
 	t.Run("unbound fails closed", func(t *testing.T) {
 		g := newMapped(t)
-		ok, err := g.AskApproval(interfaces.ApprovalRequest{Tool: "system_exec"})
+		ok, err := g.AskApproval(context.Background(), interfaces.ApprovalRequest{Tool: "system_exec"})
 		if ok || err == nil {
 			t.Fatalf("unbound = (%v, %v), want fail-closed error", ok, err)
 		}
@@ -622,7 +622,7 @@ func TestGatesMapping(t *testing.T) {
 		g.attach("s1", b)
 		defer g.detach("s1", b)
 		start := time.Now()
-		ok, err := g.AskApproval(interfaces.ApprovalRequest{Tool: "system_exec", SessionID: "s1"})
+		ok, err := g.AskApproval(context.Background(), interfaces.ApprovalRequest{Tool: "system_exec", SessionID: "s1"})
 		if ok || err == nil {
 			t.Fatalf("expired ask = (%v, %v), want fail-closed", ok, err)
 		}
@@ -644,7 +644,7 @@ func TestGatesClarifyMapping(t *testing.T) {
 		done := serveBroker(g.brokers["s1"], script)
 		defer done()
 		req.SessionID = "s1"
-		return g.AskClarify(req)
+		return g.AskClarify(context.Background(), req)
 	}
 
 	t.Run("single choice", func(t *testing.T) {
@@ -696,7 +696,7 @@ func TestGatesClarifyMapping(t *testing.T) {
 	})
 	t.Run("unbound fails closed", func(t *testing.T) {
 		g := NewGates(interfaces.ApprovalConfig{}, interfaces.ClarifyConfig{})
-		if _, err := g.AskClarify(interfaces.ClarifyRequest{Question: "how?"}); err == nil {
+		if _, err := g.AskClarify(context.Background(), interfaces.ClarifyRequest{Question: "how?"}); err == nil {
 			t.Fatal("unbound clarify must fail closed")
 		}
 	})
@@ -704,7 +704,7 @@ func TestGatesClarifyMapping(t *testing.T) {
 		g, b, detach := newGates(t, 1)
 		defer detach()
 		// Nobody serves the broker: the ask must expire into TimedOut.
-		resp, err := g.AskClarify(interfaces.ClarifyRequest{Question: "how?", SessionID: "s1"})
+		resp, err := g.AskClarify(context.Background(), interfaces.ClarifyRequest{Question: "how?", SessionID: "s1"})
 		_ = b
 		if err != nil || !resp.TimedOut {
 			t.Fatalf("AskClarify = (%+v, %v), want TimedOut", resp, err)
@@ -730,7 +730,7 @@ func TestRunGateRoundTrip(t *testing.T) {
 	h.runner.onTurn = func(_ context.Context, sessionID string, _ agentrun.EventSink) {
 		// The gates are attached for the run's whole lifetime; the ask rides
 		// the run's broker by session id.
-		approvalOK, approvalErr = h.gates.AskApproval(interfaces.ApprovalRequest{
+		approvalOK, approvalErr = h.gates.AskApproval(context.Background(), interfaces.ApprovalRequest{
 			Tool: "system_exec", Command: "echo hi", SessionID: sessionID,
 		})
 	}
@@ -760,7 +760,7 @@ func TestRunGateUnfulfillableClient(t *testing.T) {
 	})
 	h.runner.onTurn = func(_ context.Context, sessionID string, _ agentrun.EventSink) {
 		// Blocks up to the 1s gate expiry, then the denial lets the turn end.
-		_, _ = h.gates.AskApproval(interfaces.ApprovalRequest{Tool: "system_exec", SessionID: sessionID})
+		_, _ = h.gates.AskApproval(context.Background(), interfaces.ApprovalRequest{Tool: "system_exec", SessionID: sessionID})
 	}
 	_, err := h.cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "run", Arguments: runArgs("hi", "", 0)})
 	if err == nil || !strings.Contains(err.Error(), "fulfill") {

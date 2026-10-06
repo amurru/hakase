@@ -321,27 +321,65 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 	}
 	tools = append(tools, videoTool)
 
-	// generate_audio (stub)
+	// generate_audio (Piper TTS via the media registry; MG-012).
 	audioTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "generate_audio",
-		Description: "Generate audio from text (stub - planned for v2). Returns actionable error.",
+		Description: "Synthesize text to speech with local Piper TTS (set media.audio_provider to piper with a text_to_speech default voice). Returns path and an audio markdown snippet.",
 	}, func(ctx agent.Context, input GenerateAudioInput) (GenerateAudioOutput, error) {
-		cfg := reg.Config()
-		// audio_provider off -> stub
-		if cfg.AudioProvider == "off" {
-			// If provider hint is off or auto with off config, return off message
-			hint := input.Provider
-			if hint == "" {
-				hint = "auto"
+		provHint := input.Provider
+		if provHint == "" || provHint == "auto" {
+			pref := reg.Config().AudioProvider
+			if pref != "" && pref != "auto" && pref != "off" {
+				provHint = pref
+			} else {
+				provHint = "auto"
 			}
-			if hint == "auto" || hint == "off" {
-				return GenerateAudioOutput{}, fmt.Errorf("audio generation is off: set media.audio_provider to openai once TTS is wired (planned v2)")
-			}
-			// Any other value -> not wired
-			return GenerateAudioOutput{}, fmt.Errorf("audio generation is not wired in this build: openai TTS is planned for v2")
 		}
-		// Any other audio value in v1 -> not wired
-		return GenerateAudioOutput{}, fmt.Errorf("audio generation is not wired in this build: openai TTS is planned for v2")
+		if reg.Config().AudioProvider == "off" && provHint == "auto" {
+			return GenerateAudioOutput{}, errors.New(audioOffMsg)
+		}
+		provider, err := reg.ResolveForProvider("audio", provHint)
+		if err != nil {
+			return GenerateAudioOutput{}, err
+		}
+		timeout := 120 * time.Second
+		if reg.Config().TimeoutSeconds != 0 {
+			timeout = time.Duration(reg.Config().TimeoutSeconds) * time.Second
+		}
+		ctxTimeout, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if err := reg.Acquire(ctxTimeout, provider.Name()); err != nil {
+			return GenerateAudioOutput{}, err
+		}
+		defer reg.Release(provider.Name())
+
+		start := time.Now()
+		result, err := provider.GenerateAudio(ctxTimeout, AudioRequest{
+			Text:     input.Text,
+			Voice:    input.Voice,
+			Provider: provHint,
+			Model:    input.Model,
+		})
+		durationMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return GenerateAudioOutput{}, err
+		}
+		appendManifest(reg.Store(), manifestEntry{
+			TS:         time.Now().UTC().Format(time.RFC3339),
+			Tool:       "generate_audio",
+			Prompt:     input.Text,
+			Provider:   result.Provider,
+			Path:       result.Path,
+			DurationMs: durationMs,
+			Model:      result.Model,
+		})
+		return GenerateAudioOutput{
+			Path:     result.Path,
+			Provider: result.Provider,
+			Model:    result.Model,
+			MimeType: result.MimeType,
+			Markdown: result.Markdown,
+		}, nil
 	})
 	if err != nil {
 		return nil, err

@@ -50,6 +50,11 @@ const router = createRouter({
           component: () => import('@/views/MemoryView.vue'),
         },
         {
+          path: 'hooks',
+          name: 'hooks',
+          component: () => import('@/views/HooksView.vue'),
+        },
+        {
           path: 'skills',
           name: 'skills',
           component: () => import('@/views/SkillsView.vue'),

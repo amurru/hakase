@@ -2,7 +2,9 @@ package agent
 
 import (
 	"amurru/hakase/internal/interfaces"
+	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
+	"context"
 	"fmt"
 	"time"
 
@@ -53,8 +55,10 @@ func clarifyTimeout() time.Duration {
 }
 
 // askClarify wraps the interactive clarify gate. When the gate is nil
-// (headless mode / not yet wired), fails closed.
-func askClarify(req ClarifyRequest) (ClarifyResponse, error) {
+// (headless mode / not yet wired), fails closed. While blocked, the
+// pause is recorded for durable resume (best-effort; never fails the
+// gate) and removed on resolve.
+func askClarify(ctx context.Context, req ClarifyRequest) (ClarifyResponse, error) {
 	if rt == nil {
 		return ClarifyResponse{}, fmt.Errorf("no clarify mechanism available (headless mode)")
 	}
@@ -62,7 +66,16 @@ func askClarify(req ClarifyRequest) (ClarifyResponse, error) {
 	if g == nil {
 		return ClarifyResponse{}, fmt.Errorf("no clarify mechanism available (headless mode)")
 	}
-	ifaceResp, err := g.AskClarify(interfaces.ClarifyRequest{
+	pauseID := recordGatePause(ctx, hakasesession.PauseGateClarify, req.SessionID,
+		"clarify: "+util.TruncateStr(req.Question),
+		map[string]any{
+			"question": req.Question, "choices": req.Choices,
+			"multi_select": req.MultiSelect,
+		})
+	if pauseID != "" {
+		defer unrecordGatePause(pauseID)
+	}
+	ifaceResp, err := g.AskClarify(ctx, interfaces.ClarifyRequest{
 		Question:    req.Question,
 		Choices:     req.Choices,
 		MultiSelect: req.MultiSelect,
@@ -83,8 +96,12 @@ func registerClarifyTool() (tool.Tool, error) {
 	return util.NewDocTool(functiontool.Config{
 		Name:        "clarify",
 		Description: "Ask the user a question mid-task when you need input you cannot infer. Pass up to 4 answer options in 'choices', omit for an open-ended question.",
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-question can resume
+		// from the answer. Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, func(ctx agent.Context, input ClarifyInput) (ClarifyOutput, error) {
-		resp, err := askClarify(ClarifyRequest{
+		resp, err := askClarify(ctx, ClarifyRequest{
 			Question:    input.Question,
 			Choices:     input.Choices,
 			MultiSelect: input.MultiSelect,

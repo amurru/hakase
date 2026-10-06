@@ -6,6 +6,7 @@ package agent
 import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
@@ -47,10 +48,28 @@ type Deps struct {
 	// HistoryBuilder for context management.
 	HistoryBuilder *hctx.HistoryBuilder
 
-	// Knowledge enrichment / query expansion callbacks (model-backed).
-	EnrichKnowledgeFn func(ctx context.Context, prompt string) (string, error)
-	ExpandQueryFn     func(ctx context.Context, query string) ([]string, error)
-	EvolveMutateFn    func(ctx context.Context, prompt string) (string, error)
+	// HooksRunner is the process-wide tool-lifecycle hooks runner built
+	// from cfg.Hooks during SetupRunner (docs/hooks/spec.md HK-004). The
+	// four prebuilt agents close over it directly; the delegate_task path
+	// reads it here because its sub-agents are built per-delegation in
+	// delegate.go, long after SetupRunner returns. Nil (or disabled) means
+	// no hooks: every Check method is a no-op on it.
+	HooksRunner *hooks.Runner
+
+	// PauseRegistry records in-flight gate pauses for durable resume
+	// (docs/durable-resume/plan.md Phase 3). Built by SetupRunner when
+	// durable_resume is enabled; nil otherwise, and the gate wrappers
+	// skip recording (gates work unchanged).
+	PauseRegistry *hakasesession.PauseRegistry
+
+	// Evolver mutator callback (model-backed). NOTE: the knowledge
+	// enrichment / query-expansion callbacks used to live here as
+	// EnrichKnowledgeFn / ExpandQueryFn, but nothing ever read them —
+	// the knowledge tools consume the knowledge package vars, which
+	// SetupRunner assigns directly (see knowledge_seams.go). The dead
+	// fields were deleted Oct 2026 (spec KS-002) so the trap cannot
+	// recur; do not re-add Deps fields for knowledge model seams.
+	EvolveMutateFn func(ctx context.Context, prompt string) (string, error)
 
 	// --- Bridge factories for root functions (tasks 8-10 will eliminate these) ---
 

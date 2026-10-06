@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/sandbox"
 )
 
@@ -46,6 +47,21 @@ type ClarifyConfig struct {
 	// ExpirySeconds is how long the tool waits for a user answer before
 	// returning a timed-out response. 0 uses the default (120s).
 	ExpirySeconds int `json:"expiry_seconds,omitempty"`
+}
+
+// DurableResumeConfig tunes durable human-in-the-loop resume
+// (docs/durable-resume/plan.md). When disabled (default), ADK session
+// history is in-memory only and a restart loses in-flight gate pauses.
+type DurableResumeConfig struct {
+	// Enabled switches the runner's ADK session service from in-memory
+	// to the durable JSON store. Default false.
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxResumeAgeMinutes caps how old a paused gate may be to resume.
+	// 0 uses the default (30).
+	MaxResumeAgeMinutes int `json:"max_resume_age_minutes,omitempty"`
+	// AutoResumeOnStartup re-emits pending gate prompts on startup.
+	// Default false: set true to resume automatically.
+	AutoResumeOnStartup bool `json:"auto_resume_on_startup,omitempty"`
 }
 
 // ContextFilesConfig tunes the project context files (AGENTS.md) feature.
@@ -183,6 +199,11 @@ type Config struct {
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
+	// DurableResume enables durable human-in-the-loop resume: ADK
+	// session history (including gate pauses) is persisted so a
+	// restart can resume interrupted runs. Absent/disabled = in-memory
+	// only (previous behavior).
+	DurableResume DurableResumeConfig `json:"durable_resume,omitempty"`
 	// Auth tunes the web authentication layer (cookie security, login
 	// hardening). Absent/zero values are the secure defaults (cookie Secure
 	// flag on). The web bootstrap (cmd/hakase/web.go) may override with the
@@ -195,6 +216,21 @@ type Config struct {
 	// OR-matched and fused with Reciprocal Rank Fusion; on failure or
 	// timeout it falls back silently to plain substring search.
 	SearchExpansion bool `json:"search_expansion,omitempty"`
+	// HybridSearch fuses dense embeddings with BM25 via Reciprocal Rank
+	// Fusion for search_knowledge (spec docs/hybrid-retrieval/spec.md
+	// HR-005). Default false: when off, search behavior is byte-identical
+	// to plain BM25 search and no embedding endpoint is ever contacted.
+	HybridSearch bool `json:"hybrid_search,omitempty"`
+	// KnowledgeEmbedModel names the embedding model used for hybrid
+	// search (e.g. "nomic-embed-text" on Ollama, "text-embedding-3-small"
+	// on OpenAI). Empty = hybrid search unavailable (search degrades to
+	// BM25); HybridSearch=true with no model fails config load.
+	KnowledgeEmbedModel string `json:"knowledge_embed_model,omitempty"`
+	// KnowledgeEmbedBaseURL optionally overrides the endpoint used for the
+	// embedding model. When empty, the primary base_url is used. Needed
+	// when the primary provider is gemini (native Gemini embeddings are
+	// out of scope) - e.g. a local Ollama at http://localhost:11434/v1.
+	KnowledgeEmbedBaseURL string `json:"knowledge_embed_base_url,omitempty"`
 	// Media configures pluggable media generation (image/video/audio).
 	Media MediaConfig `json:"media,omitempty"`
 	// Sidekick tunes the optional second-LLM "sidekick" agent (side-process
@@ -225,6 +261,12 @@ type Config struct {
 	// start. On by default; enabled:false removes the tools and the
 	// session-start injection. See MemoryConfig for the per-field meaning.
 	Memory MemoryConfig `json:"memory,omitempty"`
+	// Hooks tunes user-configurable tool-lifecycle hooks (docs/hooks/
+	// spec.md, issue #20 Tier-2 item): PreToolUse handlers that can block a
+	// tool call and PostToolUse handlers that observe results. The embedded
+	// type is hooks.Config so there is exactly one shape; absent = on but
+	// with no groups the runner is a no-op. See HooksEnabled.
+	Hooks hooks.Config `json:"hooks,omitempty"`
 	// Tracing configures OpenTelemetry GenAI tracing over OTLP/HTTP
 	// (docs/otel-tracing/spec.md, issue #18): one waterfall trace per agent
 	// run — LLM calls with token usage, tool calls with durations, delegated
@@ -433,6 +475,28 @@ func MemoryMaxNotes(c *Config) int {
 	return c.Memory.MaxNotes
 }
 
+// HooksEnabled reports whether tool-lifecycle hooks are on: only an
+// explicit enabled:false disables them (MemoryConfig tri-state pattern).
+// Note this only gates the block; with no hook groups configured the
+// runner is a no-op either way.
+func HooksEnabled(c *Config) bool {
+	if c == nil {
+		return true
+	}
+	return hooks.Enabled(&c.Hooks)
+}
+
+// ProjectHooksEnabled reports whether the project hooks layer
+// (<root>/.hakase/hooks.json) loads. Default true; the trust gate still
+// applies per hook. Only an explicit enabled:false (or
+// HAKASE_HOOKS_PROJECT_ENABLED=0) disables the layer entirely.
+func ProjectHooksEnabled(c *Config) bool {
+	if c == nil {
+		return true
+	}
+	return hooks.ProjectLayerEnabled(&c.Hooks)
+}
+
 // SleepConfig tunes one SkillOpt-Sleep night. Defaults (documented per
 // field) keep the loop conservative: redaction always on, no evidence log,
 // single-group nights, no auto-adoption. redact_secrets is the one field
@@ -540,6 +604,10 @@ type ChannelsConfig struct {
 	EnableCronScheduler bool `json:"enable_cron_scheduler,omitempty"`
 	// Telegram configures the Telegram bot channel. See TelegramChannelConfig.
 	Telegram TelegramChannelConfig `json:"telegram,omitempty"`
+	// Discord configures the Discord DM bot channel. See
+	// DiscordChannelConfig. Off unless explicitly enabled with a token,
+	// same as Telegram; both transports can run at once.
+	Discord DiscordChannelConfig `json:"discord,omitempty"`
 }
 
 // TelegramChannelConfig configures the Telegram bot transport. Follows the
@@ -562,6 +630,29 @@ type TelegramChannelConfig struct {
 	// Pins pins the user's prompt message for the duration of each Telegram
 	// run and unpins it at completion (Hermes-style turn marker). Default off.
 	Pins bool `json:"pins,omitempty"`
+}
+
+// DiscordChannelConfig configures the Discord DM bot transport. Mirrors
+// TelegramChannelConfig: Enabled is a *bool so "absent" stays
+// distinguishable from "false", and the feature is off unless explicitly
+// enabled with a token. v1 is DM-only (spec DC-001); guild messages are
+// dropped, so no privileged intents are needed.
+type DiscordChannelConfig struct {
+	// Enabled toggles the Discord channel. nil/absent = disabled.
+	Enabled *bool `json:"enabled,omitempty"`
+	// BotToken is the bot token from the Discord Developer Portal
+	// (application → Bot → Token). May also come from the
+	// HAKASE_DISCORD_BOT_TOKEN environment variable (env wins).
+	BotToken string `json:"bot_token,omitempty"`
+	// AllowedUserIDs statically allowlists Discord user IDs as decimal
+	// snowflakes (deny-by-default; Developer Portal → ... → copy User ID
+	// with developer mode on). When empty, users pair at runtime via
+	// `pair <code>` with the pairing code printed on the server console
+	// (or `hakase channels pair-code`). Snowflakes must fit int64.
+	AllowedUserIDs []int64 `json:"allowed_user_ids,omitempty"`
+	// PairingCode optionally fixes a static pairing code for scripted setups
+	// instead of the generated rotating code. Stored plaintext, like api_key.
+	PairingCode string `json:"pairing_code,omitempty"`
 }
 
 // Default values for the speech blocks.
@@ -713,15 +804,47 @@ func (c *TTSConfig) Validate() error {
 // ApplyDefaults fills zero values with channel defaults. Call after load.
 func (c *ChannelsConfig) ApplyDefaults() {
 	c.Telegram.ApplyDefaults()
+	c.Discord.ApplyDefaults()
 }
 
 // Validate checks ChannelsConfig.
 func (c *ChannelsConfig) Validate() error {
-	return c.Telegram.Validate()
+	if err := c.Telegram.Validate(); err != nil {
+		return err
+	}
+	return c.Discord.Validate()
 }
 
 // ApplyDefaults normalizes the Telegram channel config.
 func (c *TelegramChannelConfig) ApplyDefaults() {
+}
+
+// ApplyDefaults normalizes the Discord channel config.
+func (c *DiscordChannelConfig) ApplyDefaults() {
+}
+
+// Validate errors when the Discord channel is explicitly enabled without a
+// bot token, or when an allowlisted snowflake is not a valid int64.
+func (c *DiscordChannelConfig) Validate() error {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.BotToken) == "" {
+		return fmt.Errorf("channels.discord: enabled but bot_token is empty (set bot_token or HAKASE_DISCORD_BOT_TOKEN, or disable with enabled:false)")
+	}
+	for _, id := range c.AllowedUserIDs {
+		if id <= 0 {
+			return fmt.Errorf("channels.discord: allowed_user_ids holds invalid snowflake %d (must be a positive int64)", id)
+		}
+	}
+	return nil
+}
+
+// EnabledWithToken reports whether the Discord channel should actually start:
+// explicitly enabled AND carrying a non-empty token. This is the single
+// source of truth consumed by the web bootstrap and tests.
+func (c *DiscordChannelConfig) EnabledWithToken() bool {
+	return c != nil && c.Enabled != nil && *c.Enabled && strings.TrimSpace(c.BotToken) != ""
 }
 
 // Validate errors when the Telegram channel is explicitly enabled without a
@@ -946,7 +1069,7 @@ func (c *MediaConfig) ApplyDefaults() {
 		c.AudioProvider = "off"
 	}
 	if len(c.Order) == 0 {
-		c.Order = []string{"openai", "fal", "pil"}
+		c.Order = []string{"openai", "fal", "pil", "piper"}
 	}
 	if c.OutputDir == "" {
 		c.OutputDir = "outputs/media"
@@ -983,9 +1106,9 @@ func (c *MediaConfig) Validate() error {
 	if !validVideo[c.VideoProvider] {
 		return fmt.Errorf("invalid media.video_provider %q: must be one of auto, openai, fal, off", c.VideoProvider)
 	}
-	validAudio := map[string]bool{"off": true, "openai": true, "elevenlabs": true}
+	validAudio := map[string]bool{"off": true, "openai": true, "elevenlabs": true, "piper": true}
 	if !validAudio[c.AudioProvider] {
-		return fmt.Errorf("invalid media.audio_provider %q: must be one of off, openai, elevenlabs", c.AudioProvider)
+		return fmt.Errorf("invalid media.audio_provider %q: must be one of off, openai, elevenlabs, piper", c.AudioProvider)
 	}
 	if c.MaxConcurrent < 0 {
 		return fmt.Errorf("invalid media.max_concurrent %d: must be >= 0", c.MaxConcurrent)
@@ -1022,6 +1145,8 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_SIDEKICK_API_KEY") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN") != "" ||
+		os.Getenv("HAKASE_DISCORD_ENABLED") != "" ||
+		os.Getenv("HAKASE_DISCORD_BOT_TOKEN") != "" ||
 		os.Getenv("HAKASE_MEMORY_ENABLED") != "" ||
 		os.Getenv("HAKASE_MEMORY_MAX_PROMPT_CHARS") != "" ||
 		os.Getenv("HAKASE_MEMORY_MAX_NOTES") != "" ||
@@ -1031,6 +1156,8 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_TRACING_HEADERS") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_SESSION_SNAPSHOTS_MAX") != "" ||
+		os.Getenv("HAKASE_HOOKS_ENABLED") != "" ||
+		os.Getenv("HAKASE_HOOKS_PROJECT_ENABLED") != "" ||
 		os.Getenv("HAKASE_STT_ENABLED") != "" ||
 		os.Getenv("HAKASE_TTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_STT_ENABLED") != "" ||
@@ -1212,6 +1339,19 @@ func LoadConfig(filePath string) (*Config, error) {
 		}
 		cfg.SearchExpansion = b
 	}
+	if v := os.Getenv("HAKASE_HYBRID_SEARCH"); v != "" {
+		b, err := parseEnvBool("HAKASE_HYBRID_SEARCH", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.HybridSearch = b
+	}
+	if v := os.Getenv("HAKASE_KNOWLEDGE_EMBED_MODEL"); v != "" {
+		cfg.KnowledgeEmbedModel = v
+	}
+	if v := os.Getenv("HAKASE_KNOWLEDGE_EMBED_BASE_URL"); v != "" {
+		cfg.KnowledgeEmbedBaseURL = v
+	}
 	if v := os.Getenv("HAKASE_DEBUG"); v != "" {
 		b, err := parseEnvBool("HAKASE_DEBUG", v)
 		if err != nil {
@@ -1283,6 +1423,17 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Channels.Telegram.BotToken = v
+	}
+	// Discord channel env overrides (mirrors the Telegram pattern).
+	if v := os.Getenv("HAKASE_DISCORD_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_DISCORD_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Channels.Discord.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_DISCORD_BOT_TOKEN"); v != "" {
+		cfg.Channels.Discord.BotToken = v
 	}
 	cfg.Channels.ApplyDefaults()
 	if err := cfg.Channels.Validate(); err != nil {
@@ -1399,6 +1550,28 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 
+	// Hooks env override (mirrors the memory pattern) + defaults/validate.
+	// Validation runs at load so a malformed hooks block fails startup
+	// loudly (landlock precedent), never silently.
+	if v := os.Getenv("HAKASE_HOOKS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_HOOKS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Hooks.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_HOOKS_PROJECT_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_HOOKS_PROJECT_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Hooks.Project.Enabled = &b
+	}
+	cfg.Hooks.ApplyDefaults()
+	if err := cfg.Hooks.Validate(); err != nil {
+		return nil, err
+	}
+
 	// Issue #14: landlock mode is reserved but unimplemented - refuse at
 	// config load instead of silently degrading to path-auditing-only exec.
 	// LoadSandboxConfig normalizes the roots so Validate sees the effective
@@ -1417,6 +1590,18 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if cfg.Media.OpenAIImageBaseURL == "" && cfg.BaseURL != "" {
 		cfg.Media.OpenAIImageBaseURL = cfg.BaseURL
+	}
+
+	// Hybrid search validation (spec HR-003): static misconfig fails fast
+	// at load; runtime endpoint failures degrade to BM25 at search time.
+	if cfg.HybridSearch && strings.TrimSpace(cfg.KnowledgeEmbedModel) == "" {
+		return nil, fmt.Errorf("hybrid_search requires knowledge_embed_model")
+	}
+	if strings.TrimSpace(cfg.KnowledgeEmbedModel) != "" &&
+		cfg.Provider == "gemini" &&
+		strings.TrimSpace(cfg.KnowledgeEmbedBaseURL) == "" &&
+		strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, fmt.Errorf("knowledge_embed_model with the gemini provider requires knowledge_embed_base_url (native Gemini embeddings are not supported; use an OpenAI-compatible endpoint such as Ollama)")
 	}
 
 	return &cfg, nil

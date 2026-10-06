@@ -23,10 +23,11 @@ import (
 // approvalConfig holds the runtime approval configuration, set via Run().
 var approvalConfig interfaces.ApprovalConfig
 
-// AskApproval blocks until the user approves or denies the request, or the
-// expiry deadline is reached. Sends an internal approvalPromptMsg to the
-// tea program and waits on the response channel.
-func (m *AppModel) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+// AskApproval blocks until the user approves or denies the request, the
+// context is canceled (e.g. /stop), or the expiry deadline is reached.
+// Sends an internal approvalPromptMsg to the tea program and waits on the
+// response channel.
+func (m *AppModel) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	if m.program == nil {
 		return false, fmt.Errorf("no TUI program available")
 	}
@@ -43,7 +44,7 @@ func (m *AppModel) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
 		Resp: resp,
 	})
 	expiry := m.ApprovalExpiry()
-	return waitForApproval(resp, expiry), nil
+	return waitForApproval(ctx, resp, expiry), nil
 }
 
 // ApprovalConfig returns the runtime approval configuration.
@@ -71,8 +72,9 @@ func SetApprovalConfig(cfg interfaces.ApprovalConfig) {
 // clarifyConfig holds the runtime clarify configuration.
 var clarifyConfig interfaces.ClarifyConfig
 
-// AskClarify blocks until the user answers or the deadline is reached.
-func (m *AppModel) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+// AskClarify blocks until the user answers, the context is canceled
+// (e.g. /stop), or the deadline is reached.
+func (m *AppModel) AskClarify(ctx context.Context, req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
 	if m.program == nil {
 		return interfaces.ClarifyResponse{}, fmt.Errorf("no TUI program available")
 	}
@@ -92,7 +94,7 @@ func (m *AppModel) AskClarify(req interfaces.ClarifyRequest) (interfaces.Clarify
 		time.Sleep(expiry)
 		m.program.Send(clarifyTimeoutMsg{})
 	}()
-	res := waitForClarify(agentResp, expiry)
+	res := waitForClarify(ctx, agentResp, expiry)
 	return interfaces.ClarifyResponse{
 		Answer:   res.Answer,
 		Canceled: res.Canceled,

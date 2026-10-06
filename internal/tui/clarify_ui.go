@@ -2,6 +2,7 @@ package tui
 
 import (
 	"amurru/hakase/internal/agent"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -53,13 +54,16 @@ type clarifyPromptMsg struct {
 // already moved on with a timed-out answer.
 type clarifyTimeoutMsg struct{}
 
-// waitForClarify blocks on the response channel until the user answers or the
-// expiry timer fires. Returns a timed-out response on expiry. Extracted so the
-// select logic is unit-testable without a tea.Program.
-func waitForClarify(resp chan agent.ClarifyResponse, expiry time.Duration) agent.ClarifyResponse {
+// waitForClarify blocks on the response channel until the user answers, the
+// context is canceled (e.g. /stop), or the expiry timer fires. Returns a
+// timed-out response on expiry. Extracted so the select logic is
+// unit-testable without a tea.Program.
+func waitForClarify(ctx context.Context, resp chan agent.ClarifyResponse, expiry time.Duration) agent.ClarifyResponse {
 	select {
 	case r := <-resp:
 		return r
+	case <-ctx.Done():
+		return agent.ClarifyResponse{Canceled: true}
 	case <-time.After(expiry):
 		return agent.ClarifyResponse{TimedOut: true}
 	}

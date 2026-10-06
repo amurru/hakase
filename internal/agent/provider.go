@@ -2,6 +2,7 @@ package agent
 
 import (
 	"amurru/hakase/internal/config"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -279,6 +280,105 @@ func fetchRaw(client *http.Client, ctx context.Context, base, path, apiKey strin
 		return nil, fmt.Errorf("models endpoint returned HTTP %d", resp.StatusCode)
 	}
 	return body, nil
+}
+
+// embedBatchSize caps the inputs per embeddings request. OpenAI allows
+// 2048, but self-hosted OpenAI-compatible endpoints (Ollama, vLLM) vary;
+// 32 stays well inside every known limit while keeping backfills to a
+// handful of calls.
+const embedBatchSize = 32
+
+// embedTimeout bounds a single embeddings batch request.
+const embedTimeout = 30 * time.Second
+
+// openAIEmbeddingResponse mirrors the OpenAI embeddings response. Data
+// entries carry their input index; placement below is by index so
+// out-of-order batches cannot scramble vectors.
+type openAIEmbeddingResponse struct {
+	Data []struct {
+		Index     int       `json:"index"`
+		Embedding []float32 `json:"embedding"`
+	} `json:"data"`
+}
+
+// EmbedTexts returns one embedding vector per input text, in input order,
+// via POST {base}/embeddings. baseURL empty selects the OpenAI default.
+// Large inputs are split into sequential batches of embedBatchSize.
+// A non-200 response is an error quoting the status and the body head so
+// misbehaving self-hosted endpoints are diagnosable.
+func (p *OpenAIProvider) EmbedTexts(ctx context.Context, apiKey, baseURL, model string, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	base := strings.TrimRight(baseURL, "/")
+	if base == "" {
+		base = "https://api.openai.com/v1"
+	}
+	out := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += embedBatchSize {
+		end := start + embedBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		vecs, err := p.embedBatch(ctx, base, apiKey, model, texts[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vecs...)
+	}
+	return out, nil
+}
+
+func (p *OpenAIProvider) embedBatch(ctx context.Context, base, apiKey, model string, texts []string) ([][]float32, error) {
+	payload, err := json.Marshal(map[string]any{"model": model, "input": texts})
+	if err != nil {
+		return nil, err
+	}
+	bctx, cancel := context.WithTimeout(ctx, embedTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(bctx, http.MethodPost, base+"/embeddings", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embeddings request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		head := string(body)
+		if len(head) > 300 {
+			head = head[:300]
+		}
+		return nil, fmt.Errorf("embeddings endpoint returned HTTP %d: %s", resp.StatusCode, head)
+	}
+	var er openAIEmbeddingResponse
+	if err := json.Unmarshal(body, &er); err != nil {
+		return nil, fmt.Errorf("decoding embeddings response: %w", err)
+	}
+	vecs := make([][]float32, len(texts))
+	seen := make([]bool, len(texts))
+	for _, d := range er.Data {
+		if d.Index < 0 || d.Index >= len(texts) {
+			return nil, fmt.Errorf("embeddings response index %d out of range for %d inputs", d.Index, len(texts))
+		}
+		vecs[d.Index] = d.Embedding
+		seen[d.Index] = true
+	}
+	for i, ok := range seen {
+		if !ok {
+			return nil, fmt.Errorf("embeddings response missing vector for input %d", i)
+		}
+	}
+	return vecs, nil
 }
 
 // providerForName returns the single provider matching name, defaulting to

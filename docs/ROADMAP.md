@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-20. Living index of planned work. The GitHub issues are
+Last updated: 2026-09-29. Living index of planned work. The GitHub issues are
 the source of truth for status — update this file only when priorities or
 scope change, not when individual boxes tick.
 
@@ -22,9 +22,12 @@ sessions) — ~60 built-in tools, MCP (stdio + http), bwrap-ready sandboxing, a
 knowledge wiki, three skill systems, and the shipped SkillOpt-Sleep offline
 self-improvement loop. Recent arcs: execution canvas, Telegram threads,
 built-in web search fallback, git tools + project registry, sidekick, media
-generation, SkillOpt-Sleep phases 0–4.
+generation, SkillOpt-Sleep phases 0–4, auto-memory, MCP 2026-07-28, OTel
+tracing, session rewind, Telegram voice, hakase-as-MCP-server.
 
-## Tier 1 — Catch up to the 2026 harness landscape
+## Tier 1 — Catch up to the 2026 harness landscape (complete)
+
+All shipped and closed (2026-09-20 → 2026-09-27):
 
 | Issue | What | Ecosystem driver |
 |---|---|---|
@@ -33,13 +36,40 @@ generation, SkillOpt-Sleep phases 0–4.
 | [#18](https://github.com/amurru/hakase/issues/18) | OpenTelemetry GenAI tracing from graph events + audit log | converged observability interchange; maps ~1:1 onto existing `GraphEvent`s |
 | [#19](https://github.com/amurru/hakase/issues/19) | Session checkpoints / restore-to-message rewind | proven UX (Gemini CLI); cheap given session-per-JSON + the MessageRail |
 | [#20](https://github.com/amurru/hakase/issues/20) | Telegram voice in/out (local whisper.cpp + optional Piper TTS) | explicitly deferred today; proven fully-local pattern |
+| [#21](https://github.com/amurru/hakase/issues/21) | Session checkpoints (see #19 — split across the two) | — |
 
 ## Tier 2 — Bigger bets (pick one or two)
 
-- [#21](https://github.com/amurru/hakase/issues/21) — backlog with per-item
-  notes: hakase-as-MCP-server, hybrid embeddings retrieval, hooks system,
-  second channel transport (Discord/Slack), durable HITL resume (ADK Go 2.x
-  graph engine), audio generation.
+Parking lot: [#20](https://github.com/amurru/hakase/issues/20) (the current
+open issue). Per-item notes live there; ordered by expected value:
+
+1. **Hooks system** — shipped (user-scope `PreToolUse`/`PostToolUse` +
+   project-scope `.hakase/hooks.json` with content-hash trust +
+   `SessionStart`, then `UserPromptSubmit` per-prompt context, per-hook
+   `enabled` with live in-place reload, and full CRUD on CLI / web /
+   TUI). Design: `docs/hooks/`. Trust model is **Codex's
+   content-hash**, not Gemini CLI's fingerprint-and-approve (that one is
+   known-broken — gemini-cli#27900).
+2. **Hybrid retrieval for knowledge** — shipped: optional dense
+   embeddings (OpenAI-compatible endpoint or Ollama) fused with BM25
+   via reciprocal rank fusion, default off to preserve
+   zero-dependency (`hybrid_search` + `knowledge_embed_model`).
+   Design: `docs/hybrid-retrieval/` (HR-001..HR-008).
+3. **Second channel transport** — shipped (Discord): DM-only v1
+   bot over the gateway websocket (discordgo, no privileged intents),
+   mirroring Telegram's auth/runs/gates/push on the shared service.
+   Design: `docs/discord/` (DC-001..DC-013). Guilds/voice/Slack stay
+   future options.
+4. **Durable human-in-the-loop resume** — shipped (opt-in
+   `durable_resume`): classic `Runner` + durable pauses, not the
+   graph engine (researched and rejected).
+   Design: `docs/durable-resume/` (DR Phases 1–7). TUI gates
+   covered; channel re-emission is a follow-up.
+5. **Audio generation** — shipped: Piper TTS is routed through the
+   media registry as the `piper` audio provider, and `generate_audio`
+   synthesizes end-to-end (`audio_provider: piper` + `text_to_speech`
+   default voice). Design: `docs/media-generation/spec.md` MG-012.
+
 - `docs/git-tools/tasks.md` T7.x remainder: `git_remote` management,
   `git_rebase`/`git_merge`, `git_commit --amend`/signing.
 
@@ -48,12 +78,12 @@ generation, SkillOpt-Sleep phases 0–4.
 | Item | Where recorded | Note |
 |---|---|---|
 | ComfyUI media provider (v2) | `docs/media-generation/spec.md` ("Deferred to v2") | design preserved; house-pattern conventions locked |
-| `generate_audio` | CHANGELOG Planned; [#21](https://github.com/amurru/hakase/issues/21) | stub returns an actionable error; config already validates providers |
 | Seekable video streaming (HTTP Range) | `docs/markdown-rendering/` | whole-file serving only today |
 | Telegram group chats + webhooks | `internal/channel/telegram` package doc | forum topics cover the 1:1 flow end to end |
 | `dream_consolidate` memory trials | `internal/sleep/cycle.go`; `docs/skillopt-sleep/plan.md` | reserved surface from Phase 3 |
 | Landlock enforcement (Phase 3) | [#14](https://github.com/amurru/hakase/issues/14) (closed: fail-loud shipped, mode refused) | `sandbox.mode: landlock` is refused at config load and exec time until a real LSM enforcement lands: ruleset for FS read/write/exec per workspace/read/deny roots, ABI-version detection, clear error when the kernel lacks support; see the Proposed solution in #14 |
 | Web UI voice input (mic capture → speech pipeline) | `docs/telegram-voice/` deferred section | Telegram voice notes work end-to-end and `internal/speech` is transport-neutral; the web UI has no recording capture yet |
+| Project-scope hooks + content-hash trust store | `docs/hooks/spec.md` Phase 2; shipped this arc | project `.hakase/hooks.json` loads layered under user config with Codex-style content-hash trust + explicit-accept gate, sandbox write-deny, and `SessionStart`. Gemini CLI's fingerprint-and-approve remains the documented anti-pattern (gemini-cli#27900) |
 
 ## Maintenance conventions
 

@@ -6,6 +6,7 @@ package handlers
 import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -24,6 +25,52 @@ type WebClarifyGate struct {
 	sessionID string
 	cfg       interfaces.ClarifyConfig
 	pending   map[string]chan interfaces.ClarifyResponse // clarifyID -> response channel
+	// resurrected maps re-emitted prompt IDs (durable-resume Phase 7)
+	// to pause IDs. Live prompts resolve through pending; prompts
+	// re-emitted after a restart have no blocked handler and resolve
+	// through the resume backend instead.
+	resurrected map[string]string // promptID -> pauseID
+	resume      ResumeBackend     // nil when durable resume is unwired
+}
+
+// TrackResurrected records that promptID re-emits the gate prompt for
+// pauseID after a restart.
+func (g *WebClarifyGate) TrackResurrected(promptID, pauseID string) {
+	g.mu.Lock()
+	if g.resurrected == nil {
+		g.resurrected = make(map[string]string)
+	}
+	g.resurrected[promptID] = pauseID
+	g.mu.Unlock()
+}
+
+// ResurrectedPause returns the pause ID a re-emitted prompt answers.
+func (g *WebClarifyGate) ResurrectedPause(promptID string) (string, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.resurrected[promptID]
+	return id, ok
+}
+
+// DropResurrected forgets a re-emitted prompt (answered, expired, gone).
+func (g *WebClarifyGate) DropResurrected(promptID string) {
+	g.mu.Lock()
+	delete(g.resurrected, promptID)
+	g.mu.Unlock()
+}
+
+// SetResumeBackend wires the durable-resume answer path (nil disables).
+func (g *WebClarifyGate) SetResumeBackend(b ResumeBackend) {
+	g.mu.Lock()
+	g.resume = b
+	g.mu.Unlock()
+}
+
+// ResumeBackend returns the wired resume path, or nil.
+func (g *WebClarifyGate) ResumeBackend() ResumeBackend {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.resume
 }
 
 // NewWebClarifyGate creates a new web-based clarify gate.
@@ -45,10 +92,11 @@ func (g *WebClarifyGate) promptSession(reqSession string) string {
 	return g.sessionID
 }
 
-// AskClarify blocks until the user answers or the expiry deadline is reached.
-// Emits an SSE clarify prompt, registers a response channel, and waits.
-// On timeout, emits clarify_timeout SSE event and returns ClarifyResponse{TimedOut: true}.
-func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+// AskClarify blocks until the user answers, the context is canceled
+// (e.g. /stop), or the expiry deadline is reached. Emits an SSE clarify
+// prompt, registers a response channel, and waits. On timeout, emits
+// clarify_timeout SSE event and returns ClarifyResponse{TimedOut: true}.
+func (g *WebClarifyGate) AskClarify(ctx context.Context, req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
 	clarifyID := "clar_" + uuid.New().String()
 	resp := make(chan interfaces.ClarifyResponse, 1)
 
@@ -68,7 +116,7 @@ func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.C
 		req.MultiSelect,
 	)
 
-	// Wait for response or timeout.
+	// Wait for response, context cancellation, or timeout.
 	expiry := g.ClarifyExpiry()
 	select {
 	case response := <-resp:
@@ -77,6 +125,12 @@ func (g *WebClarifyGate) AskClarify(req interfaces.ClarifyRequest) (interfaces.C
 		delete(g.pending, clarifyID)
 		g.mu.Unlock()
 		return response, nil
+	case <-ctx.Done():
+		// Context canceled (e.g. /stop): clean up and return.
+		g.mu.Lock()
+		delete(g.pending, clarifyID)
+		g.mu.Unlock()
+		return interfaces.ClarifyResponse{Canceled: true}, ctx.Err()
 	case <-time.After(expiry):
 		// Timeout: emit clarify_timeout SSE event, return TimedOut response.
 		g.mu.Lock()
@@ -173,7 +227,15 @@ func (api *ClarifyAPI) RespondClarify(w http.ResponseWriter, r *http.Request) {
 
 	if api.gate.RespondClarify(clarifyID, response) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	} else {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "clarification not found or expired"})
+		return
 	}
+	// No live prompt: the ID may re-emit an interrupted pause after a
+	// restart (durable-resume Phase 7). Without a wired backend it is
+	// simply unknown.
+	if b := api.gate.ResumeBackend(); b != nil {
+		status, body := b.AnswerResurrectedClarify(r.Context(), clarifyID, response)
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "clarification not found or expired"})
 }

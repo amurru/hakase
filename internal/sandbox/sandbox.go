@@ -275,6 +275,9 @@ func sensitiveFilePaths() []string {
 			filepath.Join(home, "jwt-secret"),
 			filepath.Join(home, "cronjobs.json"),
 			filepath.Join(home, "channels.json"),
+			// Hook trust store (docs/hooks/spec.md HK-105): the agent
+			// must never rewrite its own trust decisions.
+			filepath.Join(home, "hooks-trust.json"),
 		)
 	}
 	return paths
@@ -417,6 +420,9 @@ func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, err
 			return "", fmt.Errorf("path %q is in a denied root", path)
 		}
 	}
+	if write && isHookConfigPath(p) {
+		return "", fmt.Errorf("path %q is a protected hook config (agent writes denied)", path)
+	}
 	if sb.deniedBasename(p) {
 		return "", fmt.Errorf("path %q is a denied sensitive file", path)
 	}
@@ -461,6 +467,9 @@ func (sb *SandboxConfig) ResolveScopedPath(path string, write bool) (string, err
 				return "", fmt.Errorf("path %q resolves into a denied root", path)
 			}
 		}
+		if write && isHookConfigPath(resolved) {
+			return "", fmt.Errorf("path %q resolves to a protected hook config (agent writes denied)", path)
+		}
 		if sb.deniedBasename(resolved) {
 			return "", fmt.Errorf("path %q resolves to a denied sensitive file", path)
 		}
@@ -493,6 +502,22 @@ func (sb *SandboxConfig) Permitted(tool string) (action string, ok bool) {
 	}
 	action, ok = sb.Permissions[tool]
 	return action, ok
+}
+
+// isHookConfigPath reports paths of the form <dir>/.hakase/hooks.json:
+// project (and user-level) hook files the agent must never overwrite.
+// Reads stay allowed (transparency — the agent may inspect the automation
+// that governs it); only writes are denied, enforced in ResolveScopedPath
+// below. This is the CVE-2026-25725 control: sandboxed code must not buy
+// host-privilege persistence by editing hook config — and even if a write
+// lands through another path (e.g. shell redirection inside a permissive
+// sandbox), the trust gate still refuses to execute untrusted hooks.
+func isHookConfigPath(p string) bool {
+	base, parent := filepath.Base(p), filepath.Base(filepath.Dir(p))
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(base, "hooks.json") && strings.EqualFold(parent, ".hakase")
+	}
+	return base == "hooks.json" && parent == ".hakase"
 }
 
 // deniedBasename reports whether the base name of p matches an implicitly
@@ -627,7 +652,7 @@ var AuditCommandFunc func(entry CommandAuditEntry)
 
 // ApproveFunc is set by main to ask the user for approval.
 // When nil, approval is denied (fail-closed).
-var ApproveFunc func(req interfaces.ApprovalRequest) (bool, error)
+var ApproveFunc func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error)
 
 // ApprovalExpiryFunc is set by main to return the configured approval expiry.
 // When nil, defaults to 60s.

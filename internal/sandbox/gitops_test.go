@@ -107,7 +107,7 @@ func stubGitPolicy(t *testing.T, denyApproval bool) *[]interfaces.ApprovalReques
 	EvaluateCommandFunc = func(sb *SandboxConfig, command string, args []string) GateDecision {
 		return GateDecision{Action: ActionAllow, Risk: RiskLow, Reason: ""}
 	}
-	ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
+	ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 		*seen = append(*seen, req)
 		return !denyApproval, nil
 	}
@@ -504,7 +504,7 @@ func TestGitStageApprovalDenied(t *testing.T) {
 	EvaluateCommandFunc = func(sb *SandboxConfig, command string, args []string) GateDecision {
 		return GateDecision{Action: ActionAsk, Risk: RiskMedium, Reason: "gate asks"}
 	}
-	ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) {
+	ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 		return false, nil
 	}
 	AuditCommandFunc = func(entry CommandAuditEntry) {}

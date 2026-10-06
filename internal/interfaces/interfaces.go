@@ -217,10 +217,11 @@ type SystemInfo struct {
 // confirmation. The TUI installs an implementation at startup; headless mode
 // returns a fail-closed implementation (nil gate = deny).
 type ApprovalGate interface {
-	// AskApproval blocks until the user approves or denies the request, or the
-	// expiry deadline is reached. Returns (approved, error). Fail-closed:
-	// when the implementation is nil, the caller treats it as denied.
-	AskApproval(req ApprovalRequest) (bool, error)
+	// AskApproval blocks until the user approves or denies the request, the
+	// context is canceled (e.g. /stop), or the expiry deadline is reached.
+	// Returns (approved, error). Fail-closed: when the implementation is nil,
+	// the caller treats it as denied.
+	AskApproval(ctx context.Context, req ApprovalRequest) (bool, error)
 
 	// ApprovalConfig returns the runtime approval configuration (mode, expiry).
 	ApprovalConfig() ApprovalConfig
@@ -235,10 +236,11 @@ type ApprovalGate interface {
 // clarify modal. The TUI installs an implementation at startup; headless
 // mode returns a fail-closed implementation.
 type ClarifyGate interface {
-	// AskClarify blocks until the user answers the question or the expiry
-	// deadline is reached. Returns the response (which may carry Canceled or
-	// TimedOut flags). Fail-closed: nil gate returns an error.
-	AskClarify(req ClarifyRequest) (ClarifyResponse, error)
+	// AskClarify blocks until the user answers the question, the context
+	// is canceled (e.g. /stop), or the expiry deadline is reached. Returns
+	// the response (which may carry Canceled or TimedOut flags). Fail-closed:
+	// nil gate returns an error.
+	AskClarify(ctx context.Context, req ClarifyRequest) (ClarifyResponse, error)
 
 	// ClarifyConfig returns the runtime clarify configuration (expiry).
 	ClarifyConfig() ClarifyConfig
