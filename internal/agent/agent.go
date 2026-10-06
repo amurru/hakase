@@ -9,6 +9,7 @@ import (
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
+	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/util"
@@ -2606,10 +2607,28 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Start the background cron scheduler (fires due one-shot/recurring jobs).
 	deps.StartCronSchedulerFn(log)
 
+	// ADK engine session history: in-memory by default; durable JSON
+	// store when durable_resume is enabled (durable-resume Phase 2).
+	// The durable service persists event history across restarts so the
+	// runner's built-in resume path can rehydrate paused HITL turns.
+	// Fail-closed on construction error: silently falling back would
+	// pretend durability that is not there.
+	adkSessions := session.InMemoryService()
+	if cfg.DurableResume.Enabled && sessionSvc != nil && sessionSvc.Store() != nil {
+		durable, derr := hakasesession.NewDurableADKService(sessionSvc.Store().Dir())
+		if derr != nil {
+			return nil, fmt.Errorf("durable_resume: %w", derr)
+		}
+		adkSessions = durable
+		if log != nil {
+			log("💾 [resume] durable ADK session history enabled")
+		}
+	}
+
 	return runner.New(runner.Config{
 		AppName:           "hakase_harness",
 		Agent:             rootAgent,
-		SessionService:    session.InMemoryService(),
+		SessionService:    adkSessions,
 		AutoCreateSession: true,
 	})
 }
