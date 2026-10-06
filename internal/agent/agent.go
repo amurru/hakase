@@ -2635,7 +2635,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 
 	return runner.New(runner.Config{
-		AppName:           "hakase_harness",
+		AppName:           ResumeAppName,
 		Agent:             rootAgent,
 		SessionService:    adkSessions,
 		AutoCreateSession: true,

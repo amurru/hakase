@@ -23,10 +23,15 @@ func ApprovalExpiry() time.Duration {
 }
 
 // ApproveExec wraps the interactive approval gate. When the gate is nil
-// (headless mode / not yet wired), fails closed. While blocked, the
-// pause is recorded for durable resume (best-effort; never fails the
-// gate) and removed on resolve.
+// (headless mode / not yet wired), fails closed. A one-shot pre-grant
+// installed by ResolveApprovalPause auto-approves its exact
+// tool+command without blocking (durable-resume approval re-drive).
+// While blocked, the pause is recorded for durable resume
+// (best-effort; never fails the gate) and removed on resolve.
 func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
+	if consumePreGrant(req.Tool, req.Command) {
+		return true, nil
+	}
 	if rt == nil {
 		return false, fmt.Errorf("no approval mechanism available (headless mode)")
 	}

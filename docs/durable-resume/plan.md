@@ -362,56 +362,86 @@ pre-granted; there the marker serves pause *detection*, paired with
 the Phase 3 pause record to distinguish "died waiting for approval"
 (safe to re-drive) from "died mid-execution" (never auto-resume).
 
-### Phase 5: Resume driver
+### Phase 5: Resume driver (done)
 
-**Problem**: After restart, the system must detect that a run was
-paused on a gate and allow the user to answer it.
+**Problem**: After restart, the system must detect runs paused on a
+gate and allow the user to answer them.
 
-**Change**: A resume driver that:
-1. Scans hakase sessions for runs that were interrupted mid-gate
-2. Reconstructs the ADK session state from durable storage
-3. Re-emits the gate prompt to the transport (SSE, Telegram, etc.)
-4. Waits for the user's answer
-5. Injects the answer as a `FunctionResponse` against the paused
-   ADK session/invocation
-6. Re-enters the classic Runner with the resumed state
+**Change** (`internal/agent/resume.go`): `ListResumablePauses` scans
+the Phase 3 registry and returns records that are fresh (within
+`ResumeMaxAge`), addressed to a past ADK session, and whose durable
+history still holds open long-running calls (the engine's
+`openLongRunningCallIDs` shape, reimplemented in
+`scanPausedSession`). Stale, unaddressed, settled, and
+history-pruned records are skipped.
 
-The resume driver is invoked at startup (for crash recovery) and
-when a user answers a stale prompt (for graceful restart).
+Two settle paths, split by resume semantics (see Phase 4 note):
 
-**Files**: `internal/agent/resume.go` (new),
-`internal/web/handlers/approval.go` (hook resume on respond),
-`internal/web/handlers/clarify.go` (hook resume on respond).
+- **Clarify** — `ResumeClarify(ctx, runner, pauseID, answer)`:
+  the answer IS the tool result, so it is injected as a
+  `FunctionResponse` per open call against the paused ADK session.
+  The engine matches the open interrupt and continues WITHOUT
+  re-executing any tool (proven end-to-end: scripted model, durable
+  service, simulated restart; the clarify gate is never
+  re-consulted). Nested gates raised by the resumed turn route back
+  to the asking conversation via `RegisterTaskSession`. The pause
+  is unrecorded only on successful completion, so a run error
+  keeps the record for retry.
+- **Approval** — `ResolveApprovalPause(ctx, pauseID, approved)`:
+  the answer is NOT the tool result (the command never ran), so
+  response injection would lie to the model. Denial unrecords and
+  returns false (the command never runs). Approval installs a
+  one-shot exact tool+command pre-grant (consumed by `ApproveExec`
+  without blocking, never recorded as a pause) and returns true:
+  the caller re-drives a FRESH turn (normal `RunTurn`), during
+  which the re-issued call passes its gate. Approval re-drive
+  refuses when history holds completed never-replay calls (Phase 6
+  guard) — the record is kept for manual handling.
 
-**Test**: Simulate a restart during a pending approval, answer the
-prompt after restart, verify the run resumes without re-executing
-prior tool calls.
+Shared `ResumeAppName`/`ResumeUserID` constants pin the ADK session
+coordinates across `SetupRunner`, `agentrun`, and the driver.
 
-### Phase 6: Idempotency audit
+**Files**: `internal/agent/resume.go` (driver), `internal/agent/approval.go`
+(pre-grant check), `internal/agent/agent.go` + `internal/agentrun/agentrun.go`
+(constants wiring).
+
+**Test**: `internal/agent/resume_driver_test.go` — listing filters,
+clarify end-to-end with zero tool re-execution, pre-grant one-shot
+and scoping, risky-history refusal.
+
+### Phase 6: Idempotency audit (done — table + enforcement)
 
 **Problem**: RQ2 from the research found that resume replays any tool
 calls that completed before the pause but whose results were not
 persisted. Without idempotency keys, a resumed run may re-execute
 side-effecting tools (e.g., `write_file`, `system_exec`).
 
-**Change**: Audit all ~60 tools and classify them as:
-- **Safe to retry**: read-only tools (`read_file`, `search_files`,
-  `list_skills`, `get_task`, etc.) — no changes needed
-- **Idempotent**: tools that produce the same result on retry
-  (`write_file` with same content, `patch` with same old/new) —
-  mark with idempotency keys
-- **Must never replay**: tools with side effects (`system_exec`,
-  `delegate_task`, `cronjob`, `download_file`) — these must be
-  skipped on resume
+**Outcome**: the audit (`internal/agent/replay_policy.go`,
+`ReplayPolicyFor`) classifies every known tool as safe (read-only),
+idempotent (same-input overwrite/upsert), or never-replay (exec,
+delegation, scheduling, network, mutation, per-call identity,
+gates). Unknown names default to never (fail-closed) until
+explicitly audited.
 
-The resume driver uses this classification to decide which
-completed tool calls to replay vs. skip.
+Enforcement falls out of the Phase 5 split, and is pinned by tests:
 
-**Files**: `internal/agent/toolcall.go` (add idempotency metadata),
-`internal/agent/resume.go` (skip must-never-replay tools).
+- Clarify resume needs NO guard: the engine reuses settled history
+  and never re-executes (spike + end-to-end proof). Completed
+  side-effecting calls before the question stay settled.
+- Approval re-drive IS a fresh turn, so `ResolveApprovalPause`
+  refuses when the paused history holds completed never-replay
+  calls (naming them in the error) instead of risking double
+  execution. `write_file`/`update_task`-class completions do not
+  block re-drive.
 
-**Test**: A resumed run does not re-execute `system_exec` or
-`delegate_task` calls that completed before the pause.
+**Files**: `internal/agent/replay_policy.go` (new),
+`internal/agent/resume.go` (guard in `ResolveApprovalPause`).
+
+**Test**: `internal/agent/replay_policy_test.go` pins the
+load-bearing never classifications (`system_exec`,
+`delegate_task`, `cron`/`cronjob`, `download_file`, ...), both
+permissive tiers, and the fail-closed default;
+`TestResolveApprovalPauseRefusesRiskyHistory` pins the refusal.
 
 ### Phase 7: Transport run-view resurrection
 
