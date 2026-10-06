@@ -424,3 +424,55 @@ func ResolveApprovalPause(ctx context.Context, pauseID string, approved bool) (b
 	unrecordGatePause(rec.PauseID)
 	return true, nil
 }
+
+// FindResumablePause returns one resumable pause by record ID, or an
+// error when it is missing, stale, or no longer holds open calls.
+// Transports use it to validate an answered resurrected prompt before
+// settling it.
+func FindResumablePause(ctx context.Context, pauseID string) (ResumablePause, error) {
+	recs, err := ListResumablePauses(ctx)
+	if err != nil {
+		return ResumablePause{}, err
+	}
+	for _, rec := range recs {
+		if rec.Record.PauseID == pauseID {
+			return rec, nil
+		}
+	}
+	return ResumablePause{}, fmt.Errorf("durable_resume: pause %q not resumable (answered, expired, or settled)", pauseID)
+}
+
+// PausedTurnInput returns the paused turn's original user message: the
+// first user-authored content in its ADK history. Approval resume
+// re-drives a fresh turn with it (the answer pre-grants the gate, the
+// model re-derives the tool calls).
+func PausedTurnInput(ctx context.Context, adkSessionID string) (*genai.Content, error) {
+	svc, err := adkServiceForResume()
+	if err != nil {
+		return nil, err
+	}
+	resp, gerr := svc.Get(ctx, &adksession.GetRequest{
+		AppName: ResumeAppName, UserID: ResumeUserID, SessionID: adkSessionID,
+	})
+	if gerr != nil {
+		return nil, fmt.Errorf("durable_resume: read paused session: %w", gerr)
+	}
+	for ev := range resp.Session.Events().All() {
+		if ev == nil || ev.Content == nil || ev.Author != "user" {
+			continue
+		}
+		// Skip injected answers (FunctionResponse-only events from a
+		// previous resume): the turn input is user-authored content.
+		hasInput := false
+		for _, p := range ev.Content.Parts {
+			if p != nil && p.FunctionResponse == nil {
+				hasInput = true
+				break
+			}
+		}
+		if hasInput {
+			return ev.Content, nil
+		}
+	}
+	return nil, fmt.Errorf("durable_resume: paused session %q holds no user input", adkSessionID)
+}

@@ -26,6 +26,52 @@ type WebApprovalGate struct {
 	sessionID string
 	cfg       interfaces.ApprovalConfig
 	pending   map[string]chan bool // approvalID -> response channel
+	// resurrected maps re-emitted prompt IDs (durable-resume Phase 7)
+	// to pause IDs. Live prompts resolve through pending; prompts
+	// re-emitted after a restart have no blocked handler and resolve
+	// through the resume backend instead.
+	resurrected map[string]string // promptID -> pauseID
+	resume      ResumeBackend     // nil when durable resume is unwired
+}
+
+// TrackResurrected records that promptID re-emits the gate prompt for
+// pauseID after a restart.
+func (g *WebApprovalGate) TrackResurrected(promptID, pauseID string) {
+	g.mu.Lock()
+	if g.resurrected == nil {
+		g.resurrected = make(map[string]string)
+	}
+	g.resurrected[promptID] = pauseID
+	g.mu.Unlock()
+}
+
+// ResurrectedPause returns the pause ID a re-emitted prompt answers.
+func (g *WebApprovalGate) ResurrectedPause(promptID string) (string, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.resurrected[promptID]
+	return id, ok
+}
+
+// DropResurrected forgets a re-emitted prompt (answered, expired, gone).
+func (g *WebApprovalGate) DropResurrected(promptID string) {
+	g.mu.Lock()
+	delete(g.resurrected, promptID)
+	g.mu.Unlock()
+}
+
+// SetResumeBackend wires the durable-resume answer path (nil disables).
+func (g *WebApprovalGate) SetResumeBackend(b ResumeBackend) {
+	g.mu.Lock()
+	g.resume = b
+	g.mu.Unlock()
+}
+
+// ResumeBackend returns the wired resume path, or nil.
+func (g *WebApprovalGate) ResumeBackend() ResumeBackend {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.resume
 }
 
 // NewWebApprovalGate creates a new web-based approval gate.
@@ -172,7 +218,15 @@ func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) 
 
 	if api.gate.RespondApproval(approvalID, req.Approved) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	} else {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found or expired"})
+		return
 	}
+	// No live prompt: the ID may re-emit an interrupted pause after a
+	// restart (durable-resume Phase 7). Without a wired backend it is
+	// simply unknown.
+	if b := api.gate.ResumeBackend(); b != nil {
+		status, body := b.AnswerResurrectedApproval(r.Context(), approvalID, req.Approved)
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found or expired"})
 }

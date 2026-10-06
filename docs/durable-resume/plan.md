@@ -443,24 +443,48 @@ load-bearing never classifications (`system_exec`,
 permissive tiers, and the fail-closed default;
 `TestResolveApprovalPauseRefusesRiskyHistory` pins the refusal.
 
-### Phase 7: Transport run-view resurrection
+### Phase 7: Transport run-view resurrection (done — web)
 
 **Problem**: After restart, the web UI shows a frozen "Working..."
 status for runs that were in-flight. The user cannot tell if the
 run is still active or died with the process.
 
-**Change**: On startup, the resume driver scans for interrupted runs
-and either:
-- (a) Resumes them automatically (if the gate answer is still
-  available from the transport's perspective), or
-- (b) Marks them as "interrupted" in the UI, allowing the user to
-  manually resume or discard them
+**Change** (`internal/web/handlers/resume.go`, gate tracking,
+`internal/web/spa.go` wiring):
 
-**Files**: `internal/web/handlers/chat.go` (startup scan),
-`internal/web/sse/` (resurrection events).
+- `GET /api/resumable` lists resumable pauses (pause/session/gate/
+  summary/detail/age/open calls) for "interrupted — click to
+  resume" display. Empty (not an error) when the feature is off.
+- Startup re-emit (`ResurrectInterruptedPrompts`, behind
+  `AutoResumeOnStartup`): every resumable pause is re-emitted as a
+  native SSE gate prompt with a resurrected ID (`rsm_<pauseID>`).
+  The UI answers through the UNCHANGED respond endpoints: unknown
+  live IDs fall through to the resume backend (`*ChatAPI`), so no
+  client changes are needed.
+- Approval answers settle via `ResolveApprovalPause`; an approval
+  re-drives a fresh turn in the background with the paused turn's
+  original input (`PausedTurnInput`, new in `internal/agent`).
+  Clarify answers resume the paused turn in the background,
+  streaming + persisting like any run. Statuses: 200 settled/denied,
+  202 background resume, 404 unknown, 409 unsafe history, 410
+  expired, 429 session busy.
+- Mappings drop on terminal states; unsafe-history pauses keep both
+  record and mapping for manual handling.
 
-**Test**: After restart, the web UI shows "Interrupted — click to
-resume" for runs that were mid-gate when the process died.
+Out of scope (documented follow-ups): TUI and channel transports
+share the agent driver but need their own prompt re-emission.
+
+**Files**: `internal/web/handlers/resume.go` (new),
+`internal/web/handlers/approval.go` + `clarify.go` (tracking +
+fallthrough), `internal/web/handlers/chat.go` (route + return
+ChatAPI), `internal/web/spa.go` (backend wiring + startup re-emit),
+`internal/agent/resume.go` (`FindResumablePause`,
+`PausedTurnInput`).
+
+**Test**: `internal/web/handlers/resume_test.go` (tracking,
+fallthrough both gates, off-shape listing, status mapping, detail
+converters); driver settle paths already pinned in
+`internal/agent`.
 
 ## Configuration
 

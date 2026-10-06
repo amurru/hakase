@@ -331,3 +331,45 @@ func TestResolveApprovalPauseRefusesRiskyHistory(t *testing.T) {
 		t.Fatal("refused pause must keep its record for manual handling")
 	}
 }
+
+func TestFindResumablePauseRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	preg := resumeTestDeps(t, dir)
+	ctx := context.Background()
+	craftPausedHistory(t, dir, "turn-f", "clarify", "call-f", nil)
+	pauseID := recordPause(t, preg, hakasesession.PauseRecord{
+		HakaseSessionID: "sess-f", ADKSessionID: "turn-f",
+		Gate: hakasesession.PauseGateClarify,
+	})
+	got, err := FindResumablePause(ctx, pauseID)
+	if err != nil {
+		t.Fatalf("FindResumablePause: %v", err)
+	}
+	if got.Record.HakaseSessionID != "sess-f" || len(got.OpenCalls) != 1 {
+		t.Fatalf("got %+v, want sess-f with 1 open call", got)
+	}
+	if _, err := FindResumablePause(ctx, "nope"); err == nil {
+		t.Fatal("FindResumablePause unknown: want error")
+	}
+}
+
+func TestPausedTurnInputFirstUserMessage(t *testing.T) {
+	dir := t.TempDir()
+	resumeTestDeps(t, dir)
+	ctx := context.Background()
+	craftPausedHistory(t, dir, "turn-i", "clarify", "call-i", nil)
+	got, err := PausedTurnInput(ctx, "turn-i")
+	if err != nil {
+		t.Fatalf("PausedTurnInput: %v", err)
+	}
+	text := ""
+	for _, p := range got.Parts {
+		text += p.Text
+	}
+	if text != "go" {
+		t.Fatalf("turn input text = %q, want go", text)
+	}
+	if _, err := PausedTurnInput(ctx, "missing"); err == nil {
+		t.Fatal("PausedTurnInput missing session: want error")
+	}
+}
