@@ -96,6 +96,10 @@ func registerClarifyTool() (tool.Tool, error) {
 	return util.NewDocTool(functiontool.Config{
 		Name:        "clarify",
 		Description: "Ask the user a question mid-task when you need input you cannot infer. Pass up to 4 answer options in 'choices', omit for an open-ended question.",
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-question can resume
+		// from the answer. Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, func(ctx agent.Context, input ClarifyInput) (ClarifyOutput, error) {
 		resp, err := askClarify(ctx, ClarifyRequest{
 			Question:    input.Question,

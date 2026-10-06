@@ -962,6 +962,10 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 	execTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "system_exec",
 		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). Commands are checked against a harmful-command policy and may require approval. When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter." + shellRoutingNote,
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-approval can resume.
+		// Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
 		procID := m.allocateID()
@@ -1066,6 +1070,10 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 	startTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "system_exec_start",
 		Description: "Starts a system command or executable on the host machine in the background, registers it in the process registry, and returns immediately with a process ID for later polling with system_exec_status, killing with system_exec_kill, or listing with system_exec_list. Commands are checked against a harmful-command policy and may require approval.",
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-approval can resume.
+		// Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, func(ctx agent.Context, input SystemExecStartInput) (SystemExecStartOutput, error) {
 		workingDir := input.WorkingDir
 		if workingDir == "" {

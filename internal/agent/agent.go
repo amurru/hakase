@@ -809,6 +809,10 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	return util.NewDocTool(functiontool.Config{
 		Name:        "python_interpreter",
 		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution. Execution may require user approval depending on sandbox permissions.",
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-approval can resume.
+		// Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, execHandler)
 }
 

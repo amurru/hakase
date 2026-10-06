@@ -318,35 +318,49 @@ registry in SetupRunner when enabled).
 resolve; records survive a simulated restart; nil registry =
 gates unaffected.
 
-### Phase 4: Gate-as-pause rewiring
+### Phase 4: Gate-as-pause rewiring (done — IsLongRunning flags)
 
 **Problem**: Gates block inside tool execution. The ADK runner sees a
 tool call that never returns (until the gate resolves). For resume to
-work, the pause must be visible in ADK session history as a
-long-running tool or `RequestInput` event.
+work, the pause must be visible in ADK session history so a later
+answer matches the open call.
 
-**Change**: When a gate is pending, emit a `LongRunningTool` marker
-in the ADK event stream. The ADK runner already supports
-`LongRunningToolIDs` — when a tool call carries this marker, the
-runner yields the event to the caller and waits for a
-`FunctionResponse` with the matching ID.
+**Investigation outcome**: the engine's full long-running protocol
+(handler returns nil, engine parks, reply re-dispatches the tool)
+does NOT fit synchronous gates — our handlers block-then-return and
+must keep doing so (gate UX, expiry, first-wins all live there).
+What DOES fit is the static `tool.IsLongRunning` flag alone:
+`base_flow.go:1040` marks the FunctionCall event with
+`LongRunningToolIDs=[callID]` whenever the called tool reports it,
+with zero change to synchronous behavior. Verified by spike tests
+(`internal/agent/gate_pause_engine_test.go`, scripted model, durable
+service, simulated restart across service instances):
 
-The gate tool's `FunctionCall` ID becomes the `LongRunningToolID`.
-When the user answers, the resume driver injects a synthetic
-`FunctionResponse` with that ID and the answer as the response payload.
+1. A completed turn through a long-running tool finishes normally;
+   follow-up turns are unaffected (markers don't poison sessions).
+2. Crash shape (call + marker persisted, no response) + later
+   `FunctionResponse` with the call ID resumes WITHOUT re-executing
+   the tool.
+3. Control without the marker also consumes the answer, but via the
+   accidental fresh-run path — no `wf.Resume` validation, duplicate
+   suppression, or waiting-node bookkeeping. Markers remain required:
+   they select the designed resume path and make open pauses
+   detectable (`openLongRunningCallIDs`).
 
-**Implementation**: The gate tool handler, when it detects that the
-run is in "durable pause" mode, returns a special response that the
-ADK runner interprets as a long-running tool. This requires either:
-- (a) A custom `tool.Tool` wrapper that emits the right event shape, or
-- (b) Using the ADK's `RequestInput` mechanism (if the classic
-  runner supports it for tool calls)
+**Change**: `IsLongRunning: true` on the four gate-hosting tools —
+`clarify`, `system_exec`, `system_exec_start`, `python_interpreter`.
+Read-only companions (`system_exec_status/kill/list`) stay unmarked;
+`delegate_task` stays unmarked (its result can't be supplied as an
+answer). Git tools (approval possible inside the git engine) are a
+documented limitation: Phase 5 falls back to re-drive for those.
 
-**Files**: `internal/agent/gate.go` (emit long-running marker),
-`internal/agent/approval.go`, `internal/agent/clarify.go`.
-
-**Test**: A pending approval appears in ADK session history as a
-long-running tool call with the approval ID.
+**Resume-semantics note for Phase 5**: for `clarify` the answer IS
+the tool result, so direct `FunctionResponse` resume is correct. For
+approval-inside-a-tool the answer is NOT the tool result (the command
+never ran) — Phase 5 must re-drive the turn with approval
+pre-granted; there the marker serves pause *detection*, paired with
+the Phase 3 pause record to distinguish "died waiting for approval"
+(safe to re-drive) from "died mid-execution" (never auto-resume).
 
 ### Phase 5: Resume driver
 
