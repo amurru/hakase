@@ -2,6 +2,7 @@ package agent
 
 import (
 	"amurru/hakase/internal/interfaces"
+	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
@@ -54,7 +55,9 @@ func clarifyTimeout() time.Duration {
 }
 
 // askClarify wraps the interactive clarify gate. When the gate is nil
-// (headless mode / not yet wired), fails closed.
+// (headless mode / not yet wired), fails closed. While blocked, the
+// pause is recorded for durable resume (best-effort; never fails the
+// gate) and removed on resolve.
 func askClarify(ctx context.Context, req ClarifyRequest) (ClarifyResponse, error) {
 	if rt == nil {
 		return ClarifyResponse{}, fmt.Errorf("no clarify mechanism available (headless mode)")
@@ -62,6 +65,15 @@ func askClarify(ctx context.Context, req ClarifyRequest) (ClarifyResponse, error
 	g := rt.ClarifyGate()
 	if g == nil {
 		return ClarifyResponse{}, fmt.Errorf("no clarify mechanism available (headless mode)")
+	}
+	pauseID := recordGatePause(ctx, hakasesession.PauseGateClarify, req.SessionID,
+		"clarify: "+util.TruncateStr(req.Question),
+		map[string]any{
+			"question": req.Question, "choices": req.Choices,
+			"multi_select": req.MultiSelect,
+		})
+	if pauseID != "" {
+		defer unrecordGatePause(pauseID)
 	}
 	ifaceResp, err := g.AskClarify(ctx, interfaces.ClarifyRequest{
 		Question:    req.Question,

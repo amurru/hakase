@@ -3,6 +3,7 @@ package agent
 import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/interfaces"
+	hakasesession "amurru/hakase/internal/session"
 	"context"
 	"testing"
 	"time"
@@ -188,5 +189,57 @@ func TestClarifyTimeoutZeroFallsBack(t *testing.T) {
 	d := clarifyTimeout()
 	if d != 120*time.Second {
 		t.Errorf("clarifyTimeout() = %v, want 120s (fallback)", d)
+	}
+}
+
+func TestAskClarifyRecordsPauseWhileBlocked(t *testing.T) {
+	preg, err := hakasesession.NewPauseRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewPauseRegistry: %v", err)
+	}
+	savedDeps, savedRt := deps, rt
+	deps = &Deps{PauseRegistry: preg}
+	rt = &Runtime{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	rt.SetClarifyGate(&mockClarifyGate{
+		askFunc: func(req interfaces.ClarifyRequest) (interfaces.ClarifyResponse, error) {
+			close(entered)
+			<-release
+			return interfaces.ClarifyResponse{Answer: []string{"a"}}, nil
+		},
+	})
+	t.Cleanup(func() { deps, rt = savedDeps, savedRt })
+
+	done := make(chan bool, 1)
+	go func() {
+		resp, _ := askClarify(context.Background(), ClarifyRequest{
+			Question: "which?", SessionID: "sess-2",
+		})
+		done <- len(resp.Answer) == 1
+	}()
+
+	<-entered
+	recs, err := preg.ListForSession("sess-2")
+	if err != nil {
+		t.Fatalf("ListForSession: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records while blocked = %d, want 1", len(recs))
+	}
+	if recs[0].Gate != hakasesession.PauseGateClarify {
+		t.Errorf("gate = %q", recs[0].Gate)
+	}
+
+	close(release)
+	if !<-done {
+		t.Error("expected answer")
+	}
+	recs, err = preg.ListForSession("sess-2")
+	if err != nil {
+		t.Fatalf("ListForSession after resolve: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("records after resolve = %d, want 0", len(recs))
 	}
 }

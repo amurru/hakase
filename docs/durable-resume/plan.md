@@ -271,27 +271,52 @@ behavior for users who don't need it.
 service instance), verify events are recovered with all fields
 intact.
 
-### Phase 3: Stable ADK session identity
+### Phase 3: Pause registry (revised — no identity change)
 
-**Problem**: Hakase mints a fresh ADK session per turn
+**Problem**: Resume requires reusing the paused turn's ADK
+session/invocation, but hakase mints a fresh ADK session per turn
 (`RegisterTaskSession(taskID, sessionID)` where `taskID` is generated
-per run). Resume requires reusing the paused turn's ADK
-session/invocation.
+per run) and the in-memory task→session map is dropped at turn end
+(and lost entirely on restart).
 
-**Change**: When durable resume is enabled, the ADK session key
-becomes the **hakase session ID** (stable across turns) instead of
-the per-turn task ID. The task ID still doubles as the ADK session ID
-for gate prompt routing, but the durable service maps it to the
-hakase session for persistence.
+**Design correction (verified against
+`internal/context/context.go:261-265`)**: the ADK session key must
+NOT become the hakase session ID. `HistoryBuilder.BeforeModelCallback`
+prepends file-backed history on every model call under the documented
+invariant that "ADK session events never contain our file-backed
+history" — stable cross-turn ADK sessions would break that invariant
+and duplicate the full transcript into every prompt. Per-turn ADK
+sessions stay exactly as they are.
 
-This is a configuration-gated change: when durable resume is off,
-behavior is unchanged (fresh ADK session per turn).
+Instead, resume re-enters the runner against the *paused turn's* ADK
+session ID (which persists in the durable store from Phase 2). The
+missing link is knowing *which* ADK session holds the pause after a
+restart. That is a durable **pause registry**:
 
-**Files**: `internal/agentrun/agentrun.go` (session key strategy),
-`internal/agent/delegate.go` (sub-agent session key strategy).
+- When a gate blocks, `ApproveExec`/`askClarify` (the single
+  transport-agnostic choke points) record `{pauseID, hakaseSessionID,
+  adkSessionID (TaskIDFromCtx), gate type, prompt summary/detail,
+  createdAt}` to `<sessionsDir>/adk/pauses.json`.
+- When the gate resolves (answer, timeout, cancel), the record is
+  removed. Leftover records after a restart = interrupted pauses =
+  resumable (Phase 5) or resurrectable in the UI (Phase 7).
+- Recording is best-effort and gated on `durable_resume.enabled`:
+  registry unavailable → gates work exactly as before, durability
+  silently degrades (never fail the gate on a bookkeeping error).
 
-**Test**: With durable resume on, two turns in the same hakase session
-share the same ADK session key.
+No changes to `agentrun.go`, the TUI loop, or `delegate.go`: normal
+turns keep fresh per-turn ADK sessions; only resume turns (Phase 5)
+address old sessions.
+
+**Files**: `internal/session/pauses.go` (new) + tests,
+`internal/agent/deps.go` (PauseRegistry field),
+`internal/agent/approval.go`, `internal/agent/clarify.go`
+(record/unrecord wrappers), `internal/agent/agent.go` (build
+registry in SetupRunner when enabled).
+
+**Test**: record exists while a gate is blocked, removed after
+resolve; records survive a simulated restart; nil registry =
+gates unaffected.
 
 ### Phase 4: Gate-as-pause rewiring
 

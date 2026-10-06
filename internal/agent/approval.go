@@ -2,6 +2,8 @@ package agent
 
 import (
 	"amurru/hakase/internal/interfaces"
+	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
 	"time"
@@ -21,7 +23,9 @@ func ApprovalExpiry() time.Duration {
 }
 
 // ApproveExec wraps the interactive approval gate. When the gate is nil
-// (headless mode / not yet wired), fails closed.
+// (headless mode / not yet wired), fails closed. While blocked, the
+// pause is recorded for durable resume (best-effort; never fails the
+// gate) and removed on resolve.
 func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
 	if rt == nil {
 		return false, fmt.Errorf("no approval mechanism available (headless mode)")
@@ -29,6 +33,15 @@ func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
 	g := rt.ApprovalGate()
 	if g == nil {
 		return false, fmt.Errorf("no approval mechanism available (headless mode)")
+	}
+	pauseID := recordGatePause(ctx, hakasesession.PauseGateApproval, req.SessionID,
+		"approval: "+req.Tool+" "+util.TruncateStr(req.Command),
+		map[string]any{
+			"tool": req.Tool, "command": req.Command,
+			"risk": req.Risk, "reason": req.Reason,
+		})
+	if pauseID != "" {
+		defer unrecordGatePause(pauseID)
 	}
 	return g.AskApproval(ctx, req)
 }

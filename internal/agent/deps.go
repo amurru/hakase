@@ -56,6 +56,12 @@ type Deps struct {
 	// no hooks: every Check method is a no-op on it.
 	HooksRunner *hooks.Runner
 
+	// PauseRegistry records in-flight gate pauses for durable resume
+	// (docs/durable-resume/plan.md Phase 3). Built by SetupRunner when
+	// durable_resume is enabled; nil otherwise, and the gate wrappers
+	// skip recording (gates work unchanged).
+	PauseRegistry *hakasesession.PauseRegistry
+
 	// Evolver mutator callback (model-backed). NOTE: the knowledge
 	// enrichment / query-expansion callbacks used to live here as
 	// EnrichKnowledgeFn / ExpandQueryFn, but nothing ever read them —

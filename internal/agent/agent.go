@@ -2620,6 +2620,11 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			return nil, fmt.Errorf("durable_resume: %w", derr)
 		}
 		adkSessions = durable
+		if preg, perr := hakasesession.NewPauseRegistry(sessionSvc.Store().Dir()); perr != nil {
+			return nil, fmt.Errorf("durable_resume: %w", perr)
+		} else {
+			deps.PauseRegistry = preg
+		}
 		if log != nil {
 			log("💾 [resume] durable ADK session history enabled")
 		}
