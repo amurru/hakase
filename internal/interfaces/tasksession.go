@@ -38,6 +38,8 @@ func UnregisterTask(taskID string) {
 // registered run (TUI, CLI utilities), which keeps those gates
 // transport-agnostic (payload session_id empty → fan-out as before).
 // Best-effort by contract: any context whose session cannot be probed yields "".
+// The read lock is deferred so a panicking SessionID method cannot leak
+// it and wedge every later writer (register/unregister/resume).
 func SessionIDFromCtx(ctx context.Context) (id string) {
 	if ctx == nil {
 		return ""
@@ -48,8 +50,8 @@ func SessionIDFromCtx(ctx context.Context) (id string) {
 		return ""
 	}
 	taskSessions.RLock()
+	defer taskSessions.RUnlock()
 	id = taskSessions.m[ic.SessionID()]
-	taskSessions.RUnlock()
 	return id
 }
 
