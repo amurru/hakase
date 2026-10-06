@@ -7,6 +7,7 @@ package handlers
 import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -25,6 +26,52 @@ type WebApprovalGate struct {
 	sessionID string
 	cfg       interfaces.ApprovalConfig
 	pending   map[string]chan bool // approvalID -> response channel
+	// resurrected maps re-emitted prompt IDs (durable-resume Phase 7)
+	// to pause IDs. Live prompts resolve through pending; prompts
+	// re-emitted after a restart have no blocked handler and resolve
+	// through the resume backend instead.
+	resurrected map[string]string // promptID -> pauseID
+	resume      ResumeBackend     // nil when durable resume is unwired
+}
+
+// TrackResurrected records that promptID re-emits the gate prompt for
+// pauseID after a restart.
+func (g *WebApprovalGate) TrackResurrected(promptID, pauseID string) {
+	g.mu.Lock()
+	if g.resurrected == nil {
+		g.resurrected = make(map[string]string)
+	}
+	g.resurrected[promptID] = pauseID
+	g.mu.Unlock()
+}
+
+// ResurrectedPause returns the pause ID a re-emitted prompt answers.
+func (g *WebApprovalGate) ResurrectedPause(promptID string) (string, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.resurrected[promptID]
+	return id, ok
+}
+
+// DropResurrected forgets a re-emitted prompt (answered, expired, gone).
+func (g *WebApprovalGate) DropResurrected(promptID string) {
+	g.mu.Lock()
+	delete(g.resurrected, promptID)
+	g.mu.Unlock()
+}
+
+// SetResumeBackend wires the durable-resume answer path (nil disables).
+func (g *WebApprovalGate) SetResumeBackend(b ResumeBackend) {
+	g.mu.Lock()
+	g.resume = b
+	g.mu.Unlock()
+}
+
+// ResumeBackend returns the wired resume path, or nil.
+func (g *WebApprovalGate) ResumeBackend() ResumeBackend {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.resume
 }
 
 // NewWebApprovalGate creates a new web-based approval gate.
@@ -46,11 +93,12 @@ func (g *WebApprovalGate) promptSession(reqSession string) string {
 	return g.sessionID
 }
 
-// AskApproval blocks until the user approves/denies or the expiry deadline
-// is reached. Emits an SSE approval prompt, registers a response channel,
-// and waits. On timeout, emits approval_timeout SSE event and returns false
+// AskApproval blocks until the user approves/denies, the context is
+// canceled (e.g. /stop), or the expiry deadline is reached. Emits an
+// SSE approval prompt, registers a response channel, and waits. On
+// timeout, emits approval_timeout SSE event and returns false
 // (fail-closed).
-func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, error) {
+func (g *WebApprovalGate) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	approvalID := "appr_" + uuid.New().String()
 	resp := make(chan bool, 1)
 
@@ -71,7 +119,7 @@ func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, err
 		req.Command,
 	)
 
-	// Wait for response or timeout.
+	// Wait for response, context cancellation, or timeout.
 	expiry := g.ApprovalExpiry()
 	select {
 	case approved := <-resp:
@@ -80,6 +128,12 @@ func (g *WebApprovalGate) AskApproval(req interfaces.ApprovalRequest) (bool, err
 		delete(g.pending, approvalID)
 		g.mu.Unlock()
 		return approved, nil
+	case <-ctx.Done():
+		// Context canceled (e.g. /stop): clean up and return.
+		g.mu.Lock()
+		delete(g.pending, approvalID)
+		g.mu.Unlock()
+		return false, ctx.Err()
 	case <-time.After(expiry):
 		// Timeout: emit approval_timeout SSE event, fail-closed (deny).
 		g.mu.Lock()
@@ -164,7 +218,15 @@ func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) 
 
 	if api.gate.RespondApproval(approvalID, req.Approved) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	} else {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found or expired"})
+		return
 	}
+	// No live prompt: the ID may re-emit an interrupted pause after a
+	// restart (durable-resume Phase 7). Without a wired backend it is
+	// simply unknown.
+	if b := api.gate.ResumeBackend(); b != nil {
+		status, body := b.AnswerResurrectedApproval(r.Context(), approvalID, req.Approved)
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found or expired"})
 }

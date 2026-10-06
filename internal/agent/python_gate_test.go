@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/util"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -76,7 +77,7 @@ func TestPythonGateDeny(t *testing.T) {
 		},
 	}
 
-	err := checkPythonGate(sb, "print('hello')", "")
+	err := checkPythonGate(context.Background(), sb, "print('hello')", "")
 	if err == nil {
 		t.Fatal("expected error for deny permission")
 	}
@@ -126,7 +127,7 @@ func TestPythonGateAskApproved(t *testing.T) {
 		},
 	}
 
-	err := checkPythonGate(sb, "print('hello')", "")
+	err := checkPythonGate(context.Background(), sb, "print('hello')", "")
 	if err != nil {
 		t.Fatalf("unexpected error for approved: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestPythonGateAskNotApproved(t *testing.T) {
 		},
 	}
 
-	err := checkPythonGate(sb, "print('hello')", "")
+	err := checkPythonGate(context.Background(), sb, "print('hello')", "")
 	if err == nil {
 		t.Fatal("expected error for not approved")
 	}
@@ -197,7 +198,7 @@ func TestPythonGateNilSandboxDefaultsToAsk(t *testing.T) {
 	// nil rt -> ApproveExec returns false with error -> fail closed.
 	rt = nil
 
-	err := checkPythonGate(nil, "print('hello')", "")
+	err := checkPythonGate(context.Background(), nil, "print('hello')", "")
 	if err == nil {
 		t.Fatal("nil sandbox with nil rt should deny (fail closed)")
 	}
@@ -230,7 +231,7 @@ func TestPythonGateAllow(t *testing.T) {
 		},
 	}
 
-	err := checkPythonGate(sb, "print('hello')", "")
+	err := checkPythonGate(context.Background(), sb, "print('hello')", "")
 	if err != nil {
 		t.Fatalf("unexpected error for allow: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestPythonGateCodeTruncatedInAudit(t *testing.T) {
 		},
 	}
 
-	err := checkPythonGate(sb, longCode, "")
+	err := checkPythonGate(context.Background(), sb, longCode, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,7 +324,7 @@ func TestCheckPythonGateExpiresAt(t *testing.T) {
 		},
 	}
 
-	err := checkPythonGate(sb, "print('hello')", "")
+	err := checkPythonGate(context.Background(), sb, "print('hello')", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -102,7 +102,7 @@ func projectStubGate(t *testing.T) {
 	sandbox.EvaluateCommandFunc = func(sb *sandbox.SandboxConfig, command string, args []string) sandbox.GateDecision {
 		return sandbox.GateDecision{Action: sandbox.ActionAsk, Risk: sandbox.RiskMedium, Reason: "test: gate asks"}
 	}
-	sandbox.ApproveFunc = func(req interfaces.ApprovalRequest) (bool, error) { return true, nil }
+	sandbox.ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) { return true, nil }
 	sandbox.AuditCommandFunc = func(entry sandbox.CommandAuditEntry) {}
 	sandbox.ApprovalExpiryFunc = func() time.Duration { return 60 * time.Second }
 	t.Cleanup(func() {

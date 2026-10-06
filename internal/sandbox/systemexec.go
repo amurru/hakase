@@ -230,7 +230,7 @@ func ExecOperatorAuthorized() ExecOption {
 // env scrubbing, and bubblewrap wrapping. `env` overlays the process env;
 // `opts` customize the build (see ExecOperatorAuthorized).
 func BuildExecCommand(command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
-	return buildExecCommand(CurrentSandbox, "", command, args, workingDir, env, opts...)
+	return buildExecCommand(context.Background(), CurrentSandbox, "", command, args, workingDir, env, opts...)
 }
 
 // BuildExecCommandFor is BuildExecCommand, except the effective sandbox comes
@@ -241,13 +241,13 @@ func BuildExecCommand(command string, args []string, workingDir string, env map[
 // serves is resolved and attached to any approval prompt raised while
 // building the command (gate prompt routing).
 func BuildExecCommandFor(ctx context.Context, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
-	return buildExecCommand(ConfigFrom(ctx), interfaces.SessionIDFromCtx(ctx), command, args, workingDir, env, opts...)
+	return buildExecCommand(ctx, ConfigFrom(ctx), interfaces.SessionIDFromCtx(ctx), command, args, workingDir, env, opts...)
 }
 
 // buildExecCommand applies the policy/sandbox pipeline to one command using
 // the supplied sandbox configuration instead of reading CurrentSandbox.
 // sessionID (possibly empty) is attached to approval prompts.
-func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
+func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, command string, args []string, workingDir string, env map[string]string, opts ...ExecOption) (*exec.Cmd, error) {
 	bo := &execOptions{}
 	for _, o := range opts {
 		o(bo)
@@ -324,7 +324,7 @@ func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args 
 			})
 			break
 		}
-		approved, aerr := ApproveFunc(interfaces.ApprovalRequest{
+		approved, aerr := ApproveFunc(ctx, interfaces.ApprovalRequest{
 			Tool:      "system_exec",
 			Command:   command,
 			Args:      args,
@@ -390,7 +390,10 @@ func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args 
 	// P0-1: route through sh -c when no args are provided so the model's
 	// natural whole-command-line input (pipes, redirects, globs) works.
 	// When args are provided, use the explicit executable+args form.
-	ctx := context.Background()
+	// Named cmdCtx (not ctx) to avoid colliding with the run-context
+	// parameter: command construction stays on Background as before; only
+	// the approval gate above observes run cancellation.
+	cmdCtx := context.Background()
 
 	// Phase 2: when bubblewrap mode is active, wrap the inner command in
 	// bwrap for kernel-enforced filesystem + network isolation. The inner
@@ -459,7 +462,7 @@ func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args 
 		// P0-1: route through the platform shell when no args are
 		// provided (sh -c on Unix, cmd /D /C on Windows) so the model's
 		// natural whole-command-line input (pipes, redirects) works.
-		shellCmd, err := buildShellCommand(ctx, command, effectiveChildDir(sb, workingDir))
+		shellCmd, err := buildShellCommand(cmdCtx, command, effectiveChildDir(sb, workingDir))
 		if err != nil {
 			return nil, err
 		}
@@ -468,7 +471,7 @@ func buildExecCommand(sb *SandboxConfig, sessionID string, command string, args 
 		// Explicit executable+args form; on Windows bare names are
 		// resolved against PATH only (never the working directory) and
 		// rewritten to absolute paths before exec.
-		directCmd, err := buildDirectCommand(ctx, command, args, effectiveChildDir(sb, workingDir))
+		directCmd, err := buildDirectCommand(cmdCtx, command, args, effectiveChildDir(sb, workingDir))
 		if err != nil {
 			return nil, err
 		}
@@ -959,6 +962,10 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 	execTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "system_exec",
 		Description: "Runs a system command or executable directly on the host machine synchronously and waits for it to finish or time out (default timeout 120s; pass timeout_seconds to override, or use system_exec_start for long-running work). Commands are checked against a harmful-command policy and may require approval. When the sandbox is active, commands that reference absolute paths outside the sandbox read roots or trusted system dirs are rejected. Not routed through the Python interpreter." + shellRoutingNote,
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-approval can resume.
+		// Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, func(ctx agent.Context, input SystemExecInput) (SystemExecOutput, error) {
 		start := time.Now()
 		procID := m.allocateID()
@@ -1063,6 +1070,10 @@ func CreateSystemExecTools(log interfaces.LogFunc, sessionManager ExecSessionPro
 	startTool, err := util.NewDocTool(functiontool.Config{
 		Name:        "system_exec_start",
 		Description: "Starts a system command or executable on the host machine in the background, registers it in the process registry, and returns immediately with a process ID for later polling with system_exec_status, killing with system_exec_kill, or listing with system_exec_list. Commands are checked against a harmful-command policy and may require approval.",
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-approval can resume.
+		// Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, func(ctx agent.Context, input SystemExecStartInput) (SystemExecStartOutput, error) {
 		workingDir := input.WorkingDir
 		if workingDir == "" {

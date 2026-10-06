@@ -275,7 +275,7 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
-		for ev, err := range d.Runner.Run(runCtx, "user-1", taskID, msg, adkagent.RunConfig{}) {
+		for ev, err := range d.Runner.Run(runCtx, hakaseagent.ResumeUserID, taskID, msg, adkagent.RunConfig{}) {
 			if err != nil {
 				// Malformed tool-call JSON: re-enter the runner with a
 				// corrective user message instead of aborting the run. This

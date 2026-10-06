@@ -249,7 +249,8 @@ type ChatRouter interface {
 
 // RegisterChatRoutes registers chat-related API routes on the given router.
 // Routes are relative to /api (the caller places them inside the /api group).
-func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakasesession.SessionService, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder) {
+// Returns the ChatAPI for resume-backend wiring (durable-resume Phase 7).
+func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakasesession.SessionService, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder) *ChatAPI {
 	api := &ChatAPI{
 		bridge:        bridge,
 		sessionSvc:    sessionSvc,
@@ -267,6 +268,8 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 	r.Post("/sessions/{id}/compact", api.PostCompact)
 	r.Get("/sessions/{id}/snapshots", api.GetSnapshots)
 	r.Post("/sessions/{id}/restore", api.PostRestore)
+	r.Get("/resumable", api.GetResumable)
+	return api
 }
 
 // PostSidekick handles POST /api/sessions/{id}/sidekick.

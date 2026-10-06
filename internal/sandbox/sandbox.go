@@ -652,7 +652,7 @@ var AuditCommandFunc func(entry CommandAuditEntry)
 
 // ApproveFunc is set by main to ask the user for approval.
 // When nil, approval is denied (fail-closed).
-var ApproveFunc func(req interfaces.ApprovalRequest) (bool, error)
+var ApproveFunc func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error)
 
 // ApprovalExpiryFunc is set by main to return the configured approval expiry.
 // When nil, defaults to 60s.

@@ -9,6 +9,7 @@ import (
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
+	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/sidekick"
 	"amurru/hakase/internal/skill"
 	"amurru/hakase/internal/util"
@@ -535,7 +536,7 @@ func getVenvPython(log LogFunc) (string, error) {
 // sessionID is the hakase session of the asking run (possibly empty); it is
 // attached to the approval prompt so transports can route it (gate prompt
 // routing).
-func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) error {
+func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string, sessionID string) error {
 	sandboxMode := "off"
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
@@ -560,7 +561,7 @@ func checkPythonGate(sb *sandbox.SandboxConfig, code string, sessionID string) e
 	// nil sandbox, "" (missing), or "ask": require approval (fail closed).
 	// Source: "direct" for the root orchestrator. Delegation source tracking
 	// is out of scope for the initial implementation.
-	approved, aerr := ApproveExec(ApprovalRequest{
+	approved, aerr := ApproveExec(ctx, ApprovalRequest{
 		Tool:      "python_interpreter",
 		Command:   util.TruncateStr(code),
 		Risk:      "high",
@@ -604,7 +605,7 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
 		// Harmful-command protection gate: runs BEFORE getVenvPython so
 		// denied code never triggers venv creation side effects.
-		if err := checkPythonGate(deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
+		if err := checkPythonGate(ctx, deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
 			return PythonExecOutput{}, err
 		}
 
@@ -808,6 +809,10 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	return util.NewDocTool(functiontool.Config{
 		Name:        "python_interpreter",
 		Description: "Executes Python code safely inside an isolated .venv environment with automatic dependency resolution. Execution may require user approval depending on sandbox permissions.",
+		// Durable resume (Phase 4): marks the call event with
+		// LongRunningToolIDs so a restart mid-approval can resume.
+		// Synchronous behavior is unchanged.
+		IsLongRunning: true,
 	}, execHandler)
 }
 
@@ -2606,10 +2611,33 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Start the background cron scheduler (fires due one-shot/recurring jobs).
 	deps.StartCronSchedulerFn(log)
 
+	// ADK engine session history: in-memory by default; durable JSON
+	// store when durable_resume is enabled (durable-resume Phase 2).
+	// The durable service persists event history across restarts so the
+	// runner's built-in resume path can rehydrate paused HITL turns.
+	// Fail-closed on construction error: silently falling back would
+	// pretend durability that is not there.
+	adkSessions := session.InMemoryService()
+	if cfg.DurableResume.Enabled && sessionSvc != nil && sessionSvc.Store() != nil {
+		durable, derr := hakasesession.NewDurableADKService(sessionSvc.Store().Dir())
+		if derr != nil {
+			return nil, fmt.Errorf("durable_resume: %w", derr)
+		}
+		adkSessions = durable
+		if preg, perr := hakasesession.NewPauseRegistry(sessionSvc.Store().Dir()); perr != nil {
+			return nil, fmt.Errorf("durable_resume: %w", perr)
+		} else {
+			deps.PauseRegistry = preg
+		}
+		if log != nil {
+			log("💾 [resume] durable ADK session history enabled")
+		}
+	}
+
 	return runner.New(runner.Config{
-		AppName:           "hakase_harness",
+		AppName:           ResumeAppName,
 		Agent:             rootAgent,
-		SessionService:    session.InMemoryService(),
+		SessionService:    adkSessions,
 		AutoCreateSession: true,
 	})
 }

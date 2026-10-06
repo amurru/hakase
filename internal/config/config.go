@@ -49,6 +49,21 @@ type ClarifyConfig struct {
 	ExpirySeconds int `json:"expiry_seconds,omitempty"`
 }
 
+// DurableResumeConfig tunes durable human-in-the-loop resume
+// (docs/durable-resume/plan.md). When disabled (default), ADK session
+// history is in-memory only and a restart loses in-flight gate pauses.
+type DurableResumeConfig struct {
+	// Enabled switches the runner's ADK session service from in-memory
+	// to the durable JSON store. Default false.
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxResumeAgeMinutes caps how old a paused gate may be to resume.
+	// 0 uses the default (30).
+	MaxResumeAgeMinutes int `json:"max_resume_age_minutes,omitempty"`
+	// AutoResumeOnStartup re-emits pending gate prompts on startup.
+	// Default false: set true to resume automatically.
+	AutoResumeOnStartup bool `json:"auto_resume_on_startup,omitempty"`
+}
+
 // ContextFilesConfig tunes the project context files (AGENTS.md) feature.
 type ContextFilesConfig struct {
 	// MaxChars caps the per-file content contributed to the system
@@ -184,6 +199,11 @@ type Config struct {
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
+	// DurableResume enables durable human-in-the-loop resume: ADK
+	// session history (including gate pauses) is persisted so a
+	// restart can resume interrupted runs. Absent/disabled = in-memory
+	// only (previous behavior).
+	DurableResume DurableResumeConfig `json:"durable_resume,omitempty"`
 	// Auth tunes the web authentication layer (cookie security, login
 	// hardening). Absent/zero values are the secure defaults (cookie Secure
 	// flag on). The web bootstrap (cmd/hakase/web.go) may override with the

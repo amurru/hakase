@@ -106,6 +106,10 @@ func (s *SessionStore) migrateSessionPermissions() {
 	}
 }
 
+// Dir returns the sessions directory backing this store. Used to root
+// sibling state (e.g. the durable ADK engine store) next to it.
+func (s *SessionStore) Dir() string { return s.sessionsDir }
+
 // lockDir takes the cross-process exclusive flock for the sessions dir.
 // Callers must hold the appropriate in-process mu and release via unlockDir.
 func (s *SessionStore) lockDir() (*os.File, error) {
