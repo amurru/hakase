@@ -60,8 +60,11 @@ open issue). Per-item notes live there; ordered by expected value:
    mirroring Telegram's auth/runs/gates/push on the shared service.
    Design: `docs/discord/` (DC-001..DC-013). Guilds/voice/Slack stay
    future options.
-4. **Durable human-in-the-loop resume** — move off the classic `Runner` onto
-   the ADK graph workflow engine (interrupt/resume across restarts).
+4. **Durable human-in-the-loop resume** — shipped (opt-in
+   `durable_resume`): classic `Runner` + durable pauses, not the
+   graph engine (researched and rejected).
+   Design: `docs/durable-resume/` (DR Phases 1–7). TUI gates
+   covered; channel re-emission is a follow-up.
 5. **Audio generation** — shipped: Piper TTS is routed through the
    media registry as the `piper` audio provider, and `generate_audio`
    synthesizes end-to-end (`audio_provider: piper` + `text_to_speech`
@@ -75,7 +78,6 @@ open issue). Per-item notes live there; ordered by expected value:
 | Item | Where recorded | Note |
 |---|---|---|
 | ComfyUI media provider (v2) | `docs/media-generation/spec.md` ("Deferred to v2") | design preserved; house-pattern conventions locked |
-| `generate_audio` | CHANGELOG Planned; [#21](https://github.com/amurru/hakase/issues/21) | stub returns an actionable error; config already validates providers |
 | Seekable video streaming (HTTP Range) | `docs/markdown-rendering/` | whole-file serving only today |
 | Telegram group chats + webhooks | `internal/channel/telegram` package doc | forum topics cover the 1:1 flow end to end |
 | `dream_consolidate` memory trials | `internal/sleep/cycle.go`; `docs/skillopt-sleep/plan.md` | reserved surface from Phase 3 |
