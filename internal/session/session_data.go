@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -51,6 +52,8 @@ type Session struct {
 	// attached as context hints in this session. Persisted so a resumed
 	// session does not re-attach them.
 	HintedContextFiles []string `json:"hinted_context_files,omitempty"`
+	// ToolOutputMaxChars overrides default persist-time tool-output cap (Spec CX-003).
+	ToolOutputMaxChars int `json:"tool_output_max_chars,omitempty"`
 }
 
 // Message represents a single turn in a chat session.
@@ -133,9 +136,18 @@ func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int,
 // attachment list.
 func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking string, tokens int, kind string, atts []AttachmentRef) {
 	// Persist-time tool-output cap (Spec CX-003)
-	if kind == MessageKindToolResult && len(content) > 8192 {
-		maxChars := 8192
-		content = content[:maxChars] + fmt.Sprintf("\n...[truncated %d chars]", len(content)-maxChars)
+	if kind == MessageKindToolResult {
+		limit := 8192
+		if s != nil && s.ToolOutputMaxChars > 0 {
+			limit = s.ToolOutputMaxChars
+		}
+		if len(content) > limit {
+			maxChars := limit
+			for maxChars > 0 && !utf8.RuneStart(content[maxChars]) {
+				maxChars--
+			}
+			content = content[:maxChars] + fmt.Sprintf("\n...[truncated %d chars]", len(content)-maxChars)
+		}
 	}
 	s.Messages = append(s.Messages, Message{
 		Role:        role,
