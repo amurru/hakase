@@ -73,6 +73,39 @@ open issue). Per-item notes live there; ordered by expected value:
 - `docs/git-tools/tasks.md` T7.x remainder: `git_remote` management,
   `git_rebase`/`git_merge`, `git_commit --amend`/signing.
 
+## Tier 3 — Next bets (ordered by expected value)
+
+Designs landed 2026-10-08 as `docs/<feature>/spec.md` + `plan.md` + `tasks.md`
+(per maintenance convention 1, specs written ahead of issues so each issue
+can point at its design). Open one GitHub issue per item when work starts;
+per-item notes live in the issues, not here.
+
+1. **FinOps** — live cost meter, per-tool attribution, budgets/caps with
+   hard stop, prompt-cache guard, `hakase stats`. Answers the #1 community
+   complaint; hakase today truncates usage to one int
+   (`internal/agentrun/agentrun.go:300-306`) with no pricing, ledger, or
+   budget. Design: `docs/finops/` (FO-001..FO-005).
+2. **Context hygiene** — threshold-gated skill stub + `search_skills`,
+   KB count/byte caps, persist-time tool-output cap, durable-pin bin.
+   Lazy loading already exists (`internal/agent/agent.go:1109,1215`); this
+   scales it past ~100 skills without changing under-threshold behavior.
+   Design: `docs/context-hygiene/` (CX-001..CX-004).
+3. **Permissions policy** — `permissions.json` allow/ask/deny per
+   tool+path (opencode triples + Claude deny>ask>allow), user < project
+   (trust-gated) < enterprise layering, mobile approval queue endpoint,
+   hash-chained audit export. Builds on gates + content-hash trust already
+   shipped. Design: `docs/permissions/` (PM-001..PM-004).
+4. **MCP gateway** — registry search, one-command install, `mcp audit`
+   (shadow drift, poisoning scan, auth posture, 40-tool budget),
+   scoped-token UX, gateway meta-tools with auto-degrade over budget.
+   Reuses `UpsertServer`/`Reconnect`/`Diagnose`; never hard-fails a turn.
+   Design: `docs/mcp-gateway/` (MG-001..MG-006).
+5. **ADK adoption (phased enabler)** — replace bespoke delegation runner
+   with `agenttool.New` first (H value / L-M effort), then one workflow
+   pilot, then artifacts + `plugin.Plugin`; skills toolset + A2A deferred.
+   Cloud backends stay opt-in only. Design: `docs/adk-adoption/`
+   (AD-001..AD-005).
+
 ## Deferred ledger (intentionally not scheduled)
 
 | Item | Where recorded | Note |
