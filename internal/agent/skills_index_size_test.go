@@ -28,7 +28,9 @@ func TestSkillsIndexFormatOverheadIsBounded(t *testing.T) {
 	if len(md) == 0 {
 		t.Skip("no markdown skills discovered")
 	}
-	block := getSkillsPrompt(md, func(string) {})
+	// Force eager mode to test per-entry overhead regardless of skill count.
+	cfg := &config.Config{SkillsIndexMode: "eager"}
+	block := getSkillsPrompt(md, func(string) {}, cfg)
 
 	var content int
 	for _, s := range md {
@@ -58,7 +60,8 @@ func TestSkillsIndexStatesTheLoadInstructionOnce(t *testing.T) {
 	if len(md) == 0 {
 		t.Skip("no markdown skills discovered")
 	}
-	block := getSkillsPrompt(md, func(string) {})
+	cfg := &config.Config{SkillsIndexMode: "eager"}
+	block := getSkillsPrompt(md, func(string) {}, cfg)
 
 	if n := strings.Count(block, "load_markdown_skill"); n > 1 {
 		t.Errorf("load_markdown_skill mentioned %d times, want once in the header", n)
@@ -91,4 +94,63 @@ func TestOrchestratorInstructionBudgetWithRealSkills(t *testing.T) {
 		t.Errorf("orchestrator instruction with %d skills is %d bytes, over the %d ceiling", len(md), len(full), maxBytes)
 	}
 	t.Logf("orchestrator instruction with %d skills: %d bytes (~%d tokens)", len(md), len(full), len(full)/4)
+}
+
+func TestSkillsIndexThresholdAndStub(t *testing.T) {
+	md := skill.DiscoverMarkdownSkills(".", nil, func(string) {})
+	if len(md) == 0 {
+		t.Skip("no markdown skills discovered")
+	}
+
+	// 1. Force search-stub mode
+	stubCfg := &config.Config{SkillsIndexMode: "search-stub"}
+	blockStub := getSkillsPrompt(md, func(string) {}, stubCfg)
+	if !strings.Contains(blockStub, "skills installed; call search_skills{query}") {
+		t.Errorf("expected search-stub prompt to contain stub line, got:\n%s", blockStub)
+	}
+
+	// 2. Auto mode with low threshold forces stub
+	lowThreshCfg := &config.Config{SkillsIndexMode: "auto", SkillsSearchThreshold: 1}
+	blockLow := getSkillsPrompt(md, func(string) {}, lowThreshCfg)
+	if !strings.Contains(blockLow, "skills installed; call search_skills{query}") {
+		t.Errorf("expected low-threshold prompt to contain stub line, got:\n%s", blockLow)
+	}
+
+	// 3. Eager mode bypasses threshold
+	eagerCfg := &config.Config{SkillsIndexMode: "eager", SkillsSearchThreshold: 1}
+	blockEager := getSkillsPrompt(md, func(string) {}, eagerCfg)
+	if strings.Contains(blockEager, "call search_skills{query}") {
+		t.Errorf("expected eager prompt NOT to contain stub line")
+	}
+}
+
+func TestSearchSkillsToolRelevance(t *testing.T) {
+	md := skill.DiscoverMarkdownSkills(".", nil, func(string) {})
+	if len(md) == 0 {
+		t.Skip("no markdown skills discovered")
+	}
+
+	st, err := CreateSearchSkillsTool(md, ".", nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSearchSkillsTool error: %v", err)
+	}
+
+	if st.Name() != "search_skills" {
+		t.Errorf("tool name = %q, want %q", st.Name(), "search_skills")
+	}
+}
+
+func TestPrefixByteStability(t *testing.T) {
+	md := skill.DiscoverMarkdownSkills(".", nil, func(string) {})
+	if len(md) == 0 {
+		t.Skip("no markdown skills discovered")
+	}
+
+	eagerCfg := &config.Config{SkillsIndexMode: "eager"}
+	prompt1 := getSkillsPrompt(md, func(string) {}, eagerCfg)
+	prompt2 := getSkillsPrompt(md, func(string) {}, eagerCfg)
+
+	if prompt1 != prompt2 {
+		t.Errorf("prefix byte stability failed: prompt outputs differ between calls")
+	}
 }

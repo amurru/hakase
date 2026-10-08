@@ -85,7 +85,7 @@ per-item notes live in the issues, not here.
    complaint; hakase today truncates usage to one int
    (`internal/agentrun/agentrun.go:300-306`) with no pricing, ledger, or
    budget. Design: `docs/finops/` (FO-001..FO-005).
-2. **Context hygiene** — threshold-gated skill stub + `search_skills`,
+2. **Context hygiene** -- shipped: threshold-gated skill stub + `search_skills`,
    KB count/byte caps, persist-time tool-output cap, durable-pin bin.
    Lazy loading already exists (`internal/agent/agent.go:1109,1215`); this
    scales it past ~100 skills without changing under-threshold behavior.

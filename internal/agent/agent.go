@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1101,12 +1102,43 @@ func createListSkillsTool(cwd string, extraDirs []string, log LogFunc) (tool.Too
 	}, execHandler)
 }
 
+// clampDescription clamps a skill description to maxChars (default 300) at a word boundary.
+func clampDescription(desc string, maxChars int) string {
+	if maxChars <= 0 {
+		maxChars = 300
+	}
+	desc = strings.TrimSpace(desc)
+	if len(desc) <= maxChars {
+		return desc
+	}
+	truncated := desc[:maxChars]
+	if lastSpace := strings.LastIndex(truncated, " "); lastSpace > maxChars/2 {
+		truncated = truncated[:lastSpace]
+	}
+	return strings.TrimRight(truncated, ".,;:!- ") + "..."
+}
+
 // getSkillsPrompt reads skills.json and builds a string for the system prompt.
 // Python entries are rendered in the original format; markdown skills are
 // appended under the same "AVAILABLE PRE-LEARNED SKILLS:" header. On a
 // name collision the markdown skill wins: the Python entry is omitted and a
 // warning is logged.
-func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
+func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc, cfg ...*config.Config) string {
+	var c *config.Config
+	if len(cfg) > 0 {
+		c = cfg[0]
+	}
+
+	mode := "auto"
+	threshold := 50
+	if c != nil {
+		if c.SkillsIndexMode != "" {
+			mode = c.SkillsIndexMode
+		}
+		if c.SkillsSearchThreshold > 0 {
+			threshold = c.SkillsSearchThreshold
+		}
+	}
 	registryPath := filepath.Join("./skills", "skills.json")
 	data, err := os.ReadFile(registryPath)
 	var registry skill.SkillRegistry
@@ -1160,15 +1192,21 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 		pythonSkills = append(pythonSkills, s)
 	}
 
-	if len(pythonSkills) == 0 && len(mdEnabled) == 0 {
+	totalSkills := len(pythonSkills) + len(mdEnabled)
+	if totalSkills == 0 {
 		return "No pre-existing skills currently saved."
 	}
 
 	var sb strings.Builder
-	// The loading instructions are stated once here rather than repeated per
-	// entry. Repeating a 70-byte sentence 148 times cost ~10 KB of the
-	// per-turn prefix and told the model nothing it had not read on line one.
 	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
+
+	// Over threshold or search-stub mode: emit stub text.
+	if mode == "search-stub" || (mode == "auto" && totalSkills > threshold) {
+		sb.WriteString(fmt.Sprintf("%d skills installed; call search_skills{query}\n", totalSkills))
+		return sb.String()
+	}
+
+	// Under threshold (eager mode): render full index with clamped descriptions.
 	if len(mdEnabled) > 0 {
 		sb.WriteString("Markdown skills - to read one, call 'load_markdown_skill' with its name; the entry below is an index, not the instructions.\n")
 	}
@@ -1177,7 +1215,7 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 			fmt.Sprintf(
 				"- %s (python): %s  Import: `from skills.%s import ...`\n",
 				s.Name,
-				hctx.WrapUntrustedData(s.Description),
+				hctx.WrapUntrustedData(clampDescription(s.Description, 300)),
 				s.Name,
 			),
 		)
@@ -1187,11 +1225,172 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc) string {
 			fmt.Sprintf(
 				"- %s: %s\n",
 				s.Frontmatter.Name,
-				hctx.WrapUntrustedData(s.Frontmatter.Description),
+				hctx.WrapUntrustedData(clampDescription(s.Frontmatter.Description, 300)),
 			),
 		)
 	}
 	return sb.String()
+}
+
+// SearchSkillsInput is the input for search_skills.
+type SearchSkillsInput struct {
+	Query string `json:"query" doc:"Search query keywords"`
+	Limit int    `json:"limit,omitempty" doc:"Maximum number of skills to return (default 5, max 10)"`
+}
+
+// SkillSearchResult is a single matching skill result.
+type SkillSearchResult struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Kind        string `json:"kind,omitempty"`
+}
+
+// SearchSkillsOutput is the output for search_skills.
+type SearchSkillsOutput struct {
+	Results []SkillSearchResult `json:"results"`
+}
+
+// scoreSkill calculates relevance score for a skill against query.
+func scoreSkill(name, description, qLower string, queryTokens []string) float64 {
+	score := 0.0
+	nLower := strings.ToLower(name)
+	dLower := strings.ToLower(description)
+
+	if strings.Contains(nLower, qLower) {
+		score += 10.0
+	}
+	if strings.Contains(dLower, qLower) {
+		score += 5.0
+	}
+
+	nameTokens := hctx.Tokenize(name)
+	descTokens := hctx.Tokenize(description)
+
+	for _, qt := range queryTokens {
+		for _, nt := range nameTokens {
+			if qt == nt {
+				score += 3.0
+			}
+		}
+		for _, dt := range descTokens {
+			if qt == dt {
+				score += 1.0
+			}
+		}
+	}
+	return score
+}
+
+// CreateSearchSkillsTool creates a read-only tool to search installed skills by query.
+func CreateSearchSkillsTool(
+	skills []skill.MarkdownSkill,
+	cwd string,
+	extraDirs []string,
+	log LogFunc,
+) (tool.Tool, error) {
+	index := make(map[string]skill.MarkdownSkill, len(skills))
+	for _, s := range skills {
+		index[s.Frontmatter.Name] = s
+	}
+
+	execHandler := func(ctx agent.Context, input SearchSkillsInput) (SearchSkillsOutput, error) {
+		limit := input.Limit
+		if limit <= 0 {
+			limit = 5
+		}
+		if limit > 10 {
+			limit = 10
+		}
+
+		query := strings.TrimSpace(input.Query)
+		if query == "" {
+			return SearchSkillsOutput{Results: []SkillSearchResult{}}, nil
+		}
+
+		registryPath := filepath.Join("./skills", "skills.json")
+		data, err := os.ReadFile(registryPath)
+		var registry skill.SkillRegistry
+		if err == nil {
+			_ = json.Unmarshal(data, &registry)
+		}
+
+		disabled := skill.DisabledSkillsSet()
+
+		mdList := make([]skill.MarkdownSkill, 0, len(index))
+		for _, s := range index {
+			mdList = append(mdList, s)
+		}
+		mdNames := make(map[string]bool, len(mdList))
+		for _, s := range mdList {
+			mdNames[s.Frontmatter.Name] = true
+		}
+
+		type scoredSkill struct {
+			res   SkillSearchResult
+			score float64
+		}
+		var candidates []scoredSkill
+
+		queryTokens := hctx.Tokenize(query)
+		qLower := strings.ToLower(query)
+
+		for _, s := range mdList {
+			if disabled[skill.SkillKey(skill.KindMarkdown, s.Frontmatter.Name)] {
+				continue
+			}
+			score := scoreSkill(s.Frontmatter.Name, s.Frontmatter.Description, qLower, queryTokens)
+			if score > 0 {
+				candidates = append(candidates, scoredSkill{
+					res: SkillSearchResult{
+						Name:        s.Frontmatter.Name,
+						Description: s.Frontmatter.Description,
+						Kind:        "markdown",
+					},
+					score: score,
+				})
+			}
+		}
+
+		for _, s := range registry.Skills {
+			if mdNames[s.Name] || disabled[skill.SkillKey(skill.KindPython, s.Name)] {
+				continue
+			}
+			score := scoreSkill(s.Name, s.Description, qLower, queryTokens)
+			if score > 0 {
+				candidates = append(candidates, scoredSkill{
+					res: SkillSearchResult{
+						Name:        s.Name,
+						Description: s.Description,
+						Kind:        "python",
+					},
+					score: score,
+				})
+			}
+		}
+
+		sort.SliceStable(candidates, func(i, j int) bool {
+			if candidates[i].score != candidates[j].score {
+				return candidates[i].score > candidates[j].score
+			}
+			return candidates[i].res.Name < candidates[j].res.Name
+		})
+
+		results := make([]SkillSearchResult, 0, limit)
+		for i := 0; i < len(candidates) && i < limit; i++ {
+			results = append(results, candidates[i].res)
+		}
+
+		if log != nil {
+			log(fmt.Sprintf("[skills] search_skills query %q returned %d result(s)", query, len(results)))
+		}
+
+		return SearchSkillsOutput{Results: results}, nil
+	}
+
+	return util.NewDocTool(functiontool.Config{
+		Name:        "search_skills",
+		Description: "Search installed Python and markdown skills by keyword or name. Returns matching skill names and full descriptions. Limit defaults to 5 (max 10).",
+	}, execHandler)
 }
 
 // LoadMarkdownSkillInput is the input for the load_markdown_skill tool.
@@ -2321,6 +2520,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if err != nil {
 		return nil, err
 	}
+	searchSkillsTool, err := CreateSearchSkillsTool(mdSkills, cwd, cfg.SkillDirs, log)
+	if err != nil {
+		return nil, err
+	}
 	listSkillsTool, err := createListSkillsTool(cwd, cfg.SkillDirs, log)
 	if err != nil {
 		return nil, err
@@ -2342,7 +2545,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 
 	// Load currently saved skills from disk
-	installedSkills := getSkillsPrompt(mdSkills, log)
+	installedSkills := getSkillsPrompt(mdSkills, log, cfg)
 
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
@@ -2366,6 +2569,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			saveSkillTool,
 			listSkillsTool,
 			loadMarkdownSkillTool,
+			searchSkillsTool,
 			visionTool,
 		}, // 👈 Attached skill tools here!
 		GenerateContentConfig: genCfg,
@@ -2514,6 +2718,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	orchestratorTools := []tool.Tool{
 		listSkillsTool,
 		loadMarkdownSkillTool,
+		searchSkillsTool,
 		createTaskT,
 		updateTaskT,
 		listTasksT,

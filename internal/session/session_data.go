@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +25,8 @@ const (
 	// MessageKindSidekick marks advisory notes surfaced by the sidekick
 	// watchdog. They are persisted in-context so the orchestrator sees them
 	// across turns (per spec NotesInContext).
-	MessageKindSidekick = "sidekick"
+	MessageKindSidekick   = "sidekick"
+	MessageKindDurablePin = "durable_pin"
 )
 
 // Session represents a user chat session — a persistent conversation
@@ -130,6 +132,11 @@ func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int,
 // AddMessageWithMetaAndAttachments is AddMessageWithMeta plus a persisted
 // attachment list.
 func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking string, tokens int, kind string, atts []AttachmentRef) {
+	// Persist-time tool-output cap (Spec CX-003)
+	if kind == MessageKindToolResult && len(content) > 8192 {
+		maxChars := 8192
+		content = content[:maxChars] + fmt.Sprintf("\n...[truncated %d chars]", len(content)-maxChars)
+	}
 	s.Messages = append(s.Messages, Message{
 		Role:        role,
 		Content:     content,

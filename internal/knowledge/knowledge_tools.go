@@ -85,7 +85,8 @@ type KnowledgeSearchResult struct {
 
 // SearchKnowledgeOutput is the output for the search_knowledge tool.
 type SearchKnowledgeOutput struct {
-	Results []KnowledgeSearchResult `json:"results" doc:"Matching notes sorted by title."`
+	Results   []KnowledgeSearchResult `json:"results" doc:"Matching notes sorted by title."`
+	Truncated string                  `json:"truncated,omitempty" doc:"Truncation notice when results or total snippet bytes exceed caps."`
 }
 
 // UpdateKnowledgeInput is the input for the update_knowledge tool.
@@ -258,12 +259,36 @@ const knowledgeLogEmoji = "📚 [knowledge]"
 // Each handler builds a fresh index at call time.
 // buildSearchOutput renders scored notes into tool output (snippet per
 // note, sanitized). Shared by the BM25/expansion and hybrid paths so both
-// surfaces stay identical.
-func buildSearchOutput(query string, scored []ScoredKnowledgeNote) SearchKnowledgeOutput {
+// surfaces stay identical. Caps max results and max snippet bytes per spec CX-002.
+func buildSearchOutput(query string, scored []ScoredKnowledgeNote, opts ...SearchOptions) SearchKnowledgeOutput {
+	maxResults := 10
+	maxBytes := 2048
+	if len(opts) > 0 {
+		if opts[0].MaxResults > 0 {
+			maxResults = opts[0].MaxResults
+		}
+		if opts[0].MaxBytes > 0 {
+			maxBytes = opts[0].MaxBytes
+		}
+	}
+
 	var results []KnowledgeSearchResult
-	for _, s := range scored {
+	totalBytes := 0
+	truncatedCount := 0
+
+	for i, s := range scored {
+		if len(results) >= maxResults {
+			truncatedCount = len(scored) - i
+			break
+		}
 		n := s.Note
 		snippet := FirstSnippet(n.Body, query)
+		snipSan := hctx.SanitizeContextContent(snippet)
+		if len(results) > 0 && totalBytes+len(snipSan) > maxBytes {
+			truncatedCount = len(scored) - i
+			break
+		}
+		totalBytes += len(snipSan)
 		results = append(results, KnowledgeSearchResult{
 			Title:   n.Frontmatter.Title,
 			Slug:    n.Slug,
@@ -271,10 +296,19 @@ func buildSearchOutput(query string, scored []ScoredKnowledgeNote) SearchKnowled
 			Tags:    n.Frontmatter.Tags,
 			Updated: n.Frontmatter.Updated,
 			Status:  n.Frontmatter.Status,
-			Snippet: hctx.SanitizeContextContent(snippet),
+			Snippet: snipSan,
 		})
 	}
-	return SearchKnowledgeOutput{Results: results}
+
+	truncMsg := ""
+	if truncatedCount > 0 {
+		truncMsg = fmt.Sprintf("...[%d more, refine query]", truncatedCount)
+	}
+
+	return SearchKnowledgeOutput{
+		Results:   results,
+		Truncated: truncMsg,
+	}
 }
 
 func CreateKnowledgeTools(log LogFunc, dir string, searchExpansion bool) ([]tool.Tool, error) {
@@ -291,6 +325,8 @@ type SearchOptions struct {
 	Expansion  bool
 	Hybrid     bool
 	EmbedModel string
+	MaxResults int
+	MaxBytes   int
 }
 
 // CreateKnowledgeToolsWithOptions builds the knowledge tools with full
@@ -531,7 +567,7 @@ func CreateKnowledgeToolsWithOptions(log LogFunc, dir string, opts SearchOptions
 		var scored []ScoredKnowledgeNote
 		if opts.Hybrid {
 			scored = HybridSearch(ctx, log, dir, idx, input.Query, input.Tags, input.IncludeArchived, true, opts.EmbedModel)
-			return buildSearchOutput(input.Query, scored), nil
+			return buildSearchOutput(input.Query, scored, opts), nil
 		}
 
 		// Collect the scored result sets for each query phrasing. Without
@@ -559,7 +595,7 @@ func CreateKnowledgeToolsWithOptions(log LogFunc, dir string, opts SearchOptions
 			scored = fuseRRF(sets)
 		}
 
-		return buildSearchOutput(input.Query, scored), nil
+		return buildSearchOutput(input.Query, scored, opts), nil
 	})
 	if err != nil {
 		return nil, err

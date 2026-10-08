@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"amurru/hakase/internal/env"
@@ -70,6 +71,27 @@ type HistoryBuilder struct {
 	// their own accounting instead of overwriting each other's reserve.
 	contextBlockTokens      int
 	gitWorkspaceBlockTokens int
+	skillIndexBlockTokens   int
+}
+
+// SetSkillIndexBlockTokens records the token estimate of the rendered skill index prompt block.
+func (h *HistoryBuilder) SetSkillIndexBlockTokens(skillIndexBlockTokens int) {
+	h.skillIndexBlockTokens = skillIndexBlockTokens
+}
+
+// IsDurablePin returns true if a message is a durable pin (exempt from compaction eviction).
+func IsDurablePin(msg sesspkg.Message) bool {
+	if msg.Kind == sesspkg.MessageKindDurablePin {
+		return true
+	}
+	contentUpper := strings.ToUpper(msg.Content)
+	markers := []string{"[PIN]", "[CONSTRAINT]", "[GOAL]", "[DECISION]", "[ID]", "CONSTRAINTS:", "RULED-OUT:", "NEVER-DO:", "GOAL:", "DECISION:", "IDS:"}
+	for _, m := range markers {
+		if strings.Contains(contentUpper, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewHistoryBuilder creates a HistoryBuilder bound to the given session
@@ -552,7 +574,7 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 	// The flat baseline plus the blocks is a conservative approximation since
 	// we cannot see the fully rendered prompt.
 	const baseReserveTokens = 8000
-	reserveTokens := baseReserveTokens + h.contextBlockTokens + h.gitWorkspaceBlockTokens + env.SystemEnvBlockTokens
+	reserveTokens := baseReserveTokens + h.contextBlockTokens + h.gitWorkspaceBlockTokens + h.skillIndexBlockTokens + env.SystemEnvBlockTokens
 
 	currentTokens := util.EstimateContentsTokens(current)
 	trigger := int64(effectiveMax * 9 / 10)
@@ -608,6 +630,7 @@ func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history
 			msg.InContext = false
 			msg.Content = "[tool result trimmed]"
 			changed = true
+			h.logfSafe("⚠ [context] Evicted tool result seq %d (role: %s, tokens: %d) at %s", msg.Sequence, msg.Role, msg.Tokens, time.Now().Format(time.RFC3339))
 		}
 	}
 	if changed {
@@ -653,8 +676,13 @@ func (h *HistoryBuilder) StageBSnip(session *sesspkg.Session, history []*genai.C
 		if !session.Messages[i].InContext {
 			continue
 		}
+		if IsDurablePin(session.Messages[i]) {
+			continue
+		}
 		session.Messages[i].InContext = false
 		changed = true
+		h.logfSafe("⚠ [context] Evicted message seq %d (role: %s, kind: %s, tokens: %d) at %s",
+			session.Messages[i].Sequence, session.Messages[i].Role, session.Messages[i].Kind, session.Messages[i].Tokens, time.Now().Format(time.RFC3339))
 		if int64(util.EstimateContentsTokens(h.buildHistory(session.Messages, currentText))) <= int64(budget) {
 			break
 		}

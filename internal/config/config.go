@@ -231,6 +231,16 @@ type Config struct {
 	// when the primary provider is gemini (native Gemini embeddings are
 	// out of scope) - e.g. a local Ollama at http://localhost:11434/v1.
 	KnowledgeEmbedBaseURL string `json:"knowledge_embed_base_url,omitempty"`
+
+	// Context Hygiene configuration (spec docs/context-hygiene/spec.md CX-004)
+	// SkillsIndexMode controls skill prompt rendering: "auto" (default), "eager", or "search-stub".
+	SkillsIndexMode string `json:"skills_index_mode,omitempty"`
+	// SkillsSearchThreshold triggers search-stub mode when skill count exceeds threshold in auto mode (default 50).
+	SkillsSearchThreshold int `json:"skills_search_threshold,omitempty"`
+	// ToolOutputMaxChars caps tool output persistence in chars (0 = default 8192 when active).
+	ToolOutputMaxChars int `json:"tool_output_max_chars,omitempty"`
+	// ContextDurablePins preserves pinned/hard constraint messages from compaction (default false).
+	ContextDurablePins bool `json:"context_durable_pins,omitempty"`
 	// Media configures pluggable media generation (image/video/audio).
 	Media MediaConfig `json:"media,omitempty"`
 	// Sidekick tunes the optional second-LLM "sidekick" agent (side-process

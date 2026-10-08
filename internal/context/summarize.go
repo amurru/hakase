@@ -199,10 +199,24 @@ func buildSummarizePrompt(msgs []session.Message, focus string) string {
 		kept[i], kept[j] = kept[j], kept[i]
 	}
 
+	var durablePins []string
+	for _, msg := range msgs {
+		if IsDurablePin(msg) {
+			durablePins = append(durablePins, "- "+msg.Content)
+		}
+	}
+
 	var b strings.Builder
 	b.WriteString(summaryTemplate)
 	if strings.TrimSpace(focus) != "" {
 		b.WriteString("\n\nADDITIONAL FOCUS: " + strings.TrimSpace(focus))
+	}
+	if len(durablePins) > 0 {
+		b.WriteString("\n\n=== DURABLE PINS AND HARD CONSTRAINTS (must be preserved in summary) ===\n")
+		for _, pin := range durablePins {
+			b.WriteString(pin)
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n\n=== CONVERSATION TRANSCRIPT ===\n")
 	for _, line := range kept {
