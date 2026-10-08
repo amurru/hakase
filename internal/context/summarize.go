@@ -199,10 +199,15 @@ func buildSummarizePrompt(msgs []session.Message, focus string) string {
 		kept[i], kept[j] = kept[j], kept[i]
 	}
 
+	seenPins := make(map[string]bool)
 	var durablePins []string
 	for _, msg := range msgs {
 		if IsDurablePin(msg) {
-			durablePins = append(durablePins, "- "+msg.Content)
+			content := strings.TrimSpace(msg.Content)
+			if content != "" && !seenPins[content] {
+				seenPins[content] = true
+				durablePins = append(durablePins, "- "+content)
+			}
 		}
 	}
 
