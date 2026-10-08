@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/adk/v2/agent"
@@ -1111,8 +1112,12 @@ func clampDescription(desc string, maxChars int) string {
 	if len(desc) <= maxChars {
 		return desc
 	}
-	truncated := desc[:maxChars]
-	if lastSpace := strings.LastIndex(truncated, " "); lastSpace > maxChars/2 {
+	cut := maxChars
+	for cut > 0 && !utf8.RuneStart(desc[cut]) {
+		cut--
+	}
+	truncated := desc[:cut]
+	if lastSpace := strings.LastIndex(truncated, " "); lastSpace > cut/2 {
 		truncated = truncated[:lastSpace]
 	}
 	return strings.TrimRight(truncated, ".,;:!- ") + "..."
@@ -1133,7 +1138,15 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc, cfg ...*config
 	threshold := 50
 	if c != nil {
 		if c.SkillsIndexMode != "" {
-			mode = c.SkillsIndexMode
+			switch c.SkillsIndexMode {
+			case "auto", "eager", "search-stub":
+				mode = c.SkillsIndexMode
+			default:
+				if log != nil {
+					log(fmt.Sprintf("[skills] Unknown skills_index_mode %q, defaulting to 'auto'", c.SkillsIndexMode))
+				}
+				mode = "auto"
+			}
 		}
 		if c.SkillsSearchThreshold > 0 {
 			threshold = c.SkillsSearchThreshold
@@ -1202,7 +1215,7 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc, cfg ...*config
 
 	// Over threshold or search-stub mode: emit stub text.
 	if mode == "search-stub" || (mode == "auto" && totalSkills > threshold) {
-		sb.WriteString(fmt.Sprintf("%d skills installed; call search_skills{query}\n", totalSkills))
+		fmt.Fprintf(&sb, "%d skills installed; call search_skills{query}\n", totalSkills)
 		return sb.String()
 	}
 
@@ -1305,6 +1318,17 @@ func CreateSearchSkillsTool(
 		query := strings.TrimSpace(input.Query)
 		if query == "" {
 			return SearchSkillsOutput{Results: []SkillSearchResult{}}, nil
+		}
+
+		// Re-scan markdown skills when discovery function is available to include newly created skills.
+		if deps != nil && deps.DiscoverMarkdownSkillsFn != nil {
+			freshRaw := deps.DiscoverMarkdownSkillsFn(cwd, extraDirs, log)
+			if fresh, ok := freshRaw.([]skill.MarkdownSkill); ok {
+				index = make(map[string]skill.MarkdownSkill, len(fresh))
+				for _, s := range fresh {
+					index[s.Frontmatter.Name] = s
+				}
+			}
 		}
 
 		registryPath := filepath.Join("./skills", "skills.json")

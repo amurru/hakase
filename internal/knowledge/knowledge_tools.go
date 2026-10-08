@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -275,6 +276,7 @@ func buildSearchOutput(query string, scored []ScoredKnowledgeNote, opts ...Searc
 	var results []KnowledgeSearchResult
 	totalBytes := 0
 	truncatedCount := 0
+	snippetShortened := false
 
 	for i, s := range scored {
 		if len(results) >= maxResults {
@@ -284,10 +286,35 @@ func buildSearchOutput(query string, scored []ScoredKnowledgeNote, opts ...Searc
 		n := s.Note
 		snippet := FirstSnippet(n.Body, query)
 		snipSan := hctx.SanitizeContextContent(snippet)
-		if len(results) > 0 && totalBytes+len(snipSan) > maxBytes {
-			truncatedCount = len(scored) - i
+
+		if totalBytes+len(snipSan) > maxBytes {
+			avail := maxBytes - totalBytes
+			if avail <= 0 {
+				truncatedCount = len(scored) - i
+				break
+			}
+			cut := avail
+			for cut > 0 && !utf8.RuneStart(snipSan[cut]) {
+				cut--
+			}
+			snipSan = strings.TrimRight(snipSan[:cut], ".,;:!- ") + "..."
+			snippetShortened = true
+			totalBytes += len(snipSan)
+
+			results = append(results, KnowledgeSearchResult{
+				Title:   n.Frontmatter.Title,
+				Slug:    n.Slug,
+				Summary: n.Frontmatter.Summary,
+				Tags:    n.Frontmatter.Tags,
+				Updated: n.Frontmatter.Updated,
+				Status:  n.Frontmatter.Status,
+				Snippet: snipSan,
+			})
+
+			truncatedCount = len(scored) - (i + 1)
 			break
 		}
+
 		totalBytes += len(snipSan)
 		results = append(results, KnowledgeSearchResult{
 			Title:   n.Frontmatter.Title,
@@ -303,6 +330,8 @@ func buildSearchOutput(query string, scored []ScoredKnowledgeNote, opts ...Searc
 	truncMsg := ""
 	if truncatedCount > 0 {
 		truncMsg = fmt.Sprintf("...[%d more, refine query]", truncatedCount)
+	} else if snippetShortened {
+		truncMsg = "...[snippet truncated, refine query]"
 	}
 
 	return SearchKnowledgeOutput{
