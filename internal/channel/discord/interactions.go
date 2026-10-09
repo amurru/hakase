@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/interfaces"
 
 	"github.com/bwmarrin/discordgo"
@@ -72,6 +73,7 @@ func (b *Bot) answerApproval(inter *discordgo.Interaction, userID int64, gateID 
 		_ = b.sender.RespondInteraction(inter, false, "Already resolved or expired.")
 		return
 	}
+	hakaseagent.AuditApprovalAnswer(gateID, "", approved, fmt.Sprintf("discord:%d", userID), "discord")
 	verdict := "✅ Approved"
 	if !approved {
 		verdict = "❌ Denied"

@@ -53,9 +53,12 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 			chatAPI := handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)
 			wireResumeBackend(chatAPI, approvalGate, clarifyGate)
 		}
-		// Approval/Clarify response endpoints (task 22)
+		// Approval/Clarify response endpoints (task 22) + pending
+		// queue and batch respond with web RBAC (docs/permissions/ PM-003).
+		// Roles come from auth.web_roles; unparseable config fails loudly.
 		if approvalGate != nil {
-			handlers.RegisterApprovalRoutes(r, approvalGate)
+			roles := approvalRoles()
+			handlers.RegisterApprovalRoutesWithRoles(r, approvalGate, roles)
 		}
 		if clarifyGate != nil {
 			handlers.RegisterClarifyRoutes(r, clarifyGate)
@@ -103,7 +106,21 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 	}
 }
 
-// wireResumeBackend connects the durable-resume answer path
+// approvalRoles parses auth.web_roles for the approval queue endpoints
+// (docs/permissions/ PM-003). Unparseable config fails loudly at startup;
+// a missing config file means open (today's behavior).
+func approvalRoles() handlers.RoleMap {
+	cfg, err := config.LoadConfig("config.json")
+	if err != nil {
+		return nil
+	}
+	roles, err := handlers.ParseRoleMap(cfg.Auth.WebRoles)
+	if err != nil {
+		log.Fatalf("auth.web_roles: %v", err)
+	}
+	return roles
+}
+
 // (docs/durable-resume/plan.md Phase 7): re-emitted prompts resolve
 // through the ChatAPI resume backend, and pending gate prompts are
 // re-emitted at startup behind AutoResumeOnStartup. Nil-tolerant:

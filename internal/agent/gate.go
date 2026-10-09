@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/util"
 	"fmt"
@@ -52,6 +53,18 @@ type GateDecision struct {
 	Action GateAction
 	Risk   CommandRisk
 	Reason string // human-readable reason for deny/ask
+	// PolicyRule cites the permissions rule behind an ActionDeny/Ask
+	// from step 4b (nil when the risk gate decided on its own).
+	PolicyRule *permissions.Rule
+}
+
+// ruleSuffix renders the matching permissions rule for gate reasons
+// (audit metadata). Empty when the default applied.
+func ruleSuffix(rule *permissions.Rule) string {
+	if rule == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (rule: %s %q -> %s)", rule.Action, rule.Resource, rule.Effect)
 }
 
 // parseCommandArgv splits a shell command line into argv the way the shell
@@ -1084,6 +1097,25 @@ func EvaluateCommand(sb *sandbox.SandboxConfig, command string, args []string) G
 		// 12.2: Interpreter opaque-code escalation.
 		if hasOpaqueCodeArg(argv) {
 			return GateDecision{Action: ActionAsk, Risk: RiskUnknown, Reason: "interpreter executing opaque script/code requires user approval"}
+		}
+	}
+
+	// 4b. Permissions policy (permissions.json, PM-002): evaluated after
+	// every deny-class check above (hard-deny, deny patterns, allowlist,
+	// interpreter escalation) and before the risk threshold, so a policy
+	// can never widen a deny. No installed policy = skip with zero
+	// behavior change. A policy allow still falls through on RiskUnknown
+	// (fail-closed, step 5 below).
+	if eff, rule, ok := permissions.Lookup("shell", command); ok && rule != nil {
+		switch eff {
+		case permissions.EffectDeny:
+			return GateDecision{Action: ActionDeny, Risk: risk, Reason: "denied by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
+		case permissions.EffectAsk:
+			return GateDecision{Action: ActionAsk, Risk: risk, Reason: "requires approval by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
+		case permissions.EffectAllow:
+			if risk != RiskUnknown {
+				return GateDecision{Action: ActionAllow, Risk: risk, Reason: ""}
+			}
 		}
 	}
 

@@ -2485,6 +2485,19 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Content-hash trust for the project layer (spec HK-102/HK-103): an
 	// unopenable store trusts nothing, so cloned-repo hooks stay skipped.
 	hooksRunner.SetTrustStore(hooks.OpenDefaultTrustStore())
+
+	// Permissions policy layers (docs/permissions/ PM-001): user +
+	// trust-gated project + enterprise, installed for the gate, fileops,
+	// and path audit to consult. A corrupt user/enterprise file fails
+	// startup loudly; an untrusted project file is dropped silently and a
+	// URL outage keeps the last good policy (see permissions.Loader).
+	if err := initPermissions(cfg, cwd, hooks.OpenDefaultTrustStore(), log); err != nil {
+		return nil, fmt.Errorf("permissions: %w", err)
+	}
+
+	// SIEM forwarding for the hash-chained audit trail (PM-004):
+	// best-effort POST per entry, "" disables.
+	ConfigureAuditForward(cfg.Audit.ForwardURL, cfg.Audit.ForwardFormat)
 	// Publish the runner for the delegate_task path, whose sub-agents are
 	// built per-delegation in delegate.go (long after SetupRunner returns).
 	deps.HooksRunner = hooksRunner

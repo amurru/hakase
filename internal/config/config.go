@@ -43,6 +43,66 @@ type ApprovalConfig struct {
 	ExpirySeconds int    `json:"expiry_seconds,omitempty"` // default 60
 }
 
+// Validate rejects unknown approval modes at load (fail loudly, never
+// silently degrade to interactive).
+func (c ApprovalConfig) Validate() error {
+	switch c.Mode {
+	case "", "interactive", "deny", "allow":
+		return nil
+	default:
+		return fmt.Errorf("approval.mode: invalid %q (want interactive|deny|allow)", c.Mode)
+	}
+}
+
+// AuditConfig tunes the hash-chained audit trail (docs/permissions/ PM-004).
+type AuditConfig struct {
+	// ForwardURL optionally POSTs each audit entry to a SIEM endpoint
+	// (best-effort, never breaks the agent).
+	ForwardURL string `json:"forward_url,omitempty"`
+	// ForwardFormat is "jsonl" (default) or "json" (Content-Type framing).
+	ForwardFormat string `json:"forward_format,omitempty"`
+}
+
+// Validate rejects unknown forward formats and bad URLs at load.
+func (c AuditConfig) Validate() error {
+	switch c.ForwardFormat {
+	case "", "jsonl", "json":
+	default:
+		return fmt.Errorf("audit.forward_format: invalid %q (want jsonl|json)", c.ForwardFormat)
+	}
+	if c.ForwardURL != "" && !strings.HasPrefix(c.ForwardURL, "http://") && !strings.HasPrefix(c.ForwardURL, "https://") {
+		return fmt.Errorf("audit.forward_url: invalid %q (want http(s) URL)", c.ForwardURL)
+	}
+	return nil
+}
+
+// PermissionsConfig tunes the permissions policy layers (docs/permissions/).
+type PermissionsConfig struct {
+	// Enabled gates permissions.json loading. Nil/absent = enabled;
+	// explicit false skips all layers (nil installed policy).
+	Enabled *bool `json:"enabled,omitempty"`
+	// EnterprisePath overrides the default /etc/hakase/enterprise.json.
+	EnterprisePath string `json:"enterprise_path,omitempty"`
+	// EnterpriseURL overrides every enterprise poll source (explicit >
+	// HAKASE_ENTERPRISE_POLICY_URL > file policy_url).
+	EnterpriseURL string `json:"enterprise_url,omitempty"`
+	// PollMinutes overrides the enterprise poll interval (<=0 = default 60).
+	PollMinutes int `json:"poll_minutes,omitempty"`
+}
+
+// LoadEnabled reports whether permissions loading is active (default true).
+func (c PermissionsConfig) LoadEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// Validate rejects a negative poll interval at load.
+func (c PermissionsConfig) Validate() error {
+	if c.PollMinutes < 0 {
+		return fmt.Errorf("permissions.poll_minutes: invalid %d (want >= 0)", c.PollMinutes)
+	}
+	return nil
+}
+
 // ClarifyConfig tunes the interactive clarify gate.
 type ClarifyConfig struct {
 	// ExpirySeconds is how long the tool waits for a user answer before
@@ -111,6 +171,26 @@ type AuthConfig struct {
 	// false: cookies are Secure-only. Consumed by the web cookie setter
 	// (security-hardening Task 17 - W8).
 	AllowInsecureCookie bool `json:"allow_insecure_cookie"`
+	// WebRoles maps usernames (JWT subject, the allowlist IDs) to web
+	// RBAC tiers (viewer|approver|admin) for the approval queue and
+	// audit endpoints (docs/permissions/ PM-003). Absent = fully open
+	// (today's single-user behavior).
+	WebRoles map[string]string `json:"web_roles,omitempty"`
+}
+
+// Validate rejects unknown role tiers at load.
+func (c AuthConfig) Validate() error {
+	for user, r := range c.WebRoles {
+		switch r {
+		case "", "viewer", "approver", "admin":
+			if r == "" {
+				return fmt.Errorf("auth.web_roles[%q]: empty role (want viewer|approver|admin)", user)
+			}
+		default:
+			return fmt.Errorf("auth.web_roles[%q]: invalid %q (want viewer|approver|admin)", user, r)
+		}
+	}
+	return nil
 }
 
 type Config struct {
@@ -197,9 +277,15 @@ type Config struct {
 	// Approval tunes the interactive approval gate for harmful-command
 	// protection. Absent/zero values use defaults (interactive mode, 60s expiry).
 	Approval ApprovalConfig `json:"approval,omitempty"`
+	// Permissions tunes the permissions policy layers (docs/permissions/).
+	// Absent = enabled with default paths.
+	Permissions PermissionsConfig `json:"permissions,omitempty"`
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
+	// Audit tunes the hash-chained audit trail and SIEM forwarding.
+	// Absent = local trail only.
+	Audit AuditConfig `json:"audit,omitempty"`
 	// DurableResume enables durable human-in-the-loop resume: ADK
 	// session history (including gate pauses) is persisted so a
 	// restart can resume interrupted runs. Absent/disabled = in-memory
@@ -1566,6 +1652,41 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Session.Snapshots.ApplyDefaults()
 	if err := cfg.Session.Snapshots.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Approval + permissions validation and env overrides (mirrors the
+	// memory pattern). A bad approval.mode or poll interval fails startup
+	// loudly (landlock precedent), never silently.
+	if v := os.Getenv("HAKASE_PERMISSIONS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_PERMISSIONS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Permissions.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_PERMISSIONS_ENTERPRISE_PATH"); v != "" {
+		cfg.Permissions.EnterprisePath = v
+	}
+	if v := os.Getenv("HAKASE_PERMISSIONS_ENTERPRISE_URL"); v != "" {
+		cfg.Permissions.EnterpriseURL = v
+	}
+	if err := cfg.Approval.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Permissions.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Auth.Validate(); err != nil {
+		return nil, err
+	}
+	if v := os.Getenv("HAKASE_AUDIT_FORWARD_URL"); v != "" {
+		cfg.Audit.ForwardURL = v
+	}
+	if v := os.Getenv("HAKASE_AUDIT_FORWARD_FORMAT"); v != "" {
+		cfg.Audit.ForwardFormat = v
+	}
+	if err := cfg.Audit.Validate(); err != nil {
 		return nil, err
 	}
 

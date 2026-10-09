@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/util"
 
 	"google.golang.org/adk/v2/agent"
@@ -304,6 +305,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 			SessionID:   sessionID,
 			SandboxMode: sandboxMode,
 			Decision:    "denied",
+			PolicyRule:  decision.PolicyRule.Citation(),
 			Risk:        decision.Risk.String(),
 			Reason:      decision.Reason,
 		})
@@ -319,6 +321,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 				SessionID:   sessionID,
 				SandboxMode: sandboxMode,
 				Decision:    "operator_approved",
+				PolicyRule:  decision.PolicyRule.Citation(),
 				Risk:        decision.Risk.String(),
 				Reason:      decision.Reason,
 			})
@@ -344,6 +347,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 				SessionID:   sessionID,
 				SandboxMode: sandboxMode,
 				Decision:    "not_approved",
+				PolicyRule:  decision.PolicyRule.Citation(),
 				Risk:        decision.Risk.String(),
 				Reason:      decision.Reason,
 			})
@@ -361,6 +365,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 			SessionID:   sessionID,
 			SandboxMode: sandboxMode,
 			Decision:    "approved",
+			PolicyRule:  decision.PolicyRule.Citation(),
 			Risk:        decision.Risk.String(),
 			Reason:      decision.Reason,
 		})
@@ -374,6 +379,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 			SessionID:   sessionID,
 			SandboxMode: sandboxMode,
 			Decision:    "allowed",
+			PolicyRule:  decision.PolicyRule.Citation(),
 			Risk:        decision.Risk.String(),
 			Reason:      decision.Reason,
 		})
@@ -589,6 +595,16 @@ func effectiveChildDir(sb *SandboxConfig, workingDir string) string {
 func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, workingDir string) error {
 	if sb == nil || sb.Mode == SandboxModeOff {
 		return nil
+	}
+	// Permissions policy (PM-002): deny enforcement against the full
+	// command line. Ask/allow (and no installed policy) leave the audit
+	// unchanged; the gate owns prompting.
+	if eff, rule, ok := permissions.Lookup("shell", command); ok && rule != nil && eff == permissions.EffectDeny {
+		suffix := ""
+		if rule != nil {
+			suffix = fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
+		}
+		return fmt.Errorf("command denied by permissions policy%s", suffix)
 	}
 	// Relative operands resolve against the same working directory the
 	// executed process gets: an approved override when supplied, otherwise

@@ -5,10 +5,12 @@
 package handlers
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -25,13 +27,21 @@ type WebApprovalGate struct {
 	bridge    *sse.EventBridge
 	sessionID string
 	cfg       interfaces.ApprovalConfig
-	pending   map[string]chan bool // approvalID -> response channel
+	pending   map[string]*pendingPrompt // approvalID -> prompt
 	// resurrected maps re-emitted prompt IDs (durable-resume Phase 7)
 	// to pause IDs. Live prompts resolve through pending; prompts
 	// re-emitted after a restart have no blocked handler and resolve
 	// through the resume backend instead.
 	resurrected map[string]string // promptID -> pauseID
 	resume      ResumeBackend     // nil when durable resume is unwired
+}
+
+// pendingPrompt is one live gate prompt: the response channel plus the
+// metadata the pending queue (PM-003) serves to approvers.
+type pendingPrompt struct {
+	ch    chan bool
+	req   interfaces.ApprovalRequest
+	since time.Time
 }
 
 // TrackResurrected records that promptID re-emits the gate prompt for
@@ -80,7 +90,7 @@ func NewWebApprovalGate(bridge *sse.EventBridge, sessionID string, cfg interface
 		bridge:    bridge,
 		sessionID: sessionID,
 		cfg:       cfg,
-		pending:   make(map[string]chan bool),
+		pending:   make(map[string]*pendingPrompt),
 	}
 }
 
@@ -100,10 +110,10 @@ func (g *WebApprovalGate) promptSession(reqSession string) string {
 // (fail-closed).
 func (g *WebApprovalGate) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	approvalID := "appr_" + uuid.New().String()
-	resp := make(chan bool, 1)
+	p := &pendingPrompt{ch: make(chan bool, 1), req: req, since: time.Now().UTC()}
 
 	g.mu.Lock()
-	g.pending[approvalID] = resp
+	g.pending[approvalID] = p
 	g.mu.Unlock()
 
 	// Emit SSE approval prompt on the gate's routing topic; the payload
@@ -122,7 +132,7 @@ func (g *WebApprovalGate) AskApproval(ctx context.Context, req interfaces.Approv
 	// Wait for response, context cancellation, or timeout.
 	expiry := g.ApprovalExpiry()
 	select {
-	case approved := <-resp:
+	case approved := <-p.ch:
 		// Clean up the pending entry.
 		g.mu.Lock()
 		delete(g.pending, approvalID)
@@ -162,14 +172,14 @@ func (g *WebApprovalGate) ApprovalExpiry() time.Duration {
 // Returns true if the response was delivered, false if the ID is unknown/expired.
 func (g *WebApprovalGate) RespondApproval(approvalID string, approved bool) bool {
 	g.mu.RLock()
-	ch, ok := g.pending[approvalID]
+	p, ok := g.pending[approvalID]
 	g.mu.RUnlock()
 	if !ok {
 		return false
 	}
 	// Non-blocking send: if the channel is full or closed, the request already timed out.
 	select {
-	case ch <- approved:
+	case p.ch <- approved:
 		return true
 	default:
 		return false
@@ -183,19 +193,201 @@ func (g *WebApprovalGate) sendApprovalTimeout(approvalID string) {
 
 // ApprovalAPI handles approval response endpoints.
 type ApprovalAPI struct {
-	gate *WebApprovalGate
+	gate  *WebApprovalGate
+	roles RoleMap // nil = open (today's single-user behavior)
 }
 
-// ApprovalRouter is the minimum interface needed by RegisterApprovalRoutes.
-type ApprovalRouter interface {
+// PendingPromptView is one queue entry for GET /api/approvals/pending.
+type PendingPromptView struct {
+	ID        string `json:"id"`
+	Tool      string `json:"tool"`
+	Risk      string `json:"risk"`
+	Reason    string `json:"reason"`
+	Command   string `json:"command"`
+	SessionID string `json:"session_id"`
+	Since     string `json:"since"`
+	Resurrect bool   `json:"resurrected"`
+	PauseID   string `json:"pause_id,omitempty"`
+}
+
+// PendingApprovals snapshots live prompts plus re-emitted (resurrected)
+// ones, oldest first. Resurrected entries carry no tool metadata (the
+// blocked handler is gone) and answer through the resume backend.
+func (g *WebApprovalGate) PendingApprovals() []PendingPromptView {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var out []PendingPromptView
+	for id, p := range g.pending {
+		out = append(out, PendingPromptView{
+			ID: id, Tool: p.req.Tool, Risk: p.req.Risk, Reason: p.req.Reason,
+			Command: p.req.Command, SessionID: g.promptSession(p.req.SessionID),
+			Since: p.since.Format(time.RFC3339),
+		})
+	}
+	for id, pauseID := range g.resurrected {
+		if _, live := g.pending[id]; live {
+			continue
+		}
+		out = append(out, PendingPromptView{ID: id, Resurrect: true, PauseID: pauseID})
+	}
+	sortPending(out)
+	return out
+}
+
+func sortPending(v []PendingPromptView) {
+	for i := 1; i < len(v); i++ {
+		for j := i; j > 0 && v[j].Since < v[j-1].Since; j-- {
+			v[j], v[j-1] = v[j-1], v[j]
+		}
+	}
+}
+
+// Role is a web RBAC tier: viewer reads the queue, approver answers,
+// admin answers plus future audit administration.
+type Role string
+
+const (
+	RoleViewer   Role = "viewer"
+	RoleApprover Role = "approver"
+	RoleAdmin    Role = "admin"
+)
+
+// RoleMap maps usernames (JWT subject, the allowlist IDs) to roles.
+// A nil/empty map is fully open (today's single-user behavior); with
+// entries, unlisted users read as viewer.
+type RoleMap map[string]Role
+
+// ParseRoleMap validates a raw username -> role mapping.
+func ParseRoleMap(raw map[string]string) (RoleMap, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(RoleMap, len(raw))
+	for user, r := range raw {
+		switch Role(r) {
+		case RoleViewer, RoleApprover, RoleAdmin:
+			out[user] = Role(r)
+		default:
+			return nil, fmt.Errorf("web role for %q: invalid %q (want viewer|approver|admin)", user, r)
+		}
+	}
+	return out, nil
+}
+
+// rank orders tiers for minimum-role checks.
+func (r Role) rank() int {
+	switch r {
+	case RoleAdmin:
+		return 3
+	case RoleApprover:
+		return 2
+	case RoleViewer:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// RoleFor resolves a user's tier: open admin on an empty map, the mapped
+// tier when listed, viewer otherwise (see prompts, answer nothing).
+func (m RoleMap) RoleFor(user string) Role {
+	if len(m) == 0 {
+		return RoleAdmin
+	}
+	if r, ok := m[user]; ok {
+		return r
+	}
+	return RoleViewer
+}
+
+// requireRole rejects below-minimum tiers with 403 (unauthenticated
+// requests never reach here: AuthMiddleware runs first).
+func (api *ApprovalAPI) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if api.roles.RoleFor(r.Header.Get("X-Hakase-User")).rank() < min.rank() {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: approver role required"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// ApprovalRouteRegistrar is the route surface approval registration needs.
+type ApprovalRouteRegistrar interface {
 	Post(pattern string, handlerFn http.HandlerFunc)
+	Get(pattern string, handlerFn http.HandlerFunc)
 }
 
 // RegisterApprovalRoutes registers approval response routes on the given router.
 // Routes are relative to /api (the caller places them inside the /api group).
-func RegisterApprovalRoutes(r ApprovalRouter, gate *WebApprovalGate) {
-	api := &ApprovalAPI{gate: gate}
-	r.Post("/approvals/{id}/respond", api.RespondApproval)
+// Role enforcement is open (today's behavior); use
+// RegisterApprovalRoutesWithRoles for RBAC.
+func RegisterApprovalRoutes(r ApprovalRouteRegistrar, gate *WebApprovalGate) {
+	RegisterApprovalRoutesWithRoles(r, gate, nil)
+}
+
+// RegisterApprovalRoutesWithRoles registers the pending queue, the single
+// respond endpoint, and the batch respond endpoint with RBAC: the queue
+// needs viewer, answering needs approver. Batch answers loop over
+// RespondApproval so web + phone keep first-responder-wins.
+func RegisterApprovalRoutesWithRoles(r ApprovalRouteRegistrar, gate *WebApprovalGate, roles RoleMap) {
+	api := &ApprovalAPI{gate: gate, roles: roles}
+	r.Get("/approvals/pending", api.requireRole(RoleViewer, api.PendingApprovals))
+	r.Post("/approvals/{id}/respond", api.requireRole(RoleApprover, api.RespondApproval))
+	r.Post("/approvals/respond", api.requireRole(RoleApprover, api.RespondBatch))
+}
+
+// PendingApprovals handles GET /api/approvals/pending.
+func (api *ApprovalAPI) PendingApprovals(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, api.gate.PendingApprovals())
+}
+
+// RespondBatch handles POST /api/approvals/respond with
+// {ids: [...], approved: bool}. Each ID answers independently through
+// RespondApproval (first response wins per prompt); results report
+// per-ID delivery so a partially-answered batch is visible.
+func (api *ApprovalAPI) RespondBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs      []string `json:"ids"`
+		Approved bool     `json:"approved"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no approval ids"})
+		return
+	}
+	results := make(map[string]bool, len(req.IDs))
+	for _, id := range req.IDs {
+		if id == "" {
+			continue
+		}
+		delivered := api.gate.RespondApproval(id, req.Approved)
+		if delivered {
+			api.auditAnswer(id, req.Approved, r)
+		}
+		results[id] = delivered
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// auditAnswer records who answered a prompt (actor = web username).
+// Only delivered answers are recorded: lost races resolve elsewhere
+// and their winner's entry is the audit truth.
+func (api *ApprovalAPI) auditAnswer(approvalID string, approved bool, r *http.Request) {
+	tool := ""
+	for _, pv := range api.gate.PendingApprovals() {
+		if pv.ID == approvalID {
+			tool = pv.Tool
+			break
+		}
+	}
+	// PendingApprovals still lists the prompt (cleanup happens on the
+	// blocked handler's return); the tool lookup above best-effort
+	// enriches the entry, "" falls back to "approval".
+	hakaseagent.AuditApprovalAnswer(approvalID, tool, approved, r.Header.Get("X-Hakase-User"), "web")
 }
 
 // RespondApproval handles POST /api/approvals/{id}/respond.
@@ -217,6 +409,7 @@ func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if api.gate.RespondApproval(approvalID, req.Approved) {
+		api.auditAnswer(approvalID, req.Approved, r)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
