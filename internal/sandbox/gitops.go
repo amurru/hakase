@@ -1507,14 +1507,19 @@ func gitRemoteContent(ctx context.Context, input GitRemoteInput, log interfaces.
 			if line == "" {
 				continue
 			}
-			// Format: name\turl (fetch/push)
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				rName := fields[0]
-				rURL := fields[1]
+			// git remote -v output format: name\turl (type)
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) == 2 {
+				rName := parts[0]
+				rest := parts[1]
 				rType := ""
-				if len(fields) >= 3 {
-					rType = strings.Trim(fields[2], "()")
+				rURL := rest
+				if strings.HasSuffix(rest, " (fetch)") {
+					rType = "fetch"
+					rURL = strings.TrimSuffix(rest, " (fetch)")
+				} else if strings.HasSuffix(rest, " (push)") {
+					rType = "push"
+					rURL = strings.TrimSuffix(rest, " (push)")
 				}
 				out.Remotes = append(out.Remotes, GitRemoteEntry{
 					Name: wrapUntrustedData(rName),
@@ -1632,7 +1637,7 @@ func gitRebaseContent(ctx context.Context, input GitRebaseInput, log interfaces.
 	out.Ref = ref
 	out.Operation = op
 
-	args := []string{"rebase"}
+	args := []string{"-c", "core.editor=true", "rebase"}
 	if op != "" {
 		args = append(args, "--"+op)
 	} else {

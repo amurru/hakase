@@ -295,6 +295,7 @@ func classifyGitRisk(argv []string) CommandRisk {
 		mutatingRemoteCmds := map[string]bool{
 			"add": true, "remove": true, "rm": true, "set-url": true,
 			"rename": true, "prune": true, "set-head": true, "set-branches": true,
+			"update": true,
 		}
 		for _, arg := range argv[2:] {
 			if mutatingRemoteCmds[arg] {
@@ -310,7 +311,12 @@ func classifyGitRisk(argv []string) CommandRisk {
 			hasFlag(argv, "-c") || hasFlag(argv, "-C") ||
 			hasFlag(argv, "-f") || hasFlag(argv, "--force") ||
 			hasFlag(argv, "--delete") || hasFlag(argv, "--move") ||
-			hasFlag(argv, "--copy") || hasFlag(argv, "--edit-description") {
+			hasFlag(argv, "--copy") || hasFlag(argv, "--edit-description") ||
+			hasFlag(argv, "-u") || hasFlag(argv, "-t") ||
+			hasFlag(argv, "--track") || hasFlag(argv, "--unset-upstream") ||
+			hasFlag(argv, "--set-upstream-to") ||
+			hasFlagPrefix(argv, "--set-upstream-to=") ||
+			hasFlagPrefix(argv, "--track=") {
 			return RiskMedium
 		}
 		if hasFlag(argv, "--list") || hasFlag(argv, "-l") ||
@@ -343,6 +349,16 @@ func classifyGitRisk(argv []string) CommandRisk {
 func hasForceFlag(argv []string) bool {
 	for _, a := range argv {
 		if a == "--force" || a == "-f" || a == "--force-with-lease" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFlagPrefix checks whether any element in argv has the given prefix.
+func hasFlagPrefix(argv []string, prefix string) bool {
+	for _, a := range argv {
+		if strings.HasPrefix(a, prefix) {
 			return true
 		}
 	}

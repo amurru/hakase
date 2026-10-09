@@ -1474,16 +1474,25 @@ func TestGitRemoteOps(t *testing.T) {
 	dir := t.TempDir()
 	initRepo(t, dir)
 
-	seed := t.TempDir()
-	initRepo(t, seed)
-	bare := bareCloneOf(t, seed)
+	// Add remote with space in local path URL if possible.
+	dirWithSpace := filepath.Join(t.TempDir(), "dir with space")
+	if err := os.MkdirAll(dirWithSpace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepo(t, dirWithSpace)
+	bareWithSpace := bareCloneOf(t, dirWithSpace)
+	// Rename bareWithSpace to have spaces
+	bareWithSpaceNew := filepath.Join(t.TempDir(), "bare with space.git")
+	if err := os.Rename(bareWithSpace, bareWithSpaceNew); err != nil {
+		t.Fatal(err)
+	}
+	bareWithSpace = bareWithSpaceNew
 
-	// Add remote.
 	addOut, err := gitRemoteContent(context.Background(), GitRemoteInput{
 		RepoDir:   dir,
 		Operation: "add",
 		Name:      "origin",
-		URL:       bare,
+		URL:       bareWithSpace,
 	}, nil)
 	if err != nil {
 		t.Fatalf("remote add: %v", err)
@@ -1511,6 +1520,11 @@ func TestGitRemoteOps(t *testing.T) {
 	}
 	if !foundOrigin {
 		t.Errorf("list output missing origin: %+v", listOut.Remotes)
+	}
+	for _, r := range listOut.Remotes {
+		if r.Name == "origin" && !strings.Contains(r.URL, "bare with space") {
+			t.Errorf("origin URL did not preserve space: %q", r.URL)
+		}
 	}
 
 	// Get URL.
