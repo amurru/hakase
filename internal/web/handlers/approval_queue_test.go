@@ -175,9 +175,67 @@ func TestBatchRespondFirstWins(t *testing.T) {
 	}
 }
 
-func jsonStr(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+// TestCrossSurfaceFirstWins pins web + phone sharing one gate: a
+// Telegram-style direct answer (same RespondApproval the channel
+// callbacks call on the shared WebApprovalGate, see cmd/hakase/web.go)
+// beats a later web batch for the same prompt, while the batch still
+// answers the other prompt.
+func TestCrossSurfaceFirstWins(t *testing.T) {
+	gate := NewWebApprovalGate(sse.NewEventBridge(), "sess", interfaces.ApprovalConfig{ExpirySeconds: 5})
+	id1, done1 := blockPrompt(t, gate, "tool_a")
+	done2ch := make(chan bool, 1)
+	go func() {
+		approved, _ := gate.AskApproval(context.Background(), interfaces.ApprovalRequest{
+			Tool: "tool_b", Command: "tool_b run", Risk: "high", Reason: "test",
+		})
+		done2ch <- approved
+	}()
+	id2 := ""
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, pv := range gate.PendingApprovals() {
+			if pv.ID != id1 {
+				id2 = pv.ID
+			}
+		}
+		if id2 != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if id2 == "" {
+		t.Fatal("second prompt never appeared")
+	}
+	defer func() {
+		gate.RespondApproval(id1, false)
+		gate.RespondApproval(id2, false)
+	}()
+
+	// Phone answers first through the channel path.
+	if !gate.RespondApproval(id1, false) {
+		t.Fatal("channel-path answer not delivered")
+	}
+	// Web batch follows: id1 already resolved (loses), id2 answers.
+	rr := doReq(t, queueRouter(gate, nil), "POST", "/approvals/respond",
+		"anyone", `{"ids":[`+jsonStr(id1)+`,`+jsonStr(id2)+`],"approved":true}`)
+	var out struct {
+		Results map[string]bool `json:"results"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Results[id1] {
+		t.Error("web batch won an already-answered prompt, want first-wins")
+	}
+	if !out.Results[id2] {
+		t.Error("web batch lost a live prompt, want true")
+	}
+	if a := <-done1; a {
+		t.Error("prompt 1 got true, want false (phone denied first)")
+	}
+	if a := <-done2ch; !a {
+		t.Error("prompt 2 got false, want true (web approved)")
+	}
 }
 
 // TestApprovalRBAC pins the tier matrix: viewer reads, approver answers,
@@ -229,4 +287,9 @@ func TestParseRoleMapRejectsUnknown(t *testing.T) {
 	if _, err := ParseRoleMap(map[string]string{"amy": "superuser"}); err == nil {
 		t.Error("ParseRoleMap accepted superuser, want error")
 	}
+}
+
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
