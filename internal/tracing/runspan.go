@@ -34,6 +34,13 @@ const (
 	attrError       = attribute.Key("error.message")
 	attrRetrievalN  = attribute.Key("hakase.retrieval.results")
 	attrOperationNm = attribute.Key("gen_ai.operation.name")
+	// FinOps usage/cost attributes (FO-005, additive on Run.End): verbatim
+	// gen_ai usage keys plus cost in USD.
+	attrUsageIn     = attribute.Key("gen_ai.usage.input_tokens")
+	attrUsageOut    = attribute.Key("gen_ai.usage.output_tokens")
+	attrUsageCached = attribute.Key("gen_ai.usage.cached_tokens")
+	attrCostUSD     = attribute.Key("cost.usd")
+	attrCostEst     = attribute.Key("hakase.cost.estimated")
 )
 
 // runSpanName is the correlation root every transport run creates; ADK's
@@ -119,6 +126,35 @@ func RunSpan(ctx context.Context, p RunParams) (context.Context, *Run) {
 	ctx, span := Tracer().Start(ctx, runSpanName,
 		trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
 	return ctx, &Run{span: span}
+}
+
+// Usage carries one turn's billable counts to EndWithUsage. It mirrors the
+// FinOps UsageRecord without importing it, keeping this leaf package free of
+// internal dependencies.
+type Usage struct {
+	Input     int64
+	Output    int64
+	Cached    int64
+	CostUSD   float64
+	Estimated bool // tokens-only (unknown model): cost is 0
+}
+
+// EndWithUsage records usage/cost attributes, then closes the span with the
+// same status mapping as End. Additive: rows without usage call End.
+func (r *Run) EndWithUsage(status, errMsg string, u Usage) {
+	if r == nil || r.span == nil {
+		return
+	}
+	r.span.SetAttributes(
+		attrUsageIn.Int64(u.Input),
+		attrUsageOut.Int64(u.Output),
+		attrUsageCached.Int64(u.Cached),
+		attrCostUSD.Float64(u.CostUSD),
+	)
+	if u.Estimated {
+		r.span.SetAttributes(attrCostEst.Bool(true))
+	}
+	r.End(status, errMsg)
 }
 
 // End closes the run span, mapping the canvas status vocabulary onto span

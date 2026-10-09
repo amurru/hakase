@@ -3,6 +3,7 @@ package tui
 import (
 	hakaseagent "amurru/hakase/internal/agent"
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/finops"
 	"amurru/hakase/internal/herdr"
 	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/session"
@@ -256,7 +257,7 @@ type ModelInfoMsg struct {
 
 // UsageUpdateMsg carries the token usage of the most recent completed turn.
 type UsageUpdateMsg struct {
-	Usage *genai.GenerateContentResponseUsageMetadata
+	Usage *finops.UsageRecord
 }
 
 // StatusLogMsg represents a background status message sent to the side pane
@@ -383,7 +384,7 @@ type AppModel struct {
 	modelInfo     *hakaseagent.ModelInfo
 	modelName     string
 	thinkingLevel string
-	usage         *genai.GenerateContentResponseUsageMetadata
+	usage         *finops.UsageRecord
 
 	// Session management
 	sessionService      *session.SessionService
@@ -1311,10 +1312,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// estimate stays reasonable.
 			tokens := 0
 			if m.usage != nil {
-				tokens = int(m.usage.TotalTokenCount)
-				if tokens <= 0 {
-					tokens = int(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
-				}
+				tokens = int(m.usage.TotalTokens())
 			}
 			lastAgent := -1
 			for i := m.runStartHistoryLen; i < len(m.chatHistory); i++ {
@@ -1928,9 +1926,30 @@ func (m *AppModel) statusBar() string {
 			parts = append(parts, fmt.Sprintf("%d%% %s", pct, usageBar(pct)))
 		}
 	}
+	parts = append(parts, m.costParts()...)
 	parts = append(parts, "thinking "+m.thinkingStatus())
 
 	return statusBarStyle.Render(strings.Join(parts, "  │  "))
+}
+
+// costParts renders the FinOps meter for the status bar (FO-004): last-turn
+// cost plus the budget fill bar. Empty when FinOps recording is off. Budget
+// fill reads the cached counters file (one tiny read), never a ledger scan.
+func (m *AppModel) costParts() []string {
+	if finops.Active() == nil {
+		return nil
+	}
+	var parts []string
+	if m.usage != nil {
+		cost, unknown := finops.CostOf(*m.usage)
+		if !unknown {
+			parts = append(parts, fmt.Sprintf("$%.4g", cost))
+		}
+	}
+	if pct := finops.BudgetPct(); pct > 0 {
+		parts = append(parts, fmt.Sprintf("budget %d%% %s", pct, usageBar(pct)))
+	}
+	return parts
 }
 
 // usagePercent returns the context-window usage percentage and used tokens,
@@ -1943,10 +1962,7 @@ func (m *AppModel) usagePercent() (int, int64) {
 	if limit <= 0 || m.usage == nil {
 		return 0, 0
 	}
-	used := int64(m.usage.TotalTokenCount)
-	if used <= 0 {
-		used = int64(m.usage.PromptTokenCount + m.usage.CandidatesTokenCount)
-	}
+	used := m.usage.TotalTokens()
 	pct := int(used * 100 / limit)
 	if pct > 100 {
 		pct = 100
@@ -2242,14 +2258,37 @@ func (m *AppModel) runAgentTask(content *genai.Content, taskID string) {
 	// guard aborts end it failed.
 	runCtx, runSpan := tracing.RunSpan(runCtx, tracing.RunParams{Transport: "tui", TaskID: taskID})
 	runStatus, runErrMsg := tracing.StatusCompleted, ""
-	defer func() { runSpan.End(runStatus, runErrMsg) }()
+	var lastUsage *finops.UsageRecord
+	defer func() { runSpan.EndWithUsage(runStatus, runErrMsg, tuiSpanUsage(lastUsage)) }()
 	// Expose the cancel func to the TUI so Esc / Ctrl+C can interrupt.
 	m.runCtrl.SetCancel(runCancel)
 	defer m.runCtrl.SetCancel(nil)
 
 	guard := hakaseagent.GuardDefaults(CurrentGuard)
 
-	var lastUsage *genai.GenerateContentResponseUsageMetadata
+	// FinOps pre-turn budget gate (FO-003), mirroring the agentrun driver:
+	// block stops before any model spend, warn toasts and continues.
+	budgetSession := ""
+	if m.sessionService != nil {
+		budgetSession = m.sessionService.ActiveSessionID()
+	}
+	if budget := finops.CheckBudget(budgetSession); budget.Enabled && len(budget.Breached) > 0 {
+		if budget.Block {
+			denial := budget.Denial()
+			for _, scope := range budget.Breached {
+				hakaseagent.AuditBudgetBlock(scope, denial, budgetSession)
+			}
+			runStatus, runErrMsg = tracing.StatusFailed, denial
+			if p != nil {
+				p.Send(agentLogMsg(denial))
+				p.Send(agentDoneMsg{})
+			}
+			return
+		}
+		if budget.Warn != "" && p != nil {
+			p.Send(agentLogMsg("Budget: " + budget.Warn))
+		}
+	}
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
@@ -2276,7 +2315,12 @@ outer:
 				continue
 			}
 			if ev.UsageMetadata != nil {
-				lastUsage = ev.UsageMetadata
+				rec := finops.FromGenai(ev.UsageMetadata)
+				rec.Reason = finops.ReasonMain
+				if rec.Model == "" {
+					rec.Model = m.modelName
+				}
+				lastUsage = &rec
 			}
 			if ev.Content != nil {
 				for _, part := range ev.Content.Parts {
@@ -2343,11 +2387,37 @@ outer:
 	if p != nil {
 		p.Send(agentStreamMsg{})
 		if lastUsage != nil {
-			util.DebugEvent("usage", "prompt_tokens", lastUsage.PromptTokenCount, "candidates_tokens", lastUsage.CandidatesTokenCount, "total_tokens", lastUsage.TotalTokenCount)
+			if ok, msg := finops.CacheWarn(*lastUsage, tuiCacheRatio()); ok {
+				p.Send(agentLogMsg(msg))
+			}
+			util.DebugEvent("usage", "prompt_tokens", lastUsage.Prompt, "candidates_tokens", lastUsage.Candidates, "cached_tokens", lastUsage.Cached, "thoughts_tokens", lastUsage.Thoughts, "tool_use_tokens", lastUsage.ToolUse, "total_tokens", lastUsage.Total)
 			p.Send(UsageUpdateMsg{Usage: lastUsage})
 		}
 		util.DebugEvent("agent_done", "task_id", taskID)
 		p.Send(agentDoneMsg{})
+	}
+}
+
+// tuiCacheRatio returns the active prompt-cache guard threshold (0 = off).
+func tuiCacheRatio() float64 {
+	if s := finops.Active(); s != nil {
+		return s.Budgets.CacheWarnRatio
+	}
+	return 0
+}
+
+// tuiSpanUsage converts the turn usage record to span attributes (FO-005).
+func tuiSpanUsage(lastUsage *finops.UsageRecord) tracing.Usage {
+	if lastUsage == nil {
+		return tracing.Usage{}
+	}
+	cost, unknown := finops.CostOf(*lastUsage)
+	return tracing.Usage{
+		Input:     lastUsage.Prompt + lastUsage.ToolUse,
+		Output:    lastUsage.Candidates + lastUsage.Thoughts,
+		Cached:    lastUsage.Cached,
+		CostUSD:   cost,
+		Estimated: unknown,
 	}
 }
 

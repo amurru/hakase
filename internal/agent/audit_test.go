@@ -308,3 +308,30 @@ func TestAuditCommandExecDirCreatedOnFirstWrite(t *testing.T) {
 		t.Fatalf("audit log file was not created: %v", err)
 	}
 }
+
+func TestAuditBudgetBlockDecision(t *testing.T) {
+	oldDir := auditLogDir
+	auditLogDir = t.TempDir()
+	t.Cleanup(func() { auditLogDir = oldDir })
+
+	AuditBudgetBlock("daily", "budget exceeded (daily $6/$5)", "sess-1")
+
+	path := filepath.Join(auditLogDir, "exec-audit.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	var parsed CommandAuditEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &parsed); err != nil {
+		t.Fatalf("JSON parse error: %v", err)
+	}
+	if parsed.Decision != "budget_blocked" {
+		t.Errorf("Decision = %q, want budget_blocked", parsed.Decision)
+	}
+	if parsed.Tool != "finops" || parsed.Command != "budget:daily" {
+		t.Errorf("routing fields wrong: %+v", parsed)
+	}
+	if parsed.SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want sess-1", parsed.SessionID)
+	}
+}

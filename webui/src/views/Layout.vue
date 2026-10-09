@@ -173,6 +173,12 @@ function handleLogout() {
             <Progress :model-value="contextPercent" class="h-1.5 w-24" />
             <span class="text-xs text-muted-foreground tabular-nums">{{ contextPercent }}%</span>
           </div>
+          <!-- Cost meter (FinOps SSE v2; hidden until the first usage event) -->
+          <div v-if="appStore.costUsd > 0" class="flex items-center gap-2">
+            <span class="text-xs text-muted-foreground whitespace-nowrap tabular-nums">${{ appStore.costUsd.toFixed(4) }}</span>
+            <Progress v-if="appStore.budgetPct > 0" :model-value="appStore.budgetPct" class="h-1.5 w-16" />
+            <span v-if="appStore.budgetPct > 0" class="text-xs text-muted-foreground tabular-nums">{{ appStore.budgetPct }}%</span>
+          </div>
         </div>
       </header>
 

@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/env"
+	"amurru/hakase/internal/finops"
 	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
@@ -2408,6 +2409,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// with "no model available" while tests (which stub EvolveMutateFn)
 	// stayed green.
 	hctx.CurrentModelFunc = currentModelFunc(model)
+	// FinOps attribution (FO-002): usage events carry no model label, so the
+	// priced model name rides on the resolved primary model.
+	finops.ModelNameFunc = func() string { return modelName }
 	skill.EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
 		return ModelPromptFn(ctx, prompt)
 	}

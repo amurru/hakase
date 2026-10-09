@@ -8,6 +8,13 @@ During the alpha phase (0.x), breaking changes may land in any minor release;
 the web UI and `config.json` formats aim for backward compatibility but are not
 guaranteed stable until 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **FinOps: live cost meter, budgets, `hakase stats` (opt-in)** - every turn now captures full usage (prompt, candidates, cached, thoughts, tool-use, previously truncated to one int) with per-tool deltas and reason labels for the invisible paths (summarize/HyDE/sleep/sidekick). A metadata-only local ledger (`~/.hakase/usage.jsonl`, 0600, never prompt text) is priced against a versioned static table (tiered >200K, config overrides, unknown models warn + tokens-only with later re-estimate). Budgets (`daily/weekly/monthly/per_session`, `warn|block`) enforce at the turn boundary over rolling windows with `budget_blocked` audit chaining; the prompt-cache guard warns below `cache_warn_ratio`. Surfaces: turn cost + budget bar in the TUI status bar and web header (SSE `usage` v2), `GET /api/stats`, `hakase stats [--format table|json] [--since] [--by model|session|day]` (+ `session <id>`, `budgets`), and `gen_ai.usage.*` + `cost.usd` on run spans. Default off. See `docs/finops/` (FO-001..FO-005).
+- **Context Hygiene (scale skill index, KB caps, tool-output caps, durable pins)** - threshold-gated skill index prompt with lazy `search_skills` tool (keyword scoring over name and description), description clamping (~300 chars), KB search result and snippet byte caps (max 10 results / 2KB snippets with `...[N more, refine query]` marker), persist-time tool-output capping (8KB truncation), durable pin protection during context compaction, skill index token reserve accounting, and discovery quality lints. Configurable via `skills_index_mode`, `skills_search_threshold`, `tool_output_max_chars`, and `context_durable_pins`. See `docs/context-hygiene/spec.md`.
+
 ## [0.1.0-alpha.8] - 2026-09-27
 
 ### Fixed
@@ -25,12 +32,6 @@ guaranteed stable until 1.0.
   - the time reminder rendered the wall clock to the second and was cached by the minute, so a long-running session lost its entire conversation cache once a minute. It now renders the calendar date and is cached by day. Nothing needs the exact time - `cronjob` takes relative forms the server resolves, and `system_exec` can read the clock.
   - the skill index was 58 KB of the 69 KB prompt, mostly waste: the "call `load_markdown_skill` ..." sentence repeated once per skill, and every entry advertised an absolute path the model never used. With the 148 skills this repo ships, the prompt drops from 69,024 to 44,278 bytes. Descriptions are unchanged and the per-entry `<UNTRUSTED_DATA>` marker is a security control, so neither was touched.
   - MCP tool lists are now cached for 60s instead of being re-fetched before every model call. ADK calls `Tools()` per turn and the web-search fallback probes it a second time, so a healthy server was paying a connect+list round trip twice per turn - a process spawn for stdio, a network round trip for HTTP. Failures are deliberately not cached, so a server that comes back is picked up on the next probe rather than staying failed for the TTL; the existing cooldown gate still paces retries, and a manual reconnect invalidates the cache.
-
-## [Unreleased]
-
-### Added
-
-- **Context Hygiene (scale skill index, KB caps, tool-output caps, durable pins)** - threshold-gated skill index prompt with lazy `search_skills` tool (keyword scoring over name and description), description clamping (~300 chars), KB search result and snippet byte caps (max 10 results / 2KB snippets with `...[N more, refine query]` marker), persist-time tool-output capping (8KB truncation), durable pin protection during context compaction, skill index token reserve accounting, and discovery quality lints. Configurable via `skills_index_mode`, `skills_search_threshold`, `tool_output_max_chars`, and `context_durable_pins`. See `docs/context-hygiene/spec.md`.
 
 ## [0.1.0-alpha.9] - 2026-10-06
 

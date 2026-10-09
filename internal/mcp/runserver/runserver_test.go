@@ -185,7 +185,7 @@ func TestRunHappyPath(t *testing.T) {
 			sink.OnStream("s", "", "deep thought")
 			sink.OnLog("s", "Call: read_file(path)")
 			sink.OnLog("s", "Response: read_file")
-			sink.OnUsage("s", 123, 0)
+			sink.OnUsage("s", 123, 0, 0, 0)
 		},
 	})
 	var out runOut

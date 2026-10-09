@@ -147,7 +147,7 @@ func (s *runSink) OnLog(sessionID, line string) {
 }
 
 // OnUsage records the latest token usage.
-func (s *runSink) OnUsage(sessionID string, tokens, percent int) {
+func (s *runSink) OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int) {
 	s.mu.Lock()
 	s.tokenCount = tokens
 	s.mu.Unlock()

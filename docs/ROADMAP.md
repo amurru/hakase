@@ -80,11 +80,10 @@ Designs landed 2026-10-08 as `docs/<feature>/spec.md` + `plan.md` + `tasks.md`
 can point at its design). Open one GitHub issue per item when work starts;
 per-item notes live in the issues, not here.
 
-1. **FinOps** — live cost meter, per-tool attribution, budgets/caps with
-   hard stop, prompt-cache guard, `hakase stats`. Answers the #1 community
-   complaint; hakase today truncates usage to one int
-   (`internal/agentrun/agentrun.go:300-306`) with no pricing, ledger, or
-   budget. Design: `docs/finops/` (FO-001..FO-005).
+1. **FinOps** — shipped (2026-10-09, opt-in `finops.enabled`): full
+   usage capture, priced local ledger, rolling-window budgets (warn/block
+   with audit chaining), prompt-cache guard, TUI/web cost meters,
+   `GET /api/stats`, `hakase stats`. Design: `docs/finops/` (FO-001..FO-005).
 2. **Context hygiene** -- shipped: threshold-gated skill stub + `search_skills`,
    KB count/byte caps, persist-time tool-output cap, durable-pin bin.
    Lazy loading already exists (`internal/agent/agent.go:1109,1215`); this

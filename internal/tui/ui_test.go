@@ -2,6 +2,7 @@ package tui
 
 import (
 	hakaseagent "amurru/hakase/internal/agent"
+	"amurru/hakase/internal/finops"
 	"amurru/hakase/internal/util"
 	"context"
 	"fmt"
@@ -11,8 +12,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-
-	"google.golang.org/genai"
 )
 
 func newTestModel(t *testing.T) *AppModel {
@@ -444,11 +443,7 @@ func TestStatusBarShowsContextAndUsage(t *testing.T) {
 	m := newTestModel(t)
 	m.modelName = "test-model"
 	m.modelInfo = &hakaseagent.ModelInfo{Name: "test-model", ContextWindow: 200_000}
-	m.usage = &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     84_000,
-		CandidatesTokenCount: 16_000,
-		TotalTokenCount:      100_000,
-	}
+	m.usage = &finops.UsageRecord{Prompt: 84_000, Candidates: 16_000, Total: 100_000}
 	view := m.statusBar()
 	for _, want := range []string{"ctx 200K", "50%"} {
 		if !strings.Contains(view, want) {
@@ -471,11 +466,7 @@ func TestStatusBarFitsWithinTerminalWidth(t *testing.T) {
 	m := newTestModel(t)
 	m.modelName = "poolside/laguna-s-2.1:free"
 	m.modelInfo = &hakaseagent.ModelInfo{Name: "poolside/laguna-s-2.1:free", ContextWindow: 240_000, ThinkingLevel: "xhigh"}
-	m.usage = &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     50_000,
-		CandidatesTokenCount: 50_000,
-		TotalTokenCount:      100_000,
-	}
+	m.usage = &finops.UsageRecord{Prompt: 50_000, Candidates: 50_000, Total: 100_000}
 	view := m.statusBar()
 	if n := strings.Count(view, "\n"); n > 0 {
 		t.Fatalf("status bar must be a single line, got %d newlines:\n%s", n, view)
@@ -502,20 +493,13 @@ func TestFormatTokens(t *testing.T) {
 func TestUsagePercent(t *testing.T) {
 	m := newTestModel(t)
 	m.modelInfo = &hakaseagent.ModelInfo{Name: "m", ContextWindow: 100_000}
-	m.usage = &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     30_000,
-		CandidatesTokenCount: 20_000,
-		TotalTokenCount:      50_000,
-	}
+	m.usage = &finops.UsageRecord{Prompt: 30_000, Candidates: 20_000, Total: 50_000}
 	pct, used := m.usagePercent()
 	if pct != 50 || used != 50_000 {
 		t.Fatalf("usagePercent() = (%d, %d), want (50, 50000)", pct, used)
 	}
 
-	m.usage = &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     70_000,
-		CandidatesTokenCount: 50_000,
-	}
+	m.usage = &finops.UsageRecord{Prompt: 70_000, Candidates: 50_000}
 	pct, used = m.usagePercent()
 	if pct != 100 || used != 120_000 {
 		t.Fatalf("usagePercent fallback = (%d, %d), want (100, 120000)", pct, used)
@@ -859,11 +843,7 @@ func TestAgentDonePersistsAllRunMessages(t *testing.T) {
 		{Role: "agent", Content: "A2", Thinking: "T2"},
 	}
 	m.runStartHistoryLen = 1
-	m.usage = &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     100,
-		CandidatesTokenCount: 50,
-		TotalTokenCount:      150,
-	}
+	m.usage = &finops.UsageRecord{Prompt: 100, Candidates: 50, Total: 150}
 
 	model, _ := m.Update(agentDoneMsg{})
 	mm := model.(*AppModel)

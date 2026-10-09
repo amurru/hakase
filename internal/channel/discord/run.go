@@ -273,8 +273,8 @@ func (rv *runView) OnLog(sessionID, line string) {
 }
 
 // OnUsage implements agentrun.EventSink.
-func (rv *runView) OnUsage(sessionID string, tokens, percent int) {
-	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendUsage(sessionID, tokens, percent) })
+func (rv *runView) OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int) {
+	rv.mirrorBridge(func(b *sse.EventBridge) { b.SendUsage(sessionID, tokens, percent, costUSD, budgetPct) })
 	rv.mu.Lock()
 	rv.tokens = tokens
 	rv.dirty = true
