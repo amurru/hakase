@@ -91,6 +91,13 @@ type Bot struct {
 	mediaMu    sync.Mutex
 	mediaGroup map[string]*mediaGroupBuf // media_group_id -> buffered photos
 
+	// streamEditInterval spaces render passes: at most one answer edit per
+	// interval. Default is 2s if zero.
+	streamEditInterval time.Duration
+
+	// perChatSendInterval paces outbound messages to stay inside Telegram's budget.
+	perChatSendInterval time.Duration
+
 	// Voice-note transcription (issue #19): nil unless speech_to_text is
 	// enabled in config; queue serializes the CPU-bound pipeline.
 	transcriber transcriber
@@ -140,22 +147,24 @@ func New(d Deps) (*Bot, error) {
 	}
 	svc := d.Service
 	b := &Bot{
-		token:        strings.TrimSpace(d.Config.BotToken),
-		auth:         channel.NewAuthenticator(svc.Store(), ChannelName, d.Config.AllowedUserIDs, d.Config.PairingCode),
-		runs:         svc.Runs(),
-		driver:       svc.Driver(),
-		sessions:     svc.Sessions(),
-		store:        svc.Store(),
-		bridge:       svc.Bridge(),
-		approval:     svc.ApprovalResponder(),
-		clarify:      svc.ClarifyResponder(),
-		log:          logFn,
-		pins:         d.Config.Pins,
-		nextSend:     map[conv]time.Time{},
-		pendingOther: map[conv]pendingClarify{},
-		clarifyCtx:   map[string]clarifyChoice{},
-		mediaGroup:   map[string]*mediaGroupBuf{},
-		fileBaseURL:  "https://api.telegram.org",
+		token:               strings.TrimSpace(d.Config.BotToken),
+		auth:                channel.NewAuthenticator(svc.Store(), ChannelName, d.Config.AllowedUserIDs, d.Config.PairingCode),
+		runs:                svc.Runs(),
+		driver:              svc.Driver(),
+		sessions:            svc.Sessions(),
+		store:               svc.Store(),
+		bridge:              svc.Bridge(),
+		approval:            svc.ApprovalResponder(),
+		clarify:             svc.ClarifyResponder(),
+		log:                 logFn,
+		pins:                d.Config.Pins,
+		nextSend:            map[conv]time.Time{},
+		pendingOther:        map[conv]pendingClarify{},
+		clarifyCtx:          map[string]clarifyChoice{},
+		mediaGroup:          map[string]*mediaGroupBuf{},
+		fileBaseURL:         "https://api.telegram.org",
+		streamEditInterval:  2 * time.Second,
+		perChatSendInterval: 1100 * time.Millisecond,
 	}
 
 	// Voice-note transcription (issue #19): built only when explicitly
@@ -198,6 +207,17 @@ func New(d Deps) (*Bot, error) {
 	b.deleteWebhookFn = b.deleteWebhookDirect
 	b.api = api
 	return b, nil
+}
+
+func (b *Bot) getStreamEditInterval() time.Duration {
+	if b.streamEditInterval > 0 {
+		return b.streamEditInterval
+	}
+	return 2 * time.Second
+}
+
+func (b *Bot) getPerChatSendInterval() time.Duration {
+	return b.perChatSendInterval
 }
 
 // Name satisfies channel.Channel.
