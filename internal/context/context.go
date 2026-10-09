@@ -84,11 +84,24 @@ func IsDurablePin(msg sesspkg.Message) bool {
 	if msg.Kind == sesspkg.MessageKindDurablePin {
 		return true
 	}
-	contentUpper := strings.ToUpper(msg.Content)
-	markers := []string{"[PIN]", "[CONSTRAINT]", "[GOAL]", "[DECISION]", "[ID]", "CONSTRAINTS:", "RULED-OUT:", "NEVER-DO:", "GOAL:", "DECISION:", "IDS:"}
-	for _, m := range markers {
+	contentUpper := strings.ToUpper(strings.TrimSpace(msg.Content))
+	if contentUpper == "" {
+		return false
+	}
+	bracketMarkers := []string{"[PIN]", "[CONSTRAINT]", "[GOAL]", "[DECISION]", "[ID]"}
+	for _, m := range bracketMarkers {
 		if strings.Contains(contentUpper, m) {
 			return true
+		}
+	}
+	prefixes := []string{"CONSTRAINTS:", "RULED-OUT:", "NEVER-DO:", "GOAL:", "DECISION:", "IDS:"}
+	lines := strings.Split(contentUpper, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for _, p := range prefixes {
+			if strings.HasPrefix(trimmed, p) {
+				return true
+			}
 		}
 	}
 	return false
