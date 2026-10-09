@@ -656,6 +656,8 @@ type GitCommitInput struct {
 	Message    string `json:"message"               doc:"Commit message (required)"`
 	StageAll   *bool  `json:"stage_all,omitempty"   doc:"Stage all changes first (git add -A; defaults to false)"`
 	AllowEmpty *bool  `json:"allow_empty,omitempty" doc:"Allow committing with no changes (--allow-empty; defaults to false)"`
+	Amend      *bool  `json:"amend,omitempty"       doc:"Amend the previous commit (--amend; defaults to false)"`
+	Sign       *bool  `json:"sign,omitempty"        doc:"GPG sign the commit (-S; defaults to false)"`
 }
 
 // GitCommitOutput is the output schema of the git_commit tool.
@@ -691,6 +693,12 @@ func gitCommitContent(ctx context.Context, input GitCommitInput, log interfaces.
 	args := []string{"commit", "-m", input.Message}
 	if input.AllowEmpty != nil && *input.AllowEmpty {
 		args = append(args, "--allow-empty")
+	}
+	if input.Amend != nil && *input.Amend {
+		args = append(args, "--amend")
+	}
+	if input.Sign != nil && *input.Sign {
+		args = append(args, "-S")
 	}
 	res, err := runGit(ctx, dir, args, true, log)
 	if err != nil {
@@ -1388,6 +1396,267 @@ func gitCleanContent(ctx context.Context, input GitCleanInput, log interfaces.Lo
 }
 
 // ---------------------------------------------------------------------------
+// git_remote / git_merge / git_rebase (v3 - Phase 7 second slice)
+// ---------------------------------------------------------------------------
+
+// GitRemoteInput is the input schema for the git_remote tool.
+type GitRemoteInput struct {
+	RepoDir   string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Operation string `json:"operation"          doc:"Operation: list, get_url (or get-url), add, set_url (or set-url), or remove (or rm)"`
+	Name      string `json:"name,omitempty"     doc:"Remote name (required for get_url, add, set_url, remove)"`
+	URL       string `json:"url,omitempty"      doc:"Remote URL (required for add, set_url; validated against scheme allowlist)"`
+}
+
+// GitRemoteEntry represents one configured remote url in list output.
+type GitRemoteEntry struct {
+	Name string `json:"name" doc:"Remote name"`
+	URL  string `json:"url"  doc:"Remote URL"`
+	Type string `json:"type" doc:"Type: fetch or push"`
+}
+
+// GitRemoteOutput is the output schema of the git_remote tool.
+type GitRemoteOutput struct {
+	RepoDir   string           `json:"repo_dir"`
+	Operation string           `json:"operation"`
+	Remotes   []GitRemoteEntry `json:"remotes,omitempty" doc:"Remote entries (list operation only)"`
+	URL       string           `json:"url,omitempty"     doc:"Remote URL (get_url operation only)"`
+	Message   string           `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo  bool             `json:"not_a_repo,omitempty"`
+	Stderr    string           `json:"stderr,omitempty"`
+}
+
+// gitRemoteContent is the package-level handler for the git_remote tool.
+func gitRemoteContent(ctx context.Context, input GitRemoteInput, log interfaces.LogFunc) (GitRemoteOutput, error) {
+	out := GitRemoteOutput{}
+	op := strings.TrimSpace(input.Operation)
+	opLower := strings.ToLower(op)
+
+	var normalizedOp string
+	write := false
+	switch opLower {
+	case "list":
+		normalizedOp = "list"
+	case "get_url", "get-url":
+		normalizedOp = "get_url"
+	case "add":
+		normalizedOp = "add"
+		write = true
+	case "set_url", "set-url":
+		normalizedOp = "set_url"
+		write = true
+	case "remove", "rm":
+		normalizedOp = "remove"
+		write = true
+	default:
+		return out, fmt.Errorf("git_remote: unsupported operation %q (allowed: list, get_url, add, set_url, remove)", input.Operation)
+	}
+	out.Operation = normalizedOp
+
+	dir, err := resolveRepoDir(ctx, input.RepoDir, write)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+
+	name := strings.TrimSpace(input.Name)
+	urlInput := strings.TrimSpace(input.URL)
+
+	if normalizedOp != "list" && name == "" {
+		return out, fmt.Errorf("git_remote: name is required for operation %q", normalizedOp)
+	}
+	if (normalizedOp == "add" || normalizedOp == "set_url") && urlInput == "" {
+		return out, fmt.Errorf("git_remote: url is required for operation %q", normalizedOp)
+	}
+	if name != "" && !validGitRemote(name) {
+		return out, fmt.Errorf("git_remote: invalid remote name %q", name)
+	}
+	if urlInput != "" {
+		if err := validateCloneSource(ctx, urlInput); err != nil {
+			return out, fmt.Errorf("git_remote: %w", err)
+		}
+	}
+
+	var args []string
+	switch normalizedOp {
+	case "list":
+		args = []string{"remote", "-v"}
+	case "get_url":
+		args = []string{"remote", "get-url", name}
+	case "add":
+		args = []string{"remote", "add", name, urlInput}
+	case "set_url":
+		args = []string{"remote", "set-url", name, urlInput}
+	case "remove":
+		args = []string{"remote", "remove", name}
+	}
+
+	res, err := runGit(ctx, dir, args, write, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+
+	switch normalizedOp {
+	case "list":
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+			if line == "" {
+				continue
+			}
+			// Format: name\turl (fetch/push)
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				rName := fields[0]
+				rURL := fields[1]
+				rType := ""
+				if len(fields) >= 3 {
+					rType = strings.Trim(fields[2], "()")
+				}
+				out.Remotes = append(out.Remotes, GitRemoteEntry{
+					Name: wrapUntrustedData(rName),
+					URL:  wrapUntrustedData(rURL),
+					Type: wrapUntrustedData(rType),
+				})
+			}
+		}
+	case "get_url":
+		out.URL = wrapUntrustedData(splitGitOut(res.Stdout))
+	default:
+		out.Message = wrapUntrustedData(firstGitMessage(res))
+	}
+
+	return out, nil
+}
+
+// GitMergeInput is the input schema for the git_merge tool.
+type GitMergeInput struct {
+	RepoDir string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Ref     string `json:"ref"                doc:"Ref to merge into the current branch (required)"`
+	NoFF    *bool  `json:"no_ff,omitempty"    doc:"Create a merge commit even if fast-forward is possible (git merge --no-ff; defaults to false)"`
+}
+
+// GitMergeOutput is the output schema of the git_merge tool.
+type GitMergeOutput struct {
+	RepoDir  string `json:"repo_dir"`
+	Ref      string `json:"ref"`
+	Message  string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo bool   `json:"not_a_repo,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+// gitMergeContent is the package-level handler for the git_merge tool.
+func gitMergeContent(ctx context.Context, input GitMergeInput, log interfaces.LogFunc) (GitMergeOutput, error) {
+	out := GitMergeOutput{}
+	ref := strings.TrimSpace(input.Ref)
+	if ref == "" {
+		return out, fmt.Errorf("git_merge: ref is required")
+	}
+	if !validGitRevision(ref) {
+		return out, fmt.Errorf("git_merge: invalid ref %q", ref)
+	}
+
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+	out.Ref = ref
+
+	args := []string{"merge"}
+	if input.NoFF != nil && *input.NoFF {
+		args = append(args, "--no-ff")
+	} else {
+		args = append(args, "--ff-only")
+	}
+	args = append(args, ref)
+
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	msg := splitGitOut(res.Stdout)
+	if msg == "" {
+		msg = splitGitOut(res.Stderr)
+	}
+	out.Message = wrapUntrustedData(msg)
+	return out, nil
+}
+
+// GitRebaseInput is the input schema for the git_rebase tool.
+type GitRebaseInput struct {
+	RepoDir   string `json:"repo_dir,omitempty" doc:"Repository directory (defaults to the project root / working directory)"`
+	Ref       string `json:"ref,omitempty"      doc:"Ref to rebase onto (required unless operation is abort/continue/skip)"`
+	Operation string `json:"operation,omitempty" doc:"Optional rebase control operation: abort, continue, or skip"`
+}
+
+// GitRebaseOutput is the output schema of the git_rebase tool.
+type GitRebaseOutput struct {
+	RepoDir   string `json:"repo_dir"`
+	Ref       string `json:"ref,omitempty"`
+	Operation string `json:"operation,omitempty"`
+	Message   string `json:"message,omitempty" doc:"Bounded git output (wrapped as untrusted data)"`
+	NotARepo  bool   `json:"not_a_repo,omitempty"`
+	Stderr    string `json:"stderr,omitempty"`
+}
+
+// gitRebaseContent is the package-level handler for the git_rebase tool.
+func gitRebaseContent(ctx context.Context, input GitRebaseInput, log interfaces.LogFunc) (GitRebaseOutput, error) {
+	out := GitRebaseOutput{}
+	op := strings.ToLower(strings.TrimSpace(input.Operation))
+	ref := strings.TrimSpace(input.Ref)
+
+	if op != "" && op != "abort" && op != "continue" && op != "skip" {
+		return out, fmt.Errorf("git_rebase: unsupported operation %q (allowed: abort, continue, skip)", input.Operation)
+	}
+	if op == "" && ref == "" {
+		return out, fmt.Errorf("git_rebase: ref is required when operation is not specified")
+	}
+	if ref != "" && !validGitRevision(ref) {
+		return out, fmt.Errorf("git_rebase: invalid ref %q", ref)
+	}
+
+	dir, err := resolveRepoDir(ctx, input.RepoDir, true)
+	if err != nil {
+		return out, err
+	}
+	out.RepoDir = dir
+	out.Ref = ref
+	out.Operation = op
+
+	args := []string{"rebase"}
+	if op != "" {
+		args = append(args, "--"+op)
+	} else {
+		args = append(args, ref)
+	}
+
+	res, err := runGit(ctx, dir, args, true, log)
+	if err != nil {
+		if isNotARepoErr(res) {
+			out.NotARepo = true
+			out.Stderr = wrapUntrustedData(res.Stderr)
+			return out, nil
+		}
+		return out, err
+	}
+	msg := splitGitOut(res.Stdout)
+	if msg == "" {
+		msg = splitGitOut(res.Stderr)
+	}
+	out.Message = wrapUntrustedData(msg)
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
 // git_stash / git_tag (workspace hygiene, v3 - Phase 7 first slice)
 // ---------------------------------------------------------------------------
 
@@ -1575,7 +1844,7 @@ func gitTagContent(ctx context.Context, input GitTagInput, log interfaces.LogFun
 // Tool registration
 // ---------------------------------------------------------------------------
 
-// CreateGitOpsTools builds the fourteen-tool git toolset shared by the
+// CreateGitOpsTools builds the seventeen-tool git toolset shared by the
 // orchestrator and the general-purpose agent. Every tool runs git through
 // BuildExecCommand, so the harmful-command policy, approval gate, path
 // audit, env scrubbing, and audit log apply to structured git operations
@@ -1721,7 +1990,37 @@ func CreateGitOpsTools(log interfaces.LogFunc) ([]tool.Tool, error) {
 		return nil, err
 	}
 
-	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool, checkoutTool, resetTool, cleanTool, stashTool, tagTool}, nil
+	remoteTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_remote",
+		Description: "Manages remotes: list (LOW) shows configured remotes, get_url (LOW) retrieves a remote's URL, add/set_url/remove (MEDIUM, approval-gated) mutate remotes. URLs pass the same scheme allowlist as git_clone.",
+	}, func(ctx agent.Context, input GitRemoteInput) (GitRemoteOutput, error) {
+		return gitRemoteContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	mergeTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_merge",
+		Description: "Merges a ref into the current branch. Runs --ff-only by default; explicit no_ff=true opts into a merge commit. Mutating: approval-gated like system_exec.",
+	}, func(ctx agent.Context, input GitMergeInput) (GitMergeOutput, error) {
+		return gitMergeContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	rebaseTool, err := util.NewDocTool(functiontool.Config{
+		Name:        "git_rebase",
+		Description: "Rebases the current branch onto a ref, or controls an ongoing rebase (operation: abort, continue, or skip). Never auto-resolves conflicts - surfaces git's conflict output and stops. Mutating: approval-gated like system_exec.",
+	}, func(ctx agent.Context, input GitRebaseInput) (GitRebaseOutput, error) {
+		return gitRebaseContent(ctx, input, log)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []tool.Tool{statusTool, diffTool, logTool, branchTool, stageTool, commitTool, cloneTool, pushTool, pullTool, checkoutTool, resetTool, cleanTool, stashTool, tagTool, remoteTool, mergeTool, rebaseTool}, nil
 }
 
 // ---------------------------------------------------------------------------

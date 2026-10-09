@@ -291,10 +291,44 @@ func classifyGitRisk(argv []string) CommandRisk {
 		}
 	}
 
+	if sub == "remote" {
+		mutatingRemoteCmds := map[string]bool{
+			"add": true, "remove": true, "rm": true, "set-url": true,
+			"rename": true, "prune": true, "set-head": true, "set-branches": true,
+		}
+		for _, arg := range argv[2:] {
+			if mutatingRemoteCmds[arg] {
+				return RiskMedium
+			}
+		}
+		return RiskLow
+	}
+
+	if sub == "branch" {
+		if hasFlag(argv, "-d") || hasFlag(argv, "-D") ||
+			hasFlag(argv, "-m") || hasFlag(argv, "-M") ||
+			hasFlag(argv, "-c") || hasFlag(argv, "-C") ||
+			hasFlag(argv, "-f") || hasFlag(argv, "--force") ||
+			hasFlag(argv, "--delete") || hasFlag(argv, "--move") ||
+			hasFlag(argv, "--copy") || hasFlag(argv, "--edit-description") {
+			return RiskMedium
+		}
+		if hasFlag(argv, "--list") || hasFlag(argv, "-l") ||
+			hasFlag(argv, "--contains") || hasFlag(argv, "--no-contains") ||
+			hasFlag(argv, "--merged") || hasFlag(argv, "--no-merged") {
+			return RiskLow
+		}
+		for _, arg := range argv[2:] {
+			if !strings.HasPrefix(arg, "-") {
+				return RiskMedium
+			}
+		}
+		return RiskLow
+	}
+
 	// LOW risk git subcommands (read-only).
 	lowGitSubs := map[string]bool{
 		"status": true, "log": true, "diff": true, "show": true,
-		"branch": true, "remote": true,
 	}
 	if lowGitSubs[sub] {
 		return RiskLow
