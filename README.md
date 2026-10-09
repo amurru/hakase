@@ -233,6 +233,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `sleep` | SkillOpt-Sleep self-improvement loop for markdown skills (`harvest`, `review`, `dry-run`, `run`, `adopt`, `status`, `schedule`, `evalkit`; real runs need a configured model) |
 | `channels` | Manage communication channels (`status`, `pair-code`, `revoke`) |
 | `hooks` | Manage tool-lifecycle hooks (`list`, `trust`, `untrust`, `test`, `add`, `rm`, `enable`/`disable`, `on`/`off`) |
+| `audit` | Export and verify the hash-chained audit trail (`export [--since 24h] [--format jsonl\|csv] [--verify]`, `verify`) |
 | `auth` | Manage web authentication (`set-password`) |
 | `version` | Print build version (version, commit, build date, Go runtime) |
 
@@ -295,6 +296,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `tracing` -- OpenTelemetry GenAI tracing over OTLP/HTTP (`enabled`, `endpoint`, `headers`, `sample_ratio`). See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 - `session.snapshots` -- restore-to-message checkpoints (`enabled`, `max` per session, default 50): "Restore to before this message" on any user prompt in the chat UI rewinds the conversation; the pre-restore state is kept as an undo snapshot. See [docs/session-rewind/](docs/session-rewind/).
 - `hooks` -- tool-lifecycle hooks (`PreToolUse` blockable, `PostToolUse` observability, `SessionStart` once-per-session context, `UserPromptSubmit` per-prompt context; argv commands, tool-name regex matchers, 30s default timeout, `on_failure: allow|block`, per-hook `enabled`). Project hooks (`<root>/.hakase/hooks.json`) execute only after per-hook content-hash trust (`hakase hooks trust`). User hooks support live CRUD on CLI, web Hooks page, and TUI `/hooks` (no restart; SIGHUP for external edits). See [docs/hooks/](docs/hooks/).
+- `permissions` -- allow/ask/deny policy per tool+path (`~/.hakase/permissions.json`, trust-gated `<root>/.hakase/permissions.json`, `/etc/hakase/enterprise.json` + URL poll; enterprise deny/ask always win, `allow_managed_only`, `disable_bypass`). Mobile approval queue (`GET /api/approvals/pending`, batch respond, `auth.web_roles` viewer/approver/admin) and hash-chained audit trail (`hakase audit export|verify`, SIEM forward). See [docs/permissions/](docs/permissions/).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
 - `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 
