@@ -149,6 +149,26 @@ type AuthConfig struct {
 	// false: cookies are Secure-only. Consumed by the web cookie setter
 	// (security-hardening Task 17 - W8).
 	AllowInsecureCookie bool `json:"allow_insecure_cookie"`
+	// WebRoles maps usernames (JWT subject, the allowlist IDs) to web
+	// RBAC tiers (viewer|approver|admin) for the approval queue and
+	// audit endpoints (docs/permissions/ PM-003). Absent = fully open
+	// (today's single-user behavior).
+	WebRoles map[string]string `json:"web_roles,omitempty"`
+}
+
+// Validate rejects unknown role tiers at load.
+func (c AuthConfig) Validate() error {
+	for user, r := range c.WebRoles {
+		switch r {
+		case "", "viewer", "approver", "admin":
+			if r == "" {
+				return fmt.Errorf("auth.web_roles[%q]: empty role (want viewer|approver|admin)", user)
+			}
+		default:
+			return fmt.Errorf("auth.web_roles[%q]: invalid %q (want viewer|approver|admin)", user, r)
+		}
+	}
+	return nil
 }
 
 type Config struct {
@@ -1630,6 +1650,9 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Permissions.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Auth.Validate(); err != nil {
 		return nil, err
 	}
 

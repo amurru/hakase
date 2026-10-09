@@ -18,7 +18,7 @@ Legend: `[BE]` backend/Go, `[FE]` frontend, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 3 — queue + audit
 
-- [ ] **T3.1 [BE]** pending endpoint + RBAC + batch respond (first-wins preserved). Spec: PM-003.
+- [x] **T3.1 [BE]** pending endpoint + RBAC + batch respond (first-wins preserved). Spec: PM-003. (Done, issue #85: `pendingPrompt` metadata on the gate, `GET /api/approvals/pending` incl. resurrected, `POST /api/approvals/respond` batch looping `RespondApproval`, viewer/approver/admin `RoleMap` over `auth.web_roles` with strict validation; open map = today's behavior.)
 - [ ] **T3.2 [BE]** hash chain fields + `hakase audit export/verify` + SIEM forward. Spec: PM-004.
 - [ ] **T3.3 [QA]** queue e2e + chain tamper + rotation compat. Spec: PM-003/004.
 - [ ] **T3.4 [DOCS]** `docs/permissions/` guide + CHANGELOG + README.
