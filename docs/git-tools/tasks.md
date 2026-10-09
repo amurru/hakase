@@ -126,9 +126,8 @@ Legend: `[BE]` Go backend, `[QA]` test/docs. Status: TODO unless marked.
       `tag -d`. Names validated with git's check-ref-format rules (no `..`,
       `@{`, leading `.`, `.lock`). Mutating ops approval-gated. Verify:
       create/list/delete + validation. Spec: GT-016.
-- [ ] **T7.x** `git_remote` management, `git_rebase` / `git_merge`, `git_commit
-      --amend` / signing - still system_exec domain; revisit with explicit
-      product decisions. `git_remote add/remove/set-url` and mutating
-      `git_branch` need a separate slice: the gate classifies the whole
-      `remote`/`branch` subcommands LOW today (read-mostly), so structured
-      tools for them require a classification tightening first.
+- [x] **T7.x** `git_remote` management, `git_rebase` / `git_merge`, `git_commit
+      --amend` / signing - completed. `git_remote add/remove/set-url` and mutating
+      `git_branch` tightened in `classifyGitRisk` in `internal/agent/gate.go` first,
+      followed by structured `git_remote`, `git_merge`, `git_rebase`, and
+      `git_commit` amend/signing flags in `internal/sandbox/gitops.go`.

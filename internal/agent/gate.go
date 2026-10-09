@@ -291,10 +291,50 @@ func classifyGitRisk(argv []string) CommandRisk {
 		}
 	}
 
+	if sub == "remote" {
+		mutatingRemoteCmds := map[string]bool{
+			"add": true, "remove": true, "rm": true, "set-url": true,
+			"rename": true, "prune": true, "set-head": true, "set-branches": true,
+			"update": true,
+		}
+		for _, arg := range argv[2:] {
+			if mutatingRemoteCmds[arg] {
+				return RiskMedium
+			}
+		}
+		return RiskLow
+	}
+
+	if sub == "branch" {
+		if hasFlag(argv, "-d") || hasFlag(argv, "-D") ||
+			hasFlag(argv, "-m") || hasFlag(argv, "-M") ||
+			hasFlag(argv, "-c") || hasFlag(argv, "-C") ||
+			hasFlag(argv, "-f") || hasFlag(argv, "--force") ||
+			hasFlag(argv, "--delete") || hasFlag(argv, "--move") ||
+			hasFlag(argv, "--copy") || hasFlag(argv, "--edit-description") ||
+			hasFlag(argv, "-u") || hasFlag(argv, "-t") ||
+			hasFlag(argv, "--track") || hasFlag(argv, "--unset-upstream") ||
+			hasFlag(argv, "--set-upstream-to") ||
+			hasFlagPrefix(argv, "--set-upstream-to=") ||
+			hasFlagPrefix(argv, "--track=") {
+			return RiskMedium
+		}
+		if hasFlag(argv, "--list") || hasFlag(argv, "-l") ||
+			hasFlag(argv, "--contains") || hasFlag(argv, "--no-contains") ||
+			hasFlag(argv, "--merged") || hasFlag(argv, "--no-merged") {
+			return RiskLow
+		}
+		for _, arg := range argv[2:] {
+			if !strings.HasPrefix(arg, "-") {
+				return RiskMedium
+			}
+		}
+		return RiskLow
+	}
+
 	// LOW risk git subcommands (read-only).
 	lowGitSubs := map[string]bool{
 		"status": true, "log": true, "diff": true, "show": true,
-		"branch": true, "remote": true,
 	}
 	if lowGitSubs[sub] {
 		return RiskLow
@@ -309,6 +349,16 @@ func classifyGitRisk(argv []string) CommandRisk {
 func hasForceFlag(argv []string) bool {
 	for _, a := range argv {
 		if a == "--force" || a == "-f" || a == "--force-with-lease" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFlagPrefix checks whether any element in argv has the given prefix.
+func hasFlagPrefix(argv []string, prefix string) bool {
+	for _, a := range argv {
+		if strings.HasPrefix(a, prefix) {
 			return true
 		}
 	}
