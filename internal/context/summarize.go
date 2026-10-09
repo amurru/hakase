@@ -101,7 +101,10 @@ func (h *HistoryBuilder) runSummarize(sessionID, focus string) error {
 	}
 
 	// Build the prompt: existing running summary (if any) + transcript.
-	prompt := buildSummarizePrompt(msgs, focus)
+	prompt, err := buildSummarizePrompt(msgs, focus)
+	if err != nil {
+		return err
+	}
 
 	// Prefer the configured cheap/weak summarization model; fall back to the
 	// primary model when none is configured.
@@ -164,8 +167,9 @@ func (h *HistoryBuilder) fallbackCompaction(sessionID string) {
 // session's messages. focus is an optional user-supplied instruction (from
 // /compact [focus]) that steers what the summary prioritizes. The transcript
 // is capped so the summarization call stays cheap; older content is dropped
-// in favor of the tail.
-func buildSummarizePrompt(msgs []session.Message, focus string) string {
+// in favor of the tail. Pins share that budget; overflow returns an error so
+// ScheduleSummarize uses deterministic compaction, which preserves the pins.
+func buildSummarizePrompt(msgs []session.Message, focus string) (string, error) {
 	// Collect the relevant dialogue lines first (skip tool transcripts).
 	var lines []string
 	for _, msg := range msgs {
@@ -188,11 +192,11 @@ func buildSummarizePrompt(msgs []session.Message, focus string) string {
 	total := 0
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
-		if total+len(line) > maxChars {
+		if total+len(line)+2 > maxChars {
 			break
 		}
 		kept = append(kept, line)
-		total += len(line)
+		total += len(line) + 2 // Include the transcript separator.
 	}
 	// Reverse back to chronological order.
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
@@ -206,7 +210,12 @@ func buildSummarizePrompt(msgs []session.Message, focus string) string {
 			content := strings.TrimSpace(msg.Content)
 			if content != "" && !seenPins[content] {
 				seenPins[content] = true
-				durablePins = append(durablePins, "- "+content)
+				pin := "- " + content
+				if total+len(pin)+1 > maxChars {
+					return "", fmt.Errorf("durable pins exceed summarization prompt budget")
+				}
+				durablePins = append(durablePins, pin)
+				total += len(pin) + 1
 			}
 		}
 	}
@@ -228,5 +237,5 @@ func buildSummarizePrompt(msgs []session.Message, focus string) string {
 		b.WriteString(line)
 		b.WriteString("\n\n")
 	}
-	return b.String()
+	return b.String(), nil
 }

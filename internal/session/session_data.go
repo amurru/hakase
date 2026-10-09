@@ -141,12 +141,8 @@ func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking strin
 		if s != nil && s.ToolOutputMaxChars > 0 {
 			limit = s.ToolOutputMaxChars
 		}
-		if len(content) > limit {
-			maxChars := limit
-			for maxChars > 0 && !utf8.RuneStart(content[maxChars]) {
-				maxChars--
-			}
-			content = content[:maxChars] + fmt.Sprintf("\n...[truncated %d chars]", len(content)-maxChars)
+		if count := utf8.RuneCountInString(content); count > limit {
+			content = string([]rune(content)[:limit]) + fmt.Sprintf("\n...[truncated %d chars]", count-limit)
 		}
 	}
 	s.Messages = append(s.Messages, Message{
