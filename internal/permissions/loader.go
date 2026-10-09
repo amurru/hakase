@@ -120,6 +120,7 @@ type LayeredPolicy struct {
 
 // fileEntry is one mtime-cached policy file.
 type fileEntry struct {
+	path   string
 	mtime  time.Time
 	size   int64
 	fp     string // content fingerprint (project entries only)
@@ -333,14 +334,14 @@ func (l *Loader) loadCachedFile(entry *fileEntry, path string) (Policy, bool, er
 	if err != nil {
 		return Policy{}, false, fmt.Errorf("permissions: %s: %w", path, err)
 	}
-	if entry.ok && entry.mtime.Equal(fi.ModTime()) && entry.size == fi.Size() {
+	if entry.ok && entry.path == path && entry.mtime.Equal(fi.ModTime()) && entry.size == fi.Size() {
 		return entry.policy, true, nil
 	}
 	p, _, err := LoadPolicyFile(path)
 	if err != nil {
 		return Policy{}, false, err
 	}
-	*entry = fileEntry{mtime: fi.ModTime(), size: fi.Size(), policy: p, ok: true}
+	*entry = fileEntry{path: path, mtime: fi.ModTime(), size: fi.Size(), policy: p, ok: true}
 	return p, true, nil
 }
 
@@ -367,7 +368,7 @@ func (l *Loader) cachedProject(root, path string, raw []byte) (Policy, error) {
 	if p.Version != 0 && p.Version != 1 {
 		return Policy{}, fmt.Errorf("permissions: %s: unsupported version %d (want 1)", path, p.Version)
 	}
-	l.projects[root] = fileEntry{mtime: fi.ModTime(), size: int64(len(raw)), fp: want, policy: p, ok: true}
+	l.projects[root] = fileEntry{path: path, mtime: fi.ModTime(), size: int64(len(raw)), fp: want, policy: p, ok: true}
 	return p, nil
 }
 
@@ -471,19 +472,19 @@ func (l *Loader) writeURLCache(raw []byte) {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return
 	}
 	if err := os.Chmod(tmpName, 0o600); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 	}
 }

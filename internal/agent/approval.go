@@ -17,7 +17,7 @@ type ApprovalRequest = interfaces.ApprovalRequest
 
 // approvalMode returns the configured approval mode ("interactive"
 // default, "deny", "allow"), lowercased. Unknown values fall back to
-// interactive; strict validation lands with config plumbing (T2.2).
+// interactive at runtime; LoadConfig rejects them at startup.
 func approvalMode() string {
 	if deps == nil {
 		return ""

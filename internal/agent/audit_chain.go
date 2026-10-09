@@ -259,7 +259,7 @@ func forwardAuditEntry(line []byte) {
 		if err != nil {
 			return
 		}
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		_ = resp.Body.Close()
 	}()
 }
