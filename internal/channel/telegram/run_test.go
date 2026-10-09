@@ -78,7 +78,7 @@ func TestStreamingThrottledExactFinalRender(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		time.Sleep(100 * time.Millisecond)
-		sink.OnUsage("s", 39800, 0)
+		sink.OnUsage("s", 39800, 0, 0, 0)
 	}}
 
 	c := rootConv(100)
@@ -232,7 +232,7 @@ func TestRunMirrorsEventsToBridge(t *testing.T) {
 	b.driver = &fakeDriver{turned: make(chan struct{}), script: func(sink agentrun.EventSink) {
 		sink.OnLog(sess.ID, "Call: read_file(path)")
 		sink.OnStream(sess.ID, "partial answer ", "")
-		sink.OnUsage(sess.ID, 1200, 0)
+		sink.OnUsage(sess.ID, 1200, 0, 0, 0)
 		time.Sleep(40 * time.Millisecond)
 	}}
 	b.startRun(context.Background(), rootConv(100), 21, "prompt", nil, nil, nil, "", false)
