@@ -14,7 +14,7 @@ Legend: `[BE]` backend/Go, `[FE]` frontend, `[QA]` tests, `[DOCS]` docs.
 
 - [x] **T2.1 [BE]** user/project/enterprise loader + trust gate + URL sync + locks. Spec: PM-001. (Done, issue #85: `internal/permissions/loader.go` - strict-key file load, `perm:<sha256>` project trust gate with rewrite-lapse, mtime caches incl. per-root + content-fp project entries, enterprise file + URL poll with last-good retention and best-effort disk cache, allowManagedOnly prefix-aware stripping, agent overlays; `InstallLayered`/`LookupForAgent`/`BypassDisabled` source; `disable_bypass` enforced in `ApproveExec`.)
 - [x] **T2.2 [BE]** config plumbing + Validate. Spec: PM-001. (Done, issue #85: `PermissionsConfig` block - enabled default-true, enterprise path/URL, poll minutes - with `HAKASE_PERMISSIONS_*` env overrides; strict `approval.mode` validation failing startup loudly; `initPermissions` wired into `SetupRunner` with the hooks trust store - corrupt user/enterprise fails startup, untrusted project dropped; `config.json.example` block.)
-- [ ] **T2.3 [QA]** layering/lock matrix + trust-lapse + non-widening pin. Spec: PM-001.
+- [x] **T2.3 [QA]** layering/lock matrix + trust-lapse + non-widening pin. Spec: PM-001. (Done: full enterprise/user/project x allow/ask/deny matrix, per-root isolation for the PinnedTo case, concurrent Load+Lookup under -race; trust-lapse covered in T2.1 tests.)
 
 ## Phase 3 — queue + audit
 

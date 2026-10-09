@@ -190,6 +190,119 @@ func TestEnterpriseURLPoll(t *testing.T) {
 	}
 }
 
+// TestLayeringMatrix pins the full enterprise/user/project x
+// allow/ask/deny merge matrix for one resource.
+func TestLayeringMatrix(t *testing.T) {
+	cases := []struct {
+		name       string
+		enterprise Effect
+		user       Effect
+		project    Effect
+		want       Effect
+	}{
+		{"all deny", EffectDeny, EffectDeny, EffectDeny, EffectDeny},
+		{"enterprise deny wins over allows", EffectDeny, EffectAllow, EffectAllow, EffectDeny},
+		{"user deny beats project allow", EffectAsk, EffectDeny, EffectAllow, EffectDeny},
+		{"project deny beats allows above", EffectAllow, EffectAllow, EffectDeny, EffectDeny},
+		{"ask beats allow", EffectAllow, EffectAsk, EffectAllow, EffectAsk},
+		{"project ask escalates", EffectAllow, EffectAllow, EffectAsk, EffectAsk},
+		{"all allow", EffectAllow, EffectAllow, EffectAllow, EffectAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			proj := ProjectPolicyPath(root)
+			writePolicy(t, proj, fmt.Sprintf(`{"version":1,"rules":[
+				{"action":"shell","resource":"run *","effect":%q}]}`, tc.project))
+			raw, _ := os.ReadFile(proj)
+
+			home := t.TempDir()
+			t.Setenv("HAKASE_HOME", home)
+			writePolicy(t, filepath.Join(home, "permissions.json"), fmt.Sprintf(`{"version":1,"rules":[
+				{"action":"shell","resource":"run *","effect":%q}]}`, tc.user))
+
+			ent := filepath.Join(t.TempDir(), "enterprise.json")
+			writePolicy(t, ent, fmt.Sprintf(`{"version":1,"rules":[
+				{"action":"shell","resource":"run *","effect":%q}]}`, tc.enterprise))
+
+			l := &Loader{EnterprisePath: ent, Trust: trustMap{FingerprintPolicy(raw): true}}
+			lp, err := l.Load(root)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got, _ := lp.Policy.Evaluate("shell", "run job"); got != tc.want {
+				t.Errorf("Evaluate = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProjectRootIsolation pins per-root cache separation: trusting one
+// root's project file (the PinnedTo non-widening case) never leaks its
+// layer into another root's load.
+func TestProjectRootIsolation(t *testing.T) {
+	rootA, rootB := t.TempDir(), t.TempDir()
+	writePolicy(t, ProjectPolicyPath(rootA), `{"version":1,"rules":[
+		{"action":"shell","resource":"deploy *","effect":"allow"}]}`)
+	writePolicy(t, ProjectPolicyPath(rootB), `{"version":1,"rules":[
+		{"action":"shell","resource":"deploy *","effect":"deny"}]}`)
+	rawA, _ := os.ReadFile(ProjectPolicyPath(rootA))
+
+	l := testLoader()
+	l.Trust = trustMap{FingerprintPolicy(rawA): true}
+	lpA, err := l.Load(rootA)
+	if err != nil {
+		t.Fatalf("Load A: %v", err)
+	}
+	lpB, err := l.Load(rootB)
+	if err != nil {
+		t.Fatalf("Load B: %v", err)
+	}
+	if got, _ := lpA.Policy.Evaluate("shell", "deploy prod"); got != EffectAllow {
+		t.Errorf("root A = %q, want allow (trusted)", got)
+	}
+	if got, _ := lpB.Policy.Evaluate("shell", "deploy prod"); got != EffectAsk {
+		t.Errorf("root B = %q, want ask (untrusted file dropped)", got)
+	}
+}
+
+// TestLoaderConcurrent pins lock safety: parallel Load + Lookup under
+// -race must stay clean and consistent.
+func TestLoaderConcurrent(t *testing.T) {
+	root := t.TempDir()
+	proj := ProjectPolicyPath(root)
+	writePolicy(t, proj, `{"version":1,"rules":[
+		{"action":"shell","resource":"run *","effect":"deny"}]}`)
+	raw, _ := os.ReadFile(proj)
+
+	l := testLoader()
+	l.Trust = trustMap{FingerprintPolicy(raw): true}
+	done := make(chan error, 16)
+	for i := 0; i < 8; i++ {
+		go func() {
+			lp, err := l.Load(root)
+			if err != nil {
+				done <- err
+				return
+			}
+			if got, _ := lp.Policy.Evaluate("shell", "run job"); got != EffectDeny {
+				done <- fmt.Errorf("Evaluate = %q, want deny", got)
+				return
+			}
+			done <- nil
+		}()
+		go func() {
+			_, _, _ = Lookup("shell", "run job")
+			done <- nil
+		}()
+	}
+	for i := 0; i < 16; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestAgentOverlay pins per-agent rule merging under deny > ask > allow.
 func TestAgentOverlay(t *testing.T) {
 	cp, err := Compile(Policy{Rules: []Rule{
