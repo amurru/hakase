@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/skill"
@@ -152,5 +153,16 @@ func TestPrefixByteStability(t *testing.T) {
 
 	if prompt1 != prompt2 {
 		t.Errorf("prefix byte stability failed: prompt outputs differ between calls")
+	}
+}
+
+func TestClampDescriptionUTF8(t *testing.T) {
+	cjk := "这是一个非常长的中文技能描述，用于测试 UTF-8 截断 are working correctly 🤖🚀✨ " + strings.Repeat("测试", 100)
+	clamped := clampDescription(cjk, 50)
+	if !utf8.ValidString(clamped) {
+		t.Fatalf("clamped string contains invalid UTF-8 bytes: %q", clamped)
+	}
+	if !strings.HasSuffix(clamped, "...") {
+		t.Errorf("expected suffix '...', got %q", clamped)
 	}
 }
