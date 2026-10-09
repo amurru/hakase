@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
 	"context"
@@ -363,9 +364,30 @@ func (api *ApprovalAPI) RespondBatch(w http.ResponseWriter, r *http.Request) {
 		if id == "" {
 			continue
 		}
-		results[id] = api.gate.RespondApproval(id, req.Approved)
+		delivered := api.gate.RespondApproval(id, req.Approved)
+		if delivered {
+			api.auditAnswer(id, req.Approved, r)
+		}
+		results[id] = delivered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// auditAnswer records who answered a prompt (actor = web username).
+// Only delivered answers are recorded: lost races resolve elsewhere
+// and their winner's entry is the audit truth.
+func (api *ApprovalAPI) auditAnswer(approvalID string, approved bool, r *http.Request) {
+	tool := ""
+	for _, pv := range api.gate.PendingApprovals() {
+		if pv.ID == approvalID {
+			tool = pv.Tool
+			break
+		}
+	}
+	// PendingApprovals still lists the prompt (cleanup happens on the
+	// blocked handler's return); the tool lookup above best-effort
+	// enriches the entry, "" falls back to "approval".
+	hakaseagent.AuditApprovalAnswer(approvalID, tool, approved, r.Header.Get("X-Hakase-User"), "web")
 }
 
 // RespondApproval handles POST /api/approvals/{id}/respond.
@@ -387,6 +409,7 @@ func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if api.gate.RespondApproval(approvalID, req.Approved) {
+		api.auditAnswer(approvalID, req.Approved, r)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}

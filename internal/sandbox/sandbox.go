@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 
 	"github.com/cyphar/filepath-securejoin"
 )
@@ -599,6 +600,9 @@ type CommandAuditEntry struct {
 	Reason      string `json:"reason"`
 	DurationMs  int64  `json:"duration_ms"`
 	ExitCode    int    `json:"exit_code"`
+	// PolicyRule cites the permissions rule behind a policy decision
+	// (docs/permissions/ PM-004); zero when the risk gate decided alone.
+	PolicyRule permissions.PolicyRule `json:"policy_rule,omitempty"`
 }
 
 // GateDecision is the outcome of evaluating one command.
@@ -606,6 +610,9 @@ type GateDecision struct {
 	Action GateAction
 	Risk   CommandRisk
 	Reason string
+	// PolicyRule cites the permissions rule behind a policy deny/ask
+	// (nil when the risk gate decided on its own).
+	PolicyRule *permissions.Rule
 }
 
 // GateAction is the policy outcome.

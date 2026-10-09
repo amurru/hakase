@@ -53,6 +53,9 @@ type GateDecision struct {
 	Action GateAction
 	Risk   CommandRisk
 	Reason string // human-readable reason for deny/ask
+	// PolicyRule cites the permissions rule behind an ActionDeny/Ask
+	// from step 4b (nil when the risk gate decided on its own).
+	PolicyRule *permissions.Rule
 }
 
 // ruleSuffix renders the matching permissions rule for gate reasons
@@ -1106,9 +1109,9 @@ func EvaluateCommand(sb *sandbox.SandboxConfig, command string, args []string) G
 	if eff, rule, ok := permissions.Lookup("shell", command); ok && rule != nil {
 		switch eff {
 		case permissions.EffectDeny:
-			return GateDecision{Action: ActionDeny, Risk: risk, Reason: "denied by permissions policy" + ruleSuffix(rule)}
+			return GateDecision{Action: ActionDeny, Risk: risk, Reason: "denied by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
 		case permissions.EffectAsk:
-			return GateDecision{Action: ActionAsk, Risk: risk, Reason: "requires approval by permissions policy" + ruleSuffix(rule)}
+			return GateDecision{Action: ActionAsk, Risk: risk, Reason: "requires approval by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
 		case permissions.EffectAllow:
 			if risk != RiskUnknown {
 				return GateDecision{Action: ActionAllow, Risk: risk, Reason: ""}

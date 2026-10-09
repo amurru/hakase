@@ -2494,6 +2494,10 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if err := initPermissions(cfg, cwd, hooks.OpenDefaultTrustStore(), log); err != nil {
 		return nil, fmt.Errorf("permissions: %w", err)
 	}
+
+	// SIEM forwarding for the hash-chained audit trail (PM-004):
+	// best-effort POST per entry, "" disables.
+	ConfigureAuditForward(cfg.Audit.ForwardURL, cfg.Audit.ForwardFormat)
 	// Publish the runner for the delegate_task path, whose sub-agents are
 	// built per-delegation in delegate.go (long after SetupRunner returns).
 	deps.HooksRunner = hooksRunner

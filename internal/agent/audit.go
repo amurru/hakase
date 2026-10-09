@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/util"
 	"encoding/json"
 	"os"
@@ -27,10 +28,33 @@ type CommandAuditEntry struct {
 	Reason      string `json:"reason"`
 	DurationMs  int64  `json:"duration_ms"`
 	ExitCode    int    `json:"exit_code"`
+	// Actor is who answered a gate prompt (web username, channel user)
+	// on answer entries; empty on execution entries (PM-004).
+	Actor string `json:"actor,omitempty"`
+	// TraceID links entries to one gate prompt (the approval ID) on
+	// answer entries (PM-004).
+	TraceID string `json:"trace_id,omitempty"`
+	// PolicyRule cites the permissions rule behind a policy decision
+	// (PM-004); empty when the risk gate decided on its own.
+	PolicyRule permissions.PolicyRule `json:"policy_rule,omitempty"`
+	// PrevHash/EntryHash chain entries tamper-evidently (PM-004):
+	// entry_hash = sha256(prev_hash + canonical entry JSON).
+	PrevHash  string `json:"prev_hash,omitempty"`
+	EntryHash string `json:"entry_hash,omitempty"`
 }
 
 // auditLogDir is where the always-on audit log is written. Overridable in tests.
 var auditLogDir = "logs"
+
+// AuditDir returns the audit log directory (honors test overrides).
+func AuditDir() string {
+	return auditLogDir
+}
+
+// SetAuditDir overrides the audit log directory (tests and embedding).
+func SetAuditDir(dir string) {
+	auditLogDir = dir
+}
 
 // Audit rotation bounds logs/ (issue #13): the audit trail is append-only
 // and already ~730KB with no retention. Defaults keep ~30MB max.
@@ -56,11 +80,6 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	entry.Command = util.TruncateStr(entry.Command)
 	entry.Reason = util.TruncateStr(entry.Reason)
 
-	b, err := json.Marshal(entry)
-	if err != nil {
-		return // best-effort: encoding failure is not actionable
-	}
-
 	auditMu.Lock()
 	defer auditMu.Unlock()
 
@@ -84,7 +103,22 @@ func AuditCommandExec(entry CommandAuditEntry) {
 		}
 	}
 
-	rotateAuditLogIfNeeded(path, int64(len(b)+1))
+	// Hash chain (PM-004): link to the last stored hash BEFORE rotation
+	// so the chain spans rotated files; the entry is hashed after the
+	// prev link is set (chainEntryHash zeroes the hash fields first).
+	entry.PrevHash = tailEntryHash(path)
+	canonical, err := json.Marshal(chainView(entry))
+	if err != nil {
+		return // best-effort: encoding failure is not actionable
+	}
+
+	rotateAuditLogIfNeeded(path, int64(len(canonical)+1))
+
+	entry.EntryHash = chainEntryHash(entry.PrevHash, canonical)
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return // best-effort: encoding failure is not actionable
+	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -96,6 +130,8 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	// Append one JSON line per entry, \n terminated.
 	_, _ = f.Write(b)
 	_, _ = f.Write([]byte("\n"))
+
+	forwardAuditEntry(b)
 }
 
 // AuditBudgetBlock records a FinOps pre-turn budget denial on the always-on

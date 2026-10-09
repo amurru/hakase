@@ -19,7 +19,7 @@ Legend: `[BE]` backend/Go, `[FE]` frontend, `[QA]` tests, `[DOCS]` docs.
 ## Phase 3 — queue + audit
 
 - [x] **T3.1 [BE]** pending endpoint + RBAC + batch respond (first-wins preserved). Spec: PM-003. (Done, issue #85: `pendingPrompt` metadata on the gate, `GET /api/approvals/pending` incl. resurrected, `POST /api/approvals/respond` batch looping `RespondApproval`, viewer/approver/admin `RoleMap` over `auth.web_roles` with strict validation; open map = today's behavior.)
-- [ ] **T3.2 [BE]** hash chain fields + `hakase audit export/verify` + SIEM forward. Spec: PM-004.
+- [x] **T3.2 [BE]** hash chain fields + `hakase audit export/verify` + SIEM forward. Spec: PM-004. (Done, issue #85: `prev_hash`/`entry_hash` on every append with tail-read + rotation-spanning links, `VerifyAuditChain`/`ReadAuditEntries`/metadata-only CSV, `AuditApprovalAnswer` actor attribution at web + Telegram + Discord answer sites, `hakase audit export|verify` CLI, `audit.forward` config + best-effort SIEM POST, `PolicyRule` citations flowing gate → exec entries via the sandbox seam.)
 - [ ] **T3.3 [QA]** queue e2e + chain tamper + rotation compat. Spec: PM-003/004.
 - [ ] **T3.4 [DOCS]** `docs/permissions/` guide + CHANGELOG + README.
 - [ ] **T3.5 [QA]** Full suite green: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.

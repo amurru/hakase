@@ -32,9 +32,10 @@ func init() {
 	sandbox.EvaluateCommandFunc = func(sb *sandbox.SandboxConfig, command string, args []string) sandbox.GateDecision {
 		d := hakaseagent.EvaluateCommand(sb, command, args)
 		return sandbox.GateDecision{
-			Action: sandbox.GateAction(d.Action),
-			Risk:   sandbox.CommandRisk(d.Risk),
-			Reason: d.Reason,
+			Action:     sandbox.GateAction(d.Action),
+			Risk:       sandbox.CommandRisk(d.Risk),
+			Reason:     d.Reason,
+			PolicyRule: d.PolicyRule,
 		}
 	}
 
@@ -72,6 +73,7 @@ func init() {
 			Reason:      entry.Reason,
 			DurationMs:  entry.DurationMs,
 			ExitCode:    entry.ExitCode,
+			PolicyRule:  entry.PolicyRule,
 		})
 	}
 

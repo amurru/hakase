@@ -176,11 +176,18 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		}
 	}
 	// absorb concatenates one layer; enterprise layers are tracked so
-	// allowManagedOnly can strip allows from lower layers only.
-	absorb := func(p Policy, enterprise bool) {
+	// allowManagedOnly can strip allows from lower layers only. Source
+	// tags each rule with its layer for audit citations.
+	absorb := func(p Policy, enterprise bool, source string) {
+		for i := range p.Rules {
+			p.Rules[i].Source = source
+		}
 		merged = append(merged, p.Rules...)
 		for name, ap := range p.Agents {
 			key := strings.ToLower(name)
+			for i := range ap.Rules {
+				ap.Rules[i].Source = source
+			}
 			agentRules[key] = append(agentRules[key], ap.Rules...)
 		}
 		if enterprise {
@@ -205,7 +212,7 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 	if p, ok, err := l.loadCachedFile(&l.enterpriseFile, entPath); err != nil {
 		return nil, err
 	} else if ok {
-		absorb(p, true)
+		absorb(p, true, "enterprise")
 		orEnterprise(&entFlags, p.Enterprise)
 	}
 
@@ -213,10 +220,10 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 	if up, changed, err := l.pollEnterprise(entFlags); err != nil {
 		return nil, err
 	} else if changed {
-		absorb(*up, true)
+		absorb(*up, true, "enterprise")
 		orEnterprise(&entFlags, up.Enterprise)
 	} else if l.urlHave {
-		absorb(l.urlPolicy, true)
+		absorb(l.urlPolicy, true, "enterprise")
 		orEnterprise(&entFlags, l.urlPolicy.Enterprise)
 	}
 
@@ -229,7 +236,7 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		if p, ok, err := l.loadCachedFile(&l.user, userPath); err != nil {
 			return nil, err
 		} else if ok {
-			absorb(p, false)
+			absorb(p, false, "user")
 		}
 	}
 
@@ -251,7 +258,7 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 				if err != nil {
 					return nil, err
 				}
-				absorb(p, false)
+				absorb(p, false, "project")
 				out.ProjectTrusted = true
 			}
 		}

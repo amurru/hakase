@@ -51,11 +51,31 @@ func ParseEffect(s string) (Effect, error) {
 // Rule is one {action, resource, effect} triple. Action names a tool
 // domain ("shell", "read", "edit", "glob", "grep", "webfetch",
 // "subagent") or "*" for all actions. Resource is a glob matched
-// against the command line (shell) or path (read/edit/...).
+// against the command line (shell) or path (read/edit/...). Source
+// names the originating layer ("enterprise", "user", "project") and is
+// set by the loader; it is never serialized (json:"-") and exists so
+// audit entries can cite a rule's provenance.
 type Rule struct {
 	Action   string `json:"action"`
 	Resource string `json:"resource"`
 	Effect   Effect `json:"effect"`
+	Source   string `json:"-"`
+}
+
+// PolicyRule is the audit citation of a deciding rule.
+type PolicyRule struct {
+	Source   string `json:"source,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Resource string `json:"resource,omitempty"`
+	Effect   string `json:"effect,omitempty"`
+}
+
+// Citation renders a Rule as an audit citation (nil-safe).
+func (r *Rule) Citation() PolicyRule {
+	if r == nil {
+		return PolicyRule{}
+	}
+	return PolicyRule{Source: r.Source, Action: r.Action, Resource: r.Resource, Effect: string(r.Effect)}
 }
 
 // Policy is the rule set plus the no-match default. Agents holds
@@ -148,7 +168,7 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 			return nil, fmt.Errorf("permissions: rule %d: %w", i, err)
 		}
 		out = append(out, compiledRule{
-			rule: Rule{Action: action, Resource: r.Resource, Effect: eff},
+			rule: Rule{Action: action, Resource: r.Resource, Effect: eff, Source: r.Source},
 			re:   re,
 		})
 	}

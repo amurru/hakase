@@ -178,6 +178,11 @@ func init() {
 		Handler:     RunChannelsCLI,
 	})
 	registerCommand(Command{
+		Name:        "audit",
+		Description: "export and verify the hash-chained audit trail",
+		Handler:     RunAuditCLI,
+	})
+	registerCommand(Command{
 		Name:        "memory",
 		Description: "manage agent-written memory notes (list, add, forget)",
 		Handler:     RunMemoryCLI,

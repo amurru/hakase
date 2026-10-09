@@ -54,6 +54,28 @@ func (c ApprovalConfig) Validate() error {
 	}
 }
 
+// AuditConfig tunes the hash-chained audit trail (docs/permissions/ PM-004).
+type AuditConfig struct {
+	// ForwardURL optionally POSTs each audit entry to a SIEM endpoint
+	// (best-effort, never breaks the agent).
+	ForwardURL string `json:"forward_url,omitempty"`
+	// ForwardFormat is "jsonl" (default) or "json" (Content-Type framing).
+	ForwardFormat string `json:"forward_format,omitempty"`
+}
+
+// Validate rejects unknown forward formats and bad URLs at load.
+func (c AuditConfig) Validate() error {
+	switch c.ForwardFormat {
+	case "", "jsonl", "json":
+	default:
+		return fmt.Errorf("audit.forward_format: invalid %q (want jsonl|json)", c.ForwardFormat)
+	}
+	if c.ForwardURL != "" && !strings.HasPrefix(c.ForwardURL, "http://") && !strings.HasPrefix(c.ForwardURL, "https://") {
+		return fmt.Errorf("audit.forward_url: invalid %q (want http(s) URL)", c.ForwardURL)
+	}
+	return nil
+}
+
 // PermissionsConfig tunes the permissions policy layers (docs/permissions/).
 type PermissionsConfig struct {
 	// Enabled gates permissions.json loading. Nil/absent = enabled;
@@ -261,6 +283,9 @@ type Config struct {
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
+	// Audit tunes the hash-chained audit trail and SIEM forwarding.
+	// Absent = local trail only.
+	Audit AuditConfig `json:"audit,omitempty"`
 	// DurableResume enables durable human-in-the-loop resume: ADK
 	// session history (including gate pauses) is persisted so a
 	// restart can resume interrupted runs. Absent/disabled = in-memory
@@ -1653,6 +1678,15 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Auth.Validate(); err != nil {
+		return nil, err
+	}
+	if v := os.Getenv("HAKASE_AUDIT_FORWARD_URL"); v != "" {
+		cfg.Audit.ForwardURL = v
+	}
+	if v := os.Getenv("HAKASE_AUDIT_FORWARD_FORMAT"); v != "" {
+		cfg.Audit.ForwardFormat = v
+	}
+	if err := cfg.Audit.Validate(); err != nil {
 		return nil, err
 	}
 
