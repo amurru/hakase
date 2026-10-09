@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"unicode/utf8"
 )
 
 // standardSkillDirs are the per-tool skill directories checked at each level
@@ -50,6 +52,18 @@ func DiscoverMarkdownSkills(cwd string, extraDirs []string, log interfaces.LogFu
 		if _, dup := seen[s.Frontmatter.Name]; dup {
 			duplicateCount++
 			return
+		}
+		desc := strings.TrimSpace(s.Frontmatter.Description)
+		if utf8.RuneCountInString(desc) < 20 {
+			if log != nil {
+				log(fmt.Sprintf("[skills] Warning: skill '%s' description is short or vague (<20 chars)", s.Frontmatter.Name))
+			}
+		}
+		bodyLines := strings.Count(s.Body, "\n") + 1
+		if bodyLines > 500 {
+			if log != nil {
+				log(fmt.Sprintf("[skills] Warning: skill '%s' body has %d lines (>500 lines); consider moving content to references/", s.Frontmatter.Name, bodyLines))
+			}
 		}
 		if len(s.Body) > 100*1024 {
 			if log != nil {

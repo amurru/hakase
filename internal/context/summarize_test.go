@@ -12,7 +12,10 @@ func TestBuildSummarizePromptHasNineSections(t *testing.T) {
 		{Role: "user", Content: "q1", InContext: true, Kind: session.MessageKindText},
 		{Role: "agent", Content: "a1", InContext: true, Kind: session.MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs, "")
+	prompt, err := buildSummarizePrompt(msgs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, section := range []string{
 		"1. PRIMARY INTENT",
 		"2. KEY DECISIONS",
@@ -42,7 +45,10 @@ func TestBuildSummarizePromptSkipsToolTranscripts(t *testing.T) {
 		{Role: "agent", Content: "huge tool output", InContext: true, Kind: session.MessageKindToolResult},
 		{Role: "user", Content: "keep me", InContext: true, Kind: session.MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs, "")
+	prompt, err := buildSummarizePrompt(msgs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(prompt, "huge tool output") {
 		t.Fatalf("tool output leaked into summary prompt")
 	}
@@ -56,7 +62,10 @@ func TestBuildSummarizePromptIncludesRunningSummary(t *testing.T) {
 		{Role: "agent", Content: "OLD RUNNING SUMMARY", InContext: true, Kind: session.MessageKindSummary},
 		{Role: "user", Content: "new question", InContext: true, Kind: session.MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs, "")
+	prompt, err := buildSummarizePrompt(msgs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(prompt, "OLD RUNNING SUMMARY") {
 		t.Fatalf("running summary must be merged into the prompt")
 	}
@@ -76,7 +85,10 @@ func TestBuildSummarizePromptCapsAtTail(t *testing.T) {
 	// Make the last message distinct so we can check the tail is kept.
 	msgs[len(msgs)-1].Content = "TAIL MARKER"
 
-	prompt := buildSummarizePrompt(msgs, "")
+	prompt, err := buildSummarizePrompt(msgs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(prompt, "TAIL MARKER") {
 		t.Fatalf("tail message must be kept in the prompt")
 	}
@@ -90,13 +102,78 @@ func TestBuildSummarizePromptIncludesFocusInstruction(t *testing.T) {
 		{Role: "user", Content: "q1", InContext: true, Kind: session.MessageKindText},
 		{Role: "agent", Content: "a1", InContext: true, Kind: session.MessageKindText},
 	}
-	prompt := buildSummarizePrompt(msgs, "prioritize the auth flow")
+	prompt, err := buildSummarizePrompt(msgs, "prioritize the auth flow")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(prompt, "ADDITIONAL FOCUS: prioritize the auth flow") {
 		t.Fatalf("focus instruction missing from summary prompt")
 	}
 	// Empty focus must not add the marker.
-	if p := buildSummarizePrompt(msgs, "   "); strings.Contains(p, "ADDITIONAL FOCUS") {
+	if p, err := buildSummarizePrompt(msgs, "   "); err != nil || strings.Contains(p, "ADDITIONAL FOCUS") {
 		t.Fatalf("blank focus must not add the marker")
+	}
+}
+
+func TestBuildSummarizePromptPinBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		transcript string
+		pins       []string
+		overflow   bool
+	}{
+		{"exact fit", strings.Repeat("x", 59988), []string{"p"}, false},
+		{"one byte over", strings.Repeat("x", 59989), []string{"p"}, true},
+		{"cumulative pins", strings.Repeat("x", 59988), []string{"p", "q"}, true},
+		{"duplicate pins", strings.Repeat("x", 59988), []string{"p", " p "}, false},
+		{"oversized pin", "", []string{strings.Repeat("p", 60000)}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := []session.Message{
+				{Role: "user", Content: strings.Repeat("old", 30000), InContext: true},
+				{Role: "user", Content: tc.transcript, InContext: true},
+			}
+			for _, pin := range tc.pins {
+				// Pins outside the active transcript must still be considered.
+				msgs = append(msgs, session.Message{Content: pin, Kind: session.MessageKindDurablePin})
+			}
+			prompt, err := buildSummarizePrompt(msgs, "")
+			if tc.overflow {
+				if err == nil || !strings.Contains(err.Error(), "durable pins exceed") || prompt != "" {
+					t.Fatalf("expected explicit pin overflow without a partial prompt; err = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(prompt, "- p\n") != 1 {
+				t.Fatal("pin must appear exactly once")
+			}
+			if strings.Contains(prompt, "oldold") || !strings.Contains(prompt, "USER: "+tc.transcript) {
+				t.Fatal("expected capped transcript tail")
+			}
+		})
+	}
+}
+
+func TestRunSummarizePinOverflowPreservesPins(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	content := "[PIN] " + strings.Repeat("p", 60000)
+	if err := svc.RecordUsage("user", content, "", 15000); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+	if err := b.runSummarize(id, ""); err == nil || !strings.Contains(err.Error(), "durable pins exceed") {
+		t.Fatalf("expected pin overflow before model call, got %v", err)
+	}
+	b.fallbackCompaction(id)
+	msgs, err := svc.GetMessages(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != content || !msgs[0].InContext {
+		t.Fatal("fallback must preserve the durable pin in context")
 	}
 }
 

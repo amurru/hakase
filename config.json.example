@@ -49,6 +49,10 @@
   "hybrid_search": false,
   "knowledge_embed_model": "",
   "knowledge_embed_base_url": "",
+  "skills_index_mode": "auto",
+  "skills_search_threshold": 50,
+  "tool_output_max_chars": 8192,
+  "context_durable_pins": false,
   "finops": {
     "enabled": false,
     "currency": "USD",

@@ -84,7 +84,7 @@ per-item notes live in the issues, not here.
    usage capture, priced local ledger, rolling-window budgets (warn/block
    with audit chaining), prompt-cache guard, TUI/web cost meters,
    `GET /api/stats`, `hakase stats`. Design: `docs/finops/` (FO-001..FO-005).
-2. **Context hygiene** — threshold-gated skill stub + `search_skills`,
+2. **Context hygiene** -- shipped: threshold-gated skill stub + `search_skills`,
    KB count/byte caps, persist-time tool-output cap, durable-pin bin.
    Lazy loading already exists (`internal/agent/agent.go:1109,1215`); this
    scales it past ~100 skills without changing under-threshold behavior.

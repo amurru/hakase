@@ -1,7 +1,9 @@
 package session
 
 import (
+	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -24,7 +26,8 @@ const (
 	// MessageKindSidekick marks advisory notes surfaced by the sidekick
 	// watchdog. They are persisted in-context so the orchestrator sees them
 	// across turns (per spec NotesInContext).
-	MessageKindSidekick = "sidekick"
+	MessageKindSidekick   = "sidekick"
+	MessageKindDurablePin = "durable_pin"
 )
 
 // Session represents a user chat session — a persistent conversation
@@ -49,6 +52,8 @@ type Session struct {
 	// attached as context hints in this session. Persisted so a resumed
 	// session does not re-attach them.
 	HintedContextFiles []string `json:"hinted_context_files,omitempty"`
+	// ToolOutputMaxChars overrides default persist-time tool-output cap (Spec CX-003).
+	ToolOutputMaxChars int `json:"tool_output_max_chars,omitempty"`
 }
 
 // Message represents a single turn in a chat session.
@@ -130,6 +135,16 @@ func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int,
 // AddMessageWithMetaAndAttachments is AddMessageWithMeta plus a persisted
 // attachment list.
 func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking string, tokens int, kind string, atts []AttachmentRef) {
+	// Persist-time tool-output cap (Spec CX-003)
+	if kind == MessageKindToolResult {
+		limit := 8192
+		if s != nil && s.ToolOutputMaxChars > 0 {
+			limit = s.ToolOutputMaxChars
+		}
+		if count := utf8.RuneCountInString(content); count > limit {
+			content = string([]rune(content)[:limit]) + fmt.Sprintf("\n...[truncated %d chars]", count-limit)
+		}
+	}
 	s.Messages = append(s.Messages, Message{
 		Role:        role,
 		Content:     content,

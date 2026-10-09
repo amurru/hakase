@@ -396,3 +396,46 @@ func containsText(texts []string, needle string) bool {
 	}
 	return false
 }
+
+func TestDurablePinSurvivalReconstruction(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	b.SetModelInfo(&interfaces.ModelInfo{ContextWindow: 40_000})
+
+	session, err := svc.CreateSession("Test Durable Pin")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Add a durable pin constraint early in conversation
+	session.AddMessageWithMeta("user", "[CONSTRAINT] NEVER-DO: modify production DB directly. RULED-OUT: Option B.", "", 10, sesspkg.MessageKindDurablePin)
+	if err := svc.Store().Save(session); err != nil {
+		t.Fatalf("Save session: %v", err)
+	}
+
+	// Add many large turns to force StageBSnip compaction
+	for i := 0; i < 20; i++ {
+		big := string(make([]byte, 4000))
+		if err := svc.RecordUsage("user", big, "", 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RecordUsage("agent", big, "", 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session, _ = svc.GetActiveSession()
+	history := b.buildHistory(session.Messages, "current prompt")
+	trimmed := b.StageBSnip(session, history, "current prompt", 100, 8000, int64(0.7*36000))
+
+	// Verify that the durable pin survived in trimmed history
+	foundPin := false
+	for _, c := range trimmed {
+		if strings.Contains(c.Parts[0].Text, "NEVER-DO") && strings.Contains(c.Parts[0].Text, "RULED-OUT") {
+			foundPin = true
+			break
+		}
+	}
+	if !foundPin {
+		t.Errorf("durable pin constraint was wrongly evicted during compaction")
+	}
+}

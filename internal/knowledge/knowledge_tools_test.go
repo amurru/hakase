@@ -342,3 +342,37 @@ func TestSaveKnowledgeFallsBackWhenModelFails(t *testing.T) {
 		t.Errorf("save_knowledge: deterministic fallback summary got %q", summary)
 	}
 }
+
+func TestKnowledgeSearchCapsAndMarker(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 15; i++ {
+		writeNoteFile(t, dir, fmt.Sprintf("note-%d", i),
+			fmt.Sprintf("---\ntitle: \"Note %d\"\ncreated: \"2024-01-01\"\nupdated: \"2024-01-01\"\n---\n\nCommon search term body content for note %d.\n", i, i))
+	}
+
+	tools, err := CreateKnowledgeToolsWithOptions(func(string) {}, dir, SearchOptions{MaxResults: 10, MaxBytes: 2048})
+	if err != nil {
+		t.Fatalf("CreateKnowledgeToolsWithOptions: %v", err)
+	}
+
+	// tools[2] is search_knowledge.
+	out, err := runTool(t, tools[2], map[string]any{
+		"query": "Common search term",
+	})
+	if err != nil {
+		t.Fatalf("search_knowledge: %v", err)
+	}
+
+	results, ok := out["results"].([]any)
+	if !ok {
+		t.Fatalf("expected results array, got %v", out["results"])
+	}
+	if len(results) > 10 {
+		t.Errorf("expected max 10 results, got %d", len(results))
+	}
+
+	truncated, _ := out["truncated"].(string)
+	if !strings.Contains(truncated, "...[") || !strings.Contains(truncated, "more, refine query]") {
+		t.Errorf("expected truncation marker in output, got %q", truncated)
+	}
+}
