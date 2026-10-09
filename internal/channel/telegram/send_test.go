@@ -14,11 +14,7 @@ import (
 // Done edit, no reply chunks, no /help answer, and zero log output. The fix
 // reserves the slot exactly once per call and sleeps to it.
 func TestWaitTurnEventuallyReturns(t *testing.T) {
-	old := perChatSendInterval
-	perChatSendInterval = 100 * time.Millisecond
-	t.Cleanup(func() { perChatSendInterval = old })
-
-	b := &Bot{nextSend: map[conv]time.Time{}}
+	b := &Bot{nextSend: map[conv]time.Time{}, perChatSendInterval: 100 * time.Millisecond}
 
 	// One caller takes the slot instantly; the others arrive while it is in
 	// the future — the shape that used to trigger the livelock.

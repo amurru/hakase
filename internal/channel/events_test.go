@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 )
 
 type fakePush struct {
+	mu          sync.Mutex
 	sessionIDs  []string // session ids seen on gate prompts
 	approvals   []string // gate IDs
 	clarifies   []string
@@ -18,20 +20,66 @@ type fakePush struct {
 }
 
 func (f *fakePush) ApprovalPrompt(sessionID, id, tool, risk, reason, command string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sessionIDs = append(f.sessionIDs, sessionID)
 	f.approvals = append(f.approvals, id)
 }
 func (f *fakePush) ClarifyPrompt(sessionID, id, question string, choices []string, multiSelect bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.clarifies = append(f.clarifies, id)
 }
 func (f *fakePush) CronEvent(status, jobID, name, summary, outputPath string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.crons = append(f.crons, [2]string{status, name})
 }
 func (f *fakePush) TaskEvent(action string, id, title, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.tasks = append(f.tasks, [2]string{action, title})
 }
 func (f *fakePush) DelegationEvent(status, taskID, agent, message string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.delegations = append(f.delegations, [2]string{status, agent})
+}
+
+func (f *fakePush) getSessionIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sessionIDs...)
+}
+
+func (f *fakePush) getApprovals() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.approvals...)
+}
+
+func (f *fakePush) getClarifies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.clarifies...)
+}
+
+func (f *fakePush) getCrons() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][2]string(nil), f.crons...)
+}
+
+func (f *fakePush) getTasks() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][2]string(nil), f.tasks...)
+}
+
+func (f *fakePush) getDelegations() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][2]string(nil), f.delegations...)
 }
 
 func TestRouterDispatchesGateAndLifecycleEvents(t *testing.T) {
@@ -59,32 +107,39 @@ func TestRouterDispatchesGateAndLifecycleEvents(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(push.approvals) == 1 && len(push.clarifies) == 1 && len(push.crons) == 1 &&
-			len(push.tasks) == 1 && len(push.delegations) == 1 {
+		if len(push.getApprovals()) == 1 && len(push.getClarifies()) == 1 && len(push.getCrons()) == 1 &&
+			len(push.getTasks()) == 1 && len(push.getDelegations()) == 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 
-	if len(push.approvals) != 1 || push.approvals[0] != "appr_1" {
-		t.Errorf("approvals = %v", push.approvals)
+	approvals := push.getApprovals()
+	sessionIDs := push.getSessionIDs()
+	clarifies := push.getClarifies()
+	crons := push.getCrons()
+	tasks := push.getTasks()
+	delegations := push.getDelegations()
+
+	if len(approvals) != 1 || approvals[0] != "appr_1" {
+		t.Errorf("approvals = %v", approvals)
 	}
 	// The gate's session id must survive the router (topics-mode routing).
-	if len(push.sessionIDs) != 1 || push.sessionIDs[0] != "sess_web" {
-		t.Errorf("session ids = %v, want [sess_web]", push.sessionIDs)
+	if len(sessionIDs) != 1 || sessionIDs[0] != "sess_web" {
+		t.Errorf("session ids = %v, want [sess_web]", sessionIDs)
 	}
-	if len(push.clarifies) != 1 || push.clarifies[0] != "clar_1" {
-		t.Errorf("clarifies = %v", push.clarifies)
+	if len(clarifies) != 1 || clarifies[0] != "clar_1" {
+		t.Errorf("clarifies = %v", clarifies)
 	}
-	if len(push.crons) != 1 || push.crons[0] != [2]string{"completed", "backup"} {
-		t.Errorf("crons = %v (verbose statuses must be filtered)", push.crons)
+	if len(crons) != 1 || crons[0] != [2]string{"completed", "backup"} {
+		t.Errorf("crons = %v (verbose statuses must be filtered)", crons)
 	}
-	if len(push.tasks) != 1 || push.tasks[0] != [2]string{"completed", "Write docs"} {
-		t.Errorf("tasks = %v", push.tasks)
+	if len(tasks) != 1 || tasks[0] != [2]string{"completed", "Write docs"} {
+		t.Errorf("tasks = %v", tasks)
 	}
-	if len(push.delegations) != 1 || push.delegations[0] != [2]string{"completed", "researcher"} {
-		t.Errorf("delegations = %v", push.delegations)
+	if len(delegations) != 1 || delegations[0] != [2]string{"completed", "researcher"} {
+		t.Errorf("delegations = %v", delegations)
 	}
 }
 
@@ -110,7 +165,7 @@ func TestRouterSurvivesMalformedPayloads(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("router did not stop")
 	}
-	if len(push.approvals) != 0 {
-		t.Errorf("malformed events dispatched: %v", push.approvals)
+	if approvals := push.getApprovals(); len(approvals) != 0 {
+		t.Errorf("malformed events dispatched: %v", approvals)
 	}
 }

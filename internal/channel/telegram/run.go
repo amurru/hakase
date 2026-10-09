@@ -16,11 +16,6 @@ import (
 	"google.golang.org/genai"
 )
 
-// streamEditInterval spaces render passes: at most one answer edit per
-// interval (only when content changed), and the pre-stream status line is
-// refreshed on the same cadence. A var so tests can shorten it.
-var streamEditInterval = 2 * time.Second
-
 // streamFlushLen is the raw-answer length at which a streaming message is
 // finalized and a continuation message starts (the design's "~3,800 chars",
 // kept at ChunkReply's chunkLimit so every final render has the same headroom
@@ -242,7 +237,7 @@ func (rv *runView) begin() {
 // line) refreshed until stop is closed or the run ctx is cancelled.
 func (rv *runView) pumpLoop(stop <-chan struct{}) {
 	rv.pump() // post the status line immediately
-	ticker := time.NewTicker(streamEditInterval)
+	ticker := time.NewTicker(rv.b.getStreamEditInterval())
 	defer ticker.Stop()
 	for {
 		select {
