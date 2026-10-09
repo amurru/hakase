@@ -139,6 +139,11 @@
     "mode": "interactive",
     "expiry_seconds": 60
   },
+  "permissions": {
+    "enterprise_path": "",
+    "enterprise_url": "",
+    "poll_minutes": 0
+  },
   "sleep": {
     "edit_budget": 4,
     "gate_metric": "mixed",

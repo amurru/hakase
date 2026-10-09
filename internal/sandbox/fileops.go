@@ -28,6 +28,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/util"
 )
 
@@ -364,10 +365,35 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 // behavior (sandbox-root join or plain resolvePath). The write flag
 // selects write vs read containment in sandbox mode.
 func taskResolve(ctx context.Context, path string, write bool, sandboxRoot string) (string, error) {
+	var resolved string
 	if sb := ConfigFrom(ctx); sb != nil && sb.Mode != SandboxModeOff {
-		return sb.ResolveScopedPath(path, write)
+		r, err := sb.ResolveScopedPath(path, write)
+		if err != nil {
+			return "", err
+		}
+		resolved = r
+	} else {
+		r, err := resolveTaskPath(path, sandboxRoot)
+		if err != nil {
+			return "", err
+		}
+		resolved = r
 	}
-	return resolveTaskPath(path, sandboxRoot)
+	// Permissions policy (PM-002): deny enforcement on the resolved
+	// absolute path. Ask is left to the existing tool-risk approval path;
+	// no installed policy = zero behavior change.
+	action := "read"
+	if write {
+		action = "edit"
+	}
+	if eff, rule, ok := permissions.Lookup(action, resolved); ok && rule != nil && eff == permissions.EffectDeny {
+		suffix := ""
+		if rule != nil {
+			suffix = fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
+		}
+		return "", fmt.Errorf("path %q denied by permissions policy%s", resolved, suffix)
+	}
+	return resolved, nil
 }
 
 // resolveTaskPath scopes a path to the task sandbox root when set,

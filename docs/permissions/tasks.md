@@ -6,14 +6,14 @@ Legend: `[BE]` backend/Go, `[FE]` frontend, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 1 — engine
 
-- [ ] **T1.1 [BE]** triple engine + eval precedence (`internal/permissions/` or `gate.go`). Spec: PM-001/002.
-- [ ] **T1.2 [BE]** wiring into `EvaluateCommand`, fileops, path audit; `approval.mode` honor. Spec: PM-002.
-- [ ] **T1.3 [QA]** precedence matrix + no-match default + multi-resource deny-wins. Spec: PM-002.
+- [x] **T1.1 [BE]** triple engine + eval precedence (`internal/permissions/` or `gate.go`). Spec: PM-001/002. (Done: `internal/permissions/permissions.go` - Compile + Evaluate, deny>ask>allow, multi-resource deny-wins, default ask, `*`-spans-separators globs + `~`/`$HOME` expansion + absolute cleaning; issue #85.)
+- [x] **T1.2 [BE]** wiring into `EvaluateCommand`, fileops, path audit; `approval.mode` honor. Spec: PM-002. (Done, issue #85: policy eval after all deny-class checks in `EvaluateCommand` - deny/ask override, allow falls through on RiskUnknown; deny enforcement in `taskResolve` + `AuditSystemCommandPaths`; `approval.mode` deny/allow in `ApproveExec` with ReplayNever pinned. Nil policy = zero behavior change; additive sites act on matched rules only.)
+- [x] **T1.3 [QA]** precedence matrix + no-match default + multi-resource deny-wins. Spec: PM-002. (Done: `internal/permissions/permissions_test.go` - 8 tests, all green.)
 
 ## Phase 2 — layering
 
-- [ ] **T2.1 [BE]** user/project/enterprise loader + trust gate + URL sync + locks. Spec: PM-001.
-- [ ] **T2.2 [BE]** config plumbing + Validate. Spec: PM-001.
+- [x] **T2.1 [BE]** user/project/enterprise loader + trust gate + URL sync + locks. Spec: PM-001. (Done, issue #85: `internal/permissions/loader.go` - strict-key file load, `perm:<sha256>` project trust gate with rewrite-lapse, mtime caches incl. per-root + content-fp project entries, enterprise file + URL poll with last-good retention and best-effort disk cache, allowManagedOnly prefix-aware stripping, agent overlays; `InstallLayered`/`LookupForAgent`/`BypassDisabled` source; `disable_bypass` enforced in `ApproveExec`.)
+- [x] **T2.2 [BE]** config plumbing + Validate. Spec: PM-001. (Done, issue #85: `PermissionsConfig` block - enabled default-true, enterprise path/URL, poll minutes - with `HAKASE_PERMISSIONS_*` env overrides; strict `approval.mode` validation failing startup loudly; `initPermissions` wired into `SetupRunner` with the hooks trust store - corrupt user/enterprise fails startup, untrusted project dropped; `config.json.example` block.)
 - [ ] **T2.3 [QA]** layering/lock matrix + trust-lapse + non-widening pin. Spec: PM-001.
 
 ## Phase 3 — queue + audit

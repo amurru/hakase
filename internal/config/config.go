@@ -43,6 +43,44 @@ type ApprovalConfig struct {
 	ExpirySeconds int    `json:"expiry_seconds,omitempty"` // default 60
 }
 
+// Validate rejects unknown approval modes at load (fail loudly, never
+// silently degrade to interactive).
+func (c ApprovalConfig) Validate() error {
+	switch c.Mode {
+	case "", "interactive", "deny", "allow":
+		return nil
+	default:
+		return fmt.Errorf("approval.mode: invalid %q (want interactive|deny|allow)", c.Mode)
+	}
+}
+
+// PermissionsConfig tunes the permissions policy layers (docs/permissions/).
+type PermissionsConfig struct {
+	// Enabled gates permissions.json loading. Nil/absent = enabled;
+	// explicit false skips all layers (nil installed policy).
+	Enabled *bool `json:"enabled,omitempty"`
+	// EnterprisePath overrides the default /etc/hakase/enterprise.json.
+	EnterprisePath string `json:"enterprise_path,omitempty"`
+	// EnterpriseURL overrides every enterprise poll source (explicit >
+	// HAKASE_ENTERPRISE_POLICY_URL > file policy_url).
+	EnterpriseURL string `json:"enterprise_url,omitempty"`
+	// PollMinutes overrides the enterprise poll interval (<=0 = default 60).
+	PollMinutes int `json:"poll_minutes,omitempty"`
+}
+
+// LoadEnabled reports whether permissions loading is active (default true).
+func (c PermissionsConfig) LoadEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// Validate rejects a negative poll interval at load.
+func (c PermissionsConfig) Validate() error {
+	if c.PollMinutes < 0 {
+		return fmt.Errorf("permissions.poll_minutes: invalid %d (want >= 0)", c.PollMinutes)
+	}
+	return nil
+}
+
 // ClarifyConfig tunes the interactive clarify gate.
 type ClarifyConfig struct {
 	// ExpirySeconds is how long the tool waits for a user answer before
@@ -197,6 +235,9 @@ type Config struct {
 	// Approval tunes the interactive approval gate for harmful-command
 	// protection. Absent/zero values use defaults (interactive mode, 60s expiry).
 	Approval ApprovalConfig `json:"approval,omitempty"`
+	// Permissions tunes the permissions policy layers (docs/permissions/).
+	// Absent = enabled with default paths.
+	Permissions PermissionsConfig `json:"permissions,omitempty"`
 	// Clarify tunes the interactive clarify gate for mid-task questions.
 	// Absent/zero values use defaults (120s expiry).
 	Clarify ClarifyConfig `json:"clarify,omitempty"`
@@ -1566,6 +1607,29 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	cfg.Session.Snapshots.ApplyDefaults()
 	if err := cfg.Session.Snapshots.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Approval + permissions validation and env overrides (mirrors the
+	// memory pattern). A bad approval.mode or poll interval fails startup
+	// loudly (landlock precedent), never silently.
+	if v := os.Getenv("HAKASE_PERMISSIONS_ENABLED"); v != "" {
+		b, err := parseEnvBool("HAKASE_PERMISSIONS_ENABLED", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Permissions.Enabled = &b
+	}
+	if v := os.Getenv("HAKASE_PERMISSIONS_ENTERPRISE_PATH"); v != "" {
+		cfg.Permissions.EnterprisePath = v
+	}
+	if v := os.Getenv("HAKASE_PERMISSIONS_ENTERPRISE_URL"); v != "" {
+		cfg.Permissions.EnterpriseURL = v
+	}
+	if err := cfg.Approval.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Permissions.Validate(); err != nil {
 		return nil, err
 	}
 
