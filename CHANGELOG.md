@@ -8,6 +8,12 @@ During the alpha phase (0.x), breaking changes may land in any minor release;
 the web UI and `config.json` formats aim for backward compatibility but are not
 guaranteed stable until 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **FinOps: live cost meter, budgets, `hakase stats` (opt-in)** - every turn now captures full usage (prompt, candidates, cached, thoughts, tool-use, previously truncated to one int) with per-tool deltas and reason labels for the invisible paths (summarize/HyDE/sleep/sidekick). A metadata-only local ledger (`~/.hakase/usage.jsonl`, 0600, never prompt text) is priced against a versioned static table (tiered >200K, config overrides, unknown models warn + tokens-only with later re-estimate). Budgets (`daily/weekly/monthly/per_session`, `warn|block`) enforce at the turn boundary over rolling windows with `budget_blocked` audit chaining; the prompt-cache guard warns below `cache_warn_ratio`. Surfaces: turn cost + budget bar in the TUI status bar and web header (SSE `usage` v2), `GET /api/stats`, `hakase stats [--format table|json] [--since] [--by model|session|day]` (+ `session <id>`, `budgets`), and `gen_ai.usage.*` + `cost.usd` on run spans. Default off. See `docs/finops/` (FO-001..FO-005).
+
 ## [0.1.0-alpha.8] - 2026-09-27
 
 ### Fixed

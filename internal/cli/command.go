@@ -148,6 +148,11 @@ func init() {
 		Handler:     RunSessionCLI,
 	})
 	registerCommand(Command{
+		Name:        "stats",
+		Description: "show model usage and cost from the FinOps ledger",
+		Handler:     RunStatsCLI,
+	})
+	registerCommand(Command{
 		Name:        "rules",
 		Description: "list and show active project context files (AGENTS.md)",
 		Handler:     RunRulesCLI,

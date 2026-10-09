@@ -4,10 +4,15 @@ import (
 	"strings"
 	"testing"
 
+	"amurru/hakase/internal/finops"
 	"amurru/hakase/internal/interfaces"
 
 	"google.golang.org/adk/v2/session"
 )
+
+func mustUsage(prompt, candidates, cached, thoughts, toolUse, total int64) finops.UsageRecord {
+	return finops.UsageRecord{Prompt: prompt, Candidates: candidates, Cached: cached, Thoughts: thoughts, ToolUse: toolUse, Total: total}
+}
 
 // recordingSink captures EventSink callbacks for canvas assertions.
 type recordingSink struct {
@@ -20,7 +25,8 @@ func (s *recordingSink) OnStream(sessionID, content, thinking string) {}
 
 func (s *recordingSink) OnLog(sessionID, line string) { s.logs = append(s.logs, line) }
 
-func (s *recordingSink) OnUsage(sessionID string, tokens, percent int) {}
+func (s *recordingSink) OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int) {
+}
 
 func (s *recordingSink) OnDone(sessionID string) { s.done = true }
 
@@ -211,5 +217,35 @@ func TestGraphArgsTruncation(t *testing.T) {
 	}
 	if interfaces.GraphArgs(nil) != nil {
 		t.Error("expected nil args for empty map")
+	}
+}
+
+func TestGraphTrackerUsageDeltas(t *testing.T) {
+	sink := &recordingSink{}
+	g := newTestTracker(t, sink)
+
+	// No usage yet: a tool round-trip records a zero delta, not a crash.
+	g.toolStart("p1", "search", nil)
+	g.toolEnd("p1", "search", map[string]any{"status": "ok"})
+	if len(g.ToolDeltas) != 1 {
+		t.Fatalf("expected 1 tool delta, got %d", len(g.ToolDeltas))
+	}
+	if d := g.ToolDeltas[0]; d.Tool != "search" || d.CallID != "p1" || !d.Usage.IsZero() {
+		t.Errorf("unexpected zero-usage delta: %+v", d)
+	}
+
+	// Growth between start snapshot and end observation attributes to the call,
+	// preserving cached/thoughts/tool-use (FO-001: no truncation to one int).
+	g.observeUsage(mustUsage(100, 40, 60, 10, 20, 170))
+	g.toolStart("p2", "download", nil)
+	g.observeUsage(mustUsage(150, 60, 90, 15, 30, 250))
+	g.toolEnd("p2", "download", map[string]any{"status": "ok"})
+	if len(g.ToolDeltas) != 2 {
+		t.Fatalf("expected 2 tool deltas, got %d", len(g.ToolDeltas))
+	}
+	d := g.ToolDeltas[1]
+	if d.Usage.Prompt != 50 || d.Usage.Candidates != 20 || d.Usage.Cached != 30 ||
+		d.Usage.Thoughts != 5 || d.Usage.ToolUse != 10 || d.Usage.Total != 80 {
+		t.Errorf("bad per-tool delta: %+v", d.Usage)
 	}
 }

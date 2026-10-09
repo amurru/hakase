@@ -98,6 +98,22 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	_, _ = f.Write([]byte("\n"))
 }
 
+// AuditBudgetBlock records a FinOps pre-turn budget denial on the always-on
+// audit trail (docs/finops/spec.md FO-003). Decision "budget_blocked"
+// distinguishes budget denials from policy/hook denials; the breached scope
+// rides in Command ("budget:<scope>") and the spend line in Reason.
+// Best-effort via AuditCommandExec: never breaks the turn.
+func AuditBudgetBlock(scope, reason, sessionID string) {
+	AuditCommandExec(CommandAuditEntry{
+		Timestamp: time.Now(),
+		Tool:      "finops",
+		Command:   "budget:" + scope,
+		SessionID: sessionID,
+		Decision:  "budget_blocked",
+		Reason:    reason,
+	})
+}
+
 // AuditHookBlock records a PreToolUse hook denial on the always-on audit
 // trail (docs/hooks/spec.md HK-005). Decision "hook_blocked" distinguishes
 // hook denials from policy denials; the hook name rides in Command

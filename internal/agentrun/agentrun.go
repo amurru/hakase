@@ -17,6 +17,7 @@ import (
 	"time"
 
 	hakaseagent "amurru/hakase/internal/agent"
+	"amurru/hakase/internal/finops"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/registry"
@@ -39,8 +40,9 @@ type EventSink interface {
 	OnStream(sessionID, content, thinking string)
 	// OnLog reports one activity line (tool call/response, errors).
 	OnLog(sessionID, line string)
-	// OnUsage reports a token usage update.
-	OnUsage(sessionID string, tokens, percent int)
+	// OnUsage reports a token usage update with the turn cost so far and
+	// the budget fill percent (SSE v2 fields; transports may ignore them).
+	OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int)
 	// OnDone signals the turn has completed (success, error, or panic).
 	OnDone(sessionID string)
 	// OnGraphEvent reports one structured execution-canvas event (agent
@@ -189,7 +191,7 @@ func projectWorkspaceSnapshot(ctx context.Context, checkout string) (string, err
 // request lifecycle by the caller - cancelling it cancels the run.
 func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.Content, sink EventSink) {
 	var contentBuf, thinkBuf strings.Builder
-	var lastUsage *genai.GenerateContentResponseUsageMetadata
+	var lastUsage *finops.UsageRecord
 
 	// boundProject is resolved below (after the defer is installed), so keep
 	// the resolved id here: the defer releases the active-run slot exactly
@@ -206,7 +208,7 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 		}
 		if r := recover(); r != nil {
 			log.Printf("agentrun: panic in agent run for session %s: %v", sessionID, r)
-			d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
+			d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage, nil)
 			runSpan.End(tracing.StatusFailed, fmt.Sprintf("panic in agent run: %v", r))
 			sink.OnDone(sessionID)
 		}
@@ -264,6 +266,28 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	// reverse order of opening (tool calls resolve before their responses).
 	graph := newGraphTracker(sessionID, sink, taskID)
 	graph.agentStart(firstTextPart(content))
+
+	// FinOps pre-turn budget gate (FO-003): warn toasts and continues,
+	// block stops the run before any model spend with a legible denial on
+	// the audit trail. Mid-turn overrun is reported, never killed.
+	if budget := finops.CheckBudget(sessionID); budget.Enabled && len(budget.Breached) > 0 {
+		if budget.Block {
+			denial := budget.Denial()
+			for _, scope := range budget.Breached {
+				hakaseagent.AuditBudgetBlock(scope, denial, sessionID)
+			}
+			sink.OnLog(sessionID, denial)
+			graph.runStatus = interfaces.GraphStatusFailed
+			graph.runError = denial
+			graph.agentEnd("", denial)
+			runSpan.End(graph.runStatus, denial)
+			sink.OnDone(sessionID)
+			return
+		}
+		if budget.Warn != "" {
+			sink.OnLog(sessionID, budget.Warn)
+		}
+	}
 	defer func() {
 		// Panic path: the normal agent_end below never ran.
 		if !graph.ended {
@@ -296,14 +320,19 @@ outer:
 				continue
 			}
 			graph.observeEvent(ev)
-			// Send usage update.
+			// Send usage update. The full record is kept (FO-001): cached,
+			// thoughts, and tool-use counts survive instead of collapsing
+			// to one int. Per-tool deltas snapshot in observeUsage.
 			if ev.UsageMetadata != nil {
-				lastUsage = ev.UsageMetadata
-				tokens := int(ev.UsageMetadata.TotalTokenCount)
-				if tokens <= 0 {
-					tokens = int(ev.UsageMetadata.PromptTokenCount + ev.UsageMetadata.CandidatesTokenCount)
+				rec := finops.FromGenai(ev.UsageMetadata)
+				rec.Reason = finops.ReasonMain
+				if rec.Model == "" && finops.ModelNameFunc != nil {
+					rec.Model = finops.ModelNameFunc()
 				}
-				sink.OnUsage(sessionID, tokens, 0)
+				lastUsage = &rec
+				graph.observeUsage(rec)
+				cost, _ := finops.CostOf(rec)
+				sink.OnUsage(sessionID, int(rec.TotalTokens()), 0, cost, finops.BudgetPct())
 			}
 			if ev.Content != nil {
 				for _, part := range ev.Content.Parts {
@@ -338,10 +367,39 @@ outer:
 		}
 		break
 	}
+	if lastUsage != nil {
+		if ok, msg := finops.CacheWarn(*lastUsage, cacheWarnRatio()); ok {
+			sink.OnLog(sessionID, msg)
+		}
+	}
 	graph.agentEnd(contentBuf.String(), graph.runError)
-	runSpan.End(graph.runStatus, graph.runError)
-	d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage)
+	runSpan.EndWithUsage(graph.runStatus, graph.runError, turnUsage(lastUsage))
+	d.persistAgentResponse(sessionID, contentBuf.String(), thinkBuf.String(), lastUsage, graph.ToolDeltas)
 	sink.OnDone(sessionID)
+}
+
+// turnUsage converts the turn's usage record to span attributes, pricing
+// against the active table (0 + estimated when unknown or disabled).
+func turnUsage(lastUsage *finops.UsageRecord) tracing.Usage {
+	if lastUsage == nil {
+		return tracing.Usage{}
+	}
+	cost, unknown := finops.CostOf(*lastUsage)
+	return tracing.Usage{
+		Input:     lastUsage.Prompt + lastUsage.ToolUse,
+		Output:    lastUsage.Candidates + lastUsage.Thoughts,
+		Cached:    lastUsage.Cached,
+		CostUSD:   cost,
+		Estimated: unknown,
+	}
+}
+
+// cacheWarnRatio returns the active prompt-cache guard threshold (0 = off).
+func cacheWarnRatio() float64 {
+	if s := finops.Active(); s != nil {
+		return s.Budgets.CacheWarnRatio
+	}
+	return 0
 }
 
 // projectLabel renders the bound project's name for the tracing run span;
@@ -358,16 +416,18 @@ func projectLabel(p *registry.Project) string {
 // identified by sessionID directly (not the active session) so concurrent
 // runs in different sessions cannot misroute replies. A run that produced no
 // text (e.g. it only made tool calls and then errored) writes nothing.
-func (d *Driver) persistAgentResponse(sessionID, content, thinking string, usage *genai.GenerateContentResponseUsageMetadata) {
+func (d *Driver) persistAgentResponse(sessionID, content, thinking string, usage *finops.UsageRecord, tools []finops.ToolDelta) {
+	// Ledger recording is independent of persistence: a tool-only run with
+	// no text still burned tokens.
+	if usage != nil {
+		finops.Record(sessionID, *usage, tools)
+	}
 	if d.Sessions == nil || strings.TrimSpace(content) == "" && strings.TrimSpace(thinking) == "" {
 		return
 	}
 	tokens := 0
 	if usage != nil {
-		tokens = int(usage.TotalTokenCount)
-		if tokens <= 0 {
-			tokens = int(usage.PromptTokenCount + usage.CandidatesTokenCount)
-		}
+		tokens = int(usage.TotalTokens())
 	}
 	store := d.Sessions.Store()
 	sess, err := store.Load(sessionID)
@@ -413,6 +473,13 @@ type graphTracker struct {
 	openOrder []string                // open call ids in opening order
 	callSeq   int                     // synthesized call ids for providers that omit them
 
+	// FO-001 capture: latest full usage record plus per-tool snapshots.
+	// openUsage holds the usage at each open call's start; ToolDeltas
+	// accumulates the growth per completed call for the Phase 2 ledger.
+	last       finops.UsageRecord
+	openUsage  map[string]finops.UsageRecord
+	ToolDeltas []finops.ToolDelta
+
 	runStatus string
 	runError  string
 	ended     bool // root agent_end emitted (panic-path guard)
@@ -426,6 +493,7 @@ func newGraphTracker(sessionID string, sink EventSink, rootID string) *graphTrac
 		started:    time.Now(),
 		activeNode: rootID,
 		open:       map[string]openToolCall{},
+		openUsage:  map[string]finops.UsageRecord{},
 		runStatus:  interfaces.GraphStatusCompleted,
 	}
 }
@@ -479,6 +547,12 @@ func (g *graphTracker) observeEvent(ev *session.Event) {
 	}
 }
 
+// observeUsage records the latest full usage record for per-tool delta
+// attribution (FO-001). Called once per event carrying usage metadata.
+func (g *graphTracker) observeUsage(rec finops.UsageRecord) {
+	g.last = rec
+}
+
 // toolStart records and announces a tool call. Empty provider call ids are
 // synthesized.
 func (g *graphTracker) toolStart(id, name string, args map[string]any) {
@@ -488,6 +562,7 @@ func (g *graphTracker) toolStart(id, name string, args map[string]any) {
 	}
 	g.open[id] = openToolCall{name: name, start: time.Now()}
 	g.openOrder = append(g.openOrder, id)
+	g.openUsage[id] = g.last
 	g.emit(interfaces.GraphEvent{
 		Type:   interfaces.GraphToolStart,
 		NodeID: g.activeNode,
@@ -522,6 +597,17 @@ func (g *graphTracker) toolEnd(id, name string, resp map[string]any) {
 	} else if id == "" {
 		g.callSeq++
 		id = fmt.Sprintf("c%d", g.callSeq)
+	}
+	// Per-tool usage delta: growth between the call's start snapshot and
+	// the latest observed record. Missing snapshots degrade to zero.
+	if start, ok := g.openUsage[id]; ok {
+		g.ToolDeltas = append(g.ToolDeltas, finops.ToolDelta{
+			Tool:       name,
+			CallID:     id,
+			Usage:      g.last.Sub(start),
+			DurationMs: durationMs,
+		})
+		delete(g.openUsage, id)
 	}
 	ok := true
 	errMsg := ""

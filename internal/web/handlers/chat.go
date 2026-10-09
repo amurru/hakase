@@ -269,6 +269,7 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 	r.Get("/sessions/{id}/snapshots", api.GetSnapshots)
 	r.Post("/sessions/{id}/restore", api.PostRestore)
 	r.Get("/resumable", api.GetResumable)
+	r.Get("/stats", api.GetStats)
 	return api
 }
 
@@ -665,8 +666,8 @@ func (s bridgeSink) OnStream(sessionID, content, thinking string) {
 
 func (s bridgeSink) OnLog(sessionID, line string) { s.b.SendLog(sessionID, line) }
 
-func (s bridgeSink) OnUsage(sessionID string, tokens, percent int) {
-	s.b.SendUsage(sessionID, tokens, percent)
+func (s bridgeSink) OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int) {
+	s.b.SendUsage(sessionID, tokens, percent, costUSD, budgetPct)
 }
 
 func (s bridgeSink) OnDone(sessionID string) { s.b.SendDone(sessionID) }

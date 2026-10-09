@@ -197,6 +197,25 @@ Spans follow the GenAI semantic conventions: `hakase.run` (session, project, tra
 
 ---
 
+## FinOps (usage, cost, budgets)
+
+Opt-in metering that answers "what did that cost": every turn records its full usage (prompt, candidates, cached, thoughts, tool-use) plus per-tool deltas to a metadata-only local ledger (`~/.hakase/usage.jsonl`, never prompt text), priced against a versioned static table with config overrides and a tiered >200K boundary. Unknown models record tokens-only and warn.
+
+```json
+{
+  "finops": {
+    "enabled": true,
+    "prices": {"overrides": {"my-model": {"input_per_1m": 0.3, "output_per_1m": 2.5, "cached_per_1m": 0.075}}},
+    "budgets": {"daily_usd": 5.0, "per_session_usd": 2.0, "enforce": "warn", "cache_warn_ratio": 0.5},
+    "ledger": {"per_tool": true}
+  }
+}
+```
+
+Budgets enforce at the turn boundary over rolling windows (24h/7d/30d/session-lifetime): `warn` toasts and continues, `block` stops the run pre-turn with a legible denial chained into the audit trail (`decision: budget_blocked`). The prompt-cache guard warns when a turn's cached/total ratio falls below `cache_warn_ratio` (a cache-buster hint). Live surfaces: turn cost + budget fill in the TUI status bar and web header (SSE `usage` v2: `cost_usd`, `budget_pct`), `GET /api/stats` (`?since=24h&by=model`), and `hakase stats`. Run spans carry `gen_ai.usage.*` + `cost.usd`. Env overrides: `HAKASE_FINOPS_ENABLED`, `HAKASE_FINOPS_ENFORCE`, `HAKASE_BUDGET_DAILY_USD`. See [docs/finops/](docs/finops/).
+
+---
+
 ## CLI Reference
 
 Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server. Other subcommands are file-only (no model needed unless noted):
@@ -207,6 +226,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `task` | Manage the task board (`create`, `list`, `get`, `update`, `complete`, ...) |
 | `knowledge` | Manage the knowledge base (`list`, `read`, `search`, `lint`, `create`, `link`, `bench`) |
 | `session` | Manage sessions (`list`, `delete`, `archive`) |
+| `stats` | Show model usage and cost from the FinOps ledger (`session <id>`, `budgets`; `--format table\|json`, `--since 24h`, `--by model\|session\|day`) |
 | `rules` | List/show active project context files (`AGENTS.md`) |
 | `env` | Print the detected runtime-environment block |
 | `cron` | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |

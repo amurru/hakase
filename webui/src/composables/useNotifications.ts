@@ -5,6 +5,9 @@ import { useAppStore } from '@/stores/app'
 /** Last threshold we warned at (so we only warn on upward crossings). */
 let lastWarnedThreshold = 0
 
+/** Last budget threshold warned at (80%, 90%, 100%). */
+let lastBudgetThreshold = 0
+
 /**
  * Setup notification handlers for SSE events and context usage.
  * Returns handlers to wire into useSSE event setters.
@@ -76,6 +79,24 @@ export function useNotifications() {
       // (e.g. after a compact/compaction reduces usage).
       if (threshold < lastWarnedThreshold) {
         lastWarnedThreshold = threshold
+      }
+    },
+  )
+
+  // --- Budget watcher ---
+  // Throttled: only warn on upward threshold crossings (80%, 90%, 100%).
+  watch(
+    () => appStore.budgetPct,
+    (pct) => {
+      const threshold = pct >= 100 ? 100 : pct >= 90 ? 90 : pct >= 80 ? 80 : 0
+
+      if (threshold > lastBudgetThreshold) {
+        lastBudgetThreshold = threshold
+        toast.warning(`Budget at ${pct}% of cap`, { duration: 6000 })
+      }
+
+      if (threshold < lastBudgetThreshold) {
+        lastBudgetThreshold = threshold
       }
     },
   )

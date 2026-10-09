@@ -49,6 +49,13 @@
   "hybrid_search": false,
   "knowledge_embed_model": "",
   "knowledge_embed_base_url": "",
+  "finops": {
+    "enabled": false,
+    "currency": "USD",
+    "prices": {"overrides": {}},
+    "budgets": {"daily_usd": 5.0, "weekly_usd": 20.0, "monthly_usd": 50.0, "per_session_usd": 2.0, "enforce": "warn", "cache_warn_ratio": 0.5},
+    "ledger": {"path": "", "per_tool": true}
+  },
   "provider_options": {},
   "chat_buffer_size": 1000,
   "task_checkpoint": false,

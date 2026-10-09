@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"amurru/hakase/internal/finops"
 	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/sandbox"
 )
@@ -282,6 +283,10 @@ type Config struct {
 	// Session tunes per-session persistence behavior (docs/session-rewind/
 	// spec.md, issue #21). See SessionConfig for the per-field meaning.
 	Session SessionConfig `json:"session,omitempty"`
+	// FinOps tunes live cost metering (docs/finops/spec.md FO-003): local
+	// usage ledger, price overrides, budgets. Absent/disabled = no
+	// recording, no budget checks (default off).
+	FinOps FinOpsConfig `json:"finops,omitempty"`
 }
 
 // Tracing default constants.
@@ -1161,7 +1166,11 @@ func envConfigSet() bool {
 		os.Getenv("HAKASE_STT_ENABLED") != "" ||
 		os.Getenv("HAKASE_TTS_ENABLED") != "" ||
 		os.Getenv("HAKASE_TELEGRAM_STT_ENABLED") != "" ||
-		os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED") != ""
+		os.Getenv("HAKASE_TELEGRAM_TTS_ENABLED") != "" ||
+		os.Getenv("HAKASE_FINOPS_ENABLED") != "" ||
+		os.Getenv("HAKASE_FINOPS_ENFORCE") != "" ||
+		os.Getenv("HAKASE_BUDGET_DAILY_USD") != "" ||
+		os.Getenv("HAKASE_FINOPS_LEDGER_PATH") != ""
 }
 
 // HakaseHome returns the user-level hakase home directory: $HAKASE_HOME when
@@ -1603,6 +1612,17 @@ func LoadConfig(filePath string) (*Config, error) {
 		strings.TrimSpace(cfg.BaseURL) == "" {
 		return nil, fmt.Errorf("knowledge_embed_model with the gemini provider requires knowledge_embed_base_url (native Gemini embeddings are not supported; use an OpenAI-compatible endpoint such as Ollama)")
 	}
+
+	// FinOps (spec FO-003): env overrides, defaults, fail-fast validation,
+	// then install the live recording settings (disabled by default).
+	if err := cfg.FinOps.applyFinOpsEnv(); err != nil {
+		return nil, err
+	}
+	cfg.FinOps.ApplyDefaults()
+	if err := cfg.FinOps.Validate(); err != nil {
+		return nil, err
+	}
+	finops.Configure(cfg.FinOps.finOpsSettings())
 
 	return &cfg, nil
 }

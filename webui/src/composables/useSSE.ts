@@ -34,6 +34,8 @@ export interface SSEClarify {
 export interface SSEUsage {
   tokens: number
   percent: number
+  cost_usd?: number
+  budget_pct?: number
 }
 
 export function useSSE(sessionId: () => string | null) {
@@ -163,6 +165,8 @@ export function useSSE(sessionId: () => string | null) {
       try {
         const data: SSEUsage = JSON.parse(e.data)
         appStore.setContextUsage(data.tokens, undefined)
+        appStore.setTotalTokens(data.tokens)
+        appStore.setCostMeter(data.cost_usd ?? -1, data.budget_pct ?? -1)
         // percent from the server overrides our calculation
         if (data.percent > 0) {
           appStore.setContextUsage(Math.round((data.percent / 100) * appStore.contextMax))
