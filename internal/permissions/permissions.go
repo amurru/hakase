@@ -163,7 +163,7 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if err != nil {
 			return nil, fmt.Errorf("permissions: rule %d: %w", i, err)
 		}
-		re, err := compilePattern(expandPattern(r.Resource))
+		re, err := compilePattern(normalizeSeparators(expandPattern(r.Resource)))
 		if err != nil {
 			return nil, fmt.Errorf("permissions: rule %d: %w", i, err)
 		}
@@ -213,9 +213,10 @@ func (cp *CompiledPolicy) evaluateIn(base, extra []compiledRule, action string, 
 		}
 	}
 	for _, res := range resources {
-		v := res
+		v := normalizeSeparators(res)
 		if filepath.IsAbs(v) {
 			v = filepath.Clean(v)
+			v = normalizeSeparators(v)
 		}
 		consider(base, v)
 		consider(extra, v)
@@ -237,6 +238,12 @@ func precedence(e Effect) int {
 	default:
 		return 0
 	}
+}
+
+// normalizeSeparators canonicalizes values and patterns to forward
+// slashes so author-facing `/` globs match Windows `\` paths.
+func normalizeSeparators(s string) string {
+	return strings.ReplaceAll(s, "\\", "/")
 }
 
 // expandPattern applies "~" and "$HOME" expansion to a resource pattern.

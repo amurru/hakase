@@ -130,6 +130,17 @@ func TestGlobSemantics(t *testing.T) {
 	}
 }
 
+// TestBackslashNormalization pins Windows paths matching forward-slash
+// globs (runs on every OS: separators are canonicalized, not detected).
+func TestBackslashNormalization(t *testing.T) {
+	cp := mustCompile(t, Policy{Rules: []Rule{
+		{Action: "read", Resource: `C:/Users/me/.secrets/*`, Effect: EffectDeny},
+	}})
+	if got, _ := cp.Evaluate("read", `C:\Users\me\.secrets\a`); got != EffectDeny {
+		t.Errorf("Evaluate(read, backslash path) = %q, want deny", got)
+	}
+}
+
 // TestHomeExpansion pins "~" and "$HOME" pattern expansion.
 func TestHomeExpansion(t *testing.T) {
 	home, err := os.UserHomeDir()
