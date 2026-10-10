@@ -386,3 +386,47 @@ func TestDisableBypass(t *testing.T) {
 		t.Error("Lookup ok = false with layered policy, want true")
 	}
 }
+
+// newTestPolicyServer serves body counting hits (caller closes).
+func newTestPolicyServer(t *testing.T, calls *int, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		fmt.Fprint(w, body)
+	}))
+}
+
+// TestURLDiskCacheSurvivesRestart pins M1: a fresh Loader (restart)
+// during a poll outage enforces the disk-cached enterprise policy
+// instead of dropping enterprise restrictions.
+func TestURLDiskCacheSurvivesRestart(t *testing.T) {
+	body := `{"version":1,"rules":[
+		{"action":"shell","resource":"deploy *","effect":"deny"}]}`
+	calls := 0
+	srv := newTestPolicyServer(t, &calls, body)
+	cache := filepath.Join(t.TempDir(), "enterprise-cache.json")
+
+	a := testLoader()
+	a.PolicyURL = srv.URL
+	a.CachePath = cache
+	if _, err := a.Load(""); err != nil {
+		t.Fatalf("Load A: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("fetches = %d, want 1", calls)
+	}
+
+	// Restart: new loader, dead origin, same disk cache.
+	srv.Close()
+	b := testLoader()
+	b.PolicyURL = "http://127.0.0.1:1"
+	b.PollMinutes = -1
+	b.CachePath = cache
+	lp, err := b.Load("")
+	if err != nil {
+		t.Fatalf("Load B: %v", err)
+	}
+	if got, _ := lp.Policy.Evaluate("shell", "deploy prod"); got != EffectDeny {
+		t.Errorf("post-restart Evaluate = %q, want deny (disk cache)", got)
+	}
+}
