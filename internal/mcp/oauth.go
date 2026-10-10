@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -111,8 +112,12 @@ func saveStoredToken(server string, st storedToken) error {
 	defer util.FlockUnlock(f)
 
 	var tf tokenFile
-	data, err := os.ReadFile(path)
-	if err == nil && len(data) > 0 {
+	if _, err := f.Seek(0, 0); err != nil {
+		return fmt.Errorf("seeking %s: %w", path, err)
+	}
+	if data, err := io.ReadAll(f); err != nil {
+		return err
+	} else if len(data) > 0 {
 		if err := json.Unmarshal(data, &tf); err != nil {
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
@@ -131,8 +136,114 @@ func saveStoredToken(server string, st storedToken) error {
 	if _, err := f.Seek(0, 0); err != nil {
 		return err
 	}
-	_, err = f.Write(out)
-	return err
+	if _, err := f.Write(out); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// RevokeToken removes one server's stored token from ~/.hakase/mcp-tokens.json
+// and evicts cached handlers. It best-effort POSTs the access and refresh
+// tokens to the issuing authorization server's revocation endpoint (RFC7009)
+// before deleting the local entry; revocation failures never block the local
+// logout. It returns hadEntry=false when there was nothing stored.
+func RevokeToken(server string) (bool, error) {
+	path := tokenStorePath()
+	if path == "" {
+		return false, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	if err := util.FlockExclusive(f); err != nil {
+		return false, err
+	}
+	defer util.FlockUnlock(f)
+
+	if _, err := f.Seek(0, 0); err != nil {
+		return false, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return false, err
+	}
+
+	var tf tokenFile
+	if err := json.Unmarshal(data, &tf); err != nil {
+		return false, err
+	}
+
+	st, ok := tf.Servers[server]
+	if !ok {
+		return false, nil
+	}
+	delete(tf.Servers, server)
+
+	out, err := json.MarshalIndent(tf, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := f.Truncate(0); err != nil {
+		return false, err
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return false, err
+	}
+	if _, err := f.Write(out); err != nil {
+		return false, err
+	}
+	_ = f.Sync()
+
+	oauthHandlers.Lock()
+	delete(oauthHandlers.m, server)
+	delete(oauthHandlers.fingerprints, server)
+	oauthHandlers.Unlock()
+
+	// Best-effort server-side revocation after local delete (network errors
+	// only logged, never fatal).
+	revokeAtIssuer(st)
+
+	return true, nil
+}
+
+// revokeAtIssuer POSTs stored tokens to the recorded token endpoint's
+// revocation endpoint. Failures are debug-logged only.
+func revokeAtIssuer(st storedToken) {
+	if st.Token == nil || st.Issuer == "" {
+		return
+	}
+	revokeURL := st.Issuer
+	// Heuristic: token endpoints usually end in /token; the revocation
+	// endpoint lives beside it. Otherwise POST to the recorded URL itself.
+	if strings.HasSuffix(revokeURL, "/token") {
+		revokeURL = strings.TrimSuffix(revokeURL, "/token") + "/revoke"
+	}
+	tokens := []string{st.Token.AccessToken, st.Token.RefreshToken}
+	client := &http.Client{Timeout: 10 * time.Second}
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		form := url.Values{"token": {tok}}
+		req, err := http.NewRequest(http.MethodPost, revokeURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err != nil {
+			util.DebugWarn("mcp_oauth_revoke", "error", err.Error())
+			continue
+		}
+		_ = resp.Body.Close()
+	}
 }
 
 // staticTokenSource wraps an already-obtained token as a TokenSource. It

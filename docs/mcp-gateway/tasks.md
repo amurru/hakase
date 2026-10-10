@@ -6,15 +6,15 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 1 — registry + install
 
-- [ ] **T1.1 [BE]** registry client (`registry.go`) + `mcp search`. Spec: MG-001.
-- [ ] **T1.2 [BE]** install flow (`install.go`) + MCPB local + `skill install`; CLI wiring. Spec: MG-002.
-- [ ] **T1.3 [QA]** mock-registry search/install + credential-plan (no secrets persisted). Spec: MG-002.
+- [x] **T1.1 [BE]** registry client (`registry.go`) + `mcp search`. Spec: MG-001.
+- [x] **T1.2 [BE]** install flow (`install.go`) + MCPB local + `skill install`; CLI wiring. Spec: MG-002.
+- [x] **T1.3 [QA]** mock-registry search/install + credential-plan (no secrets persisted). Spec: MG-002.
 
 ## Phase 2 — audit + tokens + shadow
 
-- [ ] **T2.1 [BE]** `mcp audit` 7 checks + baseline file. Spec: MG-003/005.
-- [ ] **T2.2 [BE]** scope picker + `mcp logout` + elicitation audit log. Spec: MG-004.
-- [ ] **T2.3 [QA]** poisoned fixtures FAIL; shadow drift; auth posture matrix. Spec: MG-003.
+- [x] **T2.1 [BE]** `mcp audit` 7 checks + baseline file. Spec: MG-003/005.
+- [x] **T2.2 [BE]** scope picker + `mcp logout` + elicitation audit log. Spec: MG-004.
+- [x] **T2.3 [QA]** poisoned fixtures FAIL; shadow drift; auth posture matrix. Spec: MG-003.
 
 ## Phase 3 — gateway + budget
 
