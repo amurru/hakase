@@ -100,13 +100,20 @@ func refreshInterval(cfg *config.Config) time.Duration {
 func StartPermissionsRefresh(ctx context.Context, cfg *config.Config, root string, trust permissions.TrustChecker, log interfaces.LogFunc) func() {
 	stop := make(chan struct{})
 	var once sync.Once
+	var wg sync.WaitGroup
 	halt := func() {
 		once.Do(func() { close(stop) })
+		// Wait for any in-flight tick: a tick past its select would
+		// otherwise InstallLayered after the caller cleaned up (test
+		// pollution, and a stale write on shutdown).
+		wg.Wait()
 	}
 	if cfg == nil || !cfg.Permissions.LoadEnabled() {
 		return halt
 	}
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		t := time.NewTicker(refreshInterval(cfg))
 		defer t.Stop()
 		for {
