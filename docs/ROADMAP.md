@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-10-10. Living index of planned work. The GitHub issues are
+Last updated: 2026-10-11. Living index of planned work. The GitHub issues are
 the source of truth for status — update this file only when priorities or
 scope change, not when individual boxes tick.
 
@@ -111,7 +111,9 @@ per-item notes live in the issues, not here.
 ## Tier 4 — Onboarding & distribution (2026-10-10)
 
 Friction found while auditing the first-run path. `hakase init` plus friendly
-first-run errors shipped first (see CHANGELOG); the rest are open.
+first-run errors shipped first (see CHANGELOG); `doctor`, the installer/arm64
+asset, and the README quickstart have since landed — the remaining install &
+distribution slices in item 2 are open.
 
 1. **`hakase doctor` preflight** — shipped (2026-10-10, `hakase doctor`):
    checks toolchain (Go/Node/pnpm/Python/ffmpeg/whisper/piper), config
@@ -134,11 +136,11 @@ first-run errors shipped first (see CHANGELOG); the rest are open.
    - **deferred for now: prebuilt darwin binaries** (arm64+amd64) and a
      Homebrew tap, so macOS can leave the source build (`README.md:55`);
      revisit after the container path lands.
-3. **README quickstart rewrite** — lead with a 60-second install → `hakase init`
-   → type block, promote the env-var-only path (`HAKASE_API_KEY` etc., already
-   supported via `envConfigSet`, `internal/config/config.go:1230`), and move the
-   feature tables plus the source-build "fresh clone gotcha" below the fold
-   (`README.md:34-82`).
+3. **README quickstart rewrite** — shipped (2026-10-11, closes #104):
+   60-second install → `hakase init` → type block up top, env-var-only path
+   (`HAKASE_API_KEY` etc. via `envConfigSet`,
+   `internal/config/config.go:1230`), feature tables plus the source-build
+   "fresh clone gotcha" below the fold.
 
 ## Deferred ledger (intentionally not scheduled)
 
