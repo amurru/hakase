@@ -135,6 +135,63 @@ func saveStoredToken(server string, st storedToken) error {
 	return err
 }
 
+// RevokeToken removes one server's stored token from ~/.hakase/mcp-tokens.json and evicts cached handlers.
+func RevokeToken(server string) error {
+	path := tokenStorePath()
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := util.FlockExclusive(f); err != nil {
+		return err
+	}
+	defer util.FlockUnlock(f)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var tf tokenFile
+	if err := json.Unmarshal(data, &tf); err != nil {
+		return err
+	}
+
+	if tf.Servers != nil {
+		delete(tf.Servers, server)
+	}
+
+	out, err := json.MarshalIndent(tf, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return err
+	}
+	if _, err := f.Write(out); err != nil {
+		return err
+	}
+
+	oauthHandlers.Lock()
+	delete(oauthHandlers.m, server)
+	delete(oauthHandlers.fingerprints, server)
+	oauthHandlers.Unlock()
+
+	return nil
+}
+
 // staticTokenSource wraps an already-obtained token as a TokenSource. It
 // never refreshes on its own: the SDK handler re-authorizes when the server
 // answers 401 after expiry. Only used as the fallback for legacy stored

@@ -34,6 +34,8 @@ func RunSkillCLI(args []string) int {
 	switch args[0] {
 	case "create":
 		return runSkillCreate(args[1:])
+	case "install":
+		return runSkillInstall(args[1:])
 	case "list":
 		return runSkillList(args[1:])
 	case "validate":
@@ -55,10 +57,45 @@ func skillCLIUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Subcommands:")
 	fmt.Fprintln(os.Stderr, "  create     create a new markdown skill (SKILL.md with scripts/ and references/)")
+	fmt.Fprintln(os.Stderr, "  install    install a markdown skill from path, URL, or GitHub repo")
 	fmt.Fprintln(os.Stderr, "  list       list discovered skills (Python + markdown) with source paths")
 	fmt.Fprintln(os.Stderr, "  validate   validate a skill directory or SKILL.md file; exit non-zero on failure")
 	fmt.Fprintln(os.Stderr, "  evolve     run one skill-evolution pass (evaluate + optional mutate); writes report to outputs/cron/")
 	fmt.Fprintln(os.Stderr, "  evolve-md  run one markdown-skill consolidation epoch (replay + reflect + gate); stages to outputs/sleep/")
+}
+
+func runSkillInstall(args []string) int {
+	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	sFlag := fs.String("s", "", "skill name")
+	gFlag := fs.Bool("g", false, "install globally (~/.hakase/skills)")
+	yFlag := fs.Bool("y", false, "skip prompt confirmation")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "hakase skill install: missing target (<owner/repo|URL|path>)")
+		return 2
+	}
+
+	target := fs.Arg(0)
+	opts := skill.InstallOptions{
+		Target: target,
+		Skill:  *sFlag,
+		Global: *gFlag,
+		Yes:    *yFlag,
+	}
+
+	path, err := skill.InstallSkill(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase skill install: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Successfully installed skill at %s\n", path)
+	return 0
 }
 
 // runSkillCreate scaffolds a new markdown skill at <dir>/<name>/SKILL.md.
