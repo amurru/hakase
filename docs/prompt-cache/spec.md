@@ -1,6 +1,7 @@
 # Spec: Prompt-Cache Stability
 
-Governing issue: TBD (open one when work starts; ROADMAP maintenance convention 1).
+Governing issues: #106 (PC-001..PC-003), #107 (PC-006/PC-007),
+#108 (PC-004/PC-005).
 Reference: 2026-10-10 harness audit - Claude Code prompt-caching docs (prefix
 invalidation list), Codex (`prompt_cache_key`, `x-codex-turn-state`,
 `store: false` full replay), OpenCode (`promptCacheKey` = session id), Aider
