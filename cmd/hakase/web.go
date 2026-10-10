@@ -24,6 +24,7 @@ import (
 	"amurru/hakase/internal/channel/telegram"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
@@ -326,6 +327,15 @@ func runServer(args []string, serveSPA bool) int {
 		fmt.Fprintf(os.Stderr, "hakase: failed to setup agent runner: %v\n", err)
 		return 1
 	}
+
+	// Permissions refresh (M2): long-lived serve processes re-load the
+	// layered policy on the enterprise poll interval so revocations land.
+	// Stopped with the server below.
+	permRoot, _ := os.Getwd()
+	stopPermRefresh := agent.StartPermissionsRefresh(ctx, cfg, permRoot,
+		hooks.OpenDefaultTrustStore(),
+		func(msg string) { log.Printf("web: %s", msg) })
+	defer stopPermRefresh()
 
 	// NOTE (plan SL-001, audit B5): skill.EvolveMutateFn and
 	// hctx.CurrentModelFunc are owned by agent.SetupRunner above; the
