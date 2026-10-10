@@ -596,13 +596,13 @@ The legacy single-server `mcp_server_url` field still works and is auto-migrated
 The MCP Gateway (`mcp.gateway`) manages tool discovery and caps tool count overhead across connected servers:
 
 - **Config**: `mcp.gateway` struct with `enabled` (boolean, opt-in), `budget` (int, default `40`), and `hot_tools` (string array of tool names to pass through directly with real schemas).
-- **Auto-Degrade**: When post-filter configured tools exceed `budget` (default 40), `MCPServerManager.Tools()` auto-degrades to returning the meta-tool gateway toolset (`mcp_search_tools`, `mcp_describe_tool`, `mcp_call_tool`) plus real schemas for any specified `hot_tools`, rather than aborting or failing the turn. Sub-agents also default to gateway tools when over budget.
+- **Auto-Degrade**: When `gateway.enabled` is true and post-filter configured tools exceed `budget` (default `40`), `MCPServerManager.Tools()` auto-degrades to returning the meta-tool gateway toolset (`mcp_search_tools`, `mcp_describe_tool`, `mcp_call_tool`) plus real schemas for any specified `hot_tools`, rather than aborting or failing the turn. The turn never hard-fails on tool budget. Sub-agents that receive MCP tools via the shared manager automatically see the same gateway set when over budget (`code_interpreter` and `general_purpose` receive no MCP tools).
 - **Meta-Tools & Resolution**:
   - `mcp_search_tools`: search available tools across servers by name or description.
   - `mcp_describe_tool`: inspect the parameter schema for a specific tool.
   - `mcp_call_tool`: invoke a tool by name (and optional server) with JSON arguments.
   - Resolution accepts bare (`tool_name`) and qualified (`mcp_<server>_<tool>`) tool names. Exact qualified names take precedence, ambiguous bare names matching across multiple servers are rejected, and requested server filters are strictly enforced.
-  - Gateway execution routes through the manager, applying the target tool's `PreToolUse` and `PostToolUse` gates and audit logging.
+  - `mcp_call_tool` execution routes through the manager, applying the target tool's `PreToolUse` and `PostToolUse` gates and audit logging (`search`/`describe` are metadata-only and skip gates).
 
 ### Browser MCP presets
 

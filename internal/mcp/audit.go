@@ -49,7 +49,7 @@ func (a *Auditor) Audit(ctx agent.ReadonlyContext) (*AuditResult, error) {
 
 	diags := a.mgr.Diagnose(ctx)
 
-	// Check 1: Inventory vs 40 tool budget
+	// Check 1: Inventory vs configured gateway budget (default 40)
 	check1 := AuditCheck{Name: "Tool Inventory & Budget", Status: "PASS", Summary: "Tool count within limits"}
 	totalTools := 0
 	for _, d := range diags {
@@ -57,12 +57,16 @@ func (a *Auditor) Audit(ctx agent.ReadonlyContext) (*AuditResult, error) {
 			totalTools += d.ToolCount
 		}
 	}
-	if totalTools > 40 {
+	budget := 40
+	if a.cfg != nil && a.cfg.MCPServers.Gateway.Budget > 0 {
+		budget = a.cfg.MCPServers.Gateway.Budget
+	}
+	if totalTools > budget {
 		check1.Status = "WARN"
-		check1.Summary = fmt.Sprintf("Total active tools (%d) exceeds budget of 40", totalTools)
+		check1.Summary = fmt.Sprintf("Total active tools (%d) exceeds budget of %d", totalTools, budget)
 		check1.Details = append(check1.Details, "Consider disabling unused servers or configuring include/exclude lists")
 	} else {
-		check1.Details = append(check1.Details, fmt.Sprintf("Total active tools: %d / 40", totalTools))
+		check1.Details = append(check1.Details, fmt.Sprintf("Total active tools: %d / %d", totalTools, budget))
 	}
 	res.Checks = append(res.Checks, check1)
 
