@@ -47,10 +47,11 @@ Prebuilt binaries and packages ship with every [release](https://github.com/amur
 
 | Platform | How |
 | -------- | --- |
+| Linux (any distro) | `curl -fsSL https://raw.githubusercontent.com/amurru/hakase/main/packaging/install.sh \| sh` |
 | Debian / Ubuntu | Download `hakase_<version>_amd64.deb` from the release, then `sudo apt install ./hakase_*.deb` |
 | Fedora / RHEL | Download `hakase-<version>.x86_64.rpm`, then `sudo rpm -i hakase-*.rpm` |
 | Arch | `yay -S hakase-bin` (AUR, [`packaging/aur/hakase-bin`](packaging/aur/hakase-bin)) |
-| Linux (any distro) | Download `hakase-<version>-linux-amd64`, `chmod +x`, run |
+| Linux (manual) | Download `hakase-<version>-linux-amd64` or `hakase-<version>-linux-arm64`, `chmod +x`, run |
 | Windows | Download `hakase-<version>-windows-amd64.zip` and extract |
 | macOS / from source | See [Quick Start](#quick-start) below (no prebuilt darwin binary yet) |
 

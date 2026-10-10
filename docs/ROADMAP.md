@@ -120,13 +120,11 @@ first-run errors shipped first (see CHANGELOG); the rest are open.
    hard-required binary (skill venv runtime); `go`/`node`/`pnpm` warn as
    build-only. Design: `docs/doctor/` (DR-001..DR-010).
 2. **Install & distribution** - sliced, in dependency order:
-   - **next: `curl | sh` installer + linux arm64 asset** - detects OS/arch,
+   - **shipped: `curl | sh` installer + linux arm64 asset** - detects OS/arch,
      downloads the release asset, verifies `SHA256SUMS.txt`, and installs to
-     `PATH`; the release workflow gains the bare
-     `hakase-<version>-linux-arm64` binary (deb/rpm stay amd64 for now). ARM
-     servers and boards are the second platform still forced into the full
-     Go+pnpm toolchain.
-   - **then: non-interactive `auth set-password`** (`--username`,
+     `PATH`; release workflow publishes `hakase-<version>-linux-arm64`. Design:
+     `docs/release-distribution/`.
+   - **next: non-interactive `auth set-password`** (`--username`,
      `--password-stdin`) with a first-run auto-provision, so a web image can
      boot unattended (today `hakase web` hard-refuses without
      `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`); prerequisite for

@@ -48,7 +48,7 @@ LDFLAGS := -s -w \
 	-X amurru/hakase/internal/cli.Commit=$(COMMIT) \
 	-X amurru/hakase/internal/cli.Date=$(DATE)
 
-.PHONY: build-frontend build release package-deb package-rpm package-linux build-windows dev dev-frontend dev-backend test clean
+.PHONY: build-frontend build build-arm64 release package-deb package-rpm package-linux build-windows dev dev-frontend dev-backend test clean
 
 # ---------------------------------------------------------------------------
 # Frontend
@@ -72,6 +72,10 @@ build-frontend:
 # binary fully static so release artifacts run on any distro (AUR -bin pkg).
 build: build-frontend
 	CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase ./cmd/hakase/
+
+# Cross-compiles the production binary for linux/arm64 (static, pure Go).
+build-arm64: build-frontend
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase-arm64 ./cmd/hakase/
 
 # Convenience wrapper around `build`: stamps nothing extra, just surfaces the
 # version that went into the binary so release builds can be eyeballed.
@@ -144,4 +148,4 @@ test:
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -rf webui/dist internal/web/dist hakase dist/
+	rm -rf webui/dist internal/web/dist hakase hakase-arm64 dist/

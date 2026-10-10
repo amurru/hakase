@@ -65,6 +65,9 @@ jobs:
       - name: Go tests
         run: go test ./...
 
+      - name: Run installer script test harness
+        run: bash packaging/install_test.sh
+
       - name: Frontend tests
         run: pnpm --dir webui test
 

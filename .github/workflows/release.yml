@@ -3,9 +3,9 @@
 # Flow (triggered by pushing a release tag, e.g. `git push origin v0.1.0-alpha.2`):
 #
 #   1. build       - full production build via the Makefile (frontend + ldflags-
-#                    stamped Go binary), builds .deb and .rpm via nfpm, creates
-#                    the GitHub release and uploads binary + packages +
-#                    SHA256SUMS.txt
+#                    stamped Go binaries for amd64 and arm64), builds .deb and
+#                    .rpm via nfpm, creates the GitHub release and uploads
+#                    binaries + packages + SHA256SUMS.txt
 #   2. provenance  - delegates to the SLSA generic generator reusable workflow,
 #                    which signs provenance for the uploaded artifacts (keyless
 #                    Sigstore signing via OIDC) and attaches it to the release
@@ -74,6 +74,14 @@ jobs:
       - name: Smoke-test the built binary
         run: ./hakase version
 
+      - name: Build linux/arm64 release binary
+        run: make build-arm64
+
+      - name: Smoke-test linux/arm64 binary under QEMU emulation
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-user-static
+          qemu-aarch64-static ./hakase-arm64 version
+
       - name: Install nfpm (deb/rpm packager, pinned)
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.36.0
 
@@ -90,9 +98,10 @@ jobs:
           set -euo pipefail
           mkdir -p dist-release
           cp hakase "dist-release/hakase-${TAG}-linux-amd64"
+          cp hakase-arm64 "dist-release/hakase-${TAG}-linux-arm64"
           cp dist/*.deb dist/*.rpm dist-release/
           cd dist-release
-          sha256sum "hakase-${TAG}-linux-amd64" *.deb *.rpm > ../SHA256SUMS.txt
+          sha256sum "hakase-${TAG}-linux-amd64" "hakase-${TAG}-linux-arm64" *.deb *.rpm > ../SHA256SUMS.txt
 
       - name: Create release and upload binary + packages + checksums
         env:
@@ -110,6 +119,7 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes --prerelease
           gh release upload "$TAG" --clobber dist-release/hakase-"$TAG"-linux-amd64 \
+            dist-release/hakase-"$TAG"-linux-arm64 \
             dist-release/*.deb dist-release/*.rpm SHA256SUMS.txt
 
       - name: Generate SLSA provenance subjects
@@ -118,8 +128,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Provenance covers the binary and both packages (all staged assets).
-          (cd dist-release && sha256sum "hakase-${TAG}-linux-amd64" *.deb *.rpm) \
+          # Provenance covers both binaries and both packages (all staged assets).
+          (cd dist-release && sha256sum "hakase-${TAG}-linux-amd64" "hakase-${TAG}-linux-arm64" *.deb *.rpm) \
             | base64 -w0 > subjects.b64
           echo "hashes=$(cat subjects.b64)" >> "$GITHUB_OUTPUT"
 
