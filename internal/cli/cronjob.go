@@ -11,6 +11,7 @@ import (
 	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
+	"amurru/hakase/internal/hooks"
 	mcp "amurru/hakase/internal/mcp"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
@@ -1339,6 +1340,20 @@ func cronModelBootstrap() error {
 		fmt.Fprintf(os.Stderr, "hakase: warning: mcp servers unavailable: %v\n", err)
 	} else {
 		mcp.MCPManager = mcpManager
+	}
+
+	// Headless hook parity: gateway nested calls (mcp_call_tool) must enforce
+	// the same PreToolUse/PostToolUse rules as TUI/web. Without this the
+	// gateway global stays nil and headless runs silently skip user
+	// deny-rules. A malformed hooks block warns loudly rather than running
+	// ungated and unnoticed.
+	if r, herr := hooks.NewRunner(cfg.Hooks); herr != nil {
+		fmt.Fprintf(os.Stderr, "hakase: warning: invalid hooks block, gateway hook enforcement disabled: %v\n", herr)
+	} else {
+		r.SetTrustStore(hooks.OpenDefaultTrustStore())
+		mcp.SetGatewayPreToolUseCheck(r.CheckPreToolUse)
+		mcp.SetGatewayPostToolUseCheck(r.CheckPostToolUse)
+		mcp.SetGatewayAuditHook(hakaseagent.AuditHookBlock)
 	}
 
 	return nil

@@ -40,8 +40,16 @@ type MCPServerToolsConfig struct {
 	Exclude []string `json:"exclude,omitempty"` // deny-list of tool names
 }
 
+// MCPGatewayConfig tunes the Gateway meta-tools and budget mode (spec MG-006).
+type MCPGatewayConfig struct {
+	Enabled  bool     `json:"enabled,omitempty"`   // Opt-in gateway mode
+	Budget   int      `json:"budget,omitempty"`    // Tool budget cap (default 40)
+	HotTools []string `json:"hot_tools,omitempty"` // Hot tools exposed directly alongside meta-tools
+}
+
 // MCPConfig is the project-scope config block (config.json "mcp").
 type MCPConfig struct {
+	Gateway MCPGatewayConfig            `json:"gateway,omitempty"`
 	Servers map[string]*MCPServerConfig `json:"servers,omitempty"`
 }
 
