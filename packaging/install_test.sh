@@ -24,10 +24,18 @@ INSTALL_SCRIPT="$REPO_ROOT/packaging/install.sh"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-SHIM_DIR="$TEST_TMP/shims"
-mkdir -p "$SHIM_DIR"
+calc_sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	else
+		shasum -a 256 "$1" | awk '{print $1}'
+	fi
+}
 
-REAL_SHA256SUM_BIN="$(command -v sha256sum || command -v shasum || true)"
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+	echo "SKIP: neither sha256sum nor shasum is available" >&2
+	exit 0
+fi
 
 # Helper to setup shims and run install.sh
 run_installer_test() {
@@ -36,8 +44,8 @@ run_installer_test() {
 
 	echo "==> Test: $test_name"
 
-	local case_dir="$TEST_TMP/case_$RANDOM"
-	mkdir -p "$case_dir"
+	local case_dir
+	case_dir="$(mktemp -d "$TEST_TMP/case.XXXXXX")"
 
 	local fake_bin_dir="$case_dir/bin"
 	local install_dir="$case_dir/install"
@@ -60,7 +68,7 @@ EOF
 
 	# Real SHA256 calculation for payload
 	local real_sha
-	real_sha="$("$REAL_SHA256SUM_BIN" "$payload_file" | awk '{print $1}')"
+	real_sha="$(calc_sha256 "$payload_file")"
 
 	local manifest_sha="$real_sha"
 	if [ "$mock_corrupt_sha" -eq 1 ]; then
@@ -250,16 +258,20 @@ if ! grep -q "unsupported architecture" "$TEST_OUTPUT_LOG"; then
 	exit 1
 fi
 
-# --- Case 8: Unwritable target uses sudo ---
-MOCK_TARGET_UNWRITABLE=1 run_installer_test "Unwritable target directory uses sudo"
-if [ "$TEST_EXIT_CODE" -ne 0 ]; then
-	echo "FAILED: expected exit code 0 when sudo is available"
-	cat "$TEST_OUTPUT_LOG"
-	exit 1
-fi
-if [ ! -f "$TEST_CASE_DIR/sudo_calls.log" ]; then
-	echo "FAILED: sudo was not invoked for unwritable directory"
-	exit 1
+# --- Case 8: Unwritable target uses sudo (skipped as root: -w is always true for uid 0) ---
+if [ "$(id -u)" -eq 0 ]; then
+	echo "==> Test: Unwritable target directory uses sudo (SKIP: running as root)"
+else
+	MOCK_TARGET_UNWRITABLE=1 run_installer_test "Unwritable target directory uses sudo"
+	if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+		echo "FAILED: expected exit code 0 when sudo is available"
+		cat "$TEST_OUTPUT_LOG"
+		exit 1
+	fi
+	if [ ! -f "$TEST_CASE_DIR/sudo_calls.log" ]; then
+		echo "FAILED: sudo was not invoked for unwritable directory"
+		exit 1
+	fi
 fi
 
 # --- Case 9: Release without requested arch asset (curl 404) ---

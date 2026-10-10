@@ -78,6 +78,16 @@ if ! command -v curl >/dev/null 2>&1; then
 	exit 1
 fi
 
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+	echo "error: neither sha256sum nor shasum is available to verify asset checksum" >&2
+	exit 1
+fi
+
+if ! command -v install >/dev/null 2>&1; then
+	echo "error: install(1) is required to run this installer" >&2
+	exit 1
+fi
+
 OS="$(uname -s)"
 case "$OS" in
 Linux)
@@ -85,7 +95,7 @@ Linux)
 Darwin)
 	echo "error: no prebuilt darwin binary exists yet for macOS." >&2
 	echo "Please build from source using the README quick start instructions:" >&2
-	echo "  https://github.com/amurru/hakase#quick-start" >&2
+	echo "  https://github.com/$HAKASE_REPO#quick-start" >&2
 	exit 1
 	;;
 MINGW* | MSYS* | CYGWIN*)
@@ -122,7 +132,7 @@ if [ -z "$VERSION" ]; then
 		echo "Please specify a version explicitly via --version <tag> or HAKASE_VERSION." >&2
 		exit 1
 	fi
-	VERSION="$(printf '%s' "$API_RESP" | grep -o '"tag_name": *"[^"]*"' | head -n1 | sed 's/"tag_name": *"\([^"]*\)"/\1/')"
+	VERSION="$(printf '%s' "$API_RESP" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 	if [ -z "$VERSION" ]; then
 		echo "error: could not parse release tag from GitHub API response." >&2
 		echo "Please specify a version explicitly via --version <tag> or HAKASE_VERSION." >&2
@@ -135,7 +145,7 @@ DOWNLOAD_BASE="https://github.com/$HAKASE_REPO/releases/download/${VERSION}"
 ASSET_URL="${DOWNLOAD_BASE}/${ASSET_NAME}"
 SUMS_URL="${DOWNLOAD_BASE}/SHA256SUMS.txt"
 
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'hakase-install')"
+TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/hakase-install.XXXXXX")"
 cleanup() {
 	rm -rf "$TMP_DIR"
 }
@@ -209,7 +219,9 @@ case ":$PATH:" in
 	;;
 esac
 
-"$INSTALL_DIR/hakase" version || true
+if ! "$INSTALL_DIR/hakase" version; then
+	echo "warning: installed binary at $INSTALL_DIR/hakase failed to run." >&2
+fi
 
 echo ""
 echo "Next steps:"

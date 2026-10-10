@@ -15,6 +15,8 @@
 #   build-frontend  Install webui deps, build the SPA, mirror it into
 #                   internal/web/dist for embedding.
 #   build           Full production build: frontend + Go binary (prod tag).
+#   build-arm64     Cross-compile production binary for linux/arm64 (prod tag;
+#                   requires the frontend mirror - run after build-frontend/build).
 #   release         Same as build, but echoes the stamped version afterwards
 #                   (run after tagging; see Release engineering below).
 #   dev             Development mode. Runs two processes (see dev-frontend /
@@ -23,7 +25,7 @@
 #   dev-backend     Build + run the Go web server with the dev tag (serves
 #                   webui/dist from disk, API on :8080).
 #   test            Run all Go tests.
-#   clean           Remove frontend build output and the hakase binary.
+#   clean           Remove frontend build output and the hakase binaries.
 #
 # The `web` subcommand (./hakase web) is wired in a later task; until then
 # dev-backend falls back to `go run` so the build tags are still exercised.
@@ -74,6 +76,9 @@ build: build-frontend
 	CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase ./cmd/hakase/
 
 # Cross-compiles the production binary for linux/arm64 (static, pure Go).
+# Depends on build-frontend so a standalone `make build-arm64` works on a
+# fresh clone (go:embed gotcha - see above); in the release workflow `make
+# build` already built the frontend, so this rebuilds the SPA a second time.
 build-arm64: build-frontend
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase-arm64 ./cmd/hakase/
 
