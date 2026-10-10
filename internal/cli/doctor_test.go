@@ -105,8 +105,8 @@ func TestDoctor_AllPass(t *testing.T) {
 	sandboxStartupWarningFn = func(sb *sandbox.SandboxConfig) string { return "" }
 	hakaseHomeFn = func() string { return filepath.Join(home, ".hakase") }
 	httpProbeFn = func(ctx context.Context, url string) error { return nil }
-	mcpDiagnoseFn = func(ctx context.Context, cfg *config.Config) []mcp.ServerDiagnostic {
-		return nil
+	mcpDiagnoseFn = func(ctx context.Context, cfg *config.Config) ([]mcp.ServerDiagnostic, error) {
+		return nil, nil
 	}
 
 	credPath := filepath.Join(home, ".hakase", "credentials.json")
@@ -306,11 +306,13 @@ func TestDoctor_MCPAndCredentialsFailures(t *testing.T) {
 	origLoadConfig := loadConfigFn
 	origHakaseHome := hakaseHomeFn
 	origMCPDiagnose := mcpDiagnoseFn
+	origHTTPProbe := httpProbeFn
 	defer func() {
 		lookPathFn = origLookPath
 		loadConfigFn = origLoadConfig
 		hakaseHomeFn = origHakaseHome
 		mcpDiagnoseFn = origMCPDiagnose
+		httpProbeFn = origHTTPProbe
 	}()
 
 	lookPathFn = func(file string) (string, error) { return "/usr/bin/" + file, nil }
@@ -327,11 +329,15 @@ func TestDoctor_MCPAndCredentialsFailures(t *testing.T) {
 	}
 	hakaseHomeFn = func() string { return filepath.Join(home, ".hakase") }
 
-	mcpDiagnoseFn = func(ctx context.Context, cfg *config.Config) []mcp.ServerDiagnostic {
+	mcpDiagnoseFn = func(ctx context.Context, cfg *config.Config) ([]mcp.ServerDiagnostic, error) {
 		return []mcp.ServerDiagnostic{
 			{Name: "broken", OK: false, Error: "connection refused"},
-		}
+		}, nil
 	}
+	// Stub the probe: the default implementation dials the real provider
+	// endpoint, which would break the no-network test rule and add its
+	// timeout to the suite.
+	httpProbeFn = func(ctx context.Context, url string) error { return nil }
 
 	code, out := captureDoctorOutput(func() int {
 		return RunDoctorCLI([]string{})
@@ -345,5 +351,195 @@ func TestDoctor_MCPAndCredentialsFailures(t *testing.T) {
 	}
 	if !strings.Contains(out, "[WARN]   admin credentials") {
 		t.Errorf("expected admin credentials warning in output, got: %s", out)
+	}
+}
+
+// A manager that cannot be built (corrupt ~/.hakase/mcp.json, invalid server
+// block) must fail the MCP check, not silently vanish from the report.
+func TestDoctor_MCPDiagnoseError(t *testing.T) {
+	home := isolateHome(t)
+
+	origLookPath := lookPathFn
+	origLoadConfig := loadConfigFn
+	origHakaseHome := hakaseHomeFn
+	origMCPDiagnose := mcpDiagnoseFn
+	origHTTPProbe := httpProbeFn
+	defer func() {
+		lookPathFn = origLookPath
+		loadConfigFn = origLoadConfig
+		hakaseHomeFn = origHakaseHome
+		mcpDiagnoseFn = origMCPDiagnose
+		httpProbeFn = origHTTPProbe
+	}()
+
+	lookPathFn = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	loadConfigFn = func(path string) (*config.Config, error) {
+		return &config.Config{
+			Provider: "gemini",
+			APIKey:   "key",
+			MCPServers: config.MCPConfig{
+				Servers: map[string]*config.MCPServerConfig{
+					"broken": {URL: "http://localhost:9999"},
+				},
+			},
+		}, nil
+	}
+	httpProbeFn = func(ctx context.Context, url string) error { return nil }
+	hakaseHomeFn = func() string { return filepath.Join(home, ".hakase") }
+	os.MkdirAll(filepath.Join(home, ".hakase"), 0700)
+	os.WriteFile(filepath.Join(home, ".hakase", "credentials.json"), []byte(`{"username":"admin","argon2_hash":"hash"}`), 0600)
+	os.WriteFile(filepath.Join(home, ".hakase", "jwt-secret"), []byte("secret"), 0600)
+
+	mcpDiagnoseFn = func(ctx context.Context, cfg *config.Config) ([]mcp.ServerDiagnostic, error) {
+		return nil, fmt.Errorf("loading user mcp registry: invalid character 'o' in literal null")
+	}
+
+	code, out := captureDoctorOutput(func() int {
+		return RunDoctorCLI([]string{})
+	})
+
+	if code != 1 {
+		t.Errorf("expected exit code 1 when MCP diagnostics are unavailable, got %d. Output: %s", code, out)
+	}
+	if !strings.Contains(out, "[FAIL]   mcp servers") {
+		t.Errorf("expected an mcp servers failure line, got: %s", out)
+	}
+	if !strings.Contains(out, "ALL CHECKS PASSED") {
+		t.Logf("report correctly failed")
+	} else {
+		t.Errorf("MCP diagnostics failure must not report ALL CHECKS PASSED")
+	}
+}
+
+// The --skip-net path must also fail on a corrupt user MCP registry: it loads
+// the effective registry to count servers, and the error is real breakage.
+func TestDoctor_MCPRegistryErrorWithSkipNet(t *testing.T) {
+	home := isolateHome(t)
+
+	origLookPath := lookPathFn
+	origLoadConfig := loadConfigFn
+	origHakaseHome := hakaseHomeFn
+	defer func() {
+		lookPathFn = origLookPath
+		loadConfigFn = origLoadConfig
+		hakaseHomeFn = origHakaseHome
+	}()
+
+	lookPathFn = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	loadConfigFn = func(path string) (*config.Config, error) {
+		return &config.Config{
+			Provider: "gemini",
+			APIKey:   "key",
+			MCPServers: config.MCPConfig{
+				Servers: map[string]*config.MCPServerConfig{
+					"files": {Type: "http", URL: "http://localhost:9999"},
+				},
+			},
+		}, nil
+	}
+	hakaseHomeFn = func() string { return filepath.Join(home, ".hakase") }
+	os.MkdirAll(filepath.Join(home, ".hakase"), 0700)
+	// resolveMCPFile caches the registry path in a package var, so pin it to
+	// this test's file rather than relying on HAKASE_HOME alone.
+	origRegFile := config.MCPRegistryFile
+	config.MCPRegistryFile = filepath.Join(home, ".hakase", "mcp.json")
+	defer func() { config.MCPRegistryFile = origRegFile }()
+	os.WriteFile(config.MCPRegistryFile, []byte("{not json"), 0600)
+
+	code, out := captureDoctorOutput(func() int {
+		return RunDoctorCLI([]string{"--skip-net"})
+	})
+
+	if code != 1 {
+		t.Errorf("expected exit code 1 on corrupt mcp registry, got %d. Output: %s", code, out)
+	}
+	if !strings.Contains(out, "mcp registry error") {
+		t.Errorf("expected registry error detail, got: %s", out)
+	}
+}
+
+// A provider without api_key must fail with the env-var fix hint.
+func TestDoctor_ProviderMissingAPIKey(t *testing.T) {
+	home := isolateHome(t)
+
+	origLookPath := lookPathFn
+	origLoadConfig := loadConfigFn
+	origHakaseHome := hakaseHomeFn
+	defer func() {
+		lookPathFn = origLookPath
+		loadConfigFn = origLoadConfig
+		hakaseHomeFn = origHakaseHome
+	}()
+
+	lookPathFn = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	loadConfigFn = func(path string) (*config.Config, error) {
+		return &config.Config{Provider: "openai", APIKey: ""}, nil
+	}
+	hakaseHomeFn = func() string { return filepath.Join(home, ".hakase") }
+	os.MkdirAll(filepath.Join(home, ".hakase"), 0700)
+
+	code, out := captureDoctorOutput(func() int {
+		return RunDoctorCLI([]string{"--skip-net"})
+	})
+
+	if code != 1 {
+		t.Errorf("expected exit code 1 when api_key is missing, got %d. Output: %s", code, out)
+	}
+	if !strings.Contains(out, "[FAIL]   openai credentials") {
+		t.Errorf("expected openai credentials failure, got: %s", out)
+	}
+	if !strings.Contains(out, "HAKASE_API_KEY") {
+		t.Errorf("expected HAKASE_API_KEY fix hint, got: %s", out)
+	}
+}
+
+// Build-only tools missing must warn, not fail: a release-binary user with no
+// Go/Node toolchain still has a working install.
+func TestDoctor_MissingBuildOnlyTool(t *testing.T) {
+	home := isolateHome(t)
+
+	origLookPath := lookPathFn
+	origLoadConfig := loadConfigFn
+	origHakaseHome := hakaseHomeFn
+	origMCPDiagnose := mcpDiagnoseFn
+	origHTTPProbe := httpProbeFn
+	defer func() {
+		lookPathFn = origLookPath
+		loadConfigFn = origLoadConfig
+		hakaseHomeFn = origHakaseHome
+		mcpDiagnoseFn = origMCPDiagnose
+		httpProbeFn = origHTTPProbe
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		if file == "go" || file == "node" {
+			return "", fmt.Errorf("not found")
+		}
+		return "/usr/bin/" + file, nil
+	}
+	loadConfigFn = func(path string) (*config.Config, error) {
+		return &config.Config{Provider: "gemini", APIKey: "key"}, nil
+	}
+	hakaseHomeFn = func() string { return filepath.Join(home, ".hakase") }
+	os.MkdirAll(filepath.Join(home, ".hakase"), 0700)
+	os.WriteFile(filepath.Join(home, ".hakase", "credentials.json"), []byte(`{"username":"admin","argon2_hash":"hash"}`), 0600)
+	os.WriteFile(filepath.Join(home, ".hakase", "jwt-secret"), []byte("secret"), 0600)
+	httpProbeFn = func(ctx context.Context, url string) error { return nil }
+	mcpDiagnoseFn = func(ctx context.Context, cfg *config.Config) ([]mcp.ServerDiagnostic, error) {
+		return nil, nil
+	}
+
+	code, out := captureDoctorOutput(func() int {
+		return RunDoctorCLI([]string{})
+	})
+
+	if code != 0 {
+		t.Errorf("expected exit code 0 when only build-only tools are missing, got %d. Output: %s", code, out)
+	}
+	if !strings.Contains(out, "[WARN]   go") {
+		t.Errorf("expected go warning line, got: %s", out)
+	}
+	if !strings.Contains(out, "[WARN]   node") {
+		t.Errorf("expected node warning line, got: %s", out)
 	}
 }

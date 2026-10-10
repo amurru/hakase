@@ -76,16 +76,13 @@ func defaultHTTPProbe(ctx context.Context, targetURL string) error {
 	return nil
 }
 
-func defaultMCPDiagnose(ctx context.Context, cfg *config.Config) []mcp.ServerDiagnostic {
+func defaultMCPDiagnose(ctx context.Context, cfg *config.Config) ([]mcp.ServerDiagnostic, error) {
 	mgr, err := mcp.NewMCPServerManager(cfg, nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return mgr.Diagnose(mcpReadonlyCtx{Context: ctx})
+	return mgr.Diagnose(mcpDoctorCtx{Context: ctx}), nil
 }
-
-// mcpReadonlyCtx adapts context.Context to agent.ReadonlyContext for mcp.Diagnose.
-type mcpReadonlyCtx = mcpDoctorCtx
 
 // RunDoctorCLI dispatches `hakase doctor` and returns the process exit code.
 func RunDoctorCLI(args []string) int {
@@ -166,6 +163,7 @@ func runDoctorChecks(ctx context.Context, skipNet bool) DoctorReport {
 			Name:     "sandbox mode",
 			Status:   StatusWarn,
 			Detail:   "skipped (no config loaded)",
+			FixHint:  "Run 'hakase init' to create a configuration file.",
 		})
 	}
 
@@ -182,6 +180,7 @@ func runDoctorChecks(ctx context.Context, skipNet bool) DoctorReport {
 			Name:     "provider configuration",
 			Status:   StatusWarn,
 			Detail:   "skipped (no config loaded)",
+			FixHint:  "Run 'hakase init' to create a configuration file.",
 		})
 	}
 
@@ -196,8 +195,9 @@ func runDoctorChecks(ctx context.Context, skipNet bool) DoctorReport {
 		checks = append(checks, DoctorCheck{
 			Category: "mcp",
 			Name:     "mcp servers",
-			Status:   StatusOK,
+			Status:   StatusWarn,
 			Detail:   "skipped (no config loaded)",
+			FixHint:  "Run 'hakase init' to create a configuration file.",
 		})
 	}
 
@@ -222,9 +222,9 @@ type toolInfo struct {
 
 func checkToolchain() ([]DoctorCheck, bool) {
 	tools := []toolInfo{
-		{name: "go", required: true, hint: "Install Go 1.26+ from https://go.dev/doc/install"},
-		{name: "node", required: true, hint: "Install Node.js 22+ from https://nodejs.org"},
-		{name: "python3", required: true, hint: "Install Python 3 from https://python.org or system package manager"},
+		{name: "go", required: false, hint: "Install Go 1.26+ from https://go.dev/doc/install (only needed to build hakase from source)"},
+		{name: "node", required: false, hint: "Install Node.js 22+ from https://nodejs.org (only needed to build the web UI)"},
+		{name: "python3", required: true, hint: "Install Python 3 from https://python.org or system package manager (required by the bundled Python skill runtime)"},
 		{name: "pnpm", required: false, hint: "Install pnpm (npm install -g pnpm) to build/test the web UI"},
 		{name: "ffmpeg", required: false, hint: "Install ffmpeg via system package manager for audio/voice features"},
 		{name: "whisper-cli", required: false, hint: "Install whisper.cpp (whisper-cli) for local speech-to-text voice notes"},
@@ -423,7 +423,25 @@ func checkProvider(ctx context.Context, cfg *config.Config, skipNet bool) ([]Doc
 }
 
 func checkMCP(ctx context.Context, cfg *config.Config, skipNet bool) ([]DoctorCheck, bool) {
-	if cfg == nil || len(cfg.MCPServers.Servers) == 0 {
+	if skipNet {
+		return checkMCPSkipped(cfg)
+	}
+
+	diags, err := mcpDiagnoseFn(ctx, cfg)
+	if err != nil {
+		// A failed construction means the effective registry could not even be
+		// built (corrupt ~/.hakase/mcp.json, invalid server block). Reporting
+		// "no servers" here would hide a real breakage, so fail loudly.
+		return []DoctorCheck{{
+			Category: "mcp",
+			Name:     "mcp servers",
+			Status:   StatusFail,
+			Detail:   fmt.Sprintf("mcp diagnostics unavailable: %v", err),
+			FixHint:  "Fix the mcp servers block in config.json or ~/.hakase/mcp.json, then re-run 'hakase mcp doctor' for per-server detail.",
+		}}, false
+	}
+
+	if len(diags) == 0 {
 		return []DoctorCheck{{
 			Category: "mcp",
 			Name:     "mcp servers",
@@ -432,16 +450,6 @@ func checkMCP(ctx context.Context, cfg *config.Config, skipNet bool) ([]DoctorCh
 		}}, true
 	}
 
-	if skipNet {
-		return []DoctorCheck{{
-			Category: "mcp",
-			Name:     "mcp servers",
-			Status:   StatusOK,
-			Detail:   fmt.Sprintf("%d server(s) configured (probes skipped via --skip-net)", len(cfg.MCPServers.Servers)),
-		}}, true
-	}
-
-	diags := mcpDiagnoseFn(ctx, cfg)
 	var checks []DoctorCheck
 	passed := true
 
@@ -461,7 +469,7 @@ func checkMCP(ctx context.Context, cfg *config.Config, skipNet bool) ([]DoctorCh
 				Category: "mcp",
 				Name:     "mcp:" + d.Name,
 				Status:   StatusFail,
-				Detail:   fmt.Sprintf("unreachable or failed: %s", d.Error),
+				Detail:   fmt.Sprintf("unreachable or failed: %s", truncate(d.Error, 160)),
 				FixHint:  fmt.Sprintf("Check MCP server %q command/URL and configuration.", d.Name),
 			})
 		} else {
@@ -475,6 +483,35 @@ func checkMCP(ctx context.Context, cfg *config.Config, skipNet bool) ([]DoctorCh
 	}
 
 	return checks, passed
+}
+
+// checkMCPSkipped counts the effective registry (project config merged with
+// ~/.hakase/mcp.json) without dialing anything.
+func checkMCPSkipped(cfg *config.Config) ([]DoctorCheck, bool) {
+	reg, err := config.LoadMCPRegistry(cfg)
+	if err != nil {
+		return []DoctorCheck{{
+			Category: "mcp",
+			Name:     "mcp servers",
+			Status:   StatusFail,
+			Detail:   fmt.Sprintf("mcp registry error: %v", err),
+			FixHint:  "Fix the mcp servers block in config.json or ~/.hakase/mcp.json, then re-run 'hakase mcp doctor' for per-server detail.",
+		}}, false
+	}
+	if len(reg.Servers) == 0 {
+		return []DoctorCheck{{
+			Category: "mcp",
+			Name:     "mcp servers",
+			Status:   StatusOK,
+			Detail:   "no MCP servers configured",
+		}}, true
+	}
+	return []DoctorCheck{{
+		Category: "mcp",
+		Name:     "mcp servers",
+		Status:   StatusOK,
+		Detail:   fmt.Sprintf("%d server(s) configured (probes skipped via --skip-net)", len(reg.Servers)),
+	}}, true
 }
 
 func checkCredentials() ([]DoctorCheck, bool) {

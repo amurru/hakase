@@ -116,8 +116,9 @@ first-run errors shipped first (see CHANGELOG); the rest are open.
 1. **`hakase doctor` preflight** — shipped (2026-10-10, `hakase doctor`):
    checks toolchain (Go/Node/pnpm/Python/ffmpeg/whisper/piper), config
    validity, active sandbox mode, provider + MCP reachability, and credentials/JWT
-   presence, printing a fix hint for every failure/warning. Design:
-   `docs/doctor/` (DR-001..DR-008).
+   presence, printing a fix hint for every failed check. `python3` is the only
+   hard-required binary (skill venv runtime); `go`/`node`/`pnpm` warn as
+   build-only. Design: `docs/doctor/` (DR-001..DR-010).
 2. **Install & distribution** — a `curl | sh` installer that detects OS/arch,
    downloads the release asset and verifies `SHA256SUMS.txt`, plus:
    - **prebuilt darwin binaries** (arm64+amd64) and a Homebrew tap — macOS is

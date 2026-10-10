@@ -1,5 +1,6 @@
 # Execution Plan: `hakase doctor` preflight command
 
+Governing issue: [#101](https://github.com/amurru/hakase/issues/101).
 Spec: [spec.md](spec.md).
 
 ## Phases
