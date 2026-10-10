@@ -272,6 +272,11 @@ func runTUI() {
 	// MCP elicitation prompts (2026-07-28 MRTR) ride the same TUI gates.
 	mcp.SetApprovalGate(&m)
 	mcp.SetClarifyGate(&m)
+	// Gateway nested calls (mcp_call_tool) enforce the target tool's
+	// PreToolUse hooks with the resolved tool name.
+	if hooksRunner := deps.HooksRunner; hooksRunner != nil {
+		mcp.SetGatewayPreToolUseCheck(hooksRunner.CheckPreToolUse)
+	}
 
 	// Wire the event notifier into the sidekick after the TUI model
 	// exists. The sidekick is created during SetupRunner before the

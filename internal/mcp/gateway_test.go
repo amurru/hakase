@@ -173,6 +173,7 @@ func TestGatewayHotToolsPassthrough(t *testing.T) {
 
 func TestGatewayCallToolDispatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	SetGatewayPreToolUseCheck(nil)
 
 	targetTool := mockGatewayTool{name: "mcp_s1_echo", desc: "echo"}
 	gt := newGatewayToolset(nil, nil)
@@ -213,5 +214,90 @@ func TestGatewayCallToolDispatch(t *testing.T) {
 		}
 	} else {
 		t.Fatalf("callTool does not implement Run")
+	}
+}
+
+func TestResolveToolAmbiguousAndServerEnforcement(t *testing.T) {
+	a := mockGatewayTool{name: "mcp_a_search", desc: "a"}
+	b := mockGatewayTool{name: "mcp_b_search", desc: "b"}
+	tools := []tool.Tool{a, b}
+
+	if _, err := resolveTool(tools, "", "search"); err == nil {
+		t.Fatalf("bare name across servers must be ambiguous")
+	}
+	got, err := resolveTool(tools, "a", "search")
+	if err != nil || got.Name() != "mcp_a_search" {
+		t.Fatalf("server-scoped resolve = %v, %v", got, err)
+	}
+	if _, err := resolveTool(tools, "b", "mcp_a_search"); err == nil {
+		t.Fatalf("qualified name of another server must not match")
+	}
+	got, err = resolveTool(tools, "", "mcp_a_search")
+	if err != nil || got.Name() != "mcp_a_search" {
+		t.Fatalf("qualified resolve = %v, %v", got, err)
+	}
+}
+
+type blockingGatewayTool struct {
+	mockGatewayTool
+	calls *int
+}
+
+func (m blockingGatewayTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	*m.calls++
+	return m.mockGatewayTool.Run(ctx, args)
+}
+
+func findGatewayCallTool(t *testing.T, gt *gatewayToolset, raw []tool.Tool) tool.Tool {
+	t.Helper()
+	gwTools, err := gt.gatewayTools(dummyReadonlyContext{Context: context.Background()}, raw)
+	if err != nil {
+		t.Fatalf("gatewayTools: %v", err)
+	}
+	for _, gwt := range gwTools {
+		if gwt.Name() == "mcp_call_tool" {
+			return gwt
+		}
+	}
+	t.Fatalf("mcp_call_tool not found")
+	return nil
+}
+
+func TestGatewayCallToolPreToolUseBlocked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	SetGatewayPreToolUseCheck(nil)
+	t.Cleanup(func() { SetGatewayPreToolUseCheck(nil) })
+
+	var calls int
+	target := blockingGatewayTool{mockGatewayTool: mockGatewayTool{name: "mcp_s1_echo", desc: "echo"}, calls: &calls}
+	callTool := findGatewayCallTool(t, newGatewayToolset(nil, nil), []tool.Tool{target})
+
+	SetGatewayPreToolUseCheck(func(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any) {
+		if toolName != "mcp_s1_echo" {
+			t.Errorf("PreToolUse got tool %q, want mcp_s1_echo", toolName)
+		}
+		return true, map[string]any{"blocked_by": "test-hook"}
+	})
+
+	runner, ok := callTool.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	})
+	if !ok {
+		t.Fatalf("callTool does not implement Run")
+	}
+	actx := agent.NewContext(&agent.ContextMock{})
+	res, err := runner.Run(actx, map[string]any{
+		"server":    "s1",
+		"tool":      "echo",
+		"arguments": map[string]any{"msg": "hi"},
+	})
+	if err != nil {
+		t.Fatalf("blocked call must return hook result, got err: %v", err)
+	}
+	if res["blocked_by"] != "test-hook" {
+		t.Fatalf("unexpected res: %v", res)
+	}
+	if calls != 0 {
+		t.Fatalf("blocked tool must not run, calls=%d", calls)
 	}
 }

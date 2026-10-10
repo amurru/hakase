@@ -2,10 +2,13 @@
 package mcp
 
 import (
+	"amurru/hakase/internal/config"
 	"amurru/hakase/internal/util"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -64,18 +67,76 @@ type CallToolArgs struct {
 	Arguments map[string]any `json:"arguments,omitempty" doc:"Arguments map to pass to the tool"`
 }
 
-func matchTool(t tool.Tool, server, toolName string) bool {
-	tName := t.Name()
-	if tName == toolName {
-		return true
+// gatewayPreToolUseCheck mirrors hooks.Runner.CheckPreToolUse without
+// importing internal/agent or internal/hooks (see elicitation.go: the manager
+// stays decoupled behind a factory). Wired at process startup from
+// cmd/hakase after SetupRunner builds deps.HooksRunner; nil means no hooks.
+var gatewayPreToolUse = struct {
+	sync.RWMutex
+	check func(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any)
+}{}
+
+// SetGatewayPreToolUseCheck installs the PreToolUse enforcement for nested
+// gateway calls. Call once at startup with deps.HooksRunner.CheckPreToolUse.
+func SetGatewayPreToolUseCheck(check func(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any)) {
+	gatewayPreToolUse.Lock()
+	defer gatewayPreToolUse.Unlock()
+	gatewayPreToolUse.check = check
+}
+
+func gatewayCheckPreToolUse(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any) {
+	gatewayPreToolUse.RLock()
+	defer gatewayPreToolUse.RUnlock()
+	if gatewayPreToolUse.check == nil {
+		return false, nil
 	}
-	if server != "" && tName == MCPToolName(server, toolName) {
-		return true
+	return gatewayPreToolUse.check(ctx, toolName, args)
+}
+
+// resolveTool finds one tool by bare or namespaced name. Exact qualified
+// names win; bare names must match exactly one tool, otherwise the request
+// is ambiguous and must name a server. A qualified name that does not belong
+// to the requested server never matches.
+func resolveTool(tools []tool.Tool, server, toolName string) (tool.Tool, error) {
+	if strings.TrimSpace(toolName) == "" {
+		return nil, fmt.Errorf("mcp tool %q not found", toolName)
 	}
-	if server == "" && strings.HasSuffix(tName, "_"+toolName) {
-		return true
+	var exact, matches []tool.Tool
+	sanitizedName := config.SanitizeMCPServerName(toolName)
+	serverPrefix := ""
+	if server != "" {
+		serverPrefix = "mcp_" + config.SanitizeMCPServerName(server) + "_"
 	}
-	return false
+	for _, t := range tools {
+		name := t.Name()
+		if name == toolName && (server == "" || strings.HasPrefix(name, serverPrefix)) {
+			exact = append(exact, t)
+			continue
+		}
+		if server != "" {
+			if name == MCPToolName(server, toolName) {
+				matches = append(matches, t)
+			}
+		} else if strings.HasPrefix(name, "mcp_") && strings.HasSuffix(name, "_"+sanitizedName) {
+			matches = append(matches, t)
+		}
+	}
+	if len(exact) > 0 {
+		matches = exact
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("mcp tool %q not found", toolName)
+	case 1:
+		return matches[0], nil
+	default:
+		names := make([]string, 0, len(matches))
+		for _, t := range matches {
+			names = append(names, t.Name())
+		}
+		return nil, fmt.Errorf("mcp tool %q is ambiguous; specify server: %s",
+			toolName, strings.Join(names, ", "))
+	}
 }
 
 func (g *gatewayToolset) gatewayTools(ctx agent.ReadonlyContext, rawTools []tool.Tool) ([]tool.Tool, error) {
@@ -143,27 +204,26 @@ func (g *gatewayToolset) gatewayTools(ctx agent.ReadonlyContext, rawTools []tool
 					return DescribeToolResult{}, err
 				}
 			}
-			for _, t := range tools {
-				if matchTool(t, "", args.Name) {
-					res := DescribeToolResult{Name: t.Name()}
-					if declGetter, ok := t.(interface {
-						Declaration() *genai.FunctionDeclaration
-					}); ok {
-						if decl := declGetter.Declaration(); decl != nil {
-							res.Description = decl.Description
-							if decl.Parameters != nil {
-								var params map[string]any
-								if b, err := json.Marshal(decl.Parameters); err == nil {
-									_ = json.Unmarshal(b, &params)
-									res.Parameters = params
-								}
-							}
+			t, err := resolveTool(tools, "", args.Name)
+			if err != nil {
+				return DescribeToolResult{}, err
+			}
+			res := DescribeToolResult{Name: t.Name()}
+			if declGetter, ok := t.(interface {
+				Declaration() *genai.FunctionDeclaration
+			}); ok {
+				if decl := declGetter.Declaration(); decl != nil {
+					res.Description = decl.Description
+					if decl.Parameters != nil {
+						var params map[string]any
+						if b, err := json.Marshal(decl.Parameters); err == nil {
+							_ = json.Unmarshal(b, &params)
+							res.Parameters = params
 						}
 					}
-					return res, nil
 				}
 			}
-			return DescribeToolResult{}, fmt.Errorf("tool %q not found", args.Name)
+			return res, nil
 		},
 	)
 	if err != nil {
@@ -184,17 +244,19 @@ func (g *gatewayToolset) gatewayTools(ctx agent.ReadonlyContext, rawTools []tool
 					return nil, err
 				}
 			}
-			for _, t := range tools {
-				if matchTool(t, args.Server, args.Tool) {
-					if runner, ok := t.(interface {
-						Run(ctx agent.Context, args any) (map[string]any, error)
-					}); ok {
-						return runner.Run(ctx, args.Arguments)
-					}
-					return nil, fmt.Errorf("tool %q does not support execution", args.Tool)
-				}
+			t, err := resolveTool(tools, args.Server, args.Tool)
+			if err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("mcp tool %q not found", args.Tool)
+			if blocked, result := gatewayCheckPreToolUse(ctx, t.Name(), args.Arguments); blocked {
+				return result, nil
+			}
+			if runner, ok := t.(interface {
+				Run(ctx agent.Context, args any) (map[string]any, error)
+			}); ok {
+				return runner.Run(ctx, args.Arguments)
+			}
+			return nil, fmt.Errorf("tool %q does not support execution", args.Tool)
 		},
 	)
 	if err != nil {
@@ -203,14 +265,12 @@ func (g *gatewayToolset) gatewayTools(ctx agent.ReadonlyContext, rawTools []tool
 
 	out := []tool.Tool{searchTool, describeTool, callTool}
 
-	// Hot tools passthrough
+	// Hot tools passthrough: resolve unambiguously; skip missing or
+	// ambiguous entries rather than exposing an arbitrary first match.
 	if len(g.hotTools) > 0 {
 		for _, ht := range g.hotTools {
-			for _, t := range rawTools {
-				if matchTool(t, "", ht) {
-					out = append(out, t)
-					break
-				}
+			if t, err := resolveTool(rawTools, "", ht); err == nil {
+				out = append(out, t)
 			}
 		}
 	}

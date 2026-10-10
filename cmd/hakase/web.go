@@ -327,6 +327,11 @@ func runServer(args []string, serveSPA bool) int {
 		fmt.Fprintf(os.Stderr, "hakase: failed to setup agent runner: %v\n", err)
 		return 1
 	}
+	// Gateway nested calls (mcp_call_tool) enforce the target tool's
+	// PreToolUse hooks with the resolved tool name.
+	if hooksRunner := deps.HooksRunner; hooksRunner != nil {
+		mcp.SetGatewayPreToolUseCheck(hooksRunner.CheckPreToolUse)
+	}
 
 	// Permissions refresh (M2): long-lived serve processes re-load the
 	// layered policy on the enterprise poll interval so revocations land.
