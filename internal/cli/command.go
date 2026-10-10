@@ -153,6 +153,11 @@ func init() {
 		Handler:     RunSessionCLI,
 	})
 	registerCommand(Command{
+		Name:        "doctor",
+		Description: "preflight diagnostics for toolchain, config, provider, MCP, and credentials",
+		Handler:     RunDoctorCLI,
+	})
+	registerCommand(Command{
 		Name:        "stats",
 		Description: "show model usage and cost from the FinOps ledger",
 		Handler:     RunStatsCLI,

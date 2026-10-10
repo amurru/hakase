@@ -224,6 +224,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | Command | Action |
 | ------- | ------ |
 | `init` | Create a config and set up hakase for first use (interactive wizard) |
+| `doctor` | Preflight diagnostics (`--format table\|json`, `--skip-net`) for toolchain, config, provider, MCP, credentials |
 | `skill` | Manage markdown skills (`create`, `list`, `validate`, `evolve`) |
 | `task` | Manage the task board (`create`, `list`, `get`, `update`, `complete`, ...) |
 | `knowledge` | Manage the knowledge base (`list`, `read`, `search`, `lint`, `create`, `link`, `bench`) |
@@ -318,6 +319,13 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 <details>
 <summary><b>Troubleshooting</b></summary>
 
+Run preflight diagnostics to audit your setup:
+```bash
+hakase doctor
+```
+It verifies toolchain binaries on PATH (`go`, `node`, `pnpm`, `python3`, `ffmpeg`, `whisper-cli`, `piper`), `config.json` validity, active sandbox mode, provider reachability, MCP server status, and admin credentials/JWT presence, offering actionable fix hints for any issues found.
+
+Common issues:
 - `unsupported provider: <name>` -- `provider` must be `gemini`, `openai`, or `openai-compatible` (empty defaults to `gemini`).
 - `gemini/openai provider requires an api_key` -- set `api_key` in `config.json` or `HAKASE_API_KEY`.
 - `openai-compatible` endpoint unreachable -- confirm `base_url` is running and serves an OpenAI-compatible API (e.g. Ollama at `http://localhost:11434/v1`).
