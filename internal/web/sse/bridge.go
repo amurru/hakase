@@ -249,11 +249,14 @@ func (b *EventBridge) SendTask(sessionID string, task map[string]any, action str
 	b.publish(sessionID, "task", payload)
 }
 
-// SendUsage sends a token usage update.
-func (b *EventBridge) SendUsage(sessionID string, tokens int, percent int) {
-	payload, _ := json.Marshal(map[string]int{
-		"tokens":  tokens,
-		"percent": percent,
+// SendUsage sends a token usage update (SSE v2: cost_usd and budget_pct
+// are additive; older clients ignore unknown fields).
+func (b *EventBridge) SendUsage(sessionID string, tokens int, percent int, costUSD float64, budgetPct int) {
+	payload, _ := json.Marshal(map[string]any{
+		"tokens":     tokens,
+		"percent":    percent,
+		"cost_usd":   costUSD,
+		"budget_pct": budgetPct,
 	})
 	b.publish(sessionID, "usage", payload)
 }

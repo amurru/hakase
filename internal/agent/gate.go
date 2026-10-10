@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/util"
 	"fmt"
@@ -52,6 +53,18 @@ type GateDecision struct {
 	Action GateAction
 	Risk   CommandRisk
 	Reason string // human-readable reason for deny/ask
+	// PolicyRule cites the permissions rule behind an ActionDeny/Ask
+	// from step 4b (nil when the risk gate decided on its own).
+	PolicyRule *permissions.Rule
+}
+
+// ruleSuffix renders the matching permissions rule for gate reasons
+// (audit metadata). Empty when the default applied.
+func ruleSuffix(rule *permissions.Rule) string {
+	if rule == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (rule: %s %q -> %s)", rule.Action, rule.Resource, rule.Effect)
 }
 
 // parseCommandArgv splits a shell command line into argv the way the shell
@@ -291,10 +304,50 @@ func classifyGitRisk(argv []string) CommandRisk {
 		}
 	}
 
+	if sub == "remote" {
+		mutatingRemoteCmds := map[string]bool{
+			"add": true, "remove": true, "rm": true, "set-url": true,
+			"rename": true, "prune": true, "set-head": true, "set-branches": true,
+			"update": true,
+		}
+		for _, arg := range argv[2:] {
+			if mutatingRemoteCmds[arg] {
+				return RiskMedium
+			}
+		}
+		return RiskLow
+	}
+
+	if sub == "branch" {
+		if hasFlag(argv, "-d") || hasFlag(argv, "-D") ||
+			hasFlag(argv, "-m") || hasFlag(argv, "-M") ||
+			hasFlag(argv, "-c") || hasFlag(argv, "-C") ||
+			hasFlag(argv, "-f") || hasFlag(argv, "--force") ||
+			hasFlag(argv, "--delete") || hasFlag(argv, "--move") ||
+			hasFlag(argv, "--copy") || hasFlag(argv, "--edit-description") ||
+			hasFlag(argv, "-u") || hasFlag(argv, "-t") ||
+			hasFlag(argv, "--track") || hasFlag(argv, "--unset-upstream") ||
+			hasFlag(argv, "--set-upstream-to") ||
+			hasFlagPrefix(argv, "--set-upstream-to=") ||
+			hasFlagPrefix(argv, "--track=") {
+			return RiskMedium
+		}
+		if hasFlag(argv, "--list") || hasFlag(argv, "-l") ||
+			hasFlag(argv, "--contains") || hasFlag(argv, "--no-contains") ||
+			hasFlag(argv, "--merged") || hasFlag(argv, "--no-merged") {
+			return RiskLow
+		}
+		for _, arg := range argv[2:] {
+			if !strings.HasPrefix(arg, "-") {
+				return RiskMedium
+			}
+		}
+		return RiskLow
+	}
+
 	// LOW risk git subcommands (read-only).
 	lowGitSubs := map[string]bool{
 		"status": true, "log": true, "diff": true, "show": true,
-		"branch": true, "remote": true,
 	}
 	if lowGitSubs[sub] {
 		return RiskLow
@@ -309,6 +362,16 @@ func classifyGitRisk(argv []string) CommandRisk {
 func hasForceFlag(argv []string) bool {
 	for _, a := range argv {
 		if a == "--force" || a == "-f" || a == "--force-with-lease" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFlagPrefix checks whether any element in argv has the given prefix.
+func hasFlagPrefix(argv []string, prefix string) bool {
+	for _, a := range argv {
+		if strings.HasPrefix(a, prefix) {
 			return true
 		}
 	}
@@ -1034,6 +1097,25 @@ func EvaluateCommand(sb *sandbox.SandboxConfig, command string, args []string) G
 		// 12.2: Interpreter opaque-code escalation.
 		if hasOpaqueCodeArg(argv) {
 			return GateDecision{Action: ActionAsk, Risk: RiskUnknown, Reason: "interpreter executing opaque script/code requires user approval"}
+		}
+	}
+
+	// 4b. Permissions policy (permissions.json, PM-002): evaluated after
+	// every deny-class check above (hard-deny, deny patterns, allowlist,
+	// interpreter escalation) and before the risk threshold, so a policy
+	// can never widen a deny. No installed policy = skip with zero
+	// behavior change. A policy allow still falls through on RiskUnknown
+	// (fail-closed, step 5 below).
+	if eff, rule, ok := permissions.Lookup("shell", command); ok && rule != nil {
+		switch eff {
+		case permissions.EffectDeny:
+			return GateDecision{Action: ActionDeny, Risk: risk, Reason: "denied by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
+		case permissions.EffectAsk:
+			return GateDecision{Action: ActionAsk, Risk: risk, Reason: "requires approval by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
+		case permissions.EffectAllow:
+			if risk != RiskUnknown {
+				return GateDecision{Action: ActionAllow, Risk: risk, Reason: ""}
+			}
 		}
 	}
 

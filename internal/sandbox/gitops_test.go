@@ -127,10 +127,10 @@ func TestCreateGitOpsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGitOpsTools: %v", err)
 	}
-	if len(tools) != 14 {
-		t.Fatalf("expected 14 tools, got %d", len(tools))
+	if len(tools) != 17 {
+		t.Fatalf("expected 17 tools, got %d", len(tools))
 	}
-	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull", "git_checkout", "git_reset", "git_clean", "git_stash", "git_tag"}
+	want := []string{"git_status", "git_diff", "git_log", "git_branch", "git_stage", "git_commit", "git_clone", "git_push", "git_pull", "git_checkout", "git_reset", "git_clean", "git_stash", "git_tag", "git_remote", "git_merge", "git_rebase"}
 	for i, name := range want {
 		if tools[i].Name() != name {
 			t.Errorf("tool[%d] = %q, want %q", i, tools[i].Name(), name)
@@ -1466,5 +1466,275 @@ func TestGitTagCreateListDelete(t *testing.T) {
 	}
 	if _, err := gitTagContent(context.Background(), GitTagInput{RepoDir: dir, Operation: "delete", Name: "v1.0.0", Ref: "HEAD"}, nil); err == nil {
 		t.Error("delete with a ref argument accepted")
+	}
+}
+
+func TestGitRemoteOps(t *testing.T) {
+	stubGitPolicy(t, false)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	// Add remote with space in local path URL if possible.
+	dirWithSpace := filepath.Join(t.TempDir(), "dir with space")
+	if err := os.MkdirAll(dirWithSpace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepo(t, dirWithSpace)
+	bareWithSpace := bareCloneOf(t, dirWithSpace)
+	// Rename bareWithSpace to have spaces
+	bareWithSpaceNew := filepath.Join(t.TempDir(), "bare with space.git")
+	if err := os.Rename(bareWithSpace, bareWithSpaceNew); err != nil {
+		t.Fatal(err)
+	}
+	bareWithSpace = bareWithSpaceNew
+
+	addOut, err := gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "add",
+		Name:      "origin",
+		URL:       bareWithSpace,
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote add: %v", err)
+	}
+	if addOut.NotARepo {
+		t.Error("remote add reported NotARepo")
+	}
+
+	// List remotes.
+	listOut, err := gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "list",
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote list: %v", err)
+	}
+	if len(listOut.Remotes) == 0 {
+		t.Fatal("expected remotes in list output")
+	}
+	foundOrigin := false
+	for _, r := range listOut.Remotes {
+		if r.Name == "origin" {
+			foundOrigin = true
+		}
+	}
+	if !foundOrigin {
+		t.Errorf("list output missing origin: %+v", listOut.Remotes)
+	}
+	for _, r := range listOut.Remotes {
+		if r.Name == "origin" && !strings.Contains(r.URL, "bare with space") {
+			t.Errorf("origin URL did not preserve space: %q", r.URL)
+		}
+	}
+
+	// Get URL.
+	getUrlOut, err := gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "get_url",
+		Name:      "origin",
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote get_url: %v", err)
+	}
+	if getUrlOut.URL == "" {
+		t.Error("get_url returned empty URL")
+	}
+
+	// Set URL.
+	seed2 := t.TempDir()
+	initRepo(t, seed2)
+	bare2 := bareCloneOf(t, seed2)
+
+	_, err = gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "set_url",
+		Name:      "origin",
+		URL:       bare2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote set_url: %v", err)
+	}
+
+	getUrlOut2, err := gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "get_url",
+		Name:      "origin",
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote get_url after set_url: %v", err)
+	}
+	if !strings.Contains(getUrlOut2.URL, filepath.Base(bare2)) {
+		t.Errorf("URL after set_url = %q, want containing %q", getUrlOut2.URL, filepath.Base(bare2))
+	}
+
+	// Remove remote.
+	_, err = gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "remove",
+		Name:      "origin",
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote remove: %v", err)
+	}
+
+	listOutAfter, err := gitRemoteContent(context.Background(), GitRemoteInput{
+		RepoDir:   dir,
+		Operation: "list",
+	}, nil)
+	if err != nil {
+		t.Fatalf("remote list after remove: %v", err)
+	}
+	if len(listOutAfter.Remotes) != 0 {
+		t.Errorf("expected no remotes after remove, got %+v", listOutAfter.Remotes)
+	}
+}
+
+func TestGitMergeFFAndNoFF(t *testing.T) {
+	stubGitPolicy(t, false)
+	setGitIdentity(t)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	// Create feature branch and add commit.
+	create := true
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "feature", Create: &create}, nil); err != nil {
+		t.Fatalf("checkout -b feature: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feat.txt"), []byte("feat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "feat commit", StageAll: boolPtr(true)}, nil); err != nil {
+		t.Fatalf("commit on feature: %v", err)
+	}
+
+	// Switch back to main.
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "main"}, nil); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	// Fast-forward merge feature into main (default --ff-only).
+	mergeOut, err := gitMergeContent(context.Background(), GitMergeInput{RepoDir: dir, Ref: "feature"}, nil)
+	if err != nil {
+		t.Fatalf("merge feature: %v", err)
+	}
+	if mergeOut.NotARepo {
+		t.Error("merge reported NotARepo")
+	}
+
+	// Create feature2 branch and add commit.
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "feature2", Create: &create}, nil); err != nil {
+		t.Fatalf("checkout -b feature2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feat2.txt"), []byte("feat2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "feat2 commit", StageAll: boolPtr(true)}, nil); err != nil {
+		t.Fatalf("commit on feature2: %v", err)
+	}
+
+	// Switch back to main.
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "main"}, nil); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	// Merge feature2 with no_ff=true.
+	noFF := true
+	mergeNoFFOut, err := gitMergeContent(context.Background(), GitMergeInput{RepoDir: dir, Ref: "feature2", NoFF: &noFF}, nil)
+	if err != nil {
+		t.Fatalf("merge --no-ff feature2: %v", err)
+	}
+	if mergeNoFFOut.Message == "" {
+		t.Error("merge --no-ff returned empty message")
+	}
+
+	logOut, err := gitLogContent(context.Background(), GitLogInput{RepoDir: dir, Limit: 5}, nil)
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	if !strings.Contains(logOut.Commits[0].Subject, "Merge branch 'feature2'") && !strings.Contains(logOut.Commits[0].Subject, "feat2 commit") {
+		t.Errorf("top commit = %q, expected merge commit or subject", logOut.Commits[0].Subject)
+	}
+}
+
+func TestGitRebaseAndConflict(t *testing.T) {
+	stubGitPolicy(t, false)
+	setGitIdentity(t)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	// Branch feature from main.
+	create := true
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "feature", Create: &create}, nil); err != nil {
+		t.Fatalf("checkout -b feature: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("feature line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "feat change", StageAll: boolPtr(true)}, nil); err != nil {
+		t.Fatalf("commit feature: %v", err)
+	}
+
+	// Switch back to main and make a conflicting edit.
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "main"}, nil); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("main line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommitContent(context.Background(), GitCommitInput{RepoDir: dir, Message: "main change", StageAll: boolPtr(true)}, nil); err != nil {
+		t.Fatalf("commit main: %v", err)
+	}
+
+	// Switch back to feature and attempt rebase onto main -> conflict.
+	if _, err := gitCheckoutContent(context.Background(), GitCheckoutInput{RepoDir: dir, Branch: "feature"}, nil); err != nil {
+		t.Fatalf("checkout feature: %v", err)
+	}
+
+	_, err := gitRebaseContent(context.Background(), GitRebaseInput{RepoDir: dir, Ref: "main"}, nil)
+	if err == nil {
+		t.Fatal("expected conflict error on rebase")
+	}
+	if !strings.Contains(err.Error(), "Could not apply") && !strings.Contains(err.Error(), "conflict") && !strings.Contains(err.Error(), "CONFLIT") {
+		t.Errorf("expected conflict message in error, got: %v", err)
+	}
+
+	// Abort the rebase.
+	abortOut, err := gitRebaseContent(context.Background(), GitRebaseInput{RepoDir: dir, Operation: "abort"}, nil)
+	if err != nil {
+		t.Fatalf("rebase --abort: %v", err)
+	}
+	if abortOut.Operation != "abort" {
+		t.Errorf("operation = %q, want abort", abortOut.Operation)
+	}
+}
+
+func TestGitAmendCommit(t *testing.T) {
+	stubGitPolicy(t, false)
+	setGitIdentity(t)
+	dir := t.TempDir()
+	initRepo(t, dir)
+
+	amend := true
+	out, err := gitCommitContent(context.Background(), GitCommitInput{
+		RepoDir: dir,
+		Message: "amended initial commit",
+		Amend:   &amend,
+	}, nil)
+	if err != nil {
+		t.Fatalf("commit --amend: %v", err)
+	}
+	if out.Subject != "amended initial commit" {
+		t.Errorf("subject = %q, want \"amended initial commit\"", out.Subject)
+	}
+
+	logOut, err := gitLogContent(context.Background(), GitLogInput{RepoDir: dir, Limit: 5}, nil)
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	if len(logOut.Commits) != 1 {
+		t.Errorf("expected 1 commit after amend, got %d", len(logOut.Commits))
+	}
+	if logOut.Commits[0].Subject != "amended initial commit" {
+		t.Errorf("log subject = %q", logOut.Commits[0].Subject)
 	}
 }

@@ -591,6 +591,19 @@ Configuration lives in the `mcp` block of `config.json` (project scope, never wr
 
 The legacy single-server `mcp_server_url` field still works and is auto-migrated to a server named `lightpanda`.
 
+### MCP Gateway & Budget
+
+The MCP Gateway (`mcp.gateway`) manages tool discovery and caps tool count overhead across connected servers:
+
+- **Config**: `mcp.gateway` struct with `enabled` (boolean, opt-in), `budget` (int, default `40`), and `hot_tools` (string array of tool names to pass through directly with real schemas).
+- **Auto-Degrade**: When `gateway.enabled` is true and post-filter configured tools exceed `budget` (default `40`), `MCPServerManager.Tools()` auto-degrades to returning the meta-tool gateway toolset (`mcp_search_tools`, `mcp_describe_tool`, `mcp_call_tool`) plus real schemas for any specified `hot_tools`, rather than aborting or failing the turn. The turn never hard-fails on tool budget. Sub-agents that receive MCP tools via the shared manager automatically see the same gateway set when over budget (`code_interpreter` and `general_purpose` receive no MCP tools).
+- **Meta-Tools & Resolution**:
+  - `mcp_search_tools`: search available tools across servers by name or description.
+  - `mcp_describe_tool`: inspect the parameter schema for a specific tool.
+  - `mcp_call_tool`: invoke a tool by name (and optional server) with JSON arguments.
+  - Resolution accepts bare (`tool_name`) and qualified (`mcp_<server>_<tool>`) tool names. Exact qualified names take precedence, ambiguous bare names matching across multiple servers are rejected, and requested server filters are strictly enforced.
+  - `mcp_call_tool` execution routes through the manager, applying the target tool's `PreToolUse` and `PostToolUse` gates and audit logging (`search`/`describe` are metadata-only and skip gates).
+
 ### Browser MCP presets
 
 Any spec-compliant browser MCP is a config-only swap, on Linux and Windows alike. [browser-mcp-presets.md](browser-mcp-presets.md) ships four copy-pasteable presets with `web_researcher` tool shaping:
@@ -763,7 +776,7 @@ When `model_name` is empty, the provider's default model is used. `openai-compat
 - `context_files` - Optional tuning for the project context files: `max_chars` (per-file truncation cap, default `20000`) and `apply_to` (restrict which agents receive the block; empty = all).
 - `system_env` - Optional tuning for the runtime-environment block (see [Runtime Environment Awareness](#runtime-environment-awareness)): `enabled` (default `true`), `max_chars` (block cap, default `800`), and `apply_to` (restrict which agents receive the block; empty = all).
 - `mcp_server_url` - Legacy single MCP server URL (Lightpanda browser automation). Auto-migrated to a server named `lightpanda` in the `mcp` block.
-- `mcp` - Optional MCP server configuration (see [MCP Integration](#mcp-integration)): `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
+- `mcp` - Optional MCP server and gateway configuration (see [MCP Integration](#mcp-integration)): `gateway` settings (`enabled`, `budget`, `hot_tools`) and `servers` map of name -> `{type, command, env, url, headers, disabled, tools, timeout_ms, oauth}`.
 - `knowledge_dir` - Directory for the persistent knowledge base (default `./knowledge`; a leading `~` expands to the user home, e.g. `~/.hakase/knowledge` for a user-global base).
 - `search_expansion` - Optional HyDE-lite LLM query expansion for `search_knowledge` (default `false`). When off, search behavior is byte-identical to plain substring search (just relevance-ordered). When on, the summarization model rephrases the query into 2-3 phrasings which are OR-matched and fused with Reciprocal Rank Fusion; on failure or timeout it falls back silently to plain substring search. Set `HAKASE_SEARCH_EXPANSION` to override via environment.
 - `summary_model` -- Optional cheaper/weaker model used for context-compaction summarization (e.g. `gemini-3.5-flash-lite`). When empty, the primary model handles summaries. Set `HAKASE_SUMMARY_MODEL` to override via environment.

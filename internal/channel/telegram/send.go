@@ -12,11 +12,6 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-// perChatSendInterval paces outbound messages to stay well inside Telegram's
-// ~1 msg/s per-chat budget (status edits and pushes share the same limiter).
-// A var so tests can zero the pacing.
-var perChatSendInterval = 1100 * time.Millisecond
-
 // callback data prefixes (Telegram caps callback_data at 64 bytes; gate IDs
 // are "<prefix>_<uuid>" so the encoded forms fit).
 const (
@@ -218,7 +213,7 @@ func (b *Bot) waitTurn(ctx context.Context, c conv) {
 	if next.IsZero() || now.After(next) {
 		next = now
 	}
-	b.nextSend[c] = next.Add(perChatSendInterval)
+	b.nextSend[c] = next.Add(b.getPerChatSendInterval())
 	b.limiterMu.Unlock()
 
 	// Sleep exactly to the slot reserved above. Re-deriving the wait on every

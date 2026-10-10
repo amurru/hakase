@@ -199,7 +199,7 @@ func TestEventBridgeUsage(t *testing.T) {
 	_, ch := b.Subscribe("sess-1")
 	defer b.Unsubscribe("sess-1", 1)
 
-	b.SendUsage("sess-1", 1234, 42)
+	b.SendUsage("sess-1", 1234, 42, 0.023, 60)
 
 	select {
 	case data := <-ch:
@@ -209,6 +209,12 @@ func TestEventBridgeUsage(t *testing.T) {
 			}
 			if int(payload["percent"].(float64)) != 42 {
 				t.Errorf("expected percent=42, got %v", payload["percent"])
+			}
+			if payload["cost_usd"].(float64) != 0.023 {
+				t.Errorf("expected cost_usd=0.023, got %v", payload["cost_usd"])
+			}
+			if int(payload["budget_pct"].(float64)) != 60 {
+				t.Errorf("expected budget_pct=60, got %v", payload["budget_pct"])
 			}
 		})
 	default:

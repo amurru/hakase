@@ -25,7 +25,7 @@ func resolveMCPFile() string {
 	if home == "" {
 		home = "."
 	}
-	_ = os.MkdirAll(home, 0755)
+	_ = os.MkdirAll(home, 0o700)
 	MCPRegistryFile = filepath.Join(home, "mcp.json")
 	return MCPRegistryFile
 }
@@ -64,7 +64,7 @@ func saveMCPUserRegistryLocked(reg MCPUserRegistry) error {
 	tmp := file + ".tmp"
 	lockFile := file + ".lock"
 
-	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0644)
+	lf, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -74,10 +74,15 @@ func saveMCPUserRegistryLocked(reg MCPUserRegistry) error {
 	}
 	defer util.FlockUnlock(lf)
 
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, file)
+	if err := os.Rename(tmp, file); err != nil {
+		return err
+	}
+	// Best-effort: existing files may predate 0600.
+	_ = os.Chmod(file, 0o600)
+	return nil
 }
 
 // saveMCPUserRegistry is the public locked saver.

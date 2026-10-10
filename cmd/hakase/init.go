@@ -32,9 +32,10 @@ func init() {
 	sandbox.EvaluateCommandFunc = func(sb *sandbox.SandboxConfig, command string, args []string) sandbox.GateDecision {
 		d := hakaseagent.EvaluateCommand(sb, command, args)
 		return sandbox.GateDecision{
-			Action: sandbox.GateAction(d.Action),
-			Risk:   sandbox.CommandRisk(d.Risk),
-			Reason: d.Reason,
+			Action:     sandbox.GateAction(d.Action),
+			Risk:       sandbox.CommandRisk(d.Risk),
+			Reason:     d.Reason,
+			PolicyRule: d.PolicyRule,
 		}
 	}
 
@@ -57,6 +58,11 @@ func init() {
 		return hakaseagent.ApprovalExpiry()
 	}
 
+	// Sandbox hook: approval.mode=deny short-circuit (H1). Refuses
+	// everything up front, including allow-path commands and file tools
+	// that never reach ApproveExec.
+	sandbox.ApprovalDenyAllFunc = hakaseagent.ApprovalDenyAll
+
 	// Sandbox hook: audit logging.
 	sandbox.AuditCommandFunc = func(entry sandbox.CommandAuditEntry) {
 		hakaseagent.AuditCommandExec(hakaseagent.CommandAuditEntry{
@@ -72,6 +78,7 @@ func init() {
 			Reason:      entry.Reason,
 			DurationMs:  entry.DurationMs,
 			ExitCode:    entry.ExitCode,
+			PolicyRule:  entry.PolicyRule,
 		})
 	}
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-29. Living index of planned work. The GitHub issues are
+Last updated: 2026-10-10. Living index of planned work. The GitHub issues are
 the source of truth for status — update this file only when priorities or
 scope change, not when individual boxes tick.
 
@@ -72,6 +72,41 @@ open issue). Per-item notes live there; ordered by expected value:
 
 - `docs/git-tools/tasks.md` T7.x remainder: `git_remote` management,
   `git_rebase`/`git_merge`, `git_commit --amend`/signing.
+
+## Tier 3 — Next bets (ordered by expected value)
+
+Designs landed 2026-10-08 as `docs/<feature>/spec.md` + `plan.md` + `tasks.md`
+(per maintenance convention 1, specs written ahead of issues so each issue
+can point at its design). Open one GitHub issue per item when work starts;
+per-item notes live in the issues, not here.
+
+1. **FinOps** — shipped (2026-10-09, opt-in `finops.enabled`): full
+   usage capture, priced local ledger, rolling-window budgets (warn/block
+   with audit chaining), prompt-cache guard, TUI/web cost meters,
+   `GET /api/stats`, `hakase stats`. Design: `docs/finops/` (FO-001..FO-005).
+2. **Context hygiene** -- shipped: threshold-gated skill stub + `search_skills`,
+   KB count/byte caps, persist-time tool-output cap, durable-pin bin.
+   Lazy loading already exists (`internal/agent/agent.go:1109,1215`); this
+   scales it past ~100 skills without changing under-threshold behavior.
+   Design: `docs/context-hygiene/` (CX-001..CX-004).
+3. **Permissions policy** — shipped (2026-10-10): `permissions.json` allow/ask/deny
+   per tool+path (opencode triples + Claude deny>ask>allow), user < project
+   (trust-gated) < enterprise layering, mobile approval queue endpoint,
+   hash-chained audit export. Builds on the gates + content-hash trust above.
+   Design: `docs/permissions/` (PM-001..PM-004).
+4. **MCP gateway** - shipped: registry search (`hakase mcp search/install`),
+   `mcp audit` (inventory vs budget, shadow drift, poisoning scan, auth posture,
+   sandbox/egress, provenance, elicitation log), scoped-token UX
+   (`mcp logout <server>`), gateway meta-tools (`mcp_search_tools`,
+   `mcp_describe_tool`, `mcp_call_tool`) with auto-degrade over budget when
+   `mcp.gateway.enabled` (default 40). Never hard-fails a turn. Reuses
+   `UpsertServer`/`Reconnect`/`Diagnose`.
+   Design: `docs/mcp-gateway/` (MG-001..MG-006).
+5. **ADK adoption (phased enabler)** — replace bespoke delegation runner
+   with `agenttool.New` first (H value / L-M effort), then one workflow
+   pilot, then artifacts + `plugin.Plugin`; skills toolset + A2A deferred.
+   Cloud backends stay opt-in only. Design: `docs/adk-adoption/`
+   (AD-001..AD-005).
 
 ## Deferred ledger (intentionally not scheduled)
 

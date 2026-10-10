@@ -77,6 +77,9 @@ var replayNeverTools = map[string]struct{}{
 	"git_clone": {}, "git_push": {}, "git_pull": {},
 	"git_commit": {}, "git_stage": {}, "git_checkout": {},
 	"git_reset": {}, "git_clean": {}, "git_stash": {}, "git_tag": {},
+	// T7.x remainder (L5): explicit so a future default change cannot
+	// silently make history-rewriting tools replayable.
+	"git_remote": {}, "git_merge": {}, "git_rebase": {},
 	// Identity per call / destructive.
 	"create_task": {}, "delete_task": {}, "archive_task": {},
 	"forget_memory": {}, "link_knowledge": {},

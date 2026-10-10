@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/interfaces"
 
 	tgbot "github.com/go-telegram/bot"
@@ -52,6 +53,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 		approved := sel == "1"
 		delivered := b.approval != nil && b.approval.RespondApproval(gateID, approved)
 		if delivered {
+			hakaseagent.AuditApprovalAnswer(gateID, "", approved, fmt.Sprintf("telegram:%d", cq.From.ID), "telegram")
 			answer("Done.")
 			b.editText(ctx, c, msg.ID, approvalOutcome(msg.Text, approved), nil)
 		} else {

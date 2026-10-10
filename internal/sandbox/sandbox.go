@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 
 	"github.com/cyphar/filepath-securejoin"
 )
@@ -599,6 +600,9 @@ type CommandAuditEntry struct {
 	Reason      string `json:"reason"`
 	DurationMs  int64  `json:"duration_ms"`
 	ExitCode    int    `json:"exit_code"`
+	// PolicyRule cites the permissions rule behind a policy decision
+	// (docs/permissions/ PM-004); zero when the risk gate decided alone.
+	PolicyRule permissions.PolicyRule `json:"policy_rule,omitempty"`
 }
 
 // GateDecision is the outcome of evaluating one command.
@@ -606,6 +610,9 @@ type GateDecision struct {
 	Action GateAction
 	Risk   CommandRisk
 	Reason string
+	// PolicyRule cites the permissions rule behind a policy deny/ask
+	// (nil when the risk gate decided on its own).
+	PolicyRule *permissions.Rule
 }
 
 // GateAction is the policy outcome.
@@ -653,6 +660,12 @@ var AuditCommandFunc func(entry CommandAuditEntry)
 // ApproveFunc is set by main to ask the user for approval.
 // When nil, approval is denied (fail-closed).
 var ApproveFunc func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error)
+
+// ApprovalDenyAllFunc is set by main to report approval.mode=deny.
+// When non-nil and true, buildExecCommand and taskResolve refuse
+// everything up front (H1: mode=deny must cover the allow path too,
+// not just the ApproveExec ask path). Nil = feature off.
+var ApprovalDenyAllFunc func() bool
 
 // ApprovalExpiryFunc is set by main to return the configured approval expiry.
 // When nil, defaults to 60s.

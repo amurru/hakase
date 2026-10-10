@@ -31,6 +31,8 @@ export const useAppStore = defineStore('app', () => {
   // (empty for plain local sessions); the chat header renders it as a chip.
   const activeProjectName = ref('')
   const totalTokens = ref(0)
+  const costUsd = ref(0)
+  const budgetPct = ref(0)
   const thinkingEnabled = ref(false)
 
   function setModelName(name: string) {
@@ -76,6 +78,13 @@ export const useAppStore = defineStore('app', () => {
     totalTokens.value = tokens
   }
 
+  // setCostMeter records the turn cost and budget fill from SSE v2 usage
+  // events (additive fields; older servers omit them and the meter stays 0).
+  function setCostMeter(cost: number, pct: number) {
+    if (typeof cost === 'number' && cost >= 0) costUsd.value = cost
+    if (typeof pct === 'number' && pct >= 0) budgetPct.value = Math.min(100, Math.round(pct))
+  }
+
   function toggleThinking() {
     thinkingEnabled.value = !thinkingEnabled.value
   }
@@ -88,6 +97,9 @@ export const useAppStore = defineStore('app', () => {
     activeSessionTitle,
     activeProjectName,
     totalTokens,
+    costUsd,
+    budgetPct,
+    setCostMeter,
     thinkingEnabled,
     setModelName,
     loadModelName,

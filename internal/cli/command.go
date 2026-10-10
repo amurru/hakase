@@ -148,6 +148,11 @@ func init() {
 		Handler:     RunSessionCLI,
 	})
 	registerCommand(Command{
+		Name:        "stats",
+		Description: "show model usage and cost from the FinOps ledger",
+		Handler:     RunStatsCLI,
+	})
+	registerCommand(Command{
 		Name:        "rules",
 		Description: "list and show active project context files (AGENTS.md)",
 		Handler:     RunRulesCLI,
@@ -171,6 +176,11 @@ func init() {
 		Name:        "channels",
 		Description: "manage communication channels (status, pair-code, revoke)",
 		Handler:     RunChannelsCLI,
+	})
+	registerCommand(Command{
+		Name:        "audit",
+		Description: "export and verify the hash-chained audit trail",
+		Handler:     RunAuditCLI,
 	})
 	registerCommand(Command{
 		Name:        "memory",

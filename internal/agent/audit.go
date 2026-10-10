@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/util"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,10 +30,65 @@ type CommandAuditEntry struct {
 	Reason      string `json:"reason"`
 	DurationMs  int64  `json:"duration_ms"`
 	ExitCode    int    `json:"exit_code"`
+	// Actor is who answered a gate prompt (web username, channel user)
+	// on answer entries; empty on execution entries (PM-004).
+	Actor string `json:"actor,omitempty"`
+	// TraceID links entries to one gate prompt (the approval ID) on
+	// answer entries (PM-004).
+	TraceID string `json:"trace_id,omitempty"`
+	// PolicyRule cites the permissions rule behind a policy decision
+	// (PM-004); empty when the risk gate decided on its own.
+	PolicyRule permissions.PolicyRule `json:"policy_rule,omitempty"`
+	// PrevHash/EntryHash chain entries tamper-evidently (PM-004):
+	// entry_hash = sha256(prev_hash + canonical entry JSON).
+	PrevHash  string `json:"prev_hash,omitempty"`
+	EntryHash string `json:"entry_hash,omitempty"`
+	// HashAlg records the hash algorithm ("hmac-sha256" when an HMAC
+	// key was active at write time, "" = plain sha256). Verification
+	// picks the algorithm per entry so enabling HMAC later does not
+	// break verification of older entries.
+	HashAlg string `json:"hash_alg,omitempty"`
 }
+
+// hashAlgHMAC is the HashAlg marker for HMAC-chained entries.
+const hashAlgHMAC = "hmac-sha256"
 
 // auditLogDir is where the always-on audit log is written. Overridable in tests.
 var auditLogDir = "logs"
+
+// secretKV matches secret-shaped key=value assignments (keeps the key,
+// redacts the value); secretToken matches bare well-known token shapes.
+// Applied to audit entries BEFORE chaining/forwarding/export so secrets
+// never sprawl to logs or SIEM in cleartext (M5).
+var (
+	secretKV     = regexp.MustCompile(`(?i)(token|password|passwd|secret|api[_-]?key|auth)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)`)
+	secretScheme = regexp.MustCompile(`(?i)(bearer|basic)\s+\S+`)
+	secretJSON   = regexp.MustCompile(`(?i)("(?:token|password|passwd|secret|api[_-]?key|auth)")\s*:\s*"[^"]*"`)
+	secretToken  = regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|xox[bap]-[A-Za-z0-9-]{8,})\b`)
+)
+
+// redactSecrets replaces secret-shaped values with [REDACTED].
+func redactSecrets(s string) string {
+	s = secretKV.ReplaceAllString(s, "$1=[REDACTED]")
+	s = secretScheme.ReplaceAllStringFunc(s, func(m string) string {
+		if i := strings.IndexAny(m, " \t"); i >= 0 {
+			return m[:i+1] + "[REDACTED]"
+		}
+		return "[REDACTED]"
+	})
+	s = secretJSON.ReplaceAllString(s, `$1:"[REDACTED]"`)
+	return secretToken.ReplaceAllString(s, "[REDACTED]")
+}
+
+// AuditDir returns the audit log directory (honors test overrides).
+func AuditDir() string {
+	return auditLogDir
+}
+
+// SetAuditDir overrides the audit log directory (tests and embedding).
+func SetAuditDir(dir string) {
+	auditLogDir = dir
+}
 
 // Audit rotation bounds logs/ (issue #13): the audit trail is append-only
 // and already ~730KB with no retention. Defaults keep ~30MB max.
@@ -55,11 +113,15 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	// Truncate long string fields to keep the audit log bounded.
 	entry.Command = util.TruncateStr(entry.Command)
 	entry.Reason = util.TruncateStr(entry.Reason)
-
-	b, err := json.Marshal(entry)
-	if err != nil {
-		return // best-effort: encoding failure is not actionable
+	// Redact secret-shaped values before chaining/forwarding/export (M5).
+	entry.Command = redactSecrets(entry.Command)
+	entry.Reason = redactSecrets(entry.Reason)
+	// Clone before redacting: the caller's slice must not be mutated.
+	redacted := make([]string, len(entry.Args))
+	for i, a := range entry.Args {
+		redacted[i] = redactSecrets(a)
 	}
+	entry.Args = redacted
 
 	auditMu.Lock()
 	defer auditMu.Unlock()
@@ -84,7 +146,26 @@ func AuditCommandExec(entry CommandAuditEntry) {
 		}
 	}
 
-	rotateAuditLogIfNeeded(path, int64(len(b)+1))
+	// Hash chain (PM-004): link to the last stored hash BEFORE rotation
+	// so the chain spans rotated files; the entry is hashed after the
+	// prev link is set (chainEntryHash zeroes the hash fields first).
+	// The algorithm marker is set before hashing so it is covered too.
+	entry.PrevHash = tailEntryHash(path)
+	if len(auditHMACKey) > 0 {
+		entry.HashAlg = hashAlgHMAC
+	}
+	canonical, err := json.Marshal(chainView(entry))
+	if err != nil {
+		return // best-effort: encoding failure is not actionable
+	}
+
+	rotateAuditLogIfNeeded(path, int64(len(canonical)+1))
+
+	entry.EntryHash = chainEntryHash(entry.PrevHash, canonical)
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return // best-effort: encoding failure is not actionable
+	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -96,6 +177,24 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	// Append one JSON line per entry, \n terminated.
 	_, _ = f.Write(b)
 	_, _ = f.Write([]byte("\n"))
+
+	forwardAuditEntry(b)
+}
+
+// AuditBudgetBlock records a FinOps pre-turn budget denial on the always-on
+// audit trail (docs/finops/spec.md FO-003). Decision "budget_blocked"
+// distinguishes budget denials from policy/hook denials; the breached scope
+// rides in Command ("budget:<scope>") and the spend line in Reason.
+// Best-effort via AuditCommandExec: never breaks the turn.
+func AuditBudgetBlock(scope, reason, sessionID string) {
+	AuditCommandExec(CommandAuditEntry{
+		Timestamp: time.Now(),
+		Tool:      "finops",
+		Command:   "budget:" + scope,
+		SessionID: sessionID,
+		Decision:  "budget_blocked",
+		Reason:    reason,
+	})
 }
 
 // AuditHookBlock records a PreToolUse hook denial on the always-on audit

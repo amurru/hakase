@@ -2,9 +2,41 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func TestToolResultTruncationCountsRunes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		limit   int
+		kind    string
+		content string
+		want    string
+	}{
+		{"ascii overflow", 0, MessageKindToolResult, strings.Repeat("a", 8193), strings.Repeat("a", 8192) + "\n...[truncated 1 chars]"},
+		{"unicode below limit", 0, MessageKindToolResult, strings.Repeat("界", 4000), strings.Repeat("界", 4000)},
+		{"unicode exact limit", 0, MessageKindToolResult, strings.Repeat("😀", 8192), strings.Repeat("😀", 8192)},
+		{"unicode overflow", 0, MessageKindToolResult, strings.Repeat("a", 8191) + "界😀é", strings.Repeat("a", 8191) + "界\n...[truncated 2 chars]"},
+		{"custom limit", 3, MessageKindToolResult, "a界😀é", "a界😀\n...[truncated 1 chars]"},
+		{"text unaffected", 3, MessageKindText, "a界😀é", "a界😀é"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewSession("test")
+			s.ToolOutputMaxChars = tc.limit
+			s.AddMessageWithMeta("agent", tc.content, "", 0, tc.kind)
+			got := s.Messages[0].Content
+			if !utf8.ValidString(got) {
+				t.Fatal("truncation produced invalid UTF-8")
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected persisted content: got %d runes, want %d", utf8.RuneCountInString(got), utf8.RuneCountInString(tc.want))
+			}
+		})
+	}
+}
 
 func TestMessageJSONRoundTripNewFields(t *testing.T) {
 	msg := Message{

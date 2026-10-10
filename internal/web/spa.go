@@ -26,7 +26,7 @@ import (
 // Unauthenticated endpoints (/api/health, /api/login) are registered first,
 // then the auth middleware group wraps the remaining API routes.
 // The SPA catch-all is mounted last.
-func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, channelsStore *state.Store, channelsRunning func() bool, allowInsecureCookie bool) {
+func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, channelsStore *state.Store, channelsRunning func() bool, allowInsecureCookie bool, approvalRoles handlers.RoleMap) {
 	// Middleware applied globally
 	r.Use(CORSMiddleware())
 	r.Use(RequestLogger())
@@ -53,12 +53,14 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 			chatAPI := handlers.RegisterChatRoutes(r, bridge, sessionSvc, runner, runtime, history)
 			wireResumeBackend(chatAPI, approvalGate, clarifyGate)
 		}
-		// Approval/Clarify response endpoints (task 22)
+		// Approval/Clarify response endpoints (task 22) + pending
+		// queue and batch respond with web RBAC (docs/permissions/ PM-003).
+		// Roles come from auth.web_roles; unparseable config fails loudly.
 		if approvalGate != nil {
-			handlers.RegisterApprovalRoutes(r, approvalGate)
+			handlers.RegisterApprovalRoutesWithRoles(r, approvalGate, approvalRoles)
 		}
 		if clarifyGate != nil {
-			handlers.RegisterClarifyRoutes(r, clarifyGate)
+			handlers.RegisterClarifyRoutesWithRoles(r, clarifyGate, approvalRoles)
 		}
 		// Task API routes (task 27)
 		handlers.RegisterTaskRoutes(r)
@@ -103,7 +105,6 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 	}
 }
 
-// wireResumeBackend connects the durable-resume answer path
 // (docs/durable-resume/plan.md Phase 7): re-emitted prompts resolve
 // through the ChatAPI resume backend, and pending gate prompts are
 // re-emitted at startup behind AutoResumeOnStartup. Nil-tolerant:

@@ -250,9 +250,6 @@ func (r *fakeResponders) RespondClarify(clarifyID string, response interfaces.Cl
 // newTestBot wires a transport against fakes and a temp state file.
 func newTestBot(t *testing.T) (*Bot, *fakeAPI, *fakeResponders, *channel.Service) {
 	t.Helper()
-	oldPace := perChatSendInterval
-	perChatSendInterval = 0
-	t.Cleanup(func() { perChatSendInterval = oldPace })
 
 	sessionsDir := t.TempDir()
 	store_, err := hakasesession.NewSessionStore(sessionsDir)

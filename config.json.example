@@ -19,6 +19,11 @@
   },
   "mcp_server_url": "http://localhost:9223/mcp",
   "mcp": {
+    "gateway": {
+      "enabled": false,
+      "budget": 40,
+      "hot_tools": []
+    },
     "servers": {
       "lightpanda": { "type": "http", "url": "http://localhost:9223/mcp" },
       "github": {
@@ -49,6 +54,17 @@
   "hybrid_search": false,
   "knowledge_embed_model": "",
   "knowledge_embed_base_url": "",
+  "skills_index_mode": "auto",
+  "skills_search_threshold": 50,
+  "tool_output_max_chars": 8192,
+  "context_durable_pins": false,
+  "finops": {
+    "enabled": false,
+    "currency": "USD",
+    "prices": {"overrides": {}},
+    "budgets": {"daily_usd": 5.0, "weekly_usd": 20.0, "monthly_usd": 50.0, "per_session_usd": 2.0, "enforce": "warn", "cache_warn_ratio": 0.5},
+    "ledger": {"path": "", "per_tool": true}
+  },
   "provider_options": {},
   "chat_buffer_size": 1000,
   "task_checkpoint": false,
@@ -127,6 +143,16 @@
   "approval": {
     "mode": "interactive",
     "expiry_seconds": 60
+  },
+  "permissions": {
+    "enterprise_path": "",
+    "enterprise_url": "",
+    "poll_minutes": 0
+  },
+  "audit": {
+    "forward_url": "",
+    "forward_format": "jsonl",
+    "hmac_key_file": ""
   },
   "sleep": {
     "edit_budget": 4,

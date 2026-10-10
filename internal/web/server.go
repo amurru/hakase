@@ -30,8 +30,9 @@ type Server struct {
 	history *hctx.HistoryBuilder
 
 	// Gate dependencies (optional - set before RegisterDefaults to enable approval/clarify routes).
-	approvalGate *handlers.WebApprovalGate
-	clarifyGate  *handlers.WebClarifyGate
+	approvalGate  *handlers.WebApprovalGate
+	approvalRoles handlers.RoleMap
+	clarifyGate   *handlers.WebClarifyGate
 
 	// Channel management (optional): the state store for status/pairing/
 	// revoke endpoints and a liveness probe for the in-process channel
@@ -81,6 +82,13 @@ func (s *Server) SetGates(approvalGate *handlers.WebApprovalGate, clarifyGate *h
 	s.clarifyGate = clarifyGate
 }
 
+// SetApprovalRoles configures web RBAC for the approval queue endpoints
+// (docs/permissions/ PM-003). Nil = open (single-user behavior).
+// Must be called before RegisterDefaults.
+func (s *Server) SetApprovalRoles(roles handlers.RoleMap) {
+	s.approvalRoles = roles
+}
+
 // SetChannels configures the channel-management endpoints: store backs the
 // status/pairing-code/revoke handlers, and running reports whether the
 // in-process channel service is live (nil when channels never started).
@@ -106,7 +114,7 @@ func (s *Server) Router() chi.Router {
 // and SPA handler. assets is the filesystem providing the frontend assets.
 // Pass nil for API-only mode (hakase serve) - the SPA catch-all is skipped.
 func (s *Server) RegisterDefaults(assets http.FileSystem) {
-	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.history, s.approvalGate, s.clarifyGate, s.channelsStore, s.channelsRunning, s.allowInsecureCookie)
+	RegisterRoutes(&chiRouterAdapter{s.router}, assets, s.jwtKey, s.sessionSvc, s.bridge, s.runner, s.runtime, s.history, s.approvalGate, s.clarifyGate, s.channelsStore, s.channelsRunning, s.allowInsecureCookie, s.approvalRoles)
 }
 
 // Run starts the HTTP server on the given address and blocks until

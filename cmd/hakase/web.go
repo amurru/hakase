@@ -24,6 +24,7 @@ import (
 	"amurru/hakase/internal/channel/telegram"
 	"amurru/hakase/internal/cli"
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
 	"amurru/hakase/internal/mcp"
@@ -326,6 +327,23 @@ func runServer(args []string, serveSPA bool) int {
 		fmt.Fprintf(os.Stderr, "hakase: failed to setup agent runner: %v\n", err)
 		return 1
 	}
+	// Gateway nested calls (mcp_call_tool) enforce the target tool's
+	// PreToolUse/PostToolUse hooks with the resolved tool name, and audit
+	// nested denials like direct calls.
+	if hooksRunner := deps.HooksRunner; hooksRunner != nil {
+		mcp.SetGatewayPreToolUseCheck(hooksRunner.CheckPreToolUse)
+		mcp.SetGatewayPostToolUseCheck(hooksRunner.CheckPostToolUse)
+	}
+	mcp.SetGatewayAuditHook(agent.AuditHookBlock)
+
+	// Permissions refresh (M2): long-lived serve processes re-load the
+	// layered policy on the enterprise poll interval so revocations land.
+	// Stopped with the server below.
+	permRoot, _ := os.Getwd()
+	stopPermRefresh := agent.StartPermissionsRefresh(ctx, cfg, permRoot,
+		hooks.OpenDefaultTrustStore(),
+		func(msg string) { log.Printf("web: %s", msg) })
+	defer stopPermRefresh()
 
 	// NOTE (plan SL-001, audit B5): skill.EvolveMutateFn and
 	// hctx.CurrentModelFunc are owned by agent.SetupRunner above; the
@@ -358,6 +376,18 @@ func runServer(args []string, serveSPA bool) int {
 	srv.SetChatDeps(bridge, runner, runtime)
 	srv.SetHistoryBuilder(deps.HistoryBuilder)
 	srv.SetGates(approvalGate, clarifyGate)
+	// Web RBAC (M4): parse auth.web_roles once from the loaded config -
+	// never re-load by CWD - so a wrong working directory cannot silently
+	// downgrade the queue to fully open.
+	webRoles, err := handlers.ParseRoleMap(cfg.Auth.WebRoles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: %v\n", err)
+		return 1
+	}
+	srv.SetApprovalRoles(webRoles)
+	if len(webRoles) > 0 {
+		log.Printf("web: approval RBAC active (%d listed identities)", len(webRoles))
+	}
 
 	// Cron lifecycle events reach the SSE bridge in web mode too (the TUI
 	// wires its own listener in main.go); the channel router subscribes to

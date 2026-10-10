@@ -197,6 +197,25 @@ Spans follow the GenAI semantic conventions: `hakase.run` (session, project, tra
 
 ---
 
+## FinOps (usage, cost, budgets)
+
+Opt-in metering that answers "what did that cost": every turn records its full usage (prompt, candidates, cached, thoughts, tool-use) plus per-tool deltas to a metadata-only local ledger (`~/.hakase/usage.jsonl`, never prompt text), priced against a versioned static table with config overrides and a tiered >200K boundary. Unknown models record tokens-only and warn.
+
+```json
+{
+  "finops": {
+    "enabled": true,
+    "prices": {"overrides": {"my-model": {"input_per_1m": 0.3, "output_per_1m": 2.5, "cached_per_1m": 0.075}}},
+    "budgets": {"daily_usd": 5.0, "per_session_usd": 2.0, "enforce": "warn", "cache_warn_ratio": 0.5},
+    "ledger": {"per_tool": true}
+  }
+}
+```
+
+Budgets enforce at the turn boundary over rolling windows (24h/7d/30d/session-lifetime): `warn` toasts and continues, `block` stops the run pre-turn with a legible denial chained into the audit trail (`decision: budget_blocked`). The prompt-cache guard warns when a turn's cached/total ratio falls below `cache_warn_ratio` (a cache-buster hint). Live surfaces: turn cost + budget fill in the TUI status bar and web header (SSE `usage` v2: `cost_usd`, `budget_pct`), `GET /api/stats` (`?since=24h&by=model`), and `hakase stats`. Run spans carry `gen_ai.usage.*` + `cost.usd`. Env overrides: `HAKASE_FINOPS_ENABLED`, `HAKASE_FINOPS_ENFORCE`, `HAKASE_BUDGET_DAILY_USD`. See [docs/finops/](docs/finops/).
+
+---
+
 ## CLI Reference
 
 Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server. Other subcommands are file-only (no model needed unless noted):
@@ -207,12 +226,14 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 | `task` | Manage the task board (`create`, `list`, `get`, `update`, `complete`, ...) |
 | `knowledge` | Manage the knowledge base (`list`, `read`, `search`, `lint`, `create`, `link`, `bench`) |
 | `session` | Manage sessions (`list`, `delete`, `archive`) |
+| `stats` | Show model usage and cost from the FinOps ledger (`session <id>`, `budgets`; `--format table\|json`, `--since 24h`, `--by model\|session\|day`) |
 | `rules` | List/show active project context files (`AGENTS.md`) |
 | `env` | Print the detected runtime-environment block |
 | `cron` | Manage scheduled tasks (`list`, `status`, `pause`, `resume`, `run`, `tick`) |
 | `sleep` | SkillOpt-Sleep self-improvement loop for markdown skills (`harvest`, `review`, `dry-run`, `run`, `adopt`, `status`, `schedule`, `evalkit`; real runs need a configured model) |
 | `channels` | Manage communication channels (`status`, `pair-code`, `revoke`) |
 | `hooks` | Manage tool-lifecycle hooks (`list`, `trust`, `untrust`, `test`, `add`, `rm`, `enable`/`disable`, `on`/`off`) |
+| `audit` | Export and verify the hash-chained audit trail (`export [--since 24h] [--format jsonl\|csv] [--verify]`, `verify`) |
 | `auth` | Manage web authentication (`set-password`) |
 | `version` | Print build version (version, commit, build date, Go runtime) |
 
@@ -275,6 +296,7 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 - `tracing` -- OpenTelemetry GenAI tracing over OTLP/HTTP (`enabled`, `endpoint`, `headers`, `sample_ratio`). See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 - `session.snapshots` -- restore-to-message checkpoints (`enabled`, `max` per session, default 50): "Restore to before this message" on any user prompt in the chat UI rewinds the conversation; the pre-restore state is kept as an undo snapshot. See [docs/session-rewind/](docs/session-rewind/).
 - `hooks` -- tool-lifecycle hooks (`PreToolUse` blockable, `PostToolUse` observability, `SessionStart` once-per-session context, `UserPromptSubmit` per-prompt context; argv commands, tool-name regex matchers, 30s default timeout, `on_failure: allow|block`, per-hook `enabled`). Project hooks (`<root>/.hakase/hooks.json`) execute only after per-hook content-hash trust (`hakase hooks trust`). User hooks support live CRUD on CLI, web Hooks page, and TUI `/hooks` (no restart; SIGHUP for external edits). See [docs/hooks/](docs/hooks/).
+- `permissions` -- allow/ask/deny policy per tool+path (`~/.hakase/permissions.json`, trust-gated `<root>/.hakase/permissions.json`, `/etc/hakase/enterprise.json` + URL poll; enterprise deny/ask always win, `allow_managed_only`, `disable_bypass`). Mobile approval queue (`GET /api/approvals/pending`, batch respond, `auth.web_roles` viewer/approver/admin) and hash-chained audit trail (`hakase audit export|verify`, SIEM forward). See [docs/permissions/](docs/permissions/).
 - `units.system` -- `metric` (default, SI/ISO) or `imperial`
 - `HAKASE_HOME` -- user home dir (default `~/.hakase`): holds `config.json` fallback, `credentials.json`, `jwt-secret`, `mcp.json`, `cronjobs.json`, `channels.json`, `skills/`, `knowledge/`
 
@@ -387,7 +409,7 @@ See [docs/DEVELOPMENT.md#tui-deep-dive](docs/DEVELOPMENT.md#tui-deep-dive).
 
 - **Sandboxing** -- `paths` (default) confines all file ops/downloads/Python to approved roots; `bubblewrap` adds kernel namespaces; `off` disables. Secret files (`config.json`, `.env`, `~/.hakase/credentials.json`, `jwt-secret`, `cronjobs.json`, etc.) are implicitly denied. See [Sandboxing](docs/DEVELOPMENT.md#sandboxing--workspace-confinement).
 
-- **MCP** -- configure in the `mcp` block of `config.json` (merged with `~/.hakase/mcp.json`). Tools appear as `mcp_<server>_<tool>`; manage live with `/mcp`. Any spec-compliant browser MCP is a config swap -- see [presets](docs/browser-mcp-presets.md). Full reference in [docs/DEVELOPMENT.md#mcp-integration](docs/DEVELOPMENT.md#mcp-integration).
+- **MCP** -- configure in the `mcp` block of `config.json` (merged with `~/.hakase/mcp.json`). Search and install registry servers with `hakase mcp search/install`, run security/budget audits via `hakase mcp audit`, manage tokens via `hakase mcp logout <server>`, and manage live with `/mcp`. When `mcp.gateway.enabled` is true and tool counts exceed budget (default 40), the gateway auto-degrades to meta-tools (`mcp_search_tools`, `mcp_describe_tool`, `mcp_call_tool`). See [presets](docs/browser-mcp-presets.md) and full reference in [docs/DEVELOPMENT.md#mcp-integration](docs/DEVELOPMENT.md#mcp-integration).
 
 - **Media generation** -- `generate_image` (cloud via OpenAI/OpenAI-compatible incl. OpenRouter, `fal-ai/flux/schnell`, or offline `pil` fallback -- zero config) and `generate_video` (OpenRouter `/api/v1/videos` incl. image-to-video, `fal-ai/wan/v2.7`). All output goes to `outputs/media/` via `securejoin` + atomic write. Configure via the `media` block or `HAKASE_MEDIA_*` / `HAKASE_FAL_KEY`. See [docs/media-generation/support.md](docs/media-generation/support.md).
 
