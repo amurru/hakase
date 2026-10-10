@@ -94,10 +94,11 @@ per-item notes live in the issues, not here.
    (trust-gated) < enterprise layering, mobile approval queue endpoint,
    hash-chained audit export. Builds on gates + content-hash trust already
    shipped. Design: `docs/permissions/` (PM-001..PM-004).
-4. **MCP gateway** — registry search, one-command install, `mcp audit`
-   (shadow drift, poisoning scan, auth posture, 40-tool budget),
-   scoped-token UX, gateway meta-tools with auto-degrade over budget.
-   Reuses `UpsertServer`/`Reconnect`/`Diagnose`; never hard-fails a turn.
+4. **MCP gateway** — shipped: registry search (`hakase mcp search/install`),
+   `mcp audit` (inventory, shadow drift, poisoning scan, auth posture, sandbox,
+   provenance), scoped-token UX (`mcp logout`), gateway meta-tools
+   (`mcp_search_tools`, `mcp_describe_tool`, `mcp_call_tool`) with auto-degrade
+   over 40-tool budget. Reuses `UpsertServer`/`Reconnect`/`Diagnose`.
    Design: `docs/mcp-gateway/` (MG-001..MG-006).
 5. **ADK adoption (phased enabler)** — replace bespoke delegation runner
    with `agenttool.New` first (H value / L-M effort), then one workflow
