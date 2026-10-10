@@ -46,14 +46,14 @@ type DoctorReport struct {
 
 // Injectable probes for hermetic testing.
 var (
-	lookPathFn = exec.LookPath
-	loadConfigFn = config.LoadConfig
-	resolveConfigPathFn = config.ResolveConfigPath
+	lookPathFn              = exec.LookPath
+	loadConfigFn            = config.LoadConfig
+	resolveConfigPathFn     = config.ResolveConfigPath
 	validateSandboxConfigFn = sandbox.ValidateSandboxConfig
 	sandboxStartupWarningFn = sandbox.SandboxStartupWarning
-	hakaseHomeFn = config.HakaseHome
-	httpProbeFn = defaultHTTPProbe
-	mcpDiagnoseFn = defaultMCPDiagnose
+	hakaseHomeFn            = config.HakaseHome
+	httpProbeFn             = defaultHTTPProbe
+	mcpDiagnoseFn           = defaultMCPDiagnose
 )
 
 func defaultHTTPProbe(ctx context.Context, targetURL string) error {
