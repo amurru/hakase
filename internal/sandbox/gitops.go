@@ -149,7 +149,13 @@ func (cw captureWriter) Write(p []byte) (int, error) {
 // directory (never -C), so classifyGitRisk sees the subcommand in argv[1]
 // (status/log/diff/branch = LOW; add/commit = MEDIUM).
 func runGit(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc) (gitResult, error) {
-	return runGitOpt(ctx, repoDir, args, write, log)
+	return runGitEnv(ctx, repoDir, args, write, log, nil)
+}
+
+// runGitEnv is runGit with extra environment entries (L4: GIT_EDITOR
+// rides in env so argv[1] stays the real subcommand for the gate).
+func runGitEnv(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc, extraEnv map[string]string) (gitResult, error) {
+	return runGitOpt(ctx, repoDir, args, write, log, extraEnv)
 }
 
 // runGitOperator is runGit under operator authority (see
@@ -157,10 +163,10 @@ func runGit(ctx context.Context, repoDir string, args []string, write bool, log 
 // is bypassed because the human operator issued the command directly. Used by
 // the project-registry materialization, never by agent-facing tools.
 func runGitOperator(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc) (gitResult, error) {
-	return runGitOpt(ctx, repoDir, args, write, log, ExecOperatorAuthorized())
+	return runGitOpt(ctx, repoDir, args, write, log, nil, ExecOperatorAuthorized())
 }
 
-func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc, opts ...ExecOption) (gitResult, error) {
+func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, log interfaces.LogFunc, extraEnv map[string]string, opts ...ExecOption) (gitResult, error) {
 	if len(args) == 0 {
 		return gitResult{}, fmt.Errorf("git: no subcommand")
 	}
@@ -172,9 +178,11 @@ func runGitOpt(ctx context.Context, repoDir string, args []string, write bool, l
 	// GIT_TERMINAL_PROMPT=0 makes credential/confirmation prompts fail fast
 	// instead of hanging the run waiting on a TTY. The sandbox comes from the
 	// run context so a project-bound session's pinned sandbox constrains git.
-	cmd, err := BuildExecCommandFor(ctx, "git", args, dir, map[string]string{
-		"GIT_TERMINAL_PROMPT": "0",
-	}, opts...)
+	env := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+	cmd, err := BuildExecCommandFor(ctx, "git", args, dir, env, opts...)
 	if err != nil {
 		return gitResult{Stdout: "", Stderr: err.Error()}, err
 	}
@@ -1637,14 +1645,16 @@ func gitRebaseContent(ctx context.Context, input GitRebaseInput, log interfaces.
 	out.Ref = ref
 	out.Operation = op
 
-	args := []string{"-c", "core.editor=true", "rebase"}
+	// GIT_EDITOR rides in env (not -c argv) so the gate and audit see
+	// the real subcommand at argv[1] (L4).
+	args := []string{"rebase"}
 	if op != "" {
 		args = append(args, "--"+op)
 	} else {
 		args = append(args, ref)
 	}
 
-	res, err := runGit(ctx, dir, args, true, log)
+	res, err := runGitEnv(ctx, dir, args, true, log, map[string]string{"GIT_EDITOR": "true"})
 	if err != nil {
 		if isNotARepoErr(res) {
 			out.NotARepo = true

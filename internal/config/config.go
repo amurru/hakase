@@ -61,6 +61,10 @@ type AuditConfig struct {
 	ForwardURL string `json:"forward_url,omitempty"`
 	// ForwardFormat is "jsonl" (default) or "json" (Content-Type framing).
 	ForwardFormat string `json:"forward_format,omitempty"`
+	// HmacKeyFile optionally points at a file whose bytes HMAC the audit
+	// hash chain (L1): only a key holder can rewrite history undetectably.
+	// Absent = plain sha256 self-consistency chain.
+	HmacKeyFile string `json:"hmac_key_file,omitempty"`
 }
 
 // Validate rejects unknown forward formats and bad URLs at load.
@@ -1685,6 +1689,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if v := os.Getenv("HAKASE_AUDIT_FORWARD_FORMAT"); v != "" {
 		cfg.Audit.ForwardFormat = v
+	}
+	if v := os.Getenv("HAKASE_AUDIT_HMAC_KEY_FILE"); v != "" {
+		cfg.Audit.HmacKeyFile = v
 	}
 	if err := cfg.Audit.Validate(); err != nil {
 		return nil, err

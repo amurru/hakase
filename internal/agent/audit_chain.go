@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,10 +37,37 @@ func chainView(e CommandAuditEntry) CommandAuditEntry {
 	return e
 }
 
-// chainEntryHash computes the entry hash over prev + canonical bytes.
-func chainEntryHash(prev string, canonical []byte) string {
+// auditHMACKey, when set, turns the chain into an HMAC chain: only a
+// holder of the key can extend or rewrite history undetectably. Plain
+// sha256 otherwise (self-consistency only, L1). Configured via
+// audit.hmac_key_file at startup; the verify CLI takes --hmac-key-file.
+var auditHMACKey []byte
+
+// ConfigureAuditHMACKey sets the chain HMAC key (nil/empty disables).
+func ConfigureAuditHMACKey(key []byte) {
+	cp := append([]byte(nil), key...)
+	if len(cp) == 0 {
+		cp = nil
+	}
+	auditHMACKey = cp
+}
+
+// hashWithKey computes the entry hash over prev + canonical bytes
+// (HMAC when key is set, plain sha256 otherwise).
+func hashWithKey(prev string, canonical, key []byte) string {
+	if len(key) > 0 {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(prev + "\n"))
+		mac.Write(canonical)
+		return hex.EncodeToString(mac.Sum(nil))
+	}
 	sum := sha256.Sum256([]byte(prev + "\n" + string(canonical)))
 	return hex.EncodeToString(sum[:])
+}
+
+// chainEntryHash computes the entry hash with the active chain key.
+func chainEntryHash(prev string, canonical []byte) string {
+	return hashWithKey(prev, canonical, auditHMACKey)
 }
 
 // tailEntryHash returns the EntryHash of the last parseable line in path
@@ -137,7 +165,21 @@ func VerifyAuditChain(dir string) (int, error) {
 			if err != nil {
 				return n, fmt.Errorf("audit verify: %s:%d: %w", path, ln+1, err)
 			}
-			if got := chainEntryHash(prev, canonical); got != e.EntryHash {
+			// Per-entry algorithm: HMAC entries need the active key,
+			// plain entries verify with sha256 (pre-HMAC history keeps
+			// verifying after the switch).
+			var key []byte
+			switch e.HashAlg {
+			case "":
+			case hashAlgHMAC:
+				if len(auditHMACKey) == 0 {
+					return n, fmt.Errorf("audit verify: %s:%d: HMAC entry but no key configured (--hmac-key-file)", path, ln+1)
+				}
+				key = auditHMACKey
+			default:
+				return n, fmt.Errorf("audit verify: %s:%d: unknown hash_alg %q", path, ln+1, e.HashAlg)
+			}
+			if got := hashWithKey(prev, canonical, key); got != e.EntryHash {
 				return n, fmt.Errorf("audit verify: %s:%d: entry hash mismatch (tampered?)", path, ln+1)
 			}
 			if want != "" && prev != want {
@@ -183,7 +225,7 @@ const AuditCSVHeader = "timestamp,tool,decision,risk,actor,trace_id,policy_sourc
 // AuditCSVRow renders one entry's metadata-only CSV row.
 func AuditCSVRow(e CommandAuditEntry) string {
 	q := func(s string) string {
-		if strings.ContainsAny(s, ",\"\n") {
+		if strings.ContainsAny(s, ",\"\n\r") {
 			return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 		}
 		return s
@@ -219,6 +261,12 @@ func AuditApprovalAnswer(gateID, tool string, approved bool, actor, transport st
 	})
 }
 
+// noRedirectClient refuses to follow HTTP redirects (L3): the SIEM
+// endpoint stays exactly where configured.
+func noRedirectClient(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 // SIEM forwarding (PM-004 audit.forward): best-effort POST of each entry
 // JSON line. Configured once at startup; failures are swallowed (a sick
 // SIEM must never break the agent).
@@ -249,7 +297,7 @@ func forwardAuditEntry(line []byte) {
 		ct = "application/json"
 	}
 	go func() {
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirectClient}
 		req, err := http.NewRequest("POST", url, bytes.NewReader(append([]byte(nil), line...)))
 		if err != nil {
 			return

@@ -20,6 +20,35 @@ func tempAuditDir(t *testing.T) string {
 	return dir
 }
 
+// TestAuditSecretsRedacted pins M5: secret-shaped values never reach
+// the chained log (and hence never reach SIEM/export either).
+func TestAuditSecretsRedacted(t *testing.T) {
+	dir := tempAuditDir(t)
+	AuditCommandExec(CommandAuditEntry{
+		Timestamp: time.Now(), Tool: "system_exec",
+		Command:  `curl -H "Authorization: Bearer abc123xyz" https://x.example`,
+		Args:     []string{"--token", "ghp_abcdefgh12345678"},
+		Reason:   "password=hunter2 run",
+		Decision: "allowed",
+	})
+	entries, err := ReadAuditEntries(dir, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	blob, _ := json.Marshal(entries[0])
+	for _, secret := range []string{"abc123xyz", "ghp_abcdefgh12345678", "hunter2"} {
+		if strings.Contains(string(blob), secret) {
+			t.Errorf("chained entry leaks %q: %s", secret, blob)
+		}
+	}
+	if !strings.Contains(string(blob), "[REDACTED]") {
+		t.Errorf("no redaction marker in %s", blob)
+	}
+}
+
 // TestAuditChainLinks verifies prev/entry linkage across appends.
 func TestAuditChainLinks(t *testing.T) {
 	dir := tempAuditDir(t)
@@ -163,5 +192,60 @@ func TestAuditCSVRow(t *testing.T) {
 	}
 	if n := strings.Count(row, ","); n != strings.Count(AuditCSVHeader, ",") {
 		t.Errorf("CSV row has %d commas, header has %d", n, strings.Count(AuditCSVHeader, ","))
+	}
+}
+
+// TestAuditHMACChain pins L1: a keyed chain verifies with the key,
+// fails without it, and verifies again once restored.
+func TestAuditHMACChain(t *testing.T) {
+	dir := tempAuditDir(t)
+	ConfigureAuditHMACKey([]byte("test-key-123"))
+	t.Cleanup(func() { ConfigureAuditHMACKey(nil) })
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "a", Decision: "allowed"})
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "b", Decision: "allowed"})
+	if n, err := VerifyAuditChain(dir); err != nil || n != 2 {
+		t.Fatalf("keyed verify = %d/%v, want 2/nil", n, err)
+	}
+	ConfigureAuditHMACKey(nil)
+	if _, err := VerifyAuditChain(dir); err == nil {
+		t.Fatal("keyless verify of HMAC log succeeded, want error")
+	}
+	ConfigureAuditHMACKey([]byte("test-key-123"))
+	if n, err := VerifyAuditChain(dir); err != nil || n != 2 {
+		t.Fatalf("restored verify = %d/%v, want 2/nil", n, err)
+	}
+	ConfigureAuditHMACKey([]byte("wrong-key"))
+	if _, err := VerifyAuditChain(dir); err == nil {
+		t.Fatal("wrong-key verify succeeded, want error")
+	}
+}
+
+// TestAuditSecretsExtended pins Basic auth and quoted-JSON redaction.
+func TestAuditSecretsExtended(t *testing.T) {
+	for _, cmd := range []string{
+		`curl -H "Authorization: Basic dXNlcjpwYXNz" https://x.example`,
+		`curl -d '{"token":"sensitive-value","id":1}' https://x.example`,
+	} {
+		if got := redactSecrets(cmd); strings.Contains(got, "dXNlcjpwYXNz") || strings.Contains(got, "sensitive-value") {
+			t.Errorf("redactSecrets(%q) = %q, want redacted", cmd, got)
+		}
+	}
+}
+
+// TestAuditHMACTransition pins mixed-algorithm verification: sha256
+// entries written before the switch keep verifying after HMAC is on.
+func TestAuditHMACTransition(t *testing.T) {
+	dir := tempAuditDir(t)
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "old", Decision: "allowed"})
+	ConfigureAuditHMACKey([]byte("k1"))
+	t.Cleanup(func() { ConfigureAuditHMACKey(nil) })
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "new", Decision: "allowed"})
+	n, err := VerifyAuditChain(dir)
+	if err != nil || n != 2 {
+		t.Fatalf("mixed verify = %d/%v, want 2/nil", n, err)
+	}
+	entries, _ := ReadAuditEntries(dir, time.Time{})
+	if entries[0].HashAlg != "" || entries[1].HashAlg != hashAlgHMAC {
+		t.Errorf("markers = %q/%q, want \"\"/hmac-sha256", entries[0].HashAlg, entries[1].HashAlg)
 	}
 }

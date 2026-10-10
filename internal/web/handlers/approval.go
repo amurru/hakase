@@ -347,16 +347,20 @@ func (api *ApprovalAPI) PendingApprovals(w http.ResponseWriter, r *http.Request)
 // RespondApproval (first response wins per prompt); results report
 // per-ID delivery so a partially-answered batch is visible.
 func (api *ApprovalAPI) RespondBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRespondBodyBytes)
 	var req struct {
 		IDs      []string `json:"ids"`
 		Approved bool     `json:"approved"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeSingleJSON(w, r, &req); err != nil {
 		return
 	}
 	if len(req.IDs) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no approval ids"})
+		return
+	}
+	if len(req.IDs) > maxBatchIDs {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many approval ids"})
 		return
 	}
 	results := make(map[string]bool, len(req.IDs))
@@ -390,10 +394,33 @@ func (api *ApprovalAPI) auditAnswer(approvalID string, approved bool, r *http.Re
 	hakaseagent.AuditApprovalAnswer(approvalID, tool, approved, r.Header.Get("X-Hakase-User"), "web")
 }
 
+// maxRespondBodyBytes caps answer payloads (M6: authenticated DoS / audit spam).
+const maxRespondBodyBytes = 1 << 20
+
+// maxBatchIDs caps one batch respond call (M6).
+const maxBatchIDs = 100
+
+// decodeSingleJSON decodes exactly one JSON value: trailing garbage
+// after the value is rejected (a valid response followed by junk must
+// not parse).
+func decodeSingleJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return err
+	}
+	if dec.More() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return fmt.Errorf("trailing data after JSON value")
+	}
+	return nil
+}
+
 // RespondApproval handles POST /api/approvals/{id}/respond.
 // Accepts {approved: bool}. Sends the response to the pending approval channel.
 // Returns 200 on success, 404 if the approval ID is unknown/expired.
 func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRespondBodyBytes)
 	approvalID := chi.URLParam(r, "id")
 	if approvalID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing approval id"})
@@ -403,8 +430,7 @@ func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Approved bool `json:"approved"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeSingleJSON(w, r, &req); err != nil {
 		return
 	}
 

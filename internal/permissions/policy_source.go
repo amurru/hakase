@@ -63,6 +63,14 @@ func LookupForAgent(agentName, action string, resources ...string) (eff Effect, 
 	return eff, rule, true
 }
 
+// Installed returns the active layered policy, or nil when none is
+// installed.
+func Installed() *LayeredPolicy {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	return installedLayers
+}
+
 // BypassDisabled reports whether the installed enterprise layer sets
 // disable_bypass (neutralizes approval.mode=allow). False when no
 // layered policy is installed.

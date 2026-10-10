@@ -116,6 +116,11 @@ type LayeredPolicy struct {
 	ProjectPath string
 	// ProjectTrusted reports whether the project layer applied.
 	ProjectTrusted bool
+	// Warnings holds operator-actionable notes (H2: a rule-less policy
+	// with a non-ask default enforces nothing - the additive design acts
+	// on matched rules only, so closed world needs an explicit catch-all
+	// rule, not just "default":"deny").
+	Warnings []string
 }
 
 // fileEntry is one mtime-cached policy file.
@@ -158,8 +163,9 @@ type Loader struct {
 
 // Load resolves, merges, and compiles every layer for root.
 func (l *Loader) Load(root string) (*LayeredPolicy, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	// No outer lock: each helper below guards its own cache slice, and
+	// the merge works on locals (M3). Concurrent Loads each produce a
+	// valid snapshot; installation order decides (last wins).
 
 	var (
 		merged       []Rule
@@ -180,16 +186,18 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 	// allowManagedOnly can strip allows from lower layers only. Source
 	// tags each rule with its layer for audit citations.
 	absorb := func(p Policy, enterprise bool, source string) {
-		for i := range p.Rules {
-			p.Rules[i].Source = source
+		rules := append([]Rule(nil), p.Rules...)
+		for i := range rules {
+			rules[i].Source = source
 		}
-		merged = append(merged, p.Rules...)
+		merged = append(merged, rules...)
 		for name, ap := range p.Agents {
 			key := strings.ToLower(name)
-			for i := range ap.Rules {
-				ap.Rules[i].Source = source
+			ar := append([]Rule(nil), ap.Rules...)
+			for i := range ar {
+				ar[i].Source = source
 			}
-			agentRules[key] = append(agentRules[key], ap.Rules...)
+			agentRules[key] = append(agentRules[key], ar...)
 		}
 		if enterprise {
 			entLen = len(merged)
@@ -217,15 +225,12 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		orEnterprise(&entFlags, p.Enterprise)
 	}
 
-	// Enterprise URL poll (same authority as the file).
-	if up, changed, err := l.pollEnterprise(entFlags); err != nil {
-		return nil, err
-	} else if changed {
+	// Enterprise URL poll (same authority as the file). The fetch
+	// runs outside any lock (M3); refreshURLPolicy handles due-check,
+	// fetch, last-good fallback (memory then disk, M1), and store.
+	if up, ok := l.refreshURLPolicy(entFlags); ok {
 		absorb(*up, true, "enterprise")
 		orEnterprise(&entFlags, up.Enterprise)
-	} else if l.urlHave {
-		absorb(l.urlPolicy, true, "enterprise")
-		orEnterprise(&entFlags, l.urlPolicy.Enterprise)
 	}
 
 	// User layer.
@@ -292,6 +297,12 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		return nil, err
 	}
 	out.Policy = cp
+	if len(merged) == 0 && len(agentRules) == 0 && def != EffectAsk {
+		out.Warnings = append(out.Warnings,
+			"permissions: merged policy has no rules with default "+string(def)+
+				" - the default alone enforces nothing (additive design acts on matched rules only);"+
+				" for closed world add an explicit {\"action\":\"*\",\"resource\":\"*\",\"effect\":\"deny\"} rule")
+	}
 	return out, nil
 }
 
@@ -326,6 +337,8 @@ func (l *Loader) loadCachedFile(entry *fileEntry, path string) (Policy, bool, er
 	if path == "" {
 		return Policy{}, false, nil
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	fi, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		*entry = fileEntry{}
@@ -349,6 +362,8 @@ func (l *Loader) loadCachedFile(entry *fileEntry, path string) (Policy, bool, er
 // entry is fresh for the same bytes (mtime + size + content hash: a
 // rewrite inside one mtime tick still lapses the cache).
 func (l *Loader) cachedProject(root, path string, raw []byte) (Policy, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.projects == nil {
 		l.projects = map[string]fileEntry{}
 	}
@@ -398,39 +413,107 @@ func (l *Loader) enterpriseSource(fileFlags EnterprisePolicy) (url string, minut
 	return url, minutes
 }
 
-// pollEnterprise fetches the enterprise URL policy when due. It returns
-// the fresh policy with changed=true, or nil/false to keep using the
-// cached one. Fetch/parse failures keep the last good policy (memory,
-// else disk cache) and never error: a poll outage must not change
-// verdicts mid-session.
-func (l *Loader) pollEnterprise(fileFlags EnterprisePolicy) (*Policy, bool, error) {
+// refreshURLPolicy returns the enterprise URL policy to merge (or nil
+// when unconfigured). Due-check and store run locked; the fetch and all
+// fallbacks run unlocked (M3: never hold the loader mutex across network
+// I/O). Failures keep the last good policy - memory first, then the disk
+// cache (M1) - and never error: a poll outage must not change verdicts,
+// including across restarts.
+func (l *Loader) refreshURLPolicy(fileFlags EnterprisePolicy) (*Policy, bool) {
 	url, minutes := l.enterpriseSource(fileFlags)
 	if url == "" {
-		return nil, false, nil
+		return nil, false
 	}
-	if l.urlHave && time.Since(l.urlFetchedAt) < time.Duration(minutes)*time.Minute {
-		return nil, false, nil
+	l.mu.Lock()
+	due := !l.urlHave || time.Since(l.urlFetchedAt) >= time.Duration(minutes)*time.Minute
+	mem := l.urlPolicy
+	haveMem := l.urlHave
+	l.mu.Unlock()
+	if !due {
+		if !haveMem {
+			return nil, false
+		}
+		cp := mem
+		return &cp, true
 	}
 	fetch := l.Fetch
 	if fetch == nil {
 		fetch = defaultFetch
 	}
-	raw, err := fetch(url)
-	if err != nil {
-		return nil, false, nil
+	if raw, err := fetch(url); err == nil && len(raw) > 0 && len(raw) <= maxEnterpriseBytes {
+		var p Policy
+		// Decode AND compile before accepting: an undecodable or
+		// uncompilable payload (bad version/effect/pattern) falls to
+		// last-good instead of poisoning memory and the disk cache.
+		if jerr := jsonDecoder(raw).Decode(&p); jerr == nil {
+			if _, cerr := Compile(p); cerr == nil {
+				l.mu.Lock()
+				l.urlPolicy, l.urlFetchedAt, l.urlHave = p, time.Now(), true
+				l.mu.Unlock()
+				l.writeURLCache(raw)
+				cp := p
+				return &cp, true
+			}
+		}
+	}
+	// Fetch failed, oversized, unparseable, or uncompilable:
+	// last good wins.
+	return l.lastGoodURL()
+}
+
+// lastGoodURL returns the memory policy, else the disk cache, else none.
+func (l *Loader) lastGoodURL() (*Policy, bool) {
+	l.mu.Lock()
+	mem, haveMem := l.urlPolicy, l.urlHave
+	l.mu.Unlock()
+	if haveMem {
+		cp := mem
+		return &cp, true
+	}
+	if p, ok := l.readURLCache(); ok {
+		l.mu.Lock()
+		if !l.urlHave {
+			l.urlPolicy, l.urlFetchedAt, l.urlHave = p, time.Now(), true
+		}
+		l.mu.Unlock()
+		cp := p
+		return &cp, true
+	}
+	return nil, false
+}
+
+// readURLCache strict-decodes the disk cache (best-effort: any failure
+// means no cache). Size-capped before decode so memory and disk state
+// cannot diverge (M1).
+func (l *Loader) readURLCache() (Policy, bool) {
+	path := l.urlCachePath()
+	if path == "" {
+		return Policy{}, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 || len(raw) > maxEnterpriseBytes {
+		return Policy{}, false
 	}
 	var p Policy
 	if err := jsonDecoder(raw).Decode(&p); err != nil {
-		return nil, false, nil
+		return Policy{}, false
 	}
-	l.urlPolicy, l.urlFetchedAt, l.urlHave = p, time.Now(), true
-	l.writeURLCache(raw)
-	return &p, true, nil
+	if _, err := Compile(p); err != nil {
+		return Policy{}, false
+	}
+	return p, true
 }
 
 // defaultFetch GETs a policy URL with a timeout and size cap.
+// noRedirects refuses to follow HTTP redirects (L3): operator URLs
+// stay exactly where configured; a redirecting endpoint fails the poll
+// and the last-good policy holds.
+func noRedirects(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 func defaultFetch(url string) ([]byte, error) {
-	client := &http.Client{Timeout: enterpriseFetchTimeout}
+	client := &http.Client{Timeout: enterpriseFetchTimeout, CheckRedirect: noRedirects}
 	resp, err := client.Get(url) //nolint:gosec // admin-configured policy URL
 	if err != nil {
 		return nil, err

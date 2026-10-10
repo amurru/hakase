@@ -22,7 +22,11 @@ Minimal example:
 Evaluation is deny > ask > allow across every matching rule (never
 last-wins); several paths at once deny when any path denies. `*` spans
 directories, `?` is one character, `~`/`$HOME` expand. No match falls
-back to `default` (`ask` when unset).
+back to `default` (`ask` when unset). Note: the default alone enforces
+nothing at the gate/fileops/path-audit call sites (they act on matched
+rules only) — for closed world, add an explicit catch-all rule
+(`{"action": "*", "resource": "*", "effect": "deny"}`); a rule-less
+policy with a non-`ask` default logs a startup warning.
 
 ## Trusting a project file
 
@@ -56,6 +60,23 @@ answers record the actor (web username or `telegram:<id>` /
   or reasons).
 - `audit.forward_url` (+ `forward_format: jsonl|json`, env
   `HAKASE_AUDIT_FORWARD_URL`) — best-effort POST per entry.
+- `audit.hmac_key_file` (env `HAKASE_AUDIT_HMAC_KEY_FILE`) — file whose
+  bytes HMAC the chain: only a key holder can rewrite history
+  undetectably. Without it the chain is self-consistency only (`verify`
+  detects partial edits and corruption, not a full rewrite by someone
+  with log write access); the SIEM copy is the real anchor then. The
+  verify/export commands take `--hmac-key-file` for HMAC-chained logs.
+
+Notes: command lines are redacted for secret-shaped values (`password=`,
+`Bearer` tokens, `sk-`/`ghp_`/`xox-` shapes) before chaining. Operator
+URLs (enterprise poll, SIEM forward) never follow redirects. Serve the
+enterprise policy over an authenticated transport (HTTPS/TLS): strict
+decoding and validation check the payload's shape, not its origin, so a
+spoofed endpoint that answers with a well-formed policy would be
+accepted. `http://` endpoints are MITM-able; a spoofed poll that fails
+or misbehaves falls back to the last-good policy, but a well-formed
+spoof is indistinguishable from the real server without transport
+authentication.
 
 ## Config
 

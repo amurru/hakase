@@ -303,7 +303,41 @@ func TestLoaderConcurrent(t *testing.T) {
 	}
 }
 
-// TestAgentOverlay pins per-agent rule merging under deny > ask > allow.
+// TestEmptyDenyDefaultWarns pins H2: a rule-less default-deny policy
+// warns loudly instead of silently enforcing nothing.
+func TestEmptyDenyDefaultWarns(t *testing.T) {
+	ent := filepath.Join(t.TempDir(), "enterprise.json")
+	writePolicy(t, ent, `{"version":1,"default":"deny"}`)
+	l := testLoader()
+	l.EnterprisePath = ent
+	lp, err := l.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(lp.Warnings) == 0 {
+		t.Error("no warning for rule-less default-deny, want loud warning")
+	}
+	if got, _ := lp.Policy.Evaluate("shell", "anything"); got != EffectDeny {
+		t.Errorf("Evaluate = %q, want deny (default still reports)", got)
+	}
+}
+
+// TestRulesPlusDefaultDenySilent pins no warning for a coherent
+// closed-world policy (rules + default deny).
+func TestRulesPlusDefaultDenySilent(t *testing.T) {
+	ent := filepath.Join(t.TempDir(), "enterprise.json")
+	writePolicy(t, ent, `{"version":1,"default":"deny","rules":[
+		{"action":"shell","resource":"git *","effect":"allow"}]}`)
+	l := testLoader()
+	l.EnterprisePath = ent
+	lp, err := l.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(lp.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none (rules present)", lp.Warnings)
+	}
+}
 func TestAgentOverlay(t *testing.T) {
 	cp, err := Compile(Policy{Rules: []Rule{
 		{Action: "shell", Resource: "git *", Effect: EffectAllow},
@@ -350,5 +384,80 @@ func TestDisableBypass(t *testing.T) {
 	}
 	if _, _, ok := Lookup("shell", "anything"); !ok {
 		t.Error("Lookup ok = false with layered policy, want true")
+	}
+}
+
+// newTestPolicyServer serves body counting hits (caller closes).
+func newTestPolicyServer(t *testing.T, calls *int, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		fmt.Fprint(w, body)
+	}))
+}
+
+// TestURLDiskCacheSurvivesRestart pins M1: a fresh Loader (restart)
+// during a poll outage enforces the disk-cached enterprise policy
+// instead of dropping enterprise restrictions.
+func TestURLDiskCacheSurvivesRestart(t *testing.T) {
+	body := `{"version":1,"rules":[
+		{"action":"shell","resource":"deploy *","effect":"deny"}]}`
+	calls := 0
+	srv := newTestPolicyServer(t, &calls, body)
+	cache := filepath.Join(t.TempDir(), "enterprise-cache.json")
+
+	a := testLoader()
+	a.PolicyURL = srv.URL
+	a.CachePath = cache
+	if _, err := a.Load(""); err != nil {
+		t.Fatalf("Load A: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("fetches = %d, want 1", calls)
+	}
+
+	// Restart: new loader, dead origin, same disk cache.
+	srv.Close()
+	b := testLoader()
+	b.PolicyURL = "http://127.0.0.1:1"
+	b.PollMinutes = -1
+	b.CachePath = cache
+	lp, err := b.Load("")
+	if err != nil {
+		t.Fatalf("Load B: %v", err)
+	}
+	if got, _ := lp.Policy.Evaluate("shell", "deploy prod"); got != EffectDeny {
+		t.Errorf("post-restart Evaluate = %q, want deny (disk cache)", got)
+	}
+}
+
+// TestURLUncompilableFallsBack pins an undecodable-by-policy payload
+// (valid JSON, bad version) going to last-good instead of poisoning
+// memory and the disk cache.
+func TestURLUncompilableFallsBack(t *testing.T) {
+	good := `{"version":1,"rules":[
+		{"action":"shell","resource":"deploy *","effect":"deny"}]}`
+	bad := `{"version":99,"rules":[]}`
+	bodies := []string{good, bad}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, bodies[calls%len(bodies)])
+		calls++
+	}))
+	defer srv.Close()
+
+	l := testLoader()
+	l.PolicyURL = srv.URL
+	l.PollMinutes = -1
+	l.CachePath = "!"
+	if _, err := l.Load(""); err != nil {
+		t.Fatalf("Load good: %v", err)
+	}
+	lp, err := l.Load("")
+	if err != nil {
+		t.Fatalf("Load bad (must not error): %v", err)
+	}
+	if got, _ := lp.Policy.Evaluate("shell", "deploy prod"); got != EffectDeny {
+		t.Errorf("after bad payload = %q, want deny (last good kept)", got)
 	}
 }

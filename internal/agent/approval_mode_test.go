@@ -79,7 +79,7 @@ func TestApprovalModeAllowKeepsReplayNever(t *testing.T) {
 	deps = &Deps{ApprovalCfg: config.ApprovalConfig{Mode: "allow"}}
 	t.Cleanup(func() { deps = savedDeps })
 
-	for _, tool := range []string{"system_exec", "git_push", "git_commit", "unknown_tool_xyz"} {
+	for _, tool := range []string{"system_exec", "git_push", "git_commit", "git_remote", "git_merge", "git_rebase", "unknown_tool_xyz"} {
 		if got := ReplayPolicyFor(tool); got != ReplayNever {
 			t.Errorf("ReplayPolicyFor(%q) = %q under mode=allow, want never", tool, got)
 		}

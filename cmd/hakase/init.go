@@ -58,6 +58,11 @@ func init() {
 		return hakaseagent.ApprovalExpiry()
 	}
 
+	// Sandbox hook: approval.mode=deny short-circuit (H1). Refuses
+	// everything up front, including allow-path commands and file tools
+	// that never reach ApproveExec.
+	sandbox.ApprovalDenyAllFunc = hakaseagent.ApprovalDenyAll
+
 	// Sandbox hook: audit logging.
 	sandbox.AuditCommandFunc = func(entry sandbox.CommandAuditEntry) {
 		hakaseagent.AuditCommandExec(hakaseagent.CommandAuditEntry{
