@@ -266,6 +266,24 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 		return nil, ErrLandlockNotImplemented
 	}
 
+	// H1: approval.mode=deny denies everything, including commands the
+	// risk gate would allow (ApproveExec only sees the ask path).
+	if ApprovalDenyAllFunc != nil && ApprovalDenyAllFunc() {
+		mode := "off"
+		if sb != nil {
+			mode = string(sb.Mode)
+		}
+		if AuditCommandFunc != nil {
+			AuditCommandFunc(CommandAuditEntry{
+				Timestamp: time.Now(), Tool: "system_exec",
+				Command: command, Args: args, SessionID: sessionID,
+				SandboxMode: mode, Decision: "denied",
+				Risk: "unknown", Reason: "denied by approval.mode=deny",
+			})
+		}
+		return nil, fmt.Errorf("command denied by approval.mode=deny")
+	}
+
 	// WIN-005 defensive mode coercion: bubblewrap does not exist on Windows
 	// and tests construct sb directly (bypassing LoadSandboxConfig), so the
 	// coercion also happens here. Mutating the mode in place is idempotent

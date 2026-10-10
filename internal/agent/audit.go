@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -46,6 +48,28 @@ type CommandAuditEntry struct {
 // auditLogDir is where the always-on audit log is written. Overridable in tests.
 var auditLogDir = "logs"
 
+// secretKV matches secret-shaped key=value assignments (keeps the key,
+// redacts the value); secretToken matches bare well-known token shapes.
+// Applied to audit entries BEFORE chaining/forwarding/export so secrets
+// never sprawl to logs or SIEM in cleartext (M5).
+var (
+	secretKV     = regexp.MustCompile(`(?i)(token|password|passwd|secret|api[_-]?key|auth)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)`)
+	secretBearer = regexp.MustCompile(`(?i)bearer\s+\S+`)
+	secretToken  = regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|xox[bap]-[A-Za-z0-9-]{8,})\b`)
+)
+
+// redactSecrets replaces secret-shaped values with [REDACTED].
+func redactSecrets(s string) string {
+	s = secretKV.ReplaceAllString(s, "$1=[REDACTED]")
+	s = secretBearer.ReplaceAllStringFunc(s, func(m string) string {
+		if i := strings.IndexAny(m, " \t"); i >= 0 {
+			return m[:i+1] + "[REDACTED]"
+		}
+		return "[REDACTED]"
+	})
+	return secretToken.ReplaceAllString(s, "[REDACTED]")
+}
+
 // AuditDir returns the audit log directory (honors test overrides).
 func AuditDir() string {
 	return auditLogDir
@@ -79,6 +103,12 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	// Truncate long string fields to keep the audit log bounded.
 	entry.Command = util.TruncateStr(entry.Command)
 	entry.Reason = util.TruncateStr(entry.Reason)
+	// Redact secret-shaped values before chaining/forwarding/export (M5).
+	entry.Command = redactSecrets(entry.Command)
+	entry.Reason = redactSecrets(entry.Reason)
+	for i, a := range entry.Args {
+		entry.Args[i] = redactSecrets(a)
+	}
 
 	auditMu.Lock()
 	defer auditMu.Unlock()

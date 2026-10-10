@@ -661,6 +661,12 @@ var AuditCommandFunc func(entry CommandAuditEntry)
 // When nil, approval is denied (fail-closed).
 var ApproveFunc func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error)
 
+// ApprovalDenyAllFunc is set by main to report approval.mode=deny.
+// When non-nil and true, buildExecCommand and taskResolve refuse
+// everything up front (H1: mode=deny must cover the allow path too,
+// not just the ApproveExec ask path). Nil = feature off.
+var ApprovalDenyAllFunc func() bool
+
 // ApprovalExpiryFunc is set by main to return the configured approval expiry.
 // When nil, defaults to 60s.
 var ApprovalExpiryFunc func() time.Duration

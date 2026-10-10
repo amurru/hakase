@@ -379,6 +379,11 @@ func taskResolve(ctx context.Context, path string, write bool, sandboxRoot strin
 		}
 		resolved = r
 	}
+	// H1: approval.mode=deny refuses file access too (file tools never
+	// reach ApproveExec, so the mode must be enforced here).
+	if ApprovalDenyAllFunc != nil && ApprovalDenyAllFunc() {
+		return "", fmt.Errorf("path %q denied by approval.mode=deny", path)
+	}
 	// Permissions policy (PM-002): deny enforcement on the resolved
 	// absolute path. Ask is left to the existing tool-risk approval path;
 	// no installed policy = zero behavior change.

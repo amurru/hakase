@@ -20,6 +20,35 @@ func tempAuditDir(t *testing.T) string {
 	return dir
 }
 
+// TestAuditSecretsRedacted pins M5: secret-shaped values never reach
+// the chained log (and hence never reach SIEM/export either).
+func TestAuditSecretsRedacted(t *testing.T) {
+	dir := tempAuditDir(t)
+	AuditCommandExec(CommandAuditEntry{
+		Timestamp: time.Now(), Tool: "system_exec",
+		Command:  `curl -H "Authorization: Bearer abc123xyz" https://x.example`,
+		Args:     []string{"--token", "ghp_abcdefgh12345678"},
+		Reason:   "password=hunter2 run",
+		Decision: "allowed",
+	})
+	entries, err := ReadAuditEntries(dir, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	blob, _ := json.Marshal(entries[0])
+	for _, secret := range []string{"abc123xyz", "ghp_abcdefgh12345678", "hunter2"} {
+		if strings.Contains(string(blob), secret) {
+			t.Errorf("chained entry leaks %q: %s", secret, blob)
+		}
+	}
+	if !strings.Contains(string(blob), "[REDACTED]") {
+		t.Errorf("no redaction marker in %s", blob)
+	}
+}
+
 // TestAuditChainLinks verifies prev/entry linkage across appends.
 func TestAuditChainLinks(t *testing.T) {
 	dir := tempAuditDir(t)

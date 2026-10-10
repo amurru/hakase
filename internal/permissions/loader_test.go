@@ -303,7 +303,41 @@ func TestLoaderConcurrent(t *testing.T) {
 	}
 }
 
-// TestAgentOverlay pins per-agent rule merging under deny > ask > allow.
+// TestEmptyDenyDefaultWarns pins H2: a rule-less default-deny policy
+// warns loudly instead of silently enforcing nothing.
+func TestEmptyDenyDefaultWarns(t *testing.T) {
+	ent := filepath.Join(t.TempDir(), "enterprise.json")
+	writePolicy(t, ent, `{"version":1,"default":"deny"}`)
+	l := testLoader()
+	l.EnterprisePath = ent
+	lp, err := l.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(lp.Warnings) == 0 {
+		t.Error("no warning for rule-less default-deny, want loud warning")
+	}
+	if got, _ := lp.Policy.Evaluate("shell", "anything"); got != EffectDeny {
+		t.Errorf("Evaluate = %q, want deny (default still reports)", got)
+	}
+}
+
+// TestRulesPlusDefaultDenySilent pins no warning for a coherent
+// closed-world policy (rules + default deny).
+func TestRulesPlusDefaultDenySilent(t *testing.T) {
+	ent := filepath.Join(t.TempDir(), "enterprise.json")
+	writePolicy(t, ent, `{"version":1,"default":"deny","rules":[
+		{"action":"shell","resource":"git *","effect":"allow"}]}`)
+	l := testLoader()
+	l.EnterprisePath = ent
+	lp, err := l.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(lp.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none (rules present)", lp.Warnings)
+	}
+}
 func TestAgentOverlay(t *testing.T) {
 	cp, err := Compile(Policy{Rules: []Rule{
 		{Action: "shell", Resource: "git *", Effect: EffectAllow},

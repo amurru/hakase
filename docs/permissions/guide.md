@@ -22,7 +22,11 @@ Minimal example:
 Evaluation is deny > ask > allow across every matching rule (never
 last-wins); several paths at once deny when any path denies. `*` spans
 directories, `?` is one character, `~`/`$HOME` expand. No match falls
-back to `default` (`ask` when unset).
+back to `default` (`ask` when unset). Note: the default alone enforces
+nothing at the gate/fileops/path-audit call sites (they act on matched
+rules only) — for closed world, add an explicit catch-all rule
+(`{"action": "*", "resource": "*", "effect": "deny"}`); a rule-less
+policy with a non-`ask` default logs a startup warning.
 
 ## Trusting a project file
 

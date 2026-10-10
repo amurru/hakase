@@ -25,6 +25,13 @@ func approvalMode() string {
 	return strings.ToLower(strings.TrimSpace(deps.ApprovalCfg.Mode))
 }
 
+// ApprovalDenyAll reports whether approval.mode=deny is configured.
+// The sandbox package consults it (via ApprovalDenyAllFunc) to refuse
+// everything up front, including paths that never reach ApproveExec.
+func ApprovalDenyAll() bool {
+	return approvalMode() == "deny"
+}
+
 // ApprovalExpiry returns the configured approval expiry duration from deps.
 // Defaults to 60 seconds when not explicitly configured (ExpirySeconds <= 0).
 func ApprovalExpiry() time.Duration {

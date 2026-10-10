@@ -116,6 +116,11 @@ type LayeredPolicy struct {
 	ProjectPath string
 	// ProjectTrusted reports whether the project layer applied.
 	ProjectTrusted bool
+	// Warnings holds operator-actionable notes (H2: a rule-less policy
+	// with a non-ask default enforces nothing - the additive design acts
+	// on matched rules only, so closed world needs an explicit catch-all
+	// rule, not just "default":"deny").
+	Warnings []string
 }
 
 // fileEntry is one mtime-cached policy file.
@@ -292,6 +297,12 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		return nil, err
 	}
 	out.Policy = cp
+	if len(merged) == 0 && len(agentRules) == 0 && def != EffectAsk {
+		out.Warnings = append(out.Warnings,
+			"permissions: merged policy has no rules with default "+string(def)+
+				" - the default alone enforces nothing (additive design acts on matched rules only);"+
+				" for closed world add an explicit {\"action\":\"*\",\"resource\":\"*\",\"effect\":\"deny\"} rule")
+	}
 	return out, nil
 }
 

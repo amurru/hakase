@@ -30,6 +30,9 @@ func initPermissions(cfg *config.Config, root string, trust permissions.TrustChe
 	}
 	permissions.InstallLayered(lp)
 	if log != nil {
+		for _, w := range lp.Warnings {
+			log(w)
+		}
 		if lp.ProjectTrusted {
 			log(fmt.Sprintf("permissions: project layer trusted (%s)", lp.ProjectPath))
 		}
