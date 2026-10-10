@@ -15,6 +15,8 @@
 #   build-frontend  Install webui deps, build the SPA, mirror it into
 #                   internal/web/dist for embedding.
 #   build           Full production build: frontend + Go binary (prod tag).
+#   build-arm64     Cross-compile production binary for linux/arm64 (prod tag;
+#                   requires the frontend mirror - run after build-frontend/build).
 #   release         Same as build, but echoes the stamped version afterwards
 #                   (run after tagging; see Release engineering below).
 #   dev             Development mode. Runs two processes (see dev-frontend /
@@ -23,7 +25,7 @@
 #   dev-backend     Build + run the Go web server with the dev tag (serves
 #                   webui/dist from disk, API on :8080).
 #   test            Run all Go tests.
-#   clean           Remove frontend build output and the hakase binary.
+#   clean           Remove frontend build output and the hakase binaries.
 #
 # The `web` subcommand (./hakase web) is wired in a later task; until then
 # dev-backend falls back to `go run` so the build tags are still exercised.
@@ -48,7 +50,7 @@ LDFLAGS := -s -w \
 	-X amurru/hakase/internal/cli.Commit=$(COMMIT) \
 	-X amurru/hakase/internal/cli.Date=$(DATE)
 
-.PHONY: build-frontend build release package-deb package-rpm package-linux build-windows dev dev-frontend dev-backend test clean
+.PHONY: build-frontend build build-arm64 release package-deb package-rpm package-linux build-windows dev dev-frontend dev-backend test clean
 
 # ---------------------------------------------------------------------------
 # Frontend
@@ -72,6 +74,13 @@ build-frontend:
 # binary fully static so release artifacts run on any distro (AUR -bin pkg).
 build: build-frontend
 	CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase ./cmd/hakase/
+
+# Cross-compiles the production binary for linux/arm64 (static, pure Go).
+# Depends on build-frontend so a standalone `make build-arm64` works on a
+# fresh clone (go:embed gotcha - see above); in the release workflow `make
+# build` already built the frontend, so this rebuilds the SPA a second time.
+build-arm64: build-frontend
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags prod -ldflags "$(LDFLAGS)" -o hakase-arm64 ./cmd/hakase/
 
 # Convenience wrapper around `build`: stamps nothing extra, just surfaces the
 # version that went into the binary so release builds can be eyeballed.
@@ -144,4 +153,4 @@ test:
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -rf webui/dist internal/web/dist hakase dist/
+	rm -rf webui/dist internal/web/dist hakase hakase-arm64 dist/
