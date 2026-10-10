@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-29. Living index of planned work. The GitHub issues are
+Last updated: 2026-10-10. Living index of planned work. The GitHub issues are
 the source of truth for status — update this file only when priorities or
 scope change, not when individual boxes tick.
 
@@ -89,11 +89,11 @@ per-item notes live in the issues, not here.
    Lazy loading already exists (`internal/agent/agent.go:1109,1215`); this
    scales it past ~100 skills without changing under-threshold behavior.
    Design: `docs/context-hygiene/` (CX-001..CX-004).
-3. **Permissions policy** — `permissions.json` allow/ask/deny per
-   tool+path (opencode triples + Claude deny>ask>allow), user < project
+3. **Permissions policy** — shipped (2026-10-10): `permissions.json` allow/ask/deny
+   per tool+path (opencode triples + Claude deny>ask>allow), user < project
    (trust-gated) < enterprise layering, mobile approval queue endpoint,
-   hash-chained audit export. Builds on gates + content-hash trust already
-   shipped. Design: `docs/permissions/` (PM-001..PM-004).
+   hash-chained audit export. Builds on the gates + content-hash trust above.
+   Design: `docs/permissions/` (PM-001..PM-004).
 4. **MCP gateway** - shipped: registry search (`hakase mcp search/install`),
    `mcp audit` (inventory vs budget, shadow drift, poisoning scan, auth posture,
    sandbox/egress, provenance, elicitation log), scoped-token UX
