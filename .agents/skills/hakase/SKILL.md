@@ -68,6 +68,8 @@ There are four ADK agents. The orchestrator is the root agent; the other three a
 2. `~/.hakase/config.json` - user-level fallback (`$HAKASE_HOME/config.json` when `HAKASE_HOME` is set).
 3. If neither exists, config can be built entirely from `HAKASE_*` environment variables.
 
+`hakase init` creates a minimal config interactively: it prompts for provider / API key / model (and base URL for `openai-compatible`), writes `~/.hakase/config.json` (0600), and offers to set the web admin password. Pass `--local` to write `./config.json`, `--force` to overwrite, or supply `--provider/--api-key/--model/--base-url` (or the `HAKASE_*` env vars) for a fully non-interactive run. `config.minimal.json` is the hand-editable equivalent.
+
 ### Key fields
 - `provider` - `gemini` (default), `openai`, `openai-compatible`. `base_url` for compatible endpoints (e.g. Ollama `http://localhost:11434/v1`).
 - `model_name` - empty uses provider default (`gemini-2.5-flash`, `gpt-4o-mini`).

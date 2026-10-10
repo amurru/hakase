@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -74,7 +75,7 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 
 	cfg, err := config.LoadConfig(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			// No file: return a fresh zero config (config built from env).
 			cfg = &config.Config{}
 		} else {

@@ -388,6 +388,29 @@ func TestConfigExampleFileValid(t *testing.T) {
 	}
 }
 
+// TestConfigMinimalFileValid pins the shape of the hand-editable minimal
+// template referenced by README and by `hakase init`: it must decode into
+// Config with no unknown keys and resolve to the documented provider/model.
+func TestConfigMinimalFileValid(t *testing.T) {
+	data, err := os.ReadFile("../../config.minimal.json")
+	if err != nil {
+		t.Fatalf("reading ../../config.minimal.json: %v", err)
+	}
+
+	var cfg Config
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		t.Fatalf("../../config.minimal.json has keys that do not map to Config fields: %v", err)
+	}
+	if cfg.Provider != "gemini" {
+		t.Errorf("minimal provider: expected gemini, got %q", cfg.Provider)
+	}
+	if cfg.EffectiveModelName() != DefaultModelForProvider("gemini") {
+		t.Errorf("minimal model: expected %q, got %q", DefaultModelForProvider("gemini"), cfg.EffectiveModelName())
+	}
+}
+
 // mcpTestIsolate isolates the test from user MCP registry state.
 func mcpTestIsolate(t *testing.T) {
 	t.Helper()

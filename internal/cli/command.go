@@ -128,6 +128,11 @@ func runTUIPlaceholder(args []string) int {
 // replaces at startup with the real implementations.
 func init() {
 	registerCommand(Command{
+		Name:        "init",
+		Description: "create a config and set up hakase for first use",
+		Handler:     RunInitCLI,
+	})
+	registerCommand(Command{
 		Name:        "skill",
 		Description: "manage markdown skills (create, list, validate, evolve)",
 		Handler:     RunSkillCLI,
