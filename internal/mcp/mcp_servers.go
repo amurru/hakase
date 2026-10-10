@@ -338,10 +338,8 @@ func (m *MCPServerManager) Description() string {
 // IsLongRunning implements the extended toolset interface (mirrors mcptoolset).
 func (m *MCPServerManager) IsLongRunning() bool { return false }
 
-// Tools implements tool.Toolset. Returns every enabled server's tools,
-// namespaced as mcp_<server>_<tool> and filtered by per-server include/exclude
-// lists. A failed server is skipped (logged + status recorded), never an error.
-func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
+// rawTools fetches all post-filter tools from all connected MCP servers.
+func (m *MCPServerManager) rawTools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
 	m.mu.Lock()
 	servers := make([]*managedServer, 0, len(m.servers))
 	for _, ms := range m.servers {
@@ -398,6 +396,33 @@ func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 		}
 	}
 	return out, nil
+}
+
+// Tools implements tool.Toolset. Returns every enabled server's tools,
+// namespaced as mcp_<server>_<tool> and filtered by per-server include/exclude
+// lists. A failed server is skipped (logged + status recorded), never an error.
+// If total post-filter tools > budget and gateway is enabled, returns gateway toolset instead.
+func (m *MCPServerManager) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
+	raw, err := m.rawTools(ctx)
+	if err != nil {
+		return nil, nil
+	}
+
+	if m.cfg != nil {
+		gwCfg := m.cfg.MCPServers.Gateway
+		if gwCfg.Enabled {
+			budget := gwCfg.Budget
+			if budget <= 0 {
+				budget = 40
+			}
+			if len(raw) > budget {
+				gt := newGatewayToolset(m, gwCfg.HotTools)
+				return gt.gatewayTools(ctx, raw)
+			}
+		}
+	}
+
+	return raw, nil
 }
 
 // ListServers returns the current status of every configured server, sorted by

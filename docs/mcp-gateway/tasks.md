@@ -18,7 +18,7 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 3 — gateway + budget
 
-- [ ] **T3.1 [BE]** gateway toolset + auto-degrade + sub-agent default. Spec: MG-006.
-- [ ] **T3.2 [QA]** over-budget e2e (flat → gateway), hot-tools passthrough. Spec: MG-006.
+- [x] **T3.1 [BE]** gateway toolset + auto-degrade + sub-agent default. Spec: MG-006.
+- [x] **T3.2 [QA]** over-budget e2e (flat → gateway), hot-tools passthrough. Spec: MG-006.
 - [ ] **T3.3 [DOCS]** CHANGELOG + README/docs + ROADMAP tick.
 - [ ] **T3.4 [QA]** Full suite green: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.
