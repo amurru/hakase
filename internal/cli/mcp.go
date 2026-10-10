@@ -18,6 +18,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -185,7 +187,7 @@ func runMCPInstall(args []string) int {
 		return 1
 	}
 
-	fmt.Printf("Successfully installed MCP server %q (scope: %s)\n", config.SanitizeMCPServerName(ref), *scope)
+	fmt.Printf("Successfully installed MCP server %q (scope: %s)\n", displayInstallName(ref), *scope)
 	if installedCfg.URL != "" {
 		fmt.Printf("  Transport: http (%s)\n", installedCfg.URL)
 	} else if len(installedCfg.Command) > 0 {
@@ -247,6 +249,7 @@ func runMCPList(args []string) int {
 func runMCPAudit(args []string) int {
 	fs := flag.NewFlagSet("mcp audit", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	strict := fs.Bool("strict", false, "treat WARN checks as failures")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -284,6 +287,15 @@ func runMCPAudit(args []string) int {
 		return 1
 	}
 
+	if *strict {
+		for _, check := range res.Checks {
+			if check.Status == "WARN" {
+				fmt.Println("\nAudit Status: FAIL (strict: warnings present)")
+				return 1
+			}
+		}
+	}
+
 	fmt.Println("\nAudit Status: PASS")
 	return 0
 }
@@ -301,16 +313,24 @@ func runMCPLogout(args []string) int {
 	}
 
 	serverName := fs.Arg(0)
-	if err := mcp.RevokeToken(serverName); err != nil {
+	hadEntry, err := mcp.RevokeToken(serverName)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "hakase mcp logout: %v\n", err)
 		return 1
 	}
 
-	fmt.Printf("Successfully logged out and revoked tokens for server %q\n", serverName)
+	if !hadEntry {
+		fmt.Printf("No stored tokens found for server %q (nothing to revoke)\n", serverName)
+		return 0
+	}
+	fmt.Printf("Logged out %q locally and attempted server-side token revocation\n", serverName)
 	return 0
 }
 
 type envFlag map[string]string
+
+// envKeyRe restricts --allow-env keys to portable env names.
+var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (e *envFlag) String() string {
 	var parts []string
@@ -328,8 +348,25 @@ func (e *envFlag) Set(value string) error {
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid environment variable format %q (expected K=V)", value)
 	}
+	if !envKeyRe.MatchString(parts[0]) {
+		return fmt.Errorf("invalid environment variable name %q (expected [A-Za-z_][A-Za-z0-9_]*)", parts[0])
+	}
 	(*e)[parts[0]] = parts[1]
 	return nil
+}
+
+// displayInstallName mirrors InstallServer naming: basename for .mcpb,
+// name without @version for registry refs, then sanitized.
+func displayInstallName(ref string) string {
+	if strings.HasSuffix(ref, ".mcpb") {
+		base := filepath.Base(ref)
+		return config.SanitizeMCPServerName(strings.TrimSuffix(base, ".mcpb"))
+	}
+	name := ref
+	if i := strings.LastIndex(name, "@"); i > 0 && !strings.Contains(name[i:], "/") {
+		name = name[:i]
+	}
+	return config.SanitizeMCPServerName(name)
 }
 
 // runMCPDoctor measures every configured MCP server: how many tools it

@@ -16,6 +16,8 @@ import (
 func TestInstallServerAndCredentialPlan(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HAKASE_HOME", tempHome)
+	config.MCPRegistryFile = ""
+	t.Cleanup(func() { config.MCPRegistryFile = "" })
 
 	mockServer := RegistryServer{
 		Name:       "test-server",

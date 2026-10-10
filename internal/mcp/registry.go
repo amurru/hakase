@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -50,10 +51,19 @@ func NewRegistryClient(baseURL string) *RegistryClient {
 	}
 }
 
+// MaxRegistryResults caps search limit, MaxRegistryBodyBytes caps decoded bodies.
+const (
+	MaxRegistryResults   = 100
+	MaxRegistryBodyBytes = 5 << 20
+)
+
 // Search queries the registry for MCP servers matching query.
 func (c *RegistryClient) Search(ctx context.Context, query string, limit int) ([]RegistryServer, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	if limit > MaxRegistryResults {
+		limit = MaxRegistryResults
 	}
 
 	endpoint := c.BaseURL + "/v1/servers"
@@ -86,7 +96,7 @@ func (c *RegistryClient) Search(ctx context.Context, query string, limit int) ([
 	}
 
 	var raw json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxRegistryBodyBytes)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decoding registry response: %w", err)
 	}
 
@@ -136,7 +146,7 @@ func (c *RegistryClient) GetServer(ctx context.Context, name string) (*RegistryS
 	}
 
 	var srv RegistryServer
-	if err := json.NewDecoder(resp.Body).Decode(&srv); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxRegistryBodyBytes)).Decode(&srv); err != nil {
 		return nil, fmt.Errorf("decoding server manifest: %w", err)
 	}
 	return &srv, nil

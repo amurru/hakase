@@ -56,6 +56,8 @@ func (m mockPoisonedToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, erro
 func TestAudit_PoisoningAndShadowDrift(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HAKASE_HOME", tempHome)
+	config.MCPRegistryFile = ""
+	t.Cleanup(func() { config.MCPRegistryFile = "" })
 
 	cfg := &config.Config{}
 	mgr := &MCPServerManager{
