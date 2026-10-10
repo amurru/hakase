@@ -194,3 +194,28 @@ func TestAuditCSVRow(t *testing.T) {
 		t.Errorf("CSV row has %d commas, header has %d", n, strings.Count(AuditCSVHeader, ","))
 	}
 }
+
+// TestAuditHMACChain pins L1: a keyed chain verifies with the key,
+// fails without it, and verifies again once restored.
+func TestAuditHMACChain(t *testing.T) {
+	dir := tempAuditDir(t)
+	ConfigureAuditHMACKey([]byte("test-key-123"))
+	t.Cleanup(func() { ConfigureAuditHMACKey(nil) })
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "a", Decision: "allowed"})
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "b", Decision: "allowed"})
+	if n, err := VerifyAuditChain(dir); err != nil || n != 2 {
+		t.Fatalf("keyed verify = %d/%v, want 2/nil", n, err)
+	}
+	ConfigureAuditHMACKey(nil)
+	if _, err := VerifyAuditChain(dir); err == nil {
+		t.Fatal("keyless verify of HMAC log succeeded, want error")
+	}
+	ConfigureAuditHMACKey([]byte("test-key-123"))
+	if n, err := VerifyAuditChain(dir); err != nil || n != 2 {
+		t.Fatalf("restored verify = %d/%v, want 2/nil", n, err)
+	}
+	ConfigureAuditHMACKey([]byte("wrong-key"))
+	if _, err := VerifyAuditChain(dir); err == nil {
+		t.Fatal("wrong-key verify succeeded, want error")
+	}
+}

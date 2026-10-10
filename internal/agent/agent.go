@@ -2498,6 +2498,19 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// SIEM forwarding for the hash-chained audit trail (PM-004):
 	// best-effort POST per entry, "" disables.
 	ConfigureAuditForward(cfg.Audit.ForwardURL, cfg.Audit.ForwardFormat)
+	// HMAC chain key (L1): a configured-but-unreadable key file fails
+	// startup loudly (landlock precedent) - silent fallback to plain
+	// sha256 would downgrade tamper-evidence without notice.
+	if cfg.Audit.HmacKeyFile != "" {
+		key, err := os.ReadFile(cfg.Audit.HmacKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("audit.hmac_key_file: %w", err)
+		}
+		if len(bytes.TrimSpace(key)) == 0 {
+			return nil, fmt.Errorf("audit.hmac_key_file: %s is empty", cfg.Audit.HmacKeyFile)
+		}
+		ConfigureAuditHMACKey(key)
+	}
 	// Publish the runner for the delegate_task path, whose sub-agents are
 	// built per-delegation in delegate.go (long after SetupRunner returns).
 	deps.HooksRunner = hooksRunner

@@ -144,6 +144,11 @@
     "enterprise_url": "",
     "poll_minutes": 0
   },
+  "audit": {
+    "forward_url": "",
+    "forward_format": "jsonl",
+    "hmac_key_file": ""
+  },
   "sleep": {
     "edit_budget": 4,
     "gate_metric": "mixed",

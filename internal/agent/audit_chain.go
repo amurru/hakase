@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,8 +37,29 @@ func chainView(e CommandAuditEntry) CommandAuditEntry {
 	return e
 }
 
+// auditHMACKey, when set, turns the chain into an HMAC chain: only a
+// holder of the key can extend or rewrite history undetectably. Plain
+// sha256 otherwise (self-consistency only, L1). Configured via
+// audit.hmac_key_file at startup; the verify CLI takes --hmac-key-file.
+var auditHMACKey []byte
+
+// ConfigureAuditHMACKey sets the chain HMAC key (nil/empty disables).
+func ConfigureAuditHMACKey(key []byte) {
+	cp := append([]byte(nil), key...)
+	if len(cp) == 0 {
+		cp = nil
+	}
+	auditHMACKey = cp
+}
+
 // chainEntryHash computes the entry hash over prev + canonical bytes.
 func chainEntryHash(prev string, canonical []byte) string {
+	if len(auditHMACKey) > 0 {
+		mac := hmac.New(sha256.New, auditHMACKey)
+		mac.Write([]byte(prev + "\n"))
+		mac.Write(canonical)
+		return hex.EncodeToString(mac.Sum(nil))
+	}
 	sum := sha256.Sum256([]byte(prev + "\n" + string(canonical)))
 	return hex.EncodeToString(sum[:])
 }
@@ -183,7 +205,7 @@ const AuditCSVHeader = "timestamp,tool,decision,risk,actor,trace_id,policy_sourc
 // AuditCSVRow renders one entry's metadata-only CSV row.
 func AuditCSVRow(e CommandAuditEntry) string {
 	q := func(s string) string {
-		if strings.ContainsAny(s, ",\"\n") {
+		if strings.ContainsAny(s, ",\"\n\r") {
 			return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 		}
 		return s
@@ -219,6 +241,12 @@ func AuditApprovalAnswer(gateID, tool string, approved bool, actor, transport st
 	})
 }
 
+// noRedirectClient refuses to follow HTTP redirects (L3): the SIEM
+// endpoint stays exactly where configured.
+func noRedirectClient(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 // SIEM forwarding (PM-004 audit.forward): best-effort POST of each entry
 // JSON line. Configured once at startup; failures are swallowed (a sick
 // SIEM must never break the agent).
@@ -249,7 +277,7 @@ func forwardAuditEntry(line []byte) {
 		ct = "application/json"
 	}
 	go func() {
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirectClient}
 		req, err := http.NewRequest("POST", url, bytes.NewReader(append([]byte(nil), line...)))
 		if err != nil {
 			return

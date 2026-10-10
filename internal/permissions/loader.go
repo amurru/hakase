@@ -494,8 +494,15 @@ func (l *Loader) readURLCache() (Policy, bool) {
 }
 
 // defaultFetch GETs a policy URL with a timeout and size cap.
+// noRedirects refuses to follow HTTP redirects (L3): operator URLs
+// stay exactly where configured; a redirecting endpoint fails the poll
+// and the last-good policy holds.
+func noRedirects(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 func defaultFetch(url string) ([]byte, error) {
-	client := &http.Client{Timeout: enterpriseFetchTimeout}
+	client := &http.Client{Timeout: enterpriseFetchTimeout, CheckRedirect: noRedirects}
 	resp, err := client.Get(url) //nolint:gosec // admin-configured policy URL
 	if err != nil {
 		return nil, err

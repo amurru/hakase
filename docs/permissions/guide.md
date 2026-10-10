@@ -60,6 +60,18 @@ answers record the actor (web username or `telegram:<id>` /
   or reasons).
 - `audit.forward_url` (+ `forward_format: jsonl|json`, env
   `HAKASE_AUDIT_FORWARD_URL`) — best-effort POST per entry.
+- `audit.hmac_key_file` (env `HAKASE_AUDIT_HMAC_KEY_FILE`) — file whose
+  bytes HMAC the chain: only a key holder can rewrite history
+  undetectably. Without it the chain is self-consistency only (`verify`
+  detects partial edits and corruption, not a full rewrite by someone
+  with log write access); the SIEM copy is the real anchor then. The
+  verify/export commands take `--hmac-key-file` for HMAC-chained logs.
+
+Notes: command lines are redacted for secret-shaped values (`password=`,
+`Bearer` tokens, `sk-`/`ghp_`/`xox-` shapes) before chaining. Operator
+URLs (enterprise poll, SIEM forward) never follow redirects; `http://`
+endpoints are MITM-able, but a spoofed poll can only fail (the last-good
+policy holds), never inject — fetches are strict-decoded and validated.
 
 ## Config
 
