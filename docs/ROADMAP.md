@@ -119,17 +119,23 @@ first-run errors shipped first (see CHANGELOG); the rest are open.
    presence, printing a fix hint for every failed check. `python3` is the only
    hard-required binary (skill venv runtime); `go`/`node`/`pnpm` warn as
    build-only. Design: `docs/doctor/` (DR-001..DR-010).
-2. **Install & distribution** — a `curl | sh` installer that detects OS/arch,
-   downloads the release asset and verifies `SHA256SUMS.txt`, plus:
-   - **prebuilt darwin binaries** (arm64+amd64) and a Homebrew tap — macOS is
-     the only platform still forced into the full Go+pnpm toolchain
-     (`README.md:55`);
-   - a **Dockerfile + compose** as the zero-toolchain "try it" path
-     (`-e HAKASE_API_KEY`, `~/.hakase` volume);
-   - **non-interactive `auth set-password`** (`--username`,
-     `--password-stdin`) and a first-run auto-provision so a web image can boot
-     unattended (today `hakase web` hard-refuses without
-     `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`).
+2. **Install & distribution** - sliced, in dependency order:
+   - **next: `curl | sh` installer + linux arm64 asset** - detects OS/arch,
+     downloads the release asset, verifies `SHA256SUMS.txt`, and installs to
+     `PATH`; the release workflow gains the bare
+     `hakase-<version>-linux-arm64` binary (deb/rpm stay amd64 for now). ARM
+     servers and boards are the second platform still forced into the full
+     Go+pnpm toolchain.
+   - **then: non-interactive `auth set-password`** (`--username`,
+     `--password-stdin`) with a first-run auto-provision, so a web image can
+     boot unattended (today `hakase web` hard-refuses without
+     `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`); prerequisite for
+     the container path.
+   - **then: Dockerfile + compose** as the zero-toolchain "try it" path
+     (`-e HAKASE_API_KEY`, `~/.hakase` volume).
+   - **deferred for now: prebuilt darwin binaries** (arm64+amd64) and a
+     Homebrew tap, so macOS can leave the source build (`README.md:55`);
+     revisit after the container path lands.
 3. **README quickstart rewrite** — lead with a 60-second install → `hakase init`
    → type block, promote the env-var-only path (`HAKASE_API_KEY` etc., already
    supported via `envConfigSet`, `internal/config/config.go:1230`), and move the
