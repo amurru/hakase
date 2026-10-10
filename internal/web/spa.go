@@ -26,7 +26,7 @@ import (
 // Unauthenticated endpoints (/api/health, /api/login) are registered first,
 // then the auth middleware group wraps the remaining API routes.
 // The SPA catch-all is mounted last.
-func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, channelsStore *state.Store, channelsRunning func() bool, allowInsecureCookie bool) {
+func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionSvc *session.SessionService, bridge *sse.EventBridge, runner *runner.Runner, runtime *hakaseagent.Runtime, history *hctx.HistoryBuilder, approvalGate *handlers.WebApprovalGate, clarifyGate *handlers.WebClarifyGate, channelsStore *state.Store, channelsRunning func() bool, allowInsecureCookie bool, approvalRoles handlers.RoleMap) {
 	// Middleware applied globally
 	r.Use(CORSMiddleware())
 	r.Use(RequestLogger())
@@ -57,8 +57,7 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 		// queue and batch respond with web RBAC (docs/permissions/ PM-003).
 		// Roles come from auth.web_roles; unparseable config fails loudly.
 		if approvalGate != nil {
-			roles := approvalRoles()
-			handlers.RegisterApprovalRoutesWithRoles(r, approvalGate, roles)
+			handlers.RegisterApprovalRoutesWithRoles(r, approvalGate, approvalRoles)
 		}
 		if clarifyGate != nil {
 			handlers.RegisterClarifyRoutes(r, clarifyGate)
@@ -104,21 +103,6 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 	if assets != nil {
 		r.Get("/*", spaHandler(assets))
 	}
-}
-
-// approvalRoles parses auth.web_roles for the approval queue endpoints
-// (docs/permissions/ PM-003). Unparseable config fails loudly at startup;
-// a missing config file means open (today's behavior).
-func approvalRoles() handlers.RoleMap {
-	cfg, err := config.LoadConfig("config.json")
-	if err != nil {
-		return nil
-	}
-	roles, err := handlers.ParseRoleMap(cfg.Auth.WebRoles)
-	if err != nil {
-		log.Fatalf("auth.web_roles: %v", err)
-	}
-	return roles
 }
 
 // (docs/durable-resume/plan.md Phase 7): re-emitted prompts resolve

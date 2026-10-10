@@ -368,6 +368,18 @@ func runServer(args []string, serveSPA bool) int {
 	srv.SetChatDeps(bridge, runner, runtime)
 	srv.SetHistoryBuilder(deps.HistoryBuilder)
 	srv.SetGates(approvalGate, clarifyGate)
+	// Web RBAC (M4): parse auth.web_roles once from the loaded config -
+	// never re-load by CWD - so a wrong working directory cannot silently
+	// downgrade the queue to fully open.
+	webRoles, err := handlers.ParseRoleMap(cfg.Auth.WebRoles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hakase: %v\n", err)
+		return 1
+	}
+	srv.SetApprovalRoles(webRoles)
+	if len(webRoles) > 0 {
+		log.Printf("web: approval RBAC active (%d listed identities)", len(webRoles))
+	}
 
 	// Cron lifecycle events reach the SSE bridge in web mode too (the TUI
 	// wires its own listener in main.go); the channel router subscribes to
