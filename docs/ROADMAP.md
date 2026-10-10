@@ -107,6 +107,13 @@ per-item notes live in the issues, not here.
    pilot, then artifacts + `plugin.Plugin`; skills toolset + A2A deferred.
    Cloud backends stay opt-in only. Design: `docs/adk-adoption/`
    (AD-001..AD-005).
+6. **Prompt-cache stability** - design landed 2026-10-11
+   (`docs/prompt-cache/`, PC-001..PC-007): one canonical renderer plus a
+   per-turn frozen context block assembled at the end of the rendered store,
+   so requests are append-only between logged compactions; cache-ratio
+   telemetry and an implicit-cache verification guard. Fixes the
+   head-injection, live/replay byte-drift, and project-snapshot dedup
+   findings; no schema changes.
 
 ## Tier 4 — Onboarding & distribution (2026-10-10)
 
