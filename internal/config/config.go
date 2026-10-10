@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -1387,13 +1388,34 @@ func parseEnvHeaders(name, v string) (map[string]string, error) {
 	return headers, nil
 }
 
+// ErrNoConfig is returned (wrapped) by LoadConfig when no config file could be
+// read and no HAKASE_* environment overrides were present, so there was nothing
+// to build a configuration from. Callers detect it with IsNoConfig and print
+// FirstRunHint instead of the raw filesystem error.
+var ErrNoConfig = errors.New("no configuration found")
+
+// IsNoConfig reports whether err is, or wraps, ErrNoConfig - the first-run
+// "nothing configured yet" condition rather than a malformed config.
+func IsNoConfig(err error) bool { return errors.Is(err, ErrNoConfig) }
+
+// FirstRunHint returns the actionable guidance appended to a missing-config
+// error. It names the two supported ways to provide a configuration so every
+// entry point (TUI, web, CLI) prints identical instructions.
+func FirstRunHint() string {
+	return "Set up hakase with:\n" +
+		"  hakase init\n" +
+		"or provide the whole config through the environment:\n" +
+		"  HAKASE_PROVIDER=gemini HAKASE_API_KEY=... hakase"
+}
+
 // LoadConfig reads the JSON config file and applies HAKASE_* environment
 // overrides on top. Environment variables win over file values. Boolean and
 // numeric overrides share one strict parsing policy (parseEnvBool and
 // parseEnvPositiveInt): an invalid value is a load error that names the
 // variable, never a silent fallback. When the file is missing, config can
-// still come entirely from the environment; only when neither a file nor any
-// env var is present is the file error returned.
+// still come entirely from the environment; when neither a file nor any env
+// var is present it returns an error wrapping ErrNoConfig (and the underlying
+// not-exist error) with FirstRunHint appended.
 func LoadConfig(filePath string) (*Config, error) {
 	var cfg Config
 
@@ -1408,7 +1430,7 @@ func LoadConfig(filePath string) (*Config, error) {
 		}
 	case envConfigSet():
 	default:
-		return nil, err
+		return nil, fmt.Errorf("%w: %w\n\n%s", ErrNoConfig, err, FirstRunHint())
 	}
 
 	if v := os.Getenv("HAKASE_API_KEY"); v != "" {

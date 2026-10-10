@@ -108,6 +108,33 @@ per-item notes live in the issues, not here.
    Cloud backends stay opt-in only. Design: `docs/adk-adoption/`
    (AD-001..AD-005).
 
+## Tier 4 — Onboarding & distribution (2026-10-10)
+
+Friction found while auditing the first-run path. `hakase init` plus friendly
+first-run errors shipped first (see CHANGELOG); the rest are open.
+
+1. **`hakase doctor` preflight** — one command that checks the toolchain
+   (Go/Node/pnpm/Python/ffmpeg/whisper/piper), config validity, provider + MCP
+   reachability, credentials/JWT presence, and the active sandbox mode,
+   printing a fix hint per failure. Today the only triage aid is the 3-bullet
+   README troubleshooting block (`README.md:316-323`).
+2. **Install & distribution** — a `curl | sh` installer that detects OS/arch,
+   downloads the release asset and verifies `SHA256SUMS.txt`, plus:
+   - **prebuilt darwin binaries** (arm64+amd64) and a Homebrew tap — macOS is
+     the only platform still forced into the full Go+pnpm toolchain
+     (`README.md:55`);
+   - a **Dockerfile + compose** as the zero-toolchain "try it" path
+     (`-e HAKASE_API_KEY`, `~/.hakase` volume);
+   - **non-interactive `auth set-password`** (`--username`,
+     `--password-stdin`) and a first-run auto-provision so a web image can boot
+     unattended (today `hakase web` hard-refuses without
+     `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`).
+3. **README quickstart rewrite** — lead with a 60-second install → `hakase init`
+   → type block, promote the env-var-only path (`HAKASE_API_KEY` etc., already
+   supported via `envConfigSet`, `internal/config/config.go:1230`), and move the
+   feature tables plus the source-build "fresh clone gotcha" below the fold
+   (`README.md:34-82`).
+
 ## Deferred ledger (intentionally not scheduled)
 
 | Item | Where recorded | Note |

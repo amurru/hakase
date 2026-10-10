@@ -54,14 +54,15 @@ Prebuilt binaries and packages ship with every [release](https://github.com/amur
 | Windows | Download `hakase-<version>-windows-amd64.zip` and extract |
 | macOS / from source | See [Quick Start](#quick-start) below (no prebuilt darwin binary yet) |
 
-Then continue with step 1 of the Quick Start (`cp config.json.example config.json` and add your API key).
+Then run `hakase init` to create a config interactively (it writes `~/.hakase/config.json`; pass `--local` to write `./config.json`). To configure by hand instead, copy `config.minimal.json` and add your API key.
 
 ### Setup
 
 ```bash
-# 1. Clone and configure
-cp config.json.example config.json
-# Edit config.json with your API key (matching your provider) and MCP server URL
+# 1. Configure - interactive wizard (writes ~/.hakase/config.json)
+go run ./cmd/hakase/ init
+# ...or copy the template and edit it by hand:
+# cp config.minimal.json config.json
 
 # 2. Build the frontend (required once on a fresh clone)
 make build-frontend
@@ -75,7 +76,7 @@ Type your question and press `Enter`. The agent will research, analyze, and resp
 
 ```bash
 # 4. (Optional) Run the web UI instead
-go run ./cmd/hakase/ auth set-password   # one-time: create the admin login
+go run ./cmd/hakase/ auth set-password   # one-time: create the admin login (skippable if you set it in init)
 go run ./cmd/hakase/ web                 # SPA + API on http://127.0.0.1:8080
 ```
 
@@ -222,6 +223,7 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 
 | Command | Action |
 | ------- | ------ |
+| `init` | Create a config and set up hakase for first use (interactive wizard) |
 | `skill` | Manage markdown skills (`create`, `list`, `validate`, `evolve`) |
 | `task` | Manage the task board (`create`, `list`, `get`, `update`, `complete`, ...) |
 | `knowledge` | Manage the knowledge base (`list`, `read`, `search`, `lint`, `create`, `link`, `bench`) |
@@ -495,6 +497,7 @@ See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [
 | [.agents/skills/hakase/SKILL.md](.agents/skills/hakase/SKILL.md) | Self-knowledge skill -- authoritative agent reference |
 | [CHANGELOG.md](CHANGELOG.md) | User-facing changes (Keep a Changelog, semver-ish) |
 | [config.json.example](config.json.example) | Full config template with defaults |
+| [config.minimal.json](config.minimal.json) | Minimal config (provider / model / api_key) for a first run - what `hakase init` writes |
 
 ---
 

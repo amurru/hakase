@@ -10,6 +10,14 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`hakase init` first-run setup wizard** - creates a minimal config (provider / model / api_key, plus base_url for openai-compatible endpoints) without hand-editing the 270-line `config.json.example`. Interactively it prompts for any value not supplied by a flag or `HAKASE_*` env var, writes `~/.hakase/config.json` (0600; `--local` writes `./config.json`, `--force` overwrites), and offers to set the web admin password; non-interactively every required value must come from a flag or env var, so Docker/CI provisioning is deterministic. A hand-editable `config.minimal.json` ships alongside the full example.
+
+### Changed
+
+- **Missing-config first-run failures are now actionable.** `config.LoadConfig` returns an error wrapping the new sentinel `config.ErrNoConfig` (detect with `config.IsNoConfig`) with setup guidance appended. The TUI (`cmd/hakase/main.go`) and web (`cmd/hakase/web.go`) print that guidance instead of a bare `open config.json: no such file or directory`, and `hakase web` without an admin login now points at both `hakase auth set-password` and `hakase init`. The web config API still treats a missing file as a fresh env-built config (`errors.Is(err, os.ErrNotExist)`).
+
 ## [0.1.0-alpha.10] - 2026-10-10
 
 ### Added
