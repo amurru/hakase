@@ -180,7 +180,20 @@ func (g *WebClarifyGate) sendClarifyTimeout(clarifyID string) {
 
 // ClarifyAPI handles clarify response endpoints.
 type ClarifyAPI struct {
-	gate *WebClarifyGate
+	gate  *WebClarifyGate
+	roles RoleMap // nil = open (today's single-user behavior)
+}
+
+// requireRole rejects below-minimum tiers with 403 (unauthenticated
+// requests never reach here: AuthMiddleware runs first).
+func (api *ClarifyAPI) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if api.roles.RoleFor(r.Header.Get("X-Hakase-User")).rank() < min.rank() {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: approver role required"})
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ClarifyRouter is the minimum interface needed by RegisterClarifyRoutes.
@@ -191,14 +204,22 @@ type ClarifyRouter interface {
 // RegisterClarifyRoutes registers clarify response routes on the given router.
 // Routes are relative to /api (the caller places them inside the /api group).
 func RegisterClarifyRoutes(r ClarifyRouter, gate *WebClarifyGate) {
-	api := &ClarifyAPI{gate: gate}
-	r.Post("/clarifications/{id}/respond", api.RespondClarify)
+	RegisterClarifyRoutesWithRoles(r, gate, nil)
+}
+
+// RegisterClarifyRoutesWithRoles registers the clarify answer endpoint
+// with RBAC (L7: answering steers runs, so it needs approver like the
+// approval endpoints).
+func RegisterClarifyRoutesWithRoles(r ClarifyRouter, gate *WebClarifyGate, roles RoleMap) {
+	api := &ClarifyAPI{gate: gate, roles: roles}
+	r.Post("/clarifications/{id}/respond", api.requireRole(RoleApprover, api.RespondClarify))
 }
 
 // RespondClarify handles POST /api/clarifications/{id}/respond.
 // Accepts {choices: []string} or {answer: string}. Sends the response to the
 // pending clarify channel. Returns 200 on success, 404 if unknown/expired.
 func (api *ClarifyAPI) RespondClarify(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRespondBodyBytes)
 	clarifyID := chi.URLParam(r, "id")
 	if clarifyID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing clarify id"})
@@ -214,6 +235,10 @@ func (api *ClarifyAPI) RespondClarify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Choices) > maxBatchIDs {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many choices"})
+		return
+	}
 	// Build the ClarifyResponse: choices take precedence over free text.
 	var response interfaces.ClarifyResponse
 	if len(req.Choices) > 0 {

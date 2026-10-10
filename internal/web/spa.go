@@ -60,7 +60,7 @@ func RegisterRoutes(r chiRouter, assets http.FileSystem, jwtKey []byte, sessionS
 			handlers.RegisterApprovalRoutesWithRoles(r, approvalGate, approvalRoles)
 		}
 		if clarifyGate != nil {
-			handlers.RegisterClarifyRoutes(r, clarifyGate)
+			handlers.RegisterClarifyRoutesWithRoles(r, clarifyGate, approvalRoles)
 		}
 		// Task API routes (task 27)
 		handlers.RegisterTaskRoutes(r)

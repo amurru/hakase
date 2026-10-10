@@ -239,7 +239,8 @@ func TestCrossSurfaceFirstWins(t *testing.T) {
 }
 
 // TestApprovalRBAC pins the tier matrix: viewer reads, approver answers,
-// unlisted reads-only, open map allows all.
+// unlisted reads-only, open map allows all. Clarify answers need
+// approver too (L7).
 func TestApprovalRBAC(t *testing.T) {
 	newGate := func() *WebApprovalGate {
 		return NewWebApprovalGate(sse.NewEventBridge(), "sess", interfaces.ApprovalConfig{ExpirySeconds: 5})
@@ -292,4 +293,44 @@ func TestParseRoleMapRejectsUnknown(t *testing.T) {
 func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// TestBatchCap pins M6: oversized batches are rejected before touching
+// any prompt.
+func TestBatchCap(t *testing.T) {
+	gate := NewWebApprovalGate(sse.NewEventBridge(), "sess", interfaces.ApprovalConfig{})
+	ids := make([]string, 0, maxBatchIDs+1)
+	for i := 0; i <= maxBatchIDs; i++ {
+		ids = append(ids, "appr_x")
+	}
+	body, _ := json.Marshal(map[string]any{"ids": ids, "approved": true})
+	req := httptest.NewRequest("POST", "/approvals/respond", strings.NewReader(string(body)))
+	req.Header.Set("X-Hakase-User", "anyone")
+	rr := httptest.NewRecorder()
+	queueRouter(gate, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("oversized batch = %d, want 400", rr.Code)
+	}
+}
+
+// TestClarifyRBAC pins L7: answering a clarification needs approver;
+// open map stays open, viewer is refused.
+func TestClarifyRBAC(t *testing.T) {
+	clarifyGate := NewWebClarifyGate(sse.NewEventBridge(), "sess", interfaces.ClarifyConfig{})
+	open := chi.NewRouter()
+	RegisterClarifyRoutesWithRoles(open, clarifyGate, nil)
+	rr := doReq(t, open, "POST", "/clarifications/c1/respond", "stranger", `{"answer":"x"}`)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("open clarify answer = %d, want 404 (unknown id, but not forbidden)", rr.Code)
+	}
+
+	roles, err := ParseRoleMap(map[string]string{"cat": "viewer"})
+	if err != nil {
+		t.Fatalf("ParseRoleMap: %v", err)
+	}
+	rbac := chi.NewRouter()
+	RegisterClarifyRoutesWithRoles(rbac, clarifyGate, roles)
+	if rr := doReq(t, rbac, "POST", "/clarifications/c1/respond", "cat", `{"answer":"x"}`); rr.Code != http.StatusForbidden {
+		t.Errorf("viewer clarify answer = %d, want 403", rr.Code)
+	}
 }
