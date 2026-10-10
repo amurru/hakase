@@ -11,6 +11,50 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
 
 ---
 
+## Quickstart (60 seconds)
+
+1. **Install binary** (Linux x86_64 / arm64):
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/amurru/hakase/main/packaging/install.sh | sh
+   ```
+   *(For Debian/Ubuntu, Fedora/RHEL, Arch, Windows, or macOS, see [Install](#install) below.)*
+
+2. **Configure interactive wizard**:
+   ```bash
+   hakase init
+   ```
+   *(Writes `~/.hakase/config.json`. Pass `--local` to write `./config.json`, or copy [`config.minimal.json`](config.minimal.json).)*
+
+3. **Run the agent**:
+   ```bash
+   hakase
+   ```
+   Type your question and press `Enter`. The terminal TUI launches immediately.
+
+4. **(Optional) Run the web UI**:
+   ```bash
+   hakase auth set-password   # Create the admin login
+   hakase web                 # Open SPA + API on http://127.0.0.1:8080
+   ```
+
+### No config file? Use env vars
+
+You can run `hakase` without creating `config.json` by passing environment variables. Environment variables override `config.json` when present and require no configuration file on disk.
+
+**Gemini:**
+```bash
+HAKASE_PROVIDER=gemini HAKASE_API_KEY=your_api_key hakase
+```
+
+**OpenAI-compatible (Ollama):**
+```bash
+HAKASE_PROVIDER=openai-compatible HAKASE_MODEL=llama3.3 HAKASE_BASE_URL=http://localhost:11434/v1 hakase
+```
+
+Supported environment variables include `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_API_KEY`, and `HAKASE_BASE_URL` (plus `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_*`, `HAKASE_TELEGRAM_*`, `HAKASE_HOME`, etc.).
+
+---
+
 ## Overview
 
 **hakase** is an AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents -- a **Web Researcher** and a **Code Interpreter** -- through a Google ADK root orchestrator, powered by configurable LLM providers (Gemini, OpenAI, or any OpenAI-compatible endpoint). Interaction happens either in a split-pane terminal TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), or in a browser through the bundled web UI (`hakase web`).
@@ -31,16 +75,6 @@ The agent can:
 
 ---
 
-## Quick Start
-
-### Prerequisites
-
-- **Go** 1.26+
-- **Node.js + pnpm** -- builds the web UI (`webui/`). The SPA is embedded into the Go binary via `//go:embed`, so a frontend build is part of compiling the project
-- **Python 3** -- code interpreter (`.venv` execution) and the skill library (`./skills/`)
-- An **API key** for your chosen provider -- Gemini, OpenAI, or an OpenAI-compatible endpoint (Ollama, vLLM). The required key depends on the `provider` field in `config.json`.
-- **Lightpanda** (optional) -- the MCP browser automation server at [lightpanda.ai](https://lightpanda.ai) (`http://localhost:9223/mcp` by default). **Not required**: without any browser MCP, hakase automatically exposes built-in keyless `web_search`/`web_fetch` tools so research works from the first run. Any spec-compliant browser MCP also works -- see [Browser MCP presets](docs/browser-mcp-presets.md).
-
 ## Install
 
 Prebuilt binaries and packages ship with every [release](https://github.com/amurru/hakase/releases) (checksums in `SHA256SUMS.txt`, SLSA L3 provenance in `multiple.intoto.jsonl`):
@@ -53,11 +87,23 @@ Prebuilt binaries and packages ship with every [release](https://github.com/amur
 | Arch | `yay -S hakase-bin` (AUR, [`packaging/aur/hakase-bin`](packaging/aur/hakase-bin)) |
 | Linux (manual) | Download `hakase-<version>-linux-amd64` or `hakase-<version>-linux-arm64`, `chmod +x`, run |
 | Windows | Download `hakase-<version>-windows-amd64.zip` and extract |
-| macOS / from source | See [Quick Start](#quick-start) below (no prebuilt darwin binary yet) |
+| macOS / from source | See [Building from Source](#building-from-source) below (no prebuilt darwin binary yet) |
 
-Then run `hakase init` to create a config interactively (it writes `~/.hakase/config.json`; pass `--local` to write `./config.json`). To configure by hand instead, copy `config.minimal.json` and add your API key.
+Then run `hakase init` to create a config interactively (it writes `~/.hakase/config.json`; pass `--local` to write `./config.json`). To configure by hand instead, copy [`config.minimal.json`](config.minimal.json) and add your API key.
 
-### Setup
+---
+
+## Building from Source
+
+### Prerequisites
+
+- **Go** 1.26+
+- **Node.js + pnpm** -- builds the web UI (`webui/`). The SPA is embedded into the Go binary via `//go:embed`, so a frontend build is part of compiling the project
+- **Python 3** -- code interpreter (`.venv` execution) and the skill library (`./skills/`)
+- An **API key** for your chosen provider -- Gemini, OpenAI, or an OpenAI-compatible endpoint (Ollama, vLLM). The required key depends on the `provider` field in `config.json`.
+- **Lightpanda** (optional) -- the MCP browser automation server at [lightpanda.ai](https://lightpanda.ai) (`http://localhost:9223/mcp` by default). **Not required**: without any browser MCP, hakase automatically exposes built-in keyless `web_search`/`web_fetch` tools so research works from the first run. Any spec-compliant browser MCP also works -- see [Browser MCP presets](docs/browser-mcp-presets.md).
+
+### Source Setup
 
 ```bash
 # 1. Configure - interactive wizard (writes ~/.hakase/config.json)
@@ -77,7 +123,7 @@ Type your question and press `Enter`. The agent will research, analyze, and resp
 
 ```bash
 # 4. (Optional) Run the web UI instead
-go run ./cmd/hakase/ auth set-password   # one-time: create the admin login (skippable if you set it in init)
+go run ./cmd/hakase/ auth set-password   # one-time: create the admin login (skippable if set in init)
 go run ./cmd/hakase/ web                 # SPA + API on http://127.0.0.1:8080
 ```
 
@@ -137,7 +183,7 @@ The SPA is Vue 3 + TypeScript + Vite + Tailwind 4 (Pinia, Vue Router, reka-ui, m
 
 > Before `web`/`serve` will start, create the admin login: `hakase auth set-password` (argon2id, stored at `~/.hakase/credentials.json` mode `0600`). The JWT secret lives at `~/.hakase/jwt-secret`. See [Authentication](#authentication) and [Reverse Proxy](#reverse-proxy-caddy).
 
-For the full API surface and SPA details, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#web-ui-development-flow) and [internal/web](../internal/web).
+For the full API surface and SPA details, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#web-ui-development-flow) and [internal/web](internal/web).
 
 ---
 
@@ -487,7 +533,7 @@ hakase skill validate .agents/skills/my-skill
 hakase skill evolve --mutate          # darwinian-evolver pass over Python skills
 ```
 
-See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [.agents/skills/](../.agents/skills/).
+See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [.agents/skills/](.agents/skills/).
 
 ---
 
