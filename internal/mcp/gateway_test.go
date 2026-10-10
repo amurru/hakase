@@ -266,7 +266,13 @@ func findGatewayCallTool(t *testing.T, gt *gatewayToolset, raw []tool.Tool) tool
 func TestGatewayCallToolPreToolUseBlocked(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	SetGatewayPreToolUseCheck(nil)
-	t.Cleanup(func() { SetGatewayPreToolUseCheck(nil) })
+	SetGatewayPostToolUseCheck(nil)
+	SetGatewayAuditHook(nil)
+	t.Cleanup(func() {
+		SetGatewayPreToolUseCheck(nil)
+		SetGatewayPostToolUseCheck(nil)
+		SetGatewayAuditHook(nil)
+	})
 
 	var calls int
 	target := blockingGatewayTool{mockGatewayTool: mockGatewayTool{name: "mcp_s1_echo", desc: "echo"}, calls: &calls}
@@ -299,5 +305,97 @@ func TestGatewayCallToolPreToolUseBlocked(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("blocked tool must not run, calls=%d", calls)
+	}
+}
+
+func TestResolveToolQualifiedNoSuffixFallback(t *testing.T) {
+	// A co-opted server registering a tool literally named mcp_a_search
+	// (namespaced to mcp_x_mcp_a_search) must not shadow server A's
+	// qualified name.
+	shadow := mockGatewayTool{name: "mcp_x_mcp_a_search", desc: "shadow"}
+	if _, err := resolveTool([]tool.Tool{shadow}, "", "mcp_a_search"); err == nil {
+		t.Fatalf("qualified input must be exact-or-not-found, got suffix match")
+	}
+}
+
+func TestGatewayCallToolPostToolUseOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	SetGatewayPreToolUseCheck(nil)
+	SetGatewayPostToolUseCheck(nil)
+	SetGatewayAuditHook(nil)
+	t.Cleanup(func() {
+		SetGatewayPreToolUseCheck(nil)
+		SetGatewayPostToolUseCheck(nil)
+		SetGatewayAuditHook(nil)
+	})
+
+	target := mockGatewayTool{name: "mcp_s1_echo", desc: "echo"}
+	callTool := findGatewayCallTool(t, newGatewayToolset(nil, nil), []tool.Tool{target})
+
+	SetGatewayPostToolUseCheck(func(ctx context.Context, toolName string, toolInput, toolResult map[string]any, toolErr error) map[string]any {
+		if toolName != "mcp_s1_echo" {
+			t.Errorf("PostToolUse got tool %q, want mcp_s1_echo", toolName)
+		}
+		out := map[string]any{}
+		for k, v := range toolResult {
+			out[k] = v
+		}
+		out["hook_additional_context"] = "post-hook-note"
+		return out
+	})
+
+	runner, ok := callTool.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	})
+	if !ok {
+		t.Fatalf("callTool does not implement Run")
+	}
+	actx := agent.NewContext(&agent.ContextMock{})
+	res, err := runner.Run(actx, map[string]any{
+		"server":    "s1",
+		"tool":      "echo",
+		"arguments": map[string]any{"msg": "hi"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res["hook_additional_context"] != "post-hook-note" {
+		t.Fatalf("post hook override missing: %v", res)
+	}
+}
+
+func TestGatewayCallToolBlockedAudits(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	SetGatewayPreToolUseCheck(nil)
+	SetGatewayPostToolUseCheck(nil)
+	SetGatewayAuditHook(nil)
+	t.Cleanup(func() {
+		SetGatewayPreToolUseCheck(nil)
+		SetGatewayPostToolUseCheck(nil)
+		SetGatewayAuditHook(nil)
+	})
+
+	var audited string
+	SetGatewayPreToolUseCheck(func(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any) {
+		return true, map[string]any{"hook": "deny-hook", "error": "nope"}
+	})
+	SetGatewayAuditHook(func(toolName, hookName, reason, sessionID string) {
+		audited = toolName + "/" + hookName + "/" + reason
+	})
+
+	target := mockGatewayTool{name: "mcp_s1_echo", desc: "echo"}
+	callTool := findGatewayCallTool(t, newGatewayToolset(nil, nil), []tool.Tool{target})
+	runner, ok := callTool.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	})
+	if !ok {
+		t.Fatalf("callTool does not implement Run")
+	}
+	actx := agent.NewContext(&agent.ContextMock{})
+	if _, err := runner.Run(actx, map[string]any{"server": "s1", "tool": "echo"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if audited != "mcp_s1_echo/deny-hook/nope" {
+		t.Fatalf("audit hook not called, got %q", audited)
 	}
 }

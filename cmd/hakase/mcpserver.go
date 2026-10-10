@@ -165,10 +165,13 @@ func runMCPAgentServe(_ []string) int {
 		return 1
 	}
 	// Gateway nested calls (mcp_call_tool) enforce the target tool's
-	// PreToolUse hooks with the resolved tool name.
+	// PreToolUse/PostToolUse hooks with the resolved tool name, and audit
+	// nested denials like direct calls.
 	if hooksRunner := deps.HooksRunner; hooksRunner != nil {
 		mcp.SetGatewayPreToolUseCheck(hooksRunner.CheckPreToolUse)
+		mcp.SetGatewayPostToolUseCheck(hooksRunner.CheckPostToolUse)
 	}
+	mcp.SetGatewayAuditHook(agent.AuditHookBlock)
 
 	// Model capabilities feed the HistoryBuilder budget math and vision
 	// detection (same background fetch as web.go).

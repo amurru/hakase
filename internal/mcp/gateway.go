@@ -3,6 +3,7 @@ package mcp
 
 import (
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/util"
 	"context"
 	"encoding/json"
@@ -73,7 +74,9 @@ type CallToolArgs struct {
 // cmd/hakase after SetupRunner builds deps.HooksRunner; nil means no hooks.
 var gatewayPreToolUse = struct {
 	sync.RWMutex
-	check func(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any)
+	check       func(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any)
+	postCheck   func(ctx context.Context, toolName string, toolInput, toolResult map[string]any, toolErr error) map[string]any
+	onHookBlock func(toolName, hookName, reason, sessionID string)
 }{}
 
 // SetGatewayPreToolUseCheck installs the PreToolUse enforcement for nested
@@ -84,6 +87,23 @@ func SetGatewayPreToolUseCheck(check func(ctx context.Context, toolName string, 
 	gatewayPreToolUse.check = check
 }
 
+// SetGatewayPostToolUseCheck installs the PostToolUse context injection for
+// nested gateway calls. Call once at startup with
+// deps.HooksRunner.CheckPostToolUse.
+func SetGatewayPostToolUseCheck(check func(ctx context.Context, toolName string, toolInput, toolResult map[string]any, toolErr error) map[string]any) {
+	gatewayPreToolUse.Lock()
+	defer gatewayPreToolUse.Unlock()
+	gatewayPreToolUse.postCheck = check
+}
+
+// SetGatewayAuditHook installs the audit callback for nested gateway hook
+// denials. Call once at startup with agent.AuditHookBlock.
+func SetGatewayAuditHook(fn func(toolName, hookName, reason, sessionID string)) {
+	gatewayPreToolUse.Lock()
+	defer gatewayPreToolUse.Unlock()
+	gatewayPreToolUse.onHookBlock = fn
+}
+
 func gatewayCheckPreToolUse(ctx context.Context, toolName string, args map[string]any) (bool, map[string]any) {
 	gatewayPreToolUse.RLock()
 	defer gatewayPreToolUse.RUnlock()
@@ -91,6 +111,26 @@ func gatewayCheckPreToolUse(ctx context.Context, toolName string, args map[strin
 		return false, nil
 	}
 	return gatewayPreToolUse.check(ctx, toolName, args)
+}
+
+func gatewayCheckPostToolUse(ctx context.Context, toolName string, toolInput, toolResult map[string]any, toolErr error) map[string]any {
+	gatewayPreToolUse.RLock()
+	defer gatewayPreToolUse.RUnlock()
+	if gatewayPreToolUse.postCheck == nil {
+		return nil
+	}
+	return gatewayPreToolUse.postCheck(ctx, toolName, toolInput, toolResult, toolErr)
+}
+
+func gatewayAuditHookBlock(toolName string, result map[string]any, sessionID string) {
+	gatewayPreToolUse.RLock()
+	defer gatewayPreToolUse.RUnlock()
+	if gatewayPreToolUse.onHookBlock == nil {
+		return
+	}
+	hook, _ := result["hook"].(string)
+	reason, _ := result["error"].(string)
+	gatewayPreToolUse.onHookBlock(toolName, hook, reason, sessionID)
 }
 
 // resolveTool finds one tool by bare or namespaced name. Exact qualified
@@ -107,6 +147,10 @@ func resolveTool(tools []tool.Tool, server, toolName string) (tool.Tool, error) 
 	if server != "" {
 		serverPrefix = "mcp_" + config.SanitizeMCPServerName(server) + "_"
 	}
+	// Qualified inputs (already mcp_-prefixed) resolve exact-or-not-found;
+	// they never fall into the bare-name suffix scan, so a co-opted server
+	// cannot shadow another server's qualified name.
+	qualified := strings.HasPrefix(toolName, "mcp_")
 	for _, t := range tools {
 		name := t.Name()
 		if name == toolName && (server == "" || strings.HasPrefix(name, serverPrefix)) {
@@ -117,7 +161,7 @@ func resolveTool(tools []tool.Tool, server, toolName string) (tool.Tool, error) 
 			if name == MCPToolName(server, toolName) {
 				matches = append(matches, t)
 			}
-		} else if strings.HasPrefix(name, "mcp_") && strings.HasSuffix(name, "_"+sanitizedName) {
+		} else if !qualified && strings.HasPrefix(name, "mcp_") && strings.HasSuffix(name, "_"+sanitizedName) {
 			matches = append(matches, t)
 		}
 	}
@@ -249,12 +293,20 @@ func (g *gatewayToolset) gatewayTools(ctx agent.ReadonlyContext, rawTools []tool
 				return nil, err
 			}
 			if blocked, result := gatewayCheckPreToolUse(ctx, t.Name(), args.Arguments); blocked {
+				gatewayAuditHookBlock(t.Name(), result, interfaces.SessionIDFromCtx(ctx))
 				return result, nil
 			}
 			if runner, ok := t.(interface {
 				Run(ctx agent.Context, args any) (map[string]any, error)
 			}); ok {
-				return runner.Run(ctx, args.Arguments)
+				res, runErr := runner.Run(ctx, args.Arguments)
+				if runErr != nil {
+					return nil, runErr
+				}
+				if override := gatewayCheckPostToolUse(ctx, t.Name(), args.Arguments, res, nil); override != nil {
+					return override, nil
+				}
+				return res, nil
 			}
 			return nil, fmt.Errorf("tool %q does not support execution", args.Tool)
 		},
