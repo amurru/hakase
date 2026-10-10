@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"amurru/hakase/internal/config"
@@ -39,8 +40,11 @@ func TestInitWritesMinimalConfigToHakaseHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config not written: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("config mode: expected 0600, got %o", perm)
+	// Windows does not honor Unix permission bits (WriteFile 0600 yields 0666).
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("config mode: expected 0600, got %o", perm)
+		}
 	}
 
 	cfg, err := config.LoadConfig(path)
