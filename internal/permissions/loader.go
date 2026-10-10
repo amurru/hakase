@@ -442,18 +442,29 @@ func (l *Loader) refreshURLPolicy(fileFlags EnterprisePolicy) (*Policy, bool) {
 	}
 	if raw, err := fetch(url); err == nil && len(raw) > 0 && len(raw) <= maxEnterpriseBytes {
 		var p Policy
+		// Decode AND compile before accepting: an undecodable or
+		// uncompilable payload (bad version/effect/pattern) falls to
+		// last-good instead of poisoning memory and the disk cache.
 		if jerr := jsonDecoder(raw).Decode(&p); jerr == nil {
-			l.mu.Lock()
-			l.urlPolicy, l.urlFetchedAt, l.urlHave = p, time.Now(), true
-			l.mu.Unlock()
-			l.writeURLCache(raw)
-			cp := p
-			return &cp, true
+			if _, cerr := Compile(p); cerr == nil {
+				l.mu.Lock()
+				l.urlPolicy, l.urlFetchedAt, l.urlHave = p, time.Now(), true
+				l.mu.Unlock()
+				l.writeURLCache(raw)
+				cp := p
+				return &cp, true
+			}
 		}
 	}
-	// Fetch failed, oversized, or unparseable: last good wins.
+	// Fetch failed, oversized, unparseable, or uncompilable:
+	// last good wins.
+	return l.lastGoodURL()
+}
+
+// lastGoodURL returns the memory policy, else the disk cache, else none.
+func (l *Loader) lastGoodURL() (*Policy, bool) {
 	l.mu.Lock()
-	mem, haveMem = l.urlPolicy, l.urlHave
+	mem, haveMem := l.urlPolicy, l.urlHave
 	l.mu.Unlock()
 	if haveMem {
 		cp := mem

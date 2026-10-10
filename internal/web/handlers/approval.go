@@ -352,8 +352,7 @@ func (api *ApprovalAPI) RespondBatch(w http.ResponseWriter, r *http.Request) {
 		IDs      []string `json:"ids"`
 		Approved bool     `json:"approved"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeSingleJSON(w, r, &req); err != nil {
 		return
 	}
 	if len(req.IDs) == 0 {
@@ -401,6 +400,22 @@ const maxRespondBodyBytes = 1 << 20
 // maxBatchIDs caps one batch respond call (M6).
 const maxBatchIDs = 100
 
+// decodeSingleJSON decodes exactly one JSON value: trailing garbage
+// after the value is rejected (a valid response followed by junk must
+// not parse).
+func decodeSingleJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return err
+	}
+	if dec.More() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return fmt.Errorf("trailing data after JSON value")
+	}
+	return nil
+}
+
 // RespondApproval handles POST /api/approvals/{id}/respond.
 // Accepts {approved: bool}. Sends the response to the pending approval channel.
 // Returns 200 on success, 404 if the approval ID is unknown/expired.
@@ -415,8 +430,7 @@ func (api *ApprovalAPI) RespondApproval(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Approved bool `json:"approved"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeSingleJSON(w, r, &req); err != nil {
 		return
 	}
 

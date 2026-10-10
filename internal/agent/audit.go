@@ -43,7 +43,15 @@ type CommandAuditEntry struct {
 	// entry_hash = sha256(prev_hash + canonical entry JSON).
 	PrevHash  string `json:"prev_hash,omitempty"`
 	EntryHash string `json:"entry_hash,omitempty"`
+	// HashAlg records the hash algorithm ("hmac-sha256" when an HMAC
+	// key was active at write time, "" = plain sha256). Verification
+	// picks the algorithm per entry so enabling HMAC later does not
+	// break verification of older entries.
+	HashAlg string `json:"hash_alg,omitempty"`
 }
+
+// hashAlgHMAC is the HashAlg marker for HMAC-chained entries.
+const hashAlgHMAC = "hmac-sha256"
 
 // auditLogDir is where the always-on audit log is written. Overridable in tests.
 var auditLogDir = "logs"
@@ -54,19 +62,21 @@ var auditLogDir = "logs"
 // never sprawl to logs or SIEM in cleartext (M5).
 var (
 	secretKV     = regexp.MustCompile(`(?i)(token|password|passwd|secret|api[_-]?key|auth)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)`)
-	secretBearer = regexp.MustCompile(`(?i)bearer\s+\S+`)
+	secretScheme = regexp.MustCompile(`(?i)(bearer|basic)\s+\S+`)
+	secretJSON   = regexp.MustCompile(`(?i)("(?:token|password|passwd|secret|api[_-]?key|auth)")\s*:\s*"[^"]*"`)
 	secretToken  = regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|xox[bap]-[A-Za-z0-9-]{8,})\b`)
 )
 
 // redactSecrets replaces secret-shaped values with [REDACTED].
 func redactSecrets(s string) string {
 	s = secretKV.ReplaceAllString(s, "$1=[REDACTED]")
-	s = secretBearer.ReplaceAllStringFunc(s, func(m string) string {
+	s = secretScheme.ReplaceAllStringFunc(s, func(m string) string {
 		if i := strings.IndexAny(m, " \t"); i >= 0 {
 			return m[:i+1] + "[REDACTED]"
 		}
 		return "[REDACTED]"
 	})
+	s = secretJSON.ReplaceAllString(s, `$1:"[REDACTED]"`)
 	return secretToken.ReplaceAllString(s, "[REDACTED]")
 }
 
@@ -106,9 +116,12 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	// Redact secret-shaped values before chaining/forwarding/export (M5).
 	entry.Command = redactSecrets(entry.Command)
 	entry.Reason = redactSecrets(entry.Reason)
+	// Clone before redacting: the caller's slice must not be mutated.
+	redacted := make([]string, len(entry.Args))
 	for i, a := range entry.Args {
-		entry.Args[i] = redactSecrets(a)
+		redacted[i] = redactSecrets(a)
 	}
+	entry.Args = redacted
 
 	auditMu.Lock()
 	defer auditMu.Unlock()
@@ -136,7 +149,11 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	// Hash chain (PM-004): link to the last stored hash BEFORE rotation
 	// so the chain spans rotated files; the entry is hashed after the
 	// prev link is set (chainEntryHash zeroes the hash fields first).
+	// The algorithm marker is set before hashing so it is covered too.
 	entry.PrevHash = tailEntryHash(path)
+	if len(auditHMACKey) > 0 {
+		entry.HashAlg = hashAlgHMAC
+	}
 	canonical, err := json.Marshal(chainView(entry))
 	if err != nil {
 		return // best-effort: encoding failure is not actionable

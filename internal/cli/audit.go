@@ -10,6 +10,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -56,6 +57,10 @@ func useHMACKeyFile(path string) int {
 	key, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hakase: cannot read hmac key file: %v\n", err)
+		return 1
+	}
+	if len(bytes.TrimSpace(key)) == 0 {
+		fmt.Fprintf(os.Stderr, "hakase: hmac key file %s is empty\n", path)
 		return 1
 	}
 	hakaseagent.ConfigureAuditHMACKey(key)

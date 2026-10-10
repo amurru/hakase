@@ -69,9 +69,14 @@ answers record the actor (web username or `telegram:<id>` /
 
 Notes: command lines are redacted for secret-shaped values (`password=`,
 `Bearer` tokens, `sk-`/`ghp_`/`xox-` shapes) before chaining. Operator
-URLs (enterprise poll, SIEM forward) never follow redirects; `http://`
-endpoints are MITM-able, but a spoofed poll can only fail (the last-good
-policy holds), never inject — fetches are strict-decoded and validated.
+URLs (enterprise poll, SIEM forward) never follow redirects. Serve the
+enterprise policy over an authenticated transport (HTTPS/TLS): strict
+decoding and validation check the payload's shape, not its origin, so a
+spoofed endpoint that answers with a well-formed policy would be
+accepted. `http://` endpoints are MITM-able; a spoofed poll that fails
+or misbehaves falls back to the last-good policy, but a well-formed
+spoof is indistinguishable from the real server without transport
+authentication.
 
 ## Config
 

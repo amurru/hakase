@@ -430,3 +430,34 @@ func TestURLDiskCacheSurvivesRestart(t *testing.T) {
 		t.Errorf("post-restart Evaluate = %q, want deny (disk cache)", got)
 	}
 }
+
+// TestURLUncompilableFallsBack pins an undecodable-by-policy payload
+// (valid JSON, bad version) going to last-good instead of poisoning
+// memory and the disk cache.
+func TestURLUncompilableFallsBack(t *testing.T) {
+	good := `{"version":1,"rules":[
+		{"action":"shell","resource":"deploy *","effect":"deny"}]}`
+	bad := `{"version":99,"rules":[]}`
+	bodies := []string{good, bad}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, bodies[calls%len(bodies)])
+		calls++
+	}))
+	defer srv.Close()
+
+	l := testLoader()
+	l.PolicyURL = srv.URL
+	l.PollMinutes = -1
+	l.CachePath = "!"
+	if _, err := l.Load(""); err != nil {
+		t.Fatalf("Load good: %v", err)
+	}
+	lp, err := l.Load("")
+	if err != nil {
+		t.Fatalf("Load bad (must not error): %v", err)
+	}
+	if got, _ := lp.Policy.Evaluate("shell", "deploy prod"); got != EffectDeny {
+		t.Errorf("after bad payload = %q, want deny (last good kept)", got)
+	}
+}

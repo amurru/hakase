@@ -334,3 +334,14 @@ func TestClarifyRBAC(t *testing.T) {
 		t.Errorf("viewer clarify answer = %d, want 403", rr.Code)
 	}
 }
+
+// TestRespondRejectsTrailingGarbage pins single-JSON decoding: a valid
+// value followed by junk is rejected, not partially honored.
+func TestRespondRejectsTrailingGarbage(t *testing.T) {
+	gate := NewWebApprovalGate(sse.NewEventBridge(), "sess", interfaces.ApprovalConfig{})
+	rr := doReq(t, queueRouter(gate, nil), "POST", "/approvals/respond",
+		"anyone", `{"ids":["appr_x"],"approved":true} trailing-junk`)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("trailing garbage = %d, want 400", rr.Code)
+	}
+}

@@ -52,16 +52,22 @@ func ConfigureAuditHMACKey(key []byte) {
 	auditHMACKey = cp
 }
 
-// chainEntryHash computes the entry hash over prev + canonical bytes.
-func chainEntryHash(prev string, canonical []byte) string {
-	if len(auditHMACKey) > 0 {
-		mac := hmac.New(sha256.New, auditHMACKey)
+// hashWithKey computes the entry hash over prev + canonical bytes
+// (HMAC when key is set, plain sha256 otherwise).
+func hashWithKey(prev string, canonical, key []byte) string {
+	if len(key) > 0 {
+		mac := hmac.New(sha256.New, key)
 		mac.Write([]byte(prev + "\n"))
 		mac.Write(canonical)
 		return hex.EncodeToString(mac.Sum(nil))
 	}
 	sum := sha256.Sum256([]byte(prev + "\n" + string(canonical)))
 	return hex.EncodeToString(sum[:])
+}
+
+// chainEntryHash computes the entry hash with the active chain key.
+func chainEntryHash(prev string, canonical []byte) string {
+	return hashWithKey(prev, canonical, auditHMACKey)
 }
 
 // tailEntryHash returns the EntryHash of the last parseable line in path
@@ -159,7 +165,21 @@ func VerifyAuditChain(dir string) (int, error) {
 			if err != nil {
 				return n, fmt.Errorf("audit verify: %s:%d: %w", path, ln+1, err)
 			}
-			if got := chainEntryHash(prev, canonical); got != e.EntryHash {
+			// Per-entry algorithm: HMAC entries need the active key,
+			// plain entries verify with sha256 (pre-HMAC history keeps
+			// verifying after the switch).
+			var key []byte
+			switch e.HashAlg {
+			case "":
+			case hashAlgHMAC:
+				if len(auditHMACKey) == 0 {
+					return n, fmt.Errorf("audit verify: %s:%d: HMAC entry but no key configured (--hmac-key-file)", path, ln+1)
+				}
+				key = auditHMACKey
+			default:
+				return n, fmt.Errorf("audit verify: %s:%d: unknown hash_alg %q", path, ln+1, e.HashAlg)
+			}
+			if got := hashWithKey(prev, canonical, key); got != e.EntryHash {
 				return n, fmt.Errorf("audit verify: %s:%d: entry hash mismatch (tampered?)", path, ln+1)
 			}
 			if want != "" && prev != want {

@@ -219,3 +219,33 @@ func TestAuditHMACChain(t *testing.T) {
 		t.Fatal("wrong-key verify succeeded, want error")
 	}
 }
+
+// TestAuditSecretsExtended pins Basic auth and quoted-JSON redaction.
+func TestAuditSecretsExtended(t *testing.T) {
+	for _, cmd := range []string{
+		`curl -H "Authorization: Basic dXNlcjpwYXNz" https://x.example`,
+		`curl -d '{"token":"sensitive-value","id":1}' https://x.example`,
+	} {
+		if got := redactSecrets(cmd); strings.Contains(got, "dXNlcjpwYXNz") || strings.Contains(got, "sensitive-value") {
+			t.Errorf("redactSecrets(%q) = %q, want redacted", cmd, got)
+		}
+	}
+}
+
+// TestAuditHMACTransition pins mixed-algorithm verification: sha256
+// entries written before the switch keep verifying after HMAC is on.
+func TestAuditHMACTransition(t *testing.T) {
+	dir := tempAuditDir(t)
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "old", Decision: "allowed"})
+	ConfigureAuditHMACKey([]byte("k1"))
+	t.Cleanup(func() { ConfigureAuditHMACKey(nil) })
+	AuditCommandExec(CommandAuditEntry{Timestamp: time.Now(), Tool: "new", Decision: "allowed"})
+	n, err := VerifyAuditChain(dir)
+	if err != nil || n != 2 {
+		t.Fatalf("mixed verify = %d/%v, want 2/nil", n, err)
+	}
+	entries, _ := ReadAuditEntries(dir, time.Time{})
+	if entries[0].HashAlg != "" || entries[1].HashAlg != hashAlgHMAC {
+		t.Errorf("markers = %q/%q, want \"\"/hmac-sha256", entries[0].HashAlg, entries[1].HashAlg)
+	}
+}

@@ -7,7 +7,6 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/web/sse"
 	"context"
-	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
@@ -230,8 +229,7 @@ func (api *ClarifyAPI) RespondClarify(w http.ResponseWriter, r *http.Request) {
 		Choices []string `json:"choices,omitempty"`
 		Answer  string   `json:"answer,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeSingleJSON(w, r, &req); err != nil {
 		return
 	}
 
