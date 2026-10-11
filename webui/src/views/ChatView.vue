@@ -560,6 +560,8 @@ async function executeSlash(name: string, args: string) {
 }
 
 function note(severity: string, text: string) {
+  // Agent-run feedback renders as an inline sidekick chip, never a toast
+  // (UX-11): the transcript stays the single audit trail of a run.
   pushSidekickNote({ id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, severity, text, timestamp: Date.now() })
 }
 

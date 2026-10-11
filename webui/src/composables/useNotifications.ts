@@ -9,6 +9,13 @@ let lastWarnedThreshold = 0
 let lastBudgetThreshold = 0
 
 /**
+ * Feedback rule (UX-11): toasts are for SYSTEM events only - background
+ * delegation/cron updates and throttled threshold warnings, which must
+ * surface wherever the user is looking. AGENT-RUN feedback (slash-command
+ * results, compact/restore notes, run errors) renders as quiet inline
+ * sidekick chips in the chat transcript via pushSidekickNote - never as
+ * toasts, so the transcript stays the single audit trail of a run.
+ *
  * Setup notification handlers for SSE events and context usage.
  * Returns handlers to wire into useSSE event setters.
  */
