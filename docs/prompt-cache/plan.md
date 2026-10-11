@@ -32,8 +32,10 @@ tail]`, append-only between logged compactions.
 7. SessionStart persist-once path: insert at store head on the first callback
    of a session, before the first render.
 8. `internal/agentrun/agentrun.go:246-252`: stop mutating the user content;
-   enqueue the snapshot as a frozen turn block (mirror the
-   `PendingQueue`/`SidekickNoteQueue` pattern, `context.go:126-135`).
+   carry the snapshot as a frozen turn block. Shipped as a run-context
+   value (`project.WithSnapshot`/`SnapshotFrom`) read by the frozen
+   renderer, not the `PendingQueue`/`SidekickNoteQueue` mirror - the run
+   context scopes it per run and turn without shared builder state.
 9. Update `internal/context/memory_test.go`, `sessionstart_test.go`: blocks
    after the user content on every call, never prepended, memory updates
    visible next turn.

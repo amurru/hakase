@@ -419,8 +419,9 @@ scripts. Full MDM tier stays deferred.
 - `HistoryBuilder` prompt slot (`SetUserPromptProvider` +
   reserve/rollback, mirroring the memory/session slots) keyed on
   `sessionID:last-user-sequence`: every NEW user prompt fires once,
-  mid-turn model calls do not re-fire. Spliced ahead of the
-  session/memory blocks (the turn's freshest signal).
+  mid-turn model calls do not re-fire. Spliced first in the frozen turn
+  section (the turn's freshest signal), ahead of the memory and project
+  snapshot blocks.
 - `wireHookUserPrompt` in `internal/agent` (no-op unless the runner
   could ever fire); CLI `list`/`test` cover the event.
 
