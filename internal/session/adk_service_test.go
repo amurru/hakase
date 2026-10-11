@@ -315,3 +315,62 @@ func TestDurableADKService_Conformance(t *testing.T) {
 		return svc
 	})
 }
+
+// TestDurableADKService_AppendEventUpdatesPassedSession pins issue #110:
+// the ADK node runtime builds each model request's contents from the
+// session object it holds, so AppendEvent must make the appended event
+// observable on the passed session, not only on the next Get. Temp state
+// keys stay trimmed from that view, and the session-scoped state delta
+// lands on the session's state map the way the engine's in-memory service
+// does.
+func TestDurableADKService_AppendEventUpdatesPassedSession(t *testing.T) {
+	svc := newTestADKService(t)
+	ctx := context.Background()
+	created, err := svc.Create(ctx, testCreateReq())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ev := &adksession.Event{
+		ID:           "evt-1",
+		Timestamp:    time.Now().UTC(),
+		InvocationID: "inv-1",
+		Author:       "user",
+		Actions: adksession.EventActions{StateDelta: map[string]any{
+			"temp:hakase.test": "ephemeral",
+			"kept":             "yes",
+		}},
+		LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("hi", genai.RoleUser)},
+	}
+	if err := svc.AppendEvent(ctx, created.Session, ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	if got := created.Session.Events().Len(); got != 1 {
+		t.Fatalf("passed session events = %d, want 1 (in-flight append invisible)", got)
+	}
+	stored := created.Session.Events().At(0)
+	if stored == nil || stored.ID != "evt-1" {
+		t.Fatalf("passed session event = %+v, want evt-1", stored)
+	}
+	if _, leaked := stored.Actions.StateDelta["temp:hakase.test"]; leaked {
+		t.Fatalf("temp state delta leaked into the passed session view: %+v", stored.Actions.StateDelta)
+	}
+	if stored.Actions.StateDelta["kept"] != "yes" {
+		t.Fatalf("session state delta missing from the passed session view: %+v", stored.Actions.StateDelta)
+	}
+	if v, err := created.Session.State().Get("kept"); err != nil || v != "yes" {
+		t.Fatalf("session state kept = %v, %v; want yes", v, err)
+	}
+
+	// The durable record still agrees after a fresh Get.
+	got, err := svc.Get(ctx, &adksession.GetRequest{
+		AppName: "hakase_harness", UserID: "user-1", SessionID: "test-session-1",
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Session.Events().Len() != 1 || got.Session.Events().At(0).ID != "evt-1" {
+		t.Fatalf("re-read record diverged: %+v", got.Session.Events())
+	}
+}
