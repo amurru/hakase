@@ -42,6 +42,13 @@ const contextPercent = computed(() => {
   return Math.round((appStore.contextUsage / appStore.contextMax) * 100)
 })
 
+// cachePct is the prompt-cache read share of the turn's total tokens
+// (PC-007 SSE field; 0 until a usage event carries cached tokens).
+const cachePct = computed(() => {
+  if (appStore.totalTokens <= 0) return 0
+  return Math.min(100, Math.round((appStore.cachedTokens / appStore.totalTokens) * 100))
+})
+
 const statusColor = computed(() => {
   switch (appStore.connectionStatus) {
     case 'connected':
@@ -172,6 +179,11 @@ function handleLogout() {
             <span class="text-xs text-muted-foreground whitespace-nowrap">Context</span>
             <Progress :model-value="contextPercent" class="h-1.5 w-24" />
             <span class="text-xs text-muted-foreground tabular-nums">{{ contextPercent }}%</span>
+          </div>
+          <!-- Prompt-cache read (PC-007; hidden until a usage event lands) -->
+          <div v-if="appStore.totalTokens > 0" class="flex items-center gap-2">
+            <span class="text-xs text-muted-foreground whitespace-nowrap">Cache</span>
+            <span class="text-xs text-muted-foreground tabular-nums">{{ cachePct }}%</span>
           </div>
           <!-- Cost meter (FinOps SSE v2; hidden until the first usage event) -->
           <div v-if="appStore.costUsd > 0" class="flex items-center gap-2">

@@ -666,8 +666,8 @@ func (s bridgeSink) OnStream(sessionID, content, thinking string) {
 
 func (s bridgeSink) OnLog(sessionID, line string) { s.b.SendLog(sessionID, line) }
 
-func (s bridgeSink) OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int) {
-	s.b.SendUsage(sessionID, tokens, percent, costUSD, budgetPct)
+func (s bridgeSink) OnUsage(sessionID string, tokens, cached, percent int, costUSD float64, budgetPct int) {
+	s.b.SendUsage(sessionID, tokens, cached, percent, costUSD, budgetPct)
 }
 
 func (s bridgeSink) OnDone(sessionID string) { s.b.SendDone(sessionID) }

@@ -148,8 +148,9 @@ Steering drifts too: appended after tool events on every call
   and the SSE payload (`internal/web/sse/bridge.go:254`); per-turn log line
   `cache read X/Y (Z%)`.
 - Implicit-cache guard: warn once per session when cached tokens are zero
-  while prompt tokens exceed the model minimum; the message names the endpoint
-  kind and the explicit-caching escape hatch.
+  while prompt tokens exceed the model minimum (the Flash-class 1024-token
+  implicit-cache floor); the message names the endpoint kind and the
+  explicit-caching escape hatch.
 - Keepalive and `prompt_cache_key` stay deferred/optional.
 - Tests: `OnUsage` carries cached; the guard fires on a synthetic zero-cache
   run and not on a warm one.

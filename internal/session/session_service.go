@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"amurru/hakase/internal/util"
 )
 
 // SessionService manages the active session and provides
@@ -209,6 +211,11 @@ func (s *SessionService) SetSummary(id, summaryMessageID string) error {
 // AppendSummary appends a kind==summary message to the given session and
 // updates its SummaryMessageID to point at the new message's sequence.
 // This is the persistence path used by the async summarizer.
+//
+// PC-006 (prompt-cache D7): the summarizer merges the previous summary into
+// the new one, so every prior in-context summary is evicted in the same save
+// - the replayed head carries exactly one summary. One rewrite per
+// compaction; the log line records direction, tokens before/after, reason.
 func (s *SessionService) AppendSummary(id, content string) error {
 	if id == "" {
 		return fmt.Errorf("no session id")
@@ -217,7 +224,21 @@ func (s *SessionService) AppendSummary(id, content string) error {
 	if err != nil {
 		return err
 	}
+	before := 0
+	for i := range session.Messages {
+		msg := &session.Messages[i]
+		if msg.Kind == MessageKindSummary && msg.InContext {
+			before += util.EstimateTokens(msg.Content)
+			msg.InContext = false
+		}
+	}
 	session.AddMessageWithMeta("agent", content, "", 0, MessageKindSummary)
+	after := util.EstimateTokens(content)
+	direction := "add"
+	if before > 0 {
+		direction = "replace"
+	}
+	log.Printf("cache: rewrite direction=%s tokens %d->%d reason=summary", direction, before, after)
 	seq := session.Messages[len(session.Messages)-1].Sequence
 	session.SummaryMessageID = fmt.Sprintf("%d", seq)
 	session.UpdatedAt = time.Now().UTC()

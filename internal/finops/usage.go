@@ -7,6 +7,9 @@
 package finops
 
 import (
+	"fmt"
+	"math"
+
 	"google.golang.org/genai"
 )
 
@@ -68,6 +71,18 @@ func (u UsageRecord) TotalTokens() int64 {
 func (u UsageRecord) IsZero() bool {
 	return u.Prompt == 0 && u.Candidates == 0 && u.Cached == 0 &&
 		u.Thoughts == 0 && u.ToolUse == 0 && u.Total == 0
+}
+
+// CacheReadLine formats the per-turn prompt-cache telemetry line (PC-007):
+// "cache read X/Y (Z%)" with X cached tokens, Y prompt tokens, and Z the
+// cached share of the prompt. ok is false when the record carries no prompt
+// tokens, so callers never print a meaningless 0/0 line.
+func CacheReadLine(rec UsageRecord) (string, bool) {
+	if rec.Prompt <= 0 {
+		return "", false
+	}
+	pct := int(math.Round(float64(rec.Cached) * 100 / float64(rec.Prompt)))
+	return fmt.Sprintf("cache read %d/%d (%d%%)", rec.Cached, rec.Prompt, pct), true
 }
 
 // Sub returns the per-field delta u-prev floored at zero, for per-tool

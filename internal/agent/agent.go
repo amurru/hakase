@@ -2412,6 +2412,13 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// FinOps attribution (FO-002): usage events carry no model label, so the
 	// priced model name rides on the resolved primary model.
 	finops.ModelNameFunc = func() string { return modelName }
+	// Prompt-cache guard attribution (PC-007): the implicit-cache guard's
+	// message names the provider endpoint kind ("gemini" default).
+	endpointKind := cfg.Provider
+	if endpointKind == "" {
+		endpointKind = "gemini"
+	}
+	finops.EndpointKindFunc = func() string { return endpointKind }
 	skill.EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
 		return ModelPromptFn(ctx, prompt)
 	}

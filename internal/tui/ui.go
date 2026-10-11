@@ -2387,7 +2387,16 @@ outer:
 	if p != nil {
 		p.Send(agentStreamMsg{})
 		if lastUsage != nil {
-			if ok, msg := finops.CacheWarn(*lastUsage, tuiCacheRatio()); ok {
+			// Per-turn cache telemetry (PC-007) and the once-per-session
+			// implicit-cache guard, keyed on the active session.
+			if line, ok := finops.CacheReadLine(*lastUsage); ok {
+				util.DebugEvent("cache_read", "line", line)
+			}
+			sessKey := m.sessionService.ActiveSessionID()
+			if sessKey == "" {
+				sessKey = taskID
+			}
+			if ok, msg := finops.CacheWarn(sessKey, *lastUsage, tuiCacheRatio(), finops.EndpointKind()); ok {
 				p.Send(agentLogMsg(msg))
 			}
 			util.DebugEvent("usage", "prompt_tokens", lastUsage.Prompt, "candidates_tokens", lastUsage.Candidates, "cached_tokens", lastUsage.Cached, "thoughts_tokens", lastUsage.Thoughts, "tool_use_tokens", lastUsage.ToolUse, "total_tokens", lastUsage.Total)

@@ -9,9 +9,11 @@ package finops
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"amurru/hakase/internal/util"
@@ -24,8 +26,9 @@ type BudgetCaps struct {
 	MonthlyUSD    float64
 	PerSessionUSD float64
 	Enforce       string // "warn" (default) | "block"
-	// CacheWarnRatio is the prompt-cache guard threshold (FO-005): warn
-	// when cached/total falls below it. Zero disables the guard.
+	// CacheWarnRatio gates the prompt-cache guard (FO-005/prompt-cache
+	// PC-007): zero disables it, nonzero enables the once-per-session
+	// zero-cached warning.
 	CacheWarnRatio float64
 }
 
@@ -262,26 +265,52 @@ func BudgetPct() int {
 	return pct
 }
 
-// CacheWarn reports whether the turn's cached/total ratio falls below the
-// configured cache_warn_ratio (FO-005 prompt-cache guard). A low ratio hints
-// at a cache-buster (per-request-unique bytes in the prefix, OpenClaw
-// date-field class); the day-keyed buildTimeReminder pattern is the fix
-// template. Ratio <= 0 disables the guard.
-func CacheWarn(rec UsageRecord, ratio float64) (bool, string) {
-	if ratio <= 0 {
-		return false, ""
+// implicitCacheMinPromptTokens is the prompt-size class at which implicit
+// caching should engage; below it zero cached tokens is expected and not
+// warned (Gemini Flash-class implicit caching starts at 1024-token prompts).
+const implicitCacheMinPromptTokens = 1024
+
+// EndpointKindFunc reports the active provider endpoint kind ("gemini",
+// "openai", "openai-compatible") for guard messages. Set by setupRunner;
+// nil renders as unknown.
+var EndpointKindFunc func() string
+
+// EndpointKind returns the active endpoint kind label ("" when unset).
+func EndpointKind() string {
+	if EndpointKindFunc == nil {
+		return ""
 	}
-	total := rec.TotalTokens()
-	if total <= 0 {
-		return false, ""
-	}
-	got := float64(rec.Cached) / float64(total)
-	if got >= ratio {
-		return false, ""
-	}
-	return true, "low prompt-cache hit: " + trimPct(got*100) + "% cached below warn ratio " + trimPct(ratio*100) + "%"
+	return EndpointKindFunc()
 }
 
-func trimPct(v float64) string {
-	return trimUSD(v)
+// cacheGuardWarned tracks the sessions already warned by the implicit-cache
+// guard so it fires at most once per session (process lifetime).
+var (
+	cacheGuardMu     sync.Mutex
+	cacheGuardWarned = map[string]bool{}
+)
+
+// CacheWarn reports whether the implicit-cache guard should fire for this
+// turn (prompt-cache PC-007): at most once per session, when a prompt large
+// enough that implicit caching should engage reports zero cached tokens.
+// ratio is finops.cache_warn_ratio (<= 0 disables the guard); endpoint names
+// the provider kind in the message. sessionID keys the once-per-session
+// state; empty disables the guard because it cannot be keyed.
+func CacheWarn(sessionID string, rec UsageRecord, ratio float64, endpoint string) (bool, string) {
+	if ratio <= 0 || sessionID == "" || rec.Cached != 0 || rec.Prompt < implicitCacheMinPromptTokens {
+		return false, ""
+	}
+	cacheGuardMu.Lock()
+	if cacheGuardWarned[sessionID] {
+		cacheGuardMu.Unlock()
+		return false, ""
+	}
+	cacheGuardWarned[sessionID] = true
+	cacheGuardMu.Unlock()
+	if endpoint == "" {
+		endpoint = "unknown"
+	}
+	return true, fmt.Sprintf(
+		"prompt cache inactive: 0 of %d prompt tokens cached on the %s endpoint; explicit cached content is the escape hatch for repeated large prefixes (Gemini cachedContent)",
+		rec.Prompt, endpoint)
 }

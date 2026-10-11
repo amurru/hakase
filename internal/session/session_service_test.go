@@ -1,7 +1,10 @@
 package session
 
 import (
+	"bytes"
+	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -206,5 +209,50 @@ func TestArchiveSessionClearsActivePointer(t *testing.T) {
 	}
 	if svc.ActiveSessionID() != "" {
 		t.Fatalf("active id = %q, want empty after archiving the active session", svc.ActiveSessionID())
+	}
+}
+
+// TestAppendSummaryEvictsPriorSummaryAndLogsRewrite pins PC-006: the prior
+// summary is evicted in the same save as the new one, and the rewrite is
+// logged once with direction, tokens before/after, and reason.
+func TestAppendSummaryEvictsPriorSummaryAndLogsRewrite(t *testing.T) {
+	svc := newTestSessionService(t)
+	if err := svc.RecordUsage("user", "q1", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+	if err := svc.AppendSummary(id, "SUMMARY ONE"); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	if err := svc.AppendSummary(id, "SUMMARY TWO"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "cache: rewrite direction=replace") || !strings.Contains(got, "reason=summary") {
+		t.Fatalf("summary rewrite log missing fields: %q", got)
+	}
+
+	session, err := svc.Store().Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inContext := 0
+	for _, m := range session.Messages {
+		if m.Kind == MessageKindSummary && m.InContext {
+			inContext++
+			if m.Content != "SUMMARY TWO" {
+				t.Fatalf("in-context summary = %q, want the newest", m.Content)
+			}
+		}
+	}
+	if inContext != 1 {
+		t.Fatalf("in-context summaries = %d, want exactly 1", inContext)
 	}
 }

@@ -884,7 +884,12 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 		return history
 	}
 
-	h.logfSafe("⚠ context compaction scheduled: history %d + current %d tokens, budget %d", historyTokens, currentTokens, effectiveMax)
+	// One rewrite log line per compaction occurrence (prompt-cache D7/PC-006):
+	// direction, tokens before/after, reason, and the cascade stages that ran.
+	// Evictions inside the stages log per message; this is the aggregate line
+	// the verification greps for.
+	before := int(historyTokens) + currentTokens
+	stages := "tool-trim"
 
 	// Stage (a): trim tool-output transcripts. Tool results are the cheapest
 	// to evict (they were already used to produce the agent's answer).
@@ -893,14 +898,19 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 	// Stage (b): deterministic snip. Archive oldest messages until the tail
 	// fits the target; keep the recent ~20k tokens + last 2 turns verbatim.
 	if currentTokens+util.EstimateContentsTokens(history)+reserveTokens > int(target) {
+		stages += "+snip"
 		history = h.StageBSnip(session, history, currentTokens, reserveTokens, target)
 	}
 
 	// Stage (c): async summarization, only if still over target. The summary
 	// is picked up on the next turn; UI never blocks.
 	if currentTokens+util.EstimateContentsTokens(history)+reserveTokens > int(target) {
+		stages += "+summarize"
 		h.ScheduleSummarize(session.ID, "")
 	}
+
+	after := util.EstimateContentsTokens(history) + currentTokens
+	h.logfSafe("⚠ cache: rewrite direction=shrink tokens %d->%d reason=compaction stages=%s", before, after, stages)
 
 	return history
 }
