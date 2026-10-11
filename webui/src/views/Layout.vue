@@ -1,40 +1,21 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useAppStore } from '@/stores/app'
-import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import NotificationContainer from '@/components/NotificationContainer.vue'
 import ApprovalModal from '@/components/approval/ApprovalModal.vue'
 import ClarifyModal from '@/components/clarify/ClarifyModal.vue'
+import SidebarNav from '@/components/SidebarNav.vue'
 import {
-  MessageSquare,
-  FolderOpen,
-  FolderGit2,
-  ListTodo,
-  BookOpen,
-  Brain,
-  PlugZap,
-  Wand2,
-  Puzzle,
-  Clock,
-  Files,
-  Send,
-  Settings,
-  LogOut,
-  Bot,
   Loader2,
   Sun,
   Moon,
+  Menu,
 } from '@lucide/vue'
 
-const route = useRoute()
 const appStore = useAppStore()
-const authStore = useAuthStore()
 const themeStore = useThemeStore()
 
 const contextPercent = computed(() => {
@@ -60,30 +41,32 @@ const statusColor = computed(() => {
   }
 })
 
-const navItems = [
-  { to: '/chat', label: 'Chat', icon: MessageSquare },
-  { to: '/sessions', label: 'Sessions', icon: FolderOpen },
-  { to: '/projects', label: 'Projects', icon: FolderGit2 },
-  { to: '/tasks', label: 'Tasks', icon: ListTodo },
-  { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
-  { to: '/memory', label: 'Memory', icon: Brain },
-  { to: '/hooks', label: 'Hooks', icon: PlugZap },
-  { to: '/skills', label: 'Skills', icon: Wand2 },
-  { to: '/mcp', label: 'MCP', icon: Puzzle },
-  { to: '/cron', label: 'Cron', icon: Clock },
-  { to: '/channels', label: 'Channels', icon: Send },
-  { to: '/files', label: 'Files', icon: Files },
-  { to: '/settings', label: 'Settings', icon: Settings },
-]
+// Sidebar state (UX-02): collapsible on desktop (persisted), drawer on
+// mobile. The drawer closes on Escape.
+const COLLAPSED_KEY = 'hakase_sidebar_collapsed'
+const collapsed = ref(localStorage.getItem(COLLAPSED_KEY) === '1')
+const mobileOpen = ref(false)
 
-function isActive(path: string) {
-  return route.path === path
+function toggleCollapsed() {
+  collapsed.value = !collapsed.value
+  localStorage.setItem(COLLAPSED_KEY, collapsed.value ? '1' : '0')
 }
 
-function handleLogout() {
-  authStore.logout()
-  window.location.href = '/login'
+function onDrawerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') mobileOpen.value = false
 }
+
+watch(mobileOpen, (open) => {
+  if (open) {
+    document.addEventListener('keydown', onDrawerKeydown)
+  } else {
+    document.removeEventListener('keydown', onDrawerKeydown)
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onDrawerKeydown)
+})
 </script>
 
 <template>
@@ -94,55 +77,37 @@ function handleLogout() {
     <!-- Approval Modal (global overlay) -->
     <ApprovalModal />
 
-    <!-- Sidebar -->
-    <aside class="flex w-56 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground">
-      <!-- Logo -->
-      <div class="flex h-14 items-center gap-2 px-4">
-        <Bot class="h-6 w-6 text-primary" />
-        <span class="text-lg font-semibold tracking-tight">Hakase</span>
-      </div>
-
-      <Separator />
-
-      <!-- Navigation -->
-      <ScrollArea class="flex-1 py-2">
-        <nav class="flex flex-col gap-1 px-2">
-          <RouterLink
-            v-for="item in navItems"
-            :key="item.to"
-            :to="item.to"
-            class="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            :class="[
-              isActive(item.to)
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                : 'text-sidebar-foreground/70',
-            ]"
-          >
-            <component :is="item.icon" class="h-4 w-4 shrink-0" />
-            {{ item.label }}
-          </RouterLink>
-        </nav>
-      </ScrollArea>
-
-      <!-- Sidebar footer -->
-      <div class="border-t border-sidebar-border p-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          class="w-full justify-start gap-2 text-sidebar-foreground/70 hover:text-sidebar-foreground"
-          @click="handleLogout"
-        >
-          <LogOut class="h-4 w-4" />
-          <span>Log out</span>
-        </Button>
-      </div>
+    <!-- Sidebar (desktop): grouped nav, collapsible to icons. -->
+    <aside
+      class="hidden shrink-0 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground transition-[width] lg:flex"
+      :class="collapsed ? 'w-16' : 'w-56'"
+    >
+      <SidebarNav :collapsed="collapsed" @toggle-collapse="toggleCollapsed" />
     </aside>
+
+    <!-- Sidebar (mobile): overlay drawer below lg. -->
+    <div v-if="mobileOpen" class="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+      <div class="absolute inset-0 bg-black/60" @click="mobileOpen = false" />
+      <aside class="absolute inset-y-0 left-0 flex w-72 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground">
+        <SidebarNav @navigate="mobileOpen = false" @toggle-collapse="toggleCollapsed" />
+      </aside>
+    </div>
 
     <!-- Main area -->
     <div class="flex flex-1 flex-col overflow-hidden">
       <!-- Header -->
       <header class="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
         <div class="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-8 w-8 p-0 lg:hidden"
+            aria-label="Open navigation"
+            title="Open navigation"
+            @click="mobileOpen = true"
+          >
+            <Menu class="h-4 w-4" />
+          </Button>
           <span class="text-sm font-medium">{{ appStore.modelName }}</span>
           <div class="flex items-center gap-2">
             <div class="flex items-center gap-1.5">
