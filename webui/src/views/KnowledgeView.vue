@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 // No Textarea component - using native textarea styled to match
 import { ScrollArea } from '@/components/ui/scroll-area'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   Dialog,
   DialogContent,
@@ -363,8 +364,17 @@ onMounted(loadNotes)
         <ScrollArea class="h-full">
           <div class="p-2">
             <!-- Loading -->
-            <div v-if="loading && notes.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-              Loading...
+            <div
+              v-if="loading && notes.length === 0"
+              class="space-y-2 p-4"
+              aria-hidden="true"
+            >
+              <div
+                v-for="i in 4"
+                :key="i"
+                class="h-4 rounded bg-muted motion-safe:animate-pulse"
+                :style="{ width: `${85 - i * 12}%` }"
+              />
             </div>
 
             <!-- Error -->
@@ -379,11 +389,16 @@ onMounted(loadNotes)
             </div>
 
             <!-- Empty state -->
-            <div v-else-if="filteredNotes.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-              <FileText class="mx-auto mb-2 h-6 w-6 opacity-50" />
-              <p v-if="searchQuery">No matching notes</p>
-              <p v-else>No notes yet</p>
-            </div>
+            <EmptyState
+              v-else-if="filteredNotes.length === 0"
+              compact
+              :title="searchQuery ? 'No matching notes' : 'No notes yet'"
+              :description="searchQuery ? 'Try a different search term.' : 'Ask the agent to remember something.'"
+            >
+              <template #icon>
+                <FileText class="h-6 w-6 opacity-50" />
+              </template>
+            </EmptyState>
 
             <!-- Note items -->
             <button

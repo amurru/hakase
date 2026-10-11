@@ -24,6 +24,7 @@ import { useProjectsStore, type ProjectStatus } from '@/stores/projects'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageRail from '@/components/chat/MessageRail.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
 import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
@@ -819,12 +820,9 @@ onMounted(() => {
               </p>
             </div>
 
-            <!-- Loading indicator -->
-            <div
-              v-if="isLoadingHistory"
-              class="flex h-full items-center justify-center"
-            >
-              <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
+            <!-- Loading history: skeleton rows, same column as the list -->
+            <div v-if="isLoadingHistory" class="mx-auto w-full max-w-3xl py-4">
+              <ListSkeleton :rows="5" />
             </div>
 
             <!-- Message list. Wrapper stays out of the empty state: its

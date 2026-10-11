@@ -371,17 +371,36 @@ onMounted(loadRoot)
         <!-- Content area -->
         <div class="flex-1 overflow-auto">
           <!-- Loading -->
-          <div v-if="loading && selectedPath" class="flex h-full items-center justify-center text-muted-foreground">
-            <span class="text-sm">Loading...</span>
+          <div
+            v-if="loading && selectedPath"
+            class="space-y-2 p-6"
+            aria-hidden="true"
+          >
+            <div
+              v-for="i in 5"
+              :key="i"
+              class="h-4 rounded bg-muted motion-safe:animate-pulse"
+              :style="{ width: `${90 - i * 9}%` }"
+            />
           </div>
 
           <!-- Error -->
-          <div v-else-if="error && selectedPath" class="flex h-full items-center justify-center">
-            <div class="text-center">
-              <AlertCircle class="mx-auto mb-2 h-6 w-6 text-destructive" />
-              <p class="text-sm text-destructive">{{ error }}</p>
-            </div>
-          </div>
+          <EmptyState
+            v-else-if="error && selectedPath"
+            compact
+            title="Could not load this file"
+            :description="error"
+            class="h-full"
+          >
+            <template #icon>
+              <AlertCircle class="h-6 w-6 text-destructive" />
+            </template>
+            <template #action>
+              <Button variant="outline" size="sm" @click="selectFile(selectedPath)">
+                Retry
+              </Button>
+            </template>
+          </EmptyState>
 
           <!-- Image preview -->
           <div
