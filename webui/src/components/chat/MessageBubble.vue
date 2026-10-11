@@ -20,6 +20,15 @@ const canRestore = computed(
 const emit = defineEmits<{ restore: [] }>()
 
 const isUser = computed(() => props.message.role === 'user')
+
+// Short clock time for the hover toolbar (HH:MM in locale order).
+const timeLabel = computed(() => {
+  if (!props.message.timestamp) return ''
+  return new Date(props.message.timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+})
 const copied = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -46,7 +55,7 @@ async function copyContent() {
 
 <template>
   <div
-    class="flex gap-3 px-4"
+    class="group flex gap-3 px-4"
     :class="[isUser ? 'flex-row-reverse' : 'flex-row', compact ? 'py-1' : 'py-3']"
     :data-message-id="message.id"
   >
@@ -93,26 +102,38 @@ async function copyContent() {
         />
       </div>
 
-      <!-- Copy + restore buttons -->
-      <button
+      <!-- Hover toolbar: timestamp + copy + restore in one row. Hidden
+           until hover/focus on fine pointers; always visible on touch
+           (no hover there) so the actions are never stranded. -->
+      <div
         v-if="!streaming"
-        type="button"
-        class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
-        :title="copied ? 'Copied' : 'Copy message'"
-        @click="copyContent"
+        class="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
+        :class="isUser ? 'justify-end' : 'justify-start'"
       >
-        <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
-        <Copy v-else class="h-3 w-3" />
-      </button>
-      <button
-        v-if="canRestore"
-        type="button"
-        class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
-        title="Restore conversation to before this message"
-        @click="emit('restore')"
-      >
-        <History class="h-3 w-3" />
-      </button>
+        <span v-if="timeLabel" class="mr-1 text-[11px] tabular-nums text-muted-foreground/50">
+          {{ timeLabel }}
+        </span>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+          :title="copied ? 'Copied' : 'Copy message'"
+          :aria-label="copied ? 'Copied' : 'Copy message'"
+          @click="copyContent"
+        >
+          <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
+          <Copy v-else class="h-3 w-3" />
+        </button>
+        <button
+          v-if="canRestore"
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+          title="Restore conversation to before this message"
+          aria-label="Restore conversation to before this message"
+          @click="emit('restore')"
+        >
+          <History class="h-3 w-3" />
+        </button>
+      </div>
     </div>
   </div>
 </template>
