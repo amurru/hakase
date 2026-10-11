@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,60 @@ func TestSummaryMessageIDRoundTrip(t *testing.T) {
 	}
 	if got.SummaryMessageID != "12" {
 		t.Fatalf("SummaryMessageID = %q, want 12", got.SummaryMessageID)
+	}
+}
+
+func TestNormalizeIngestedText(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"crlf", "a\r\nb", "a\nb"},
+		{"cr", "a\rb", "a\nb"},
+		{"lf untouched", "a\nb", "a\nb"},
+		{"nfd to nfc", "café", "café"},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeIngestedText(tc.input); got != tc.want {
+				t.Fatalf("NormalizeIngestedText(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAddMessageNormalizesContent(t *testing.T) {
+	s := NewSession("t")
+	s.AddMessageWithMeta("user", "a\r\nb", "", 0, MessageKindText)
+	if got := s.Messages[0].Content; got != "a\nb" {
+		t.Fatalf("persisted content = %q, want LF-only", got)
+	}
+}
+
+func TestAttachmentHashSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/note.txt"
+	if err := os.WriteFile(path, []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSession("t")
+	s.AddMessageWithMetaAndAttachments("user", "see", "", 0, MessageKindText,
+		[]AttachmentRef{{Name: "note.txt", Path: path, MIME: "text/plain"}})
+	if len(s.Messages) != 1 || len(s.Messages[0].Attachments) != 1 {
+		t.Fatalf("attachment not persisted: %+v", s.Messages)
+	}
+	if h := s.Messages[0].Attachments[0].Hash; h == "" {
+		t.Fatal("attachment hash not snapshotted at persist time")
+	} else if h != HashAttachmentFile(path) {
+		t.Fatalf("hash mismatch: %q", h)
+	}
+	// Drift: changed bytes hash differently.
+	if err := os.WriteFile(path, []byte("v2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if h := HashAttachmentFile(path); h == s.Messages[0].Attachments[0].Hash {
+		t.Fatal("changed file must hash differently (drift detectable)")
 	}
 }
 

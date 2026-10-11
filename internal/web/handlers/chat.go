@@ -414,7 +414,7 @@ func (api *ChatAPI) PostCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	api.history.StageBSnip(sess, nil, "", 0, 8000, 0)
+	api.history.StageBSnip(sess, nil, 0, 8000, 0)
 	if err := store.Save(sess); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save compacted session"})
 		return

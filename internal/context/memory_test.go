@@ -34,12 +34,21 @@ func newMemorySession(t *testing.T, svc *sesspkg.SessionService, taskID, title s
 
 func runMemoryCallback(t *testing.T, b *HistoryBuilder, taskID string) []string {
 	t.Helper()
+	return runMemoryCallbackWithState(t, b, taskID, newFakeInvocationState())
+}
+
+// runMemoryCallbackWithState runs the callback with an explicit turn state:
+// calls sharing one state are calls of the same turn (frozen payload
+// reused); a fresh state is a new turn (sources re-evaluated).
+func runMemoryCallbackWithState(t *testing.T, b *HistoryBuilder, taskID string, st *fakeInvocationState) []string {
+	t.Helper()
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{genai.NewContentFromText("current", genai.RoleUser)},
 	}
 	cctx := &testCallbackContext{
 		userContent: genai.NewContentFromText("current", genai.RoleUser),
 		sessionID:   taskID,
+		state:       st,
 	}
 	if _, err := b.BeforeModelCallback(cctx, req); err != nil {
 		t.Fatalf("callback: %v", err)
@@ -58,17 +67,41 @@ func TestMemoryInjectsOncePerSession(t *testing.T) {
 	newMemorySession(t, svc, "task_mem_1", "one")
 	b.SetMemoryProvider(func(ctx agent.Context) string { return "AUTO MEMORY BLOCK" })
 
-	texts := runMemoryCallback(t, b, "task_mem_1")
-	// The block sits at the very head, ahead of persisted history and the
-	// run's own contents.
-	if len(texts) == 0 || texts[0] != "AUTO MEMORY BLOCK" {
-		t.Fatalf("memory block not at head: %v", texts)
+	turn := newFakeInvocationState()
+	texts := runMemoryCallbackWithState(t, b, "task_mem_1", turn)
+	// The block sits after the rendered store (frozen turn section), ahead
+	// of the run's own contents.
+	if len(texts) != 3 || texts[1] != "AUTO MEMORY BLOCK" {
+		t.Fatalf("memory block not in frozen section: %v", texts)
 	}
-	// Second call of the same session: not re-injected.
+	if !strings.Contains(texts[0], "hello-one") {
+		t.Fatalf("rendered store must lead: %v", texts)
+	}
+	// Second call of the same turn: the frozen payload is spliced
+	// byte-identically, the provider is not re-invoked.
+	texts2 := runMemoryCallbackWithState(t, b, "task_mem_1", turn)
+	if len(texts2) != len(texts) {
+		t.Fatalf("same-turn splice changed shape: %v vs %v", texts, texts2)
+	}
+	for i := range texts {
+		if texts2[i] != texts[i] {
+			t.Fatalf("same-turn splice differs at %d: %q vs %q", i, texts[i], texts2[i])
+		}
+	}
+	// New turn: the one-shot gate stays spent, so no block — and the
+	// provider must not be consulted again.
+	calls := 0
+	b.SetMemoryProvider(func(ctx agent.Context) string {
+		calls++
+		return "AUTO MEMORY BLOCK"
+	})
 	for _, txt := range runMemoryCallback(t, b, "task_mem_1") {
 		if strings.Contains(txt, "AUTO MEMORY BLOCK") {
-			t.Fatalf("memory block re-injected on second call: %v", texts)
+			t.Fatalf("memory block re-injected on a new turn: %v", txt)
 		}
+	}
+	if calls != 0 {
+		t.Fatalf("provider consulted on a new turn after the one shot (%d calls)", calls)
 	}
 }
 
@@ -117,9 +150,18 @@ func TestMemoryEmptyBlockNotMarkedSeen(t *testing.T) {
 		}
 	}
 	texts := runMemoryCallback(t, b, "task_mem_late")
-	if len(texts) == 0 || texts[0] != "AUTO MEMORY BLOCK" {
+	if len(texts) == 0 || !containsBlock(texts, "AUTO MEMORY BLOCK") {
 		t.Fatalf("block written mid-session must appear on a later call: %v", texts)
 	}
+}
+
+func containsBlock(texts []string, needle string) bool {
+	for _, txt := range texts {
+		if strings.Contains(txt, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestMemoryPerSessionIsolation(t *testing.T) {

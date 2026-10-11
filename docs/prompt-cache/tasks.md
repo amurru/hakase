@@ -6,11 +6,11 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 1 - canonical renderer + frozen turn context + assembly (PR A)
 
-- [ ] **T1.1 [BE]** split `BeforeModelCallback` into `beginTurn` (render once, store `temp:hakase.frozen_tail` via `ctx.State()`) and read-only `assemble` (`internal/context/context.go:301`). Spec: PC-002.
-- [ ] **T1.2 [BE]** remove deferred head prepends (`context.go:363-373`); move notices (`:406-420`) and steering (`:427-431`) into the frozen insert; sidekick to persist-only (`:436-449`). Spec: PC-003/004.
-- [ ] **T1.3 [BE]** request assembly per D4: store in sequence order, drop matched live user content, append frozen blocks + steering, keep ADK tail. Spec: PC-003.
-- [ ] **T1.4 [BE]** shared wrap function for live and replay; ingestion normalization (LF, NFC) in `internal/session/session_data.go:137`; attachment hash + drift log. Spec: PC-001.
-- [ ] **T1.5 [QA]** prefix extension across calls and turns; freeze-once with a counter/`time.Now()` source; live-vs-replay bytes across CRLF/NFC; exactly one user content. Spec: PC-001/002/003.
+- [x] **T1.1 [BE]** split `BeforeModelCallback` into `beginTurn` (render once, store `temp:hakase.frozen_tail` via `ctx.State()`) and read-only `assemble` (`internal/context/context.go:301`). Spec: PC-002.
+- [x] **T1.2 [BE]** remove deferred head prepends (`context.go:363-373`); move notices (`:406-420`) and steering (`:427-431`) into the frozen insert; sidekick to persist-only (`:436-449`). Spec: PC-003/004.
+- [x] **T1.3 [BE]** request assembly per D4: store in sequence order, drop matched live user content, append frozen blocks + steering, keep ADK tail. Spec: PC-003.
+- [x] **T1.4 [BE]** shared wrap function for live and replay; ingestion normalization (LF, NFC) in `internal/session/session_data.go:137`; attachment hash + drift log. Spec: PC-001.
+- [x] **T1.5 [QA]** prefix extension across calls and turns; freeze-once with a counter/`time.Now()` source; live-vs-replay bytes across CRLF/NFC; exactly one user content. Spec: PC-001/002/003.
 
 ## Phase 2 - context classes + project snapshot (PR B)
 
