@@ -108,7 +108,10 @@ Steering drifts too: appended after tool events on every call
 ### PC-003 - Request assembly
 
 - Assembly order per D1/D4. The un-persisted tail is whatever remains in
-  `req.Contents` after the matched user content.
+  `req.Contents` after the matched user content. Tool-protocol content
+  (function calls/responses) is never the dedup anchor and an empty stored
+  prompt never prefix-matches: the drop can only ever remove a real user
+  message, never a gate answer or unrelated live content.
 - Steering joins the frozen insertion section (moved from end-append);
   a steering arrival mid-turn is a logged tail rewrite.
 - Sidekick notes stay persisted; because assembly renders the store in

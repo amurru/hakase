@@ -293,15 +293,22 @@ func (h *HistoryBuilder) logfSafe(format string, args ...any) {
 // frozenStateKey is the ADK invocation-state slot holding the turn's
 // frozen context payload (prompt-cache PC-002, spec D3). `temp:` values
 // live for the invocation only and are never persisted, so the payload is
-// rendered exactly once per turn on the first model call and spliced
-// read-only on later calls. Render functions are unreachable from the
-// assembly path, making mid-turn mutation impossible by construction.
+// rendered once per turn (the first model call) and spliced read-only
+// while the slot survives. stateGet/stateSet are recover-guarded and
+// report failure instead of panicking: a context without state degrades to
+// re-rendering the (already reserved) sources on later calls, and the
+// caller logs that. The guard makes mid-turn mutation by the normal path
+// impossible; it is not a structural barrier.
 const frozenStateKey = "temp:hakase.frozen_tail"
 
-// loadFrozenTurn returns the frozen block texts stored for this invocation.
-// ok is false when nothing was stored yet (the caller must render and
-// store) or when the context carries no state (degraded: render fresh).
-func loadFrozenTurn(ctx agent.Context) (texts []string, ok bool) {
+// steeringStateKey remembers how many steering blocks were already spliced
+// in this invocation, so the rewrite log fires on an actual mid-turn
+// arrival instead of on every later model call.
+const steeringStateKey = "temp:hakase.steering_injected"
+
+// stateGet reads one invocation-state slot; ok is false when the context
+// carries no state or the key is absent.
+func stateGet(ctx agent.Context, key string) (any, bool) {
 	if ctx == nil {
 		return nil, false
 	}
@@ -315,27 +322,58 @@ func loadFrozenTurn(ctx agent.Context) (texts []string, ok bool) {
 	if st == nil {
 		return nil, false
 	}
-	v, err := st.Get(frozenStateKey)
+	v, err := st.Get(key)
 	if err != nil || v == nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// stateSet writes one invocation-state slot; false reports the degraded
+// path (no state, a failed write, or a panic inside the state object).
+func stateSet(ctx agent.Context, key string, v any) bool {
+	if ctx == nil {
+		return false
+	}
+	ok := false
+	func() {
+		defer func() { _ = recover() }()
+		if st := ctx.State(); st != nil {
+			ok = st.Set(key, v) == nil
+		}
+	}()
+	return ok
+}
+
+// loadFrozenTurn returns the frozen block texts stored for this invocation.
+// ok is false when nothing was stored yet (the caller must render and
+// store) or when the context carries no state (degraded: render fresh).
+func loadFrozenTurn(ctx agent.Context) (texts []string, ok bool) {
+	v, ok := stateGet(ctx, frozenStateKey)
+	if !ok {
 		return nil, false
 	}
 	return decodeFrozenTexts(v)
 }
 
 // storeFrozenTurn records the turn's frozen block texts in invocation
-// state. A nil state (test mocks without one) is a silent no-op; the
-// caller still splices the freshly rendered blocks into the current
-// request.
-func storeFrozenTurn(ctx agent.Context, texts []string) {
-	if ctx == nil {
-		return
+// state. A false return is the degraded path (test mocks without state, or
+// a failed write); the caller still splices the freshly rendered blocks
+// into the current request and logs the condition.
+func storeFrozenTurn(ctx agent.Context, texts []string) bool {
+	return stateSet(ctx, frozenStateKey, encodeFrozenTexts(texts))
+}
+
+// decodeStateCount reads a small integer invocation-state slot, accepting
+// the in-memory int form and the JSON-round-tripped float64.
+func decodeStateCount(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
 	}
-	func() {
-		defer func() { _ = recover() }()
-		if st := ctx.State(); st != nil {
-			_ = st.Set(frozenStateKey, encodeFrozenTexts(texts))
-		}
-	}()
+	return 0, false
 }
 
 // encodeFrozenTexts converts block texts to a JSON-safe invocation-state
@@ -412,6 +450,15 @@ func splitLiveTail(contents []*genai.Content, session *sesspkg.Session) (tail []
 	if !ok || contents[0] == nil || contents[0].Role != genai.RoleUser {
 		return contents, false
 	}
+	// Tool-protocol traffic is never the live copy of a persisted message:
+	// a durable resume re-enters the runner with the human answer as a
+	// user-role FunctionResponse (resume.go), which is textless and would
+	// otherwise match an attachment-only anchor below. Refuse to drop it.
+	for _, p := range contents[0].Parts {
+		if p != nil && p.FunctionResponse != nil {
+			return contents, false
+		}
+	}
 	// The persisted anchor was normalized at ingestion (PC-001); normalize
 	// the live copy the same way so a CRLF or NFD live send still matches
 	// its stored bytes instead of duplicating the prompt.
@@ -474,7 +521,9 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 	firstCall := !haveFrozen
 	if firstCall {
 		frozenTexts = h.renderFrozenTurn(ctx, session)
-		storeFrozenTurn(ctx, frozenTexts)
+		if !storeFrozenTurn(ctx, frozenTexts) {
+			h.logfSafe("cache: frozen turn state unavailable; blocks re-render per call")
+		}
 	}
 	frozen := frozenContents(frozenTexts)
 
@@ -494,8 +543,19 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		for _, q := range h.pending.Snapshot() {
 			steering = append(steering, util.SteeringContent(q))
 		}
-		if !firstCall {
+		// A pre-turn queue is spliced identically on the first call and
+		// must stay silent on later calls; only an increase over the count
+		// already spliced this turn is a logged tail rewrite. The count
+		// lives in invocation state, so it resets every turn.
+		prev, havePrev := 0, false
+		if v, ok := stateGet(ctx, steeringStateKey); ok {
+			prev, havePrev = decodeStateCount(v)
+		}
+		if len(steering) > prev && (havePrev || !firstCall) {
 			h.logfSafe("cache: steering arrival mid-turn, tail rewrite (%d queued)", len(steering))
+		}
+		if !havePrev || len(steering) != prev {
+			_ = stateSet(ctx, steeringStateKey, len(steering))
 		}
 	}
 
@@ -646,8 +706,11 @@ func CurrentUserMessageMatches(msg sesspkg.Message, currentText string) bool {
 	}
 	// Attachment-bearing messages persist the bare prompt; the request text
 	// is the prompt followed by any attachment parts (text files), so a
-	// prefix match means the same message.
-	if len(msg.Attachments) > 0 && currentText != "" && strings.HasPrefix(currentText, msg.Content) {
+	// prefix match means the same message. An empty stored prompt cannot
+	// prefix-match anything: that degenerate case belongs to the
+	// attachment-only arm below, so nothing with text is ever dropped by
+	// accident.
+	if len(msg.Attachments) > 0 && msg.Content != "" && currentText != "" && strings.HasPrefix(currentText, msg.Content) {
 		return true
 	}
 	// Image-only messages persist no text and the request carries only the

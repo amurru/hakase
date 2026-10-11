@@ -8,12 +8,15 @@ package context
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"amurru/hakase/internal/interfaces"
+	sesspkg "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
 
 	"google.golang.org/adk/v2/agent"
@@ -327,5 +330,154 @@ func TestAssemblyOrderBlocksSteeringTail(t *testing.T) {
 	if !(store < frozen && frozen < steering && steering < tail) {
 		t.Fatalf("order violated (store=%d frozen=%d steering=%d tail=%d): %v",
 			store, frozen, steering, tail, got)
+	}
+}
+
+// TestSplitLiveTailNeverDropsToolProtocol pins the #109 hardening: a
+// user-role content carrying a FunctionResponse (the durable-resume gate
+// answer) is never treated as the live copy of the persisted message, even
+// when the anchor is an attachment-only message that would textually match.
+func TestSplitLiveTailNeverDropsToolProtocol(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	sess, err := svc.CreateSession("toolproto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_toolproto"
+	interfaces.RegisterTaskSession(taskID, sess.ID)
+	t.Cleanup(func() { interfaces.UnregisterTask(taskID) })
+
+	// Image-only anchor: textless content with a persisted attachment. This
+	// is the shape the attachment-only match arm would accept.
+	dir := t.TempDir()
+	img := filepath.Join(dir, "pic.png")
+	if err := os.WriteFile(img, []byte{0x89, 'P', 'N', 'G'}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	refs := []sesspkg.AttachmentRef{{Name: "pic.png", Path: img, MIME: "image/png"}}
+	if err := svc.RecordUsageInSession(sess.ID, "user", "", "", 0, refs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Durable-resume payload: user role, FunctionResponse parts, no text.
+	fr := &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{{
+			FunctionResponse: &genai.FunctionResponse{
+				ID: "call-9", Name: "clarify",
+				Response: map[string]any{"user_response": "yes"},
+			},
+		}},
+	}
+	got := assemble(t, b, taskID, []*genai.Content{fr}, newFakeInvocationState())
+	for _, c := range got {
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				return // survived
+			}
+		}
+	}
+	t.Fatalf("resume FunctionResponse dropped from assembly: %v", contentTexts(got))
+}
+
+// TestCurrentUserMessageMatchesEmptyAttachmentAnchor pins the second half
+// of the #109 guard: an empty stored prompt must not prefix-match live
+// text (HasPrefix(x, "") is vacuously true), while the image-only re-send
+// still matches through the dedicated arm.
+func TestCurrentUserMessageMatchesEmptyAttachmentAnchor(t *testing.T) {
+	msg := sesspkg.Message{
+		Role:        "user",
+		Content:     "",
+		Attachments: []sesspkg.AttachmentRef{{Name: "x", Path: "/x", MIME: "image/png"}},
+	}
+	if CurrentUserMessageMatches(msg, "hello") {
+		t.Fatal("non-empty live text must not match an empty-content attachment anchor")
+	}
+	if !CurrentUserMessageMatches(msg, "") {
+		t.Fatal("image-only re-send must still match its anchor")
+	}
+}
+
+// TestFrozenStoreFailureLogged pins the #109 observability: a context
+// without invocation state logs the degraded frozen path instead of
+// silently re-rendering.
+func TestFrozenStoreFailureLogged(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	newMemorySession(t, svc, "task_frozen_nostate", "frozen")
+
+	var logs []string
+	b.SetLogFunc(func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	live := func() []*genai.Content {
+		return []*genai.Content{genai.NewContentFromText("hello-frozen", genai.RoleUser)}
+	}
+	// nil state: the degraded path every call.
+	assemble(t, b, "task_frozen_nostate", live(), nil)
+	assemble(t, b, "task_frozen_nostate", live(), nil)
+
+	hits := 0
+	for _, l := range logs {
+		if strings.Contains(l, "frozen turn state unavailable") {
+			hits++
+		}
+	}
+	if hits == 0 {
+		t.Fatalf("degraded frozen path not logged; logs: %v", logs)
+	}
+}
+
+// TestSteeringArrivalLoggedOnlyOnIncrease pins the #109 telemetry fix: a
+// pre-turn steering queue is spliced once and never re-logged, and a real
+// mid-turn arrival is logged exactly once.
+func TestSteeringArrivalLoggedOnlyOnIncrease(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	newMemorySession(t, svc, "task_steerlog", "steerlog")
+
+	var logs []string
+	b.SetLogFunc(func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	arrivals := func() int {
+		n := 0
+		for _, l := range logs {
+			if strings.Contains(l, "steering arrival mid-turn") {
+				n++
+			}
+		}
+		return n
+	}
+
+	pq := util.NewPendingQueue()
+	pq.Push(util.QueuedPrompt{Text: "steer-one"})
+	b.SetPendingQueue(pq)
+
+	turn := newFakeInvocationState()
+	live := func() []*genai.Content {
+		return []*genai.Content{genai.NewContentFromText("hello-steerlog", genai.RoleUser)}
+	}
+	// Call 1: pre-turn steering, part of the initial prefix. Call 2: same
+	// queue, no rewrite. Neither may log.
+	assemble(t, b, "task_steerlog", live(), turn)
+	assemble(t, b, "task_steerlog", live(), turn)
+	if n := arrivals(); n != 0 {
+		t.Fatalf("pre-turn steering logged %d arrivals, want 0; logs: %v", n, logs)
+	}
+
+	// Mid-turn arrival: exactly one log, on the call that first sees it.
+	pq.Push(util.QueuedPrompt{Text: "steer-two"})
+	got := contentTexts(assemble(t, b, "task_steerlog", live(), turn))
+	if n := arrivals(); n != 1 {
+		t.Fatalf("mid-turn arrival logged %d times, want 1; logs: %v", n, logs)
+	}
+	joined := strings.Join(got, "\x00")
+	if !strings.Contains(joined, "steer-one") || !strings.Contains(joined, "steer-two") {
+		t.Fatalf("both steering blocks must be spliced: %v", got)
+	}
+
+	// Later call of the same turn: still exactly one.
+	assemble(t, b, "task_steerlog", live(), turn)
+	if n := arrivals(); n != 1 {
+		t.Fatalf("arrival re-logged on a later call (%d); logs: %v", n, logs)
 	}
 }
