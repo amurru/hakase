@@ -89,19 +89,37 @@ function handleCopy(e: Event) {
 function attachCopyButtons(root: HTMLElement) {
   for (const pre of root.querySelectorAll<HTMLElement>('pre')) {
     if (pre.classList.contains('mermaid-error-code')) continue
-    if (pre.querySelector('.copy-code-button')) continue
     if (!pre.querySelector('code')) continue
 
-    const btn = document.createElement('button')
-    btn.type = 'button'
-    btn.className = 'copy-code-button'
-    btn.setAttribute('aria-label', 'Copy code')
-    btn.innerHTML = `
-      <svg class="copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-      <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-    `
-    btn.addEventListener('click', handleCopy)
-    pre.appendChild(btn)
+    if (!pre.querySelector('.copy-code-button')) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'copy-code-button'
+      btn.setAttribute('aria-label', 'Copy code')
+      btn.innerHTML = `
+        <svg class="copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+        <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      `
+      btn.addEventListener('click', handleCopy)
+      pre.appendChild(btn)
+    }
+
+    // Wrap toggle: long lines scroll by default; one click wraps them.
+    // Pressed state stays visible so wrapped blocks are recognizable.
+    if (!pre.querySelector('.wrap-code-button')) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'wrap-code-button'
+      btn.setAttribute('aria-label', 'Toggle code wrapping')
+      btn.setAttribute('aria-pressed', 'false')
+      btn.textContent = 'wrap'
+      btn.addEventListener('click', () => {
+        const pressed = btn.getAttribute('aria-pressed') === 'true'
+        btn.setAttribute('aria-pressed', String(!pressed))
+        pre.classList.toggle('code-wrap', !pressed)
+      })
+      pre.appendChild(btn)
+    }
   }
 }
 </script>
@@ -206,6 +224,45 @@ function attachCopyButtons(root: HTMLElement) {
 }
 .markdown-body pre:hover .copy-code-button {
   opacity: 1;
+}
+/* Wrap toggle: sits left of copy, stays visible while wrapping is on. */
+.markdown-body pre.code-wrap code {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+}
+.markdown-body .wrap-code-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  height: 1.75rem;
+  padding: 0 0.5rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.markdown-body pre:hover .wrap-code-button,
+.markdown-body .wrap-code-button:focus-visible {
+  opacity: 1;
+}
+.markdown-body .wrap-code-button[aria-pressed="true"] {
+  opacity: 1;
+  color: var(--foreground);
+  background: var(--accent);
+}
+.markdown-body .wrap-code-button:focus-visible {
+  outline: none;
+  border-color: var(--ring);
 }
 .markdown-body .copy-code-button .check-icon {
   display: none;

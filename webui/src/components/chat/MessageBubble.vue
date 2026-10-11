@@ -89,7 +89,7 @@ async function copyContent() {
         <!-- Streaming indicator -->
         <span
           v-if="streaming && !isUser && message.content"
-          class="inline-block h-4 w-0.5 animate-pulse bg-foreground/50 ml-0.5 align-text-bottom"
+          class="inline-block h-4 w-0.5 motion-safe:animate-pulse bg-foreground/50 ml-0.5 align-text-bottom"
         />
       </div>
 
