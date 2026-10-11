@@ -33,6 +33,11 @@ const (
 	// across turns (per spec NotesInContext).
 	MessageKindSidekick   = "sidekick"
 	MessageKindDurablePin = "durable_pin"
+	// MessageKindSessionStart marks a persisted SessionStart hook context
+	// block (prompt-cache PC-004): inserted once at the store head before
+	// the session's first render, then rendered from the store like any
+	// other history message.
+	MessageKindSessionStart = "sessionstart"
 )
 
 // Session represents a user chat session — a persistent conversation

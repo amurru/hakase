@@ -55,8 +55,8 @@ func memoryStore() (*memory.Store, error) {
 }
 
 // wireMemory adds the agent-written auto-memory surface for the orchestrator
-// (docs/auto-memory/spec.md D3/D7): the remember/forget_memory tools plus the
-// session-start injection provider on the history builder. When memory is
+// (docs/auto-memory/spec.md D3/D5): the remember/forget_memory tools plus the
+// per-turn injection provider on the history builder. When memory is
 // disabled it returns nil tools and leaves the builder untouched, so the
 // model is never told about tools it lacks.
 func wireMemory(cfg *config.Config, hb *hctx.HistoryBuilder) ([]tool.Tool, error) {

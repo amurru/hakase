@@ -2802,8 +2802,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 
 	// Agent-written auto-memory (docs/auto-memory/spec.md): orchestrator-only
-	// tools plus the session-start injection provider. When disabled, both
-	// are absent entirely so the model is never told about tools it lacks.
+	// tools plus the per-turn memory provider on the history builder. When
+	// disabled, both are absent entirely so the model is never told about tools it lacks.
 	if memoryTools, err := wireMemory(cfg, historyBuilder); err != nil {
 		return nil, err
 	} else if len(memoryTools) > 0 {

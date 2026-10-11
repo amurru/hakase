@@ -39,13 +39,15 @@ TUI work).
 - **Per-process staleness** (one runner, many sessions): prevented by D5 —
   injection reads the store per session-start, never at SetupRunner time.
 - **Prompt bloat**: three caps (per-note 2000 chars, block
-  `max_prompt_chars`, store `max_notes`) + once-per-session injection.
+  `max_prompt_chars`, store `max_notes`) + per-turn frozen injection
+  (re-rendered every turn, bounded by `max_prompt_chars`; prompt-cache
+  PC-004).
 - **Cross-surface concurrency** (web + Telegram + CLI on one file):
   channels-state mtime/size reload + flock covers it; CLI works while the
   server runs.
 - **TUI fallback path**: the callback resolves sessions exactly like the
   history prepend does (session-ID from ctx, active-session fallback), so
-  the TUI's single session gets memory injected once without a registered
+  the TUI's single session gets its memory block without a registered
   run mapping.
 
 ## Verification strategy

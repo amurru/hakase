@@ -57,22 +57,21 @@ the knowledge wiki, which has richer structure). Fixed enum keeps rendering
 order stable and the web UI filter trivial. Invalid categories are rejected
 by the tool with the allowed list in the error.
 
-**D5 — Injection is a once-per-session user-role content block via
-`HistoryBuilder.BeforeModelCallback`, not a system-prompt block.**
-The once-per-session gate is an atomic reserve-before-render step (with
-rollback when the block renders empty), so overlapping model calls for one
-session — concurrent runs share the builder — inject exactly once.
-SetupRunner renders system-prompt blocks once per *process* (the web/serve
-process keeps one runner across many sessions), so a prompt block would go
-stale the moment session 2 starts. The callback fires per model call with
-fresh session resolution (web chat, channel threads, TUI each resolve their
-own session — same logic the history prepend uses). A
-`memorySeen map[sessionID]bool` on the builder makes it once per session:
-injected on the session's first model call, not re-paid on every turn of the
-run. Placement follows the `ContextUpdateNotice` pattern: user-role content
-at the head of the run's contents, after persisted history, before the
-current run contents. Injection happens even when persisted history is empty
-(brand-new session), so it sits *before* the early return on empty sessions.
+**D5 — Injection is a per-turn frozen block via `HistoryBuilder`'s frozen
+turn context (prompt-cache PC-004), not a system-prompt block.**
+The provider renders on the first model call of every turn and the payload
+is frozen for the rest of that turn, so a `remember`/`forget_memory` write
+is visible on the very next turn. SetupRunner renders system-prompt blocks
+once per *process* (the web/serve process keeps one runner across many
+sessions), so a prompt block would go stale the moment session 2 starts.
+The callback fires per model call with fresh session resolution (web chat,
+channel threads, TUI each resolve their own session — same logic the
+history prepend uses). Placement follows invariant P: the rendered store
+first, then the frozen turn blocks (prompt hooks, memory, snapshot,
+notices), then steering and the run tail — memory is never prepended.
+Injection happens even when persisted history is empty (brand-new
+session). Contrast SessionStart hooks: those are persist-once at the
+store head (PC-004), replayed from history afterwards.
 
 **D6 — Budget caps, enforced at render time.** `memory.max_prompt_chars`
 (default 4000) bounds the injected block; `memory.max_notes` (default 200)
@@ -165,14 +164,12 @@ memory provider closure (`memory.Default()` → `SelectForProject` with
 
 ### `internal/context` (injection)
 
-`HistoryBuilder.SetMemoryProvider(fn func(agent.Context) string)` +
-`memorySeen` set. In `BeforeModelCallback`: after session resolution, if a
-provider is set, this session has not been served yet, and the block is
-non-empty → inject `genai.NewContentFromText(block, RoleUser)` at the head
-of the run's contents (same splice pattern as the context-update notice) and
-mark the session. Provider nil / empty block / disabled → no injection, no
-state change (a session that starts before the first note is written gets
-its memory on its *next* session, which is the semantics D5 wants).
+`HistoryBuilder.SetMemoryProvider(fn func(agent.Context) string)`.
+In `BeforeModelCallback` the provider renders on the first call of every
+turn into the frozen turn payload (prompt-cache PC-004): present on every
+call and every turn, never prepended, so a note written mid-session is
+visible on the next turn. Provider nil / empty block / disabled → no
+block for that turn.
 
 ### `internal/web` + webui
 
@@ -222,9 +219,10 @@ dependencies.
 - `internal/agent`: tool runnable invocation (knowledge-tools test pattern,
   `isolateHome` for the store), upsert by id, forget idempotence, disabled
   config → no memory tools in the toolset.
-- `internal/context`: injects on first call only (second call: absent),
-  injects into a brand-new empty session, disabled/nil provider no-op,
-  per-session isolation for two sessions on one builder.
+- `internal/context`: renders on the first call of every turn and splices
+  frozen within the turn; renders into a brand-new empty session;
+  disabled/nil provider no-op; per-session rendering without cross-leak
+  for two sessions on one builder.
 - `internal/config`: defaults, nil-vs-false, env override precedence,
   validation.
 - `internal/cli`: list/forget/add against an isolated home.
@@ -236,8 +234,8 @@ dependencies.
 
 - [ ] Agent can `remember` and `forget_memory` typed notes; they persist at
       `~/.hakase/memory/notes.json` (0600, atomic, flocked).
-- [ ] A new session starts with a budget-capped memory block, once per
-      session, scoped to the session's project + global notes.
+- [ ] A turn carries a budget-capped memory block, re-rendered every turn,
+      scoped to the session's project + global notes.
 - [ ] `memory.enabled: false` (or env) removes the tools and the injection.
 - [ ] The web UI can inspect and prune memory; `hakase memory` can too,
       while the server is running.

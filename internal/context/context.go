@@ -11,6 +11,7 @@ import (
 
 	"amurru/hakase/internal/env"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/project"
 	sesspkg "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
 
@@ -34,22 +35,24 @@ type HistoryBuilder struct {
 	pending     *util.PendingQueue      // mid-run steering queue (may be nil)
 	sidekick    *util.SidekickNoteQueue // sidekick advisory notes (may be nil)
 
-	// Auto-memory (docs/auto-memory/spec.md D5): memoryProvider renders the
-	// session-start memory block ("" = nothing to inject); memorySeen tracks
-	// the sessions already served so the block is injected once per session,
-	// not re-paid on every model call of a run. Both are guarded by
-	// memoryMu. The provider is wired in SetupRunner and stays nil when
-	// memory is disabled.
+	// Auto-memory (docs/auto-memory/spec.md D5, prompt-cache PC-004):
+	// memoryProvider renders the per-turn memory block ("" = nothing to
+	// inject). The block is evaluated on the first model call of every
+	// turn and frozen for the rest of that turn, so a remember/forget
+	// write lands on the next turn. The provider is wired in SetupRunner
+	// and stays nil when memory is disabled. Guarded by memoryMu.
 	memoryProvider func(ctx agent.Context) string
-	memorySeen     map[string]bool
 	memoryMu       sync.Mutex
 
-	// SessionStart hooks (docs/hooks/spec.md HK-104): hookProvider renders
-	// the one-shot SessionStart context block ("" = nothing to inject);
-	// hookSeen tracks served sessions. Mirrors the memory slot exactly,
-	// including the rollback-on-empty behavior (a mid-session trust grant
-	// re-arms a later call). Wired in SetupRunner; nil when hooks cannot
-	// fire SessionStart. Guarded by hookMu.
+	// SessionStart hooks (docs/hooks/spec.md HK-104, prompt-cache
+	// PC-004): hookProvider renders the one-shot SessionStart context
+	// block ("" = nothing to inject); hookSeen tracks settled sessions.
+	// Unlike memory, the block is persisted once at the store head
+	// before the session's first render and replays from the store
+	// afterwards — never a frozen turn block. The rollback-on-empty
+	// behavior is kept (a mid-session trust grant re-arms a later call).
+	// Wired in SetupRunner; nil when hooks cannot fire SessionStart.
+	// Guarded by hookMu.
 	hookProvider func(ctx agent.Context) (string, bool)
 	hookSeen     map[string]bool
 	hookMu       sync.Mutex
@@ -143,15 +146,12 @@ func (h *HistoryBuilder) SetModelInfo(info *interfaces.ModelInfo) {
 }
 
 // SetMemoryProvider attaches the auto-memory block renderer (SetupRunner).
-// The provider is called at most once per session; a nil provider (memory
-// disabled) disables injection entirely.
+// The provider is evaluated on the first model call of every turn; a nil
+// provider (memory disabled) disables injection entirely.
 func (h *HistoryBuilder) SetMemoryProvider(fn func(ctx agent.Context) string) {
 	h.memoryMu.Lock()
 	defer h.memoryMu.Unlock()
 	h.memoryProvider = fn
-	if h.memorySeen == nil {
-		h.memorySeen = make(map[string]bool)
-	}
 }
 
 // MemoryProvider returns the attached auto-memory renderer (nil when memory
@@ -162,32 +162,9 @@ func (h *HistoryBuilder) MemoryProvider() func(ctx agent.Context) string {
 	return h.memoryProvider
 }
 
-// reserveMemory atomically claims the session's one-shot memory injection:
-// overlapping model calls for one session (concurrent runs share the
-// builder) cannot both pass this gate, so the block is injected exactly
-// once. ok is false when memory is disabled, the session is already served,
-// or another in-flight callback holds the reservation.
-func (h *HistoryBuilder) reserveMemory(sessionID string) bool {
-	h.memoryMu.Lock()
-	defer h.memoryMu.Unlock()
-	if h.memoryProvider == nil || h.memorySeen[sessionID] {
-		return false
-	}
-	h.memorySeen[sessionID] = true
-	return true
-}
-
-// rollbackMemory releases a reservation whose rendered block came back
-// empty, keeping the session eligible for a later call (e.g. the first note
-// is written mid-session).
-func (h *HistoryBuilder) rollbackMemory(sessionID string) {
-	h.memoryMu.Lock()
-	defer h.memoryMu.Unlock()
-	delete(h.memorySeen, sessionID)
-}
-
 // SetSessionStartProvider attaches the SessionStart-hooks block renderer
-// (SetupRunner). Same once-per-session contract as SetMemoryProvider.
+// (SetupRunner). The block is persisted once at the store head; see
+// persistSessionStart.
 func (h *HistoryBuilder) SetSessionStartProvider(fn func(ctx agent.Context) (string, bool)) {
 	h.hookMu.Lock()
 	defer h.hookMu.Unlock()
@@ -206,8 +183,9 @@ func (h *HistoryBuilder) SessionStartProvider() func(ctx agent.Context) (string,
 }
 
 // reserveSessionStart atomically claims the session's one-shot hook
-// injection; rollbackSessionStart releases an empty render. Mirrors
-// reserveMemory/rollbackMemory.
+// persistence; rollbackSessionStart releases a nothing-ran render so a
+// later call (e.g. after a mid-session trust grant) stays eligible. A
+// silent but executed hook (ran=true, empty block) stays claimed.
 func (h *HistoryBuilder) reserveSessionStart(sessionID string) bool {
 	h.hookMu.Lock()
 	defer h.hookMu.Unlock()
@@ -245,7 +223,8 @@ func (h *HistoryBuilder) UserPromptProvider() func(ctx agent.Context) (string, b
 }
 
 // reserveUserPrompt atomically claims one prompt key; rollbackUserPrompt
-// releases an empty render. Mirrors reserveMemory/rollbackMemory.
+// releases an empty render. Same reserve/rollback contract as the
+// SessionStart slots below.
 func (h *HistoryBuilder) reserveUserPrompt(key string) bool {
 	h.promptMu.Lock()
 	defer h.promptMu.Unlock()
@@ -508,6 +487,12 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		}
 	}
 
+	// SessionStart hooks are persist-once at the store head (PC-004): the
+	// first callback of a session renders the provider and prepends the
+	// block before anything else reads the store, so every later call and
+	// turn replays it from history instead of re-paying it.
+	h.persistSessionStart(ctx, session)
+
 	// Sidekick notes are persist-only (PC-003): drain the queue into the
 	// session before rendering the store, so a mid-turn note lands after
 	// the current user message in sequence order and stays there on every
@@ -590,11 +575,10 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 }
 
 // renderFrozenTurn evaluates the turn-injected sources exactly once per
-// turn: the one-shot reserve gates (memory, SessionStart, per-prompt
-// hooks) plus the live notices (context-file updates, environment
-// staleness). A mid-turn change renders into the NEXT turn's frozen set.
-// Order preserves the previous head precedence (freshest first): prompt,
-// SessionStart, memory, then notices.
+// turn: the per-prompt hook reservation plus the live per-turn renders
+// (memory, project snapshot, notices). A mid-turn change renders into the
+// NEXT turn's frozen set. Order preserves the previous head precedence
+// (freshest first): prompt, memory, snapshot, then notices.
 func (h *HistoryBuilder) renderFrozenTurn(ctx agent.Context, session *sesspkg.Session) []string {
 	var texts []string
 
@@ -607,23 +591,23 @@ func (h *HistoryBuilder) renderFrozenTurn(ctx agent.Context, session *sesspkg.Se
 			h.rollbackUserPrompt(pkey)
 		}
 	}
-	// SessionStart hooks: one-shot reservation; only a nothing-ran render
-	// rolls back, a silent-but-executed hook must not re-fire.
-	if h.reserveSessionStart(session.ID) {
-		if block, ran := h.hookProvider(ctx); block != "" {
-			texts = append(texts, "HOOK SESSIONSTART CONTEXT:\n"+block)
-		} else if !ran {
-			h.rollbackSessionStart(session.ID)
+	// Session-start auto-memory: re-rendered every turn (PC-004) so a
+	// remember/forget write is visible on the next turn. An empty block
+	// simply contributes nothing; no reservation, no rollback.
+	h.memoryMu.Lock()
+	memProvider := h.memoryProvider
+	h.memoryMu.Unlock()
+	if memProvider != nil {
+		if block := memProvider(ctx); block != "" {
+			texts = append(texts, block)
 		}
 	}
-	// Session-start auto-memory: one-shot reservation; an empty block
-	// rolls back so the session stays eligible for a later call.
-	if h.reserveMemory(session.ID) {
-		if block := h.memoryProvider(ctx); block != "" {
-			texts = append(texts, block)
-		} else {
-			h.rollbackMemory(session.ID)
-		}
+	// Project snapshot (PC-005): the turn's pre-rendered GIT WORKSPACE
+	// block rides the run context (agentrun sets it per turn for bound
+	// sessions). Frozen here so every call of the turn splices identical
+	// bytes; a mid-turn repo change renders next turn.
+	if snap := project.SnapshotFrom(ctx); strings.TrimSpace(snap) != "" {
+		texts = append(texts, snap)
 	}
 
 	// Live reconcile: project context files changed mid-session. Frozen
@@ -639,6 +623,83 @@ func (h *HistoryBuilder) renderFrozenTurn(ctx agent.Context, session *sesspkg.Se
 		texts = append(texts, notice)
 	}
 	return texts
+}
+
+// persistSessionStart inserts the SessionStart hook block once at the
+// store head (PC-004), before the session's first render. Later callbacks
+// find the persisted marker and do nothing, so the block replays from
+// history on every call and turn. A nothing-ran render rolls the slot
+// back and stays eligible (e.g. a mid-session trust grant); a silent but
+// executed hook settles the slot without persisting anything.
+func (h *HistoryBuilder) persistSessionStart(ctx agent.Context, session *sesspkg.Session) {
+	if h == nil || session == nil {
+		return
+	}
+	h.hookMu.Lock()
+	provider := h.hookProvider
+	settled := h.hookSeen[session.ID]
+	h.hookMu.Unlock()
+	if provider == nil || settled {
+		return
+	}
+	if hasSessionStart(session) {
+		// Persisted by an earlier process (or a concurrent run that won
+		// the reserve): settle the slot without rendering again.
+		h.hookMu.Lock()
+		if h.hookSeen == nil {
+			h.hookSeen = make(map[string]bool)
+		}
+		h.hookSeen[session.ID] = true
+		h.hookMu.Unlock()
+		return
+	}
+	if !h.reserveSessionStart(session.ID) {
+		return
+	}
+	block, ran := provider(ctx)
+	if block == "" {
+		if !ran {
+			h.rollbackSessionStart(session.ID)
+		}
+		return
+	}
+	prependSessionStart(session, "HOOK SESSIONSTART CONTEXT:\n"+block)
+	if h.svc != nil {
+		if err := h.svc.SaveSession(session); err != nil {
+			h.logfSafe("⚠ [context] sessionstart persist failed: %v", err)
+		}
+	}
+}
+
+// hasSessionStart reports whether the session already carries its
+// persisted SessionStart block (the cross-restart idempotency marker;
+// the in-memory hookSeen slot covers only this process).
+func hasSessionStart(session *sesspkg.Session) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		if msg.Kind == sesspkg.MessageKindSessionStart {
+			return true
+		}
+	}
+	return false
+}
+
+// prependSessionStart inserts the rendered hook block at the store head
+// so it replays first (after summaries) on every later render. The
+// sequence takes the next cursor value to keep creation order monotonic;
+// render and eviction walk slice order, so head placement is what matters.
+func prependSessionStart(session *sesspkg.Session, content string) {
+	msg := sesspkg.Message{
+		Role:      "user",
+		Content:   sesspkg.NormalizeIngestedText(content),
+		Timestamp: time.Now().UTC(),
+		Sequence:  int64(len(session.Messages)),
+		InContext: true,
+		Kind:      sesspkg.MessageKindSessionStart,
+	}
+	session.Messages = append([]sesspkg.Message{msg}, session.Messages...)
 }
 
 // persistSidekickNotes drains the sidekick advisory queue into the session
