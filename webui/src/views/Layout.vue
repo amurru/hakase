@@ -212,16 +212,15 @@ onUnmounted(() => {
         <RouterView />
       </main>
 
-      <!-- Status bar -->
+      <!-- Status bar: token count only. The session title already shows in
+           the chat header (and renames there), so repeating it here tripled
+           the same string on screen. -->
       <footer class="flex h-8 shrink-0 items-center justify-between border-t border-border bg-muted/50 px-4">
         <div class="flex items-center gap-3 text-xs text-muted-foreground">
-          <span v-if="appStore.activeSessionTitle" class="max-w-64 truncate">
-            {{ appStore.activeSessionTitle }}
-          </span>
-          <span v-else>No active session</span>
           <span v-if="appStore.totalTokens > 0" class="tabular-nums">
             {{ appStore.totalTokens.toLocaleString() }} tokens
           </span>
+          <span v-else-if="!appStore.activeSessionTitle">No active session</span>
         </div>
         <div class="flex items-center gap-2">
           <Button

@@ -64,7 +64,6 @@ const {
   messages,
   sidekickNotes,
   isStreaming,
-  connected,
   sendMessage,
   stopRun,
   connect,
@@ -749,12 +748,9 @@ onMounted(() => {
           <Loader2 class="h-3 w-3 animate-spin" />
           <span class="hidden min-[420px]:inline">Streaming...</span>
         </span>
-        <span
-          v-else-if="connected"
-          class="hidden shrink-0 text-xs text-emerald-500 min-[420px]:inline"
-        >
-          Connected
-        </span>
+        <!-- Connection state lives in the app header; repeating it here
+             doubled the status noise, so the chat header shows only the
+             transient streaming state. -->
       </div>
 
       <div class="flex shrink-0 items-center gap-2">
@@ -839,17 +835,17 @@ onMounted(() => {
               </div>
             </div>
 
-            <!-- Loading history: skeleton rows, same column as the list -->
-            <div v-if="isLoadingHistory" class="mx-auto w-full max-w-3xl py-4 xl:max-w-4xl">
+            <!-- Loading history: skeleton rows in the same full-width flow -->
+            <div v-if="isLoadingHistory" class="w-full py-4">
               <ListSkeleton :rows="5" />
             </div>
 
             <!-- Message list. Wrapper stays out of the empty state: its
                  padding would add dead scroll below the h-full empty panel
-                 and pin a scrollbar over the composer. Centered readable
-                 column (UX-04), widened at xl so wide viewports do not read
-                 as empty gutters; the rail still measures prompt anchors. -->
-            <div v-if="messages.length" class="mx-auto w-full max-w-3xl py-4 xl:max-w-4xl">
+                 and pin a scrollbar over the composer. Full-width rows (no
+                 centered measure): bubbles carry their own max width, and
+                 the rail still measures prompt anchors. -->
+            <div v-if="messages.length" class="w-full py-4">
               <template v-for="(msg, i) in messages" :key="msg.id">
                 <div
                   v-if="showDayDivider(i)"
