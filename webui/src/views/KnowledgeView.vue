@@ -663,7 +663,7 @@ onMounted(loadNotes)
 
 <style scoped>
 .markdown-body :deep(pre) {
-  background: hsl(var(--muted));
+  background: var(--muted);
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-x: auto;
@@ -673,7 +673,7 @@ onMounted(loadNotes)
 .markdown-body :deep(pre code) {
   background: transparent !important;
   padding: 0 !important;
-  color: hsl(var(--foreground));
+  color: var(--foreground);
   font-size: 0.8125rem;
   line-height: 1.7;
 }
@@ -687,13 +687,13 @@ onMounted(loadNotes)
 
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   padding: 0.5rem 0.75rem;
   text-align: left;
 }
 
 .markdown-body :deep(th) {
-  background: hsl(var(--muted));
+  background: var(--muted);
   font-weight: 600;
 }
 
@@ -706,7 +706,7 @@ onMounted(loadNotes)
 }
 
 .markdown-body :deep(a) {
-  color: hsl(var(--primary));
+  color: var(--primary);
 }
 
 .markdown-body :deep(ul) {

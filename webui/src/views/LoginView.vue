@@ -66,7 +66,7 @@ async function handleSubmit() {
         >
           <div
             v-if="error"
-            class="rounded-md bg-destructive/15 px-4 py-3 text-sm text-destructive-foreground"
+            class="rounded-md bg-destructive/15 px-4 py-3 text-sm text-destructive"
           >
             {{ error }}
           </div>

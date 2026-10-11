@@ -130,7 +130,7 @@ function attachCopyButtons(root: HTMLElement) {
 <style>
 .markdown-body pre {
   position: relative;
-  background: hsl(var(--muted));
+  background: var(--muted);
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-x: auto;
@@ -140,7 +140,7 @@ function attachCopyButtons(root: HTMLElement) {
 .markdown-body pre code {
   background: transparent !important;
   padding: 0 !important;
-  color: hsl(var(--foreground));
+  color: var(--foreground);
   font-size: 0.8125rem;
   line-height: 1.7;
 }
@@ -154,13 +154,13 @@ function attachCopyButtons(root: HTMLElement) {
 
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   padding: 0.5rem 0.75rem;
   text-align: left;
 }
 
 .markdown-body th {
-  background: hsl(var(--muted));
+  background: var(--muted);
   font-weight: 600;
 }
 
@@ -173,7 +173,7 @@ function attachCopyButtons(root: HTMLElement) {
 }
 
 .markdown-body a {
-  color: hsl(var(--primary));
+  color: var(--primary);
 }
 
 .markdown-body ul {
@@ -197,9 +197,9 @@ function attachCopyButtons(root: HTMLElement) {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 0.375rem;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--muted));
-  color: hsl(var(--muted-foreground));
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease;
@@ -209,7 +209,7 @@ function attachCopyButtons(root: HTMLElement) {
 }
 .markdown-body .copy-code-button .check-icon {
   display: none;
-  color: hsl(var(--chart-2));
+  color: var(--chart-2);
 }
 .markdown-body .copy-code-button.copied .check-icon {
   display: block;
@@ -224,7 +224,7 @@ function attachCopyButtons(root: HTMLElement) {
   overflow-x: auto;
   display: flex;
   justify-content: center;
-  background: hsl(var(--muted));
+  background: var(--muted);
   border-radius: 0.5rem;
   padding: 1rem;
 }
@@ -236,7 +236,7 @@ function attachCopyButtons(root: HTMLElement) {
 .markdown-body .mermaid-placeholder {
   margin: 1rem 0;
   border-radius: 0.5rem;
-  background: hsl(var(--muted));
+  background: var(--muted);
   min-height: 3rem;
 }
 
@@ -248,22 +248,22 @@ function attachCopyButtons(root: HTMLElement) {
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: hsl(var(--destructive-foreground));
-  background: hsl(var(--destructive));
+  color: var(--destructive-foreground);
+  background: var(--destructive);
   border-radius: 0.25rem;
 }
 
 .markdown-body .mermaid-error-code {
   margin: 0.5rem;
   padding: 0.75rem;
-  background: hsl(var(--muted));
-  color: hsl(var(--muted-foreground));
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-x: auto;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   border-radius: 0.375rem;
 }
 </style>

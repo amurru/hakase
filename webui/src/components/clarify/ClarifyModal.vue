@@ -196,7 +196,7 @@ function onOpenChange(open: boolean) {
           <textarea
             v-model="freeText"
             rows="3"
-            class="w-full rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 resize-none"
+            class="w-full rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus-visible:outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3 resize-none"
             placeholder="Type your answer..."
           />
         </div>
