@@ -14,7 +14,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Plus, RefreshCw, Trash2, ArrowRight } from '@lucide/vue'
+import EmptyState from '@/components/EmptyState.vue'
+import { Plus, RefreshCw, Trash2, ArrowRight, ListTodo } from '@lucide/vue'
 
 const store = useTaskStore()
 
@@ -136,7 +137,42 @@ onMounted(() => {
 
     <!-- Kanban board -->
     <div class="flex-1 overflow-x-auto p-4">
-      <div class="flex gap-4" style="min-width: max-content">
+      <!-- Loading skeletons: column shapes, no layout shift on swap-in -->
+      <div
+        v-if="store.loading && store.tasks.length === 0"
+        class="flex gap-4"
+        style="min-width: max-content"
+        aria-hidden="true"
+      >
+        <div
+          v-for="i in 3"
+          :key="i"
+          class="flex w-72 shrink-0 flex-col gap-2 rounded-lg border border-border bg-muted/30 p-2"
+        >
+          <div class="h-4 w-1/2 rounded bg-muted motion-safe:animate-pulse" />
+          <div class="h-20 rounded-md bg-muted/70 motion-safe:animate-pulse" />
+          <div class="h-20 rounded-md bg-muted/70 motion-safe:animate-pulse" />
+        </div>
+      </div>
+
+      <!-- Board empty state -->
+      <EmptyState
+        v-else-if="!store.loading && store.tasks.length === 0"
+        title="No tasks yet"
+        description="Break the work down into trackable pieces. Tasks persist across sessions."
+      >
+        <template #icon>
+          <ListTodo class="h-10 w-10" />
+        </template>
+        <template #action>
+          <Button size="sm" @click="createOpen = true">
+            <Plus class="mr-1 h-4 w-4" />
+            New Task
+          </Button>
+        </template>
+      </EmptyState>
+
+      <div v-else class="flex gap-4" style="min-width: max-content">
         <div
           v-for="status in columns"
           :key="status"

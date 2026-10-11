@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import EmptyState from '@/components/EmptyState.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 
 import {
   Dialog,
@@ -210,46 +212,44 @@ onMounted(async () => {
     <!-- Project list -->
     <ScrollArea class="flex-1">
       <!-- Loading -->
-      <div
+      <ListSkeleton
         v-if="projectsStore.loading && projectsStore.projects.length === 0"
-        class="flex items-center justify-center py-16"
-      >
-        <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
+        :rows="5"
+      />
 
       <!-- Load error (registry unreachable / not configured) -->
-      <div
+      <EmptyState
         v-else-if="projectsStore.error && projectsStore.projects.length === 0"
-        class="flex flex-col items-center justify-center gap-3 px-6 py-16 text-muted-foreground"
+        title="Projects are unavailable on this server"
+        :description="projectsStore.error"
       >
-        <CircleAlert class="h-10 w-10 text-destructive/70" />
-        <p class="text-sm">Projects are unavailable on this server</p>
-        <p class="max-w-md text-center text-xs leading-relaxed">
-          {{ projectsStore.error }}
-        </p>
-        <Button variant="outline" size="sm" @click="projectsStore.load">
-          <RefreshCw class="mr-2 h-4 w-4" />
-          Retry
-        </Button>
-      </div>
+        <template #icon>
+          <CircleAlert class="h-10 w-10 text-destructive/70" />
+        </template>
+        <template #action>
+          <Button variant="outline" size="sm" @click="projectsStore.load">
+            <RefreshCw class="mr-2 h-4 w-4" />
+            Retry
+          </Button>
+        </template>
+      </EmptyState>
 
       <!-- Empty state -->
-      <div
+      <EmptyState
         v-else-if="projectsStore.projects.length === 0"
-        class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
+        title="No registered projects"
+        description="Register a git repository and hakase clones it into a managed checkout on this host. You can then start project-bound chat sessions against the latest code - the remote is never modified."
       >
-        <FolderGit2 class="h-10 w-10" />
-        <p class="text-sm">No registered projects</p>
-        <p class="max-w-sm text-center text-xs leading-relaxed">
-          Register a git repository and hakase clones it into a managed checkout
-          on this host. You can then start project-bound chat sessions against
-          the latest code - the remote is never modified.
-        </p>
-        <Button variant="outline" size="sm" @click="openRegister">
-          <Plus class="mr-2 h-4 w-4" />
-          Register your first project
-        </Button>
-      </div>
+        <template #icon>
+          <FolderGit2 class="h-10 w-10" />
+        </template>
+        <template #action>
+          <Button variant="outline" size="sm" @click="openRegister">
+            <Plus class="mr-2 h-4 w-4" />
+            Register your first project
+          </Button>
+        </template>
+      </EmptyState>
 
       <!-- Project rows -->
       <div v-else class="divide-y divide-border">

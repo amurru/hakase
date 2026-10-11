@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import TreeItem from '@/components/TreeItem.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   FileCode,
   FileImage,
@@ -271,8 +272,17 @@ onMounted(loadRoot)
         <ScrollArea class="h-full">
           <div class="p-2">
             <!-- Loading -->
-            <div v-if="loading && treeRoots.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-              Loading...
+            <div
+              v-if="loading && treeRoots.length === 0"
+              class="space-y-2 p-4"
+              aria-hidden="true"
+            >
+              <div
+                v-for="i in 4"
+                :key="i"
+                class="h-4 rounded bg-muted motion-safe:animate-pulse"
+                :style="{ width: `${85 - i * 12}%` }"
+              />
             </div>
 
             <!-- Error -->
@@ -288,9 +298,16 @@ onMounted(loadRoot)
 
             <!-- Tree -->
             <template v-else>
-              <div v-if="treeRoots.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-                No files found
-              </div>
+              <EmptyState
+                v-if="treeRoots.length === 0"
+                compact
+                title="No files found"
+                description="The workspace is empty or unreadable."
+              >
+                <template #icon>
+                  <File class="h-8 w-8" />
+                </template>
+              </EmptyState>
               <TreeItem
                 v-for="node in treeRoots"
                 :key="node.entry.path"
@@ -307,12 +324,17 @@ onMounted(loadRoot)
       <!-- Content viewer -->
       <div class="flex flex-1 flex-col overflow-hidden">
         <!-- No file selected -->
-        <div v-if="!selectedPath" class="flex flex-1 items-center justify-center text-muted-foreground">
-          <div class="text-center">
+        <EmptyState
+          v-if="!selectedPath"
+          compact
+          title="Select a file to view"
+          description="Pick a file from the tree to preview it here."
+          class="flex-1"
+        >
+          <template #icon>
             <FileCode class="mx-auto mb-2 h-8 w-8 opacity-50" />
-            <p class="text-sm">Select a file to view</p>
-          </div>
-        </div>
+          </template>
+        </EmptyState>
 
         <!-- File header bar -->
         <div v-else class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">

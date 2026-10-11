@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import EmptyState from '@/components/EmptyState.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 
 import {
   Dialog,
@@ -119,6 +121,17 @@ const filteredSessions = computed(() => {
 })
 
 const pinnedCount = computed(() => sessionStore.sessions.filter((s) => isPinned(s)).length)
+
+const emptyResultTitle = computed(() => {
+  if (searchQuery.value.trim()) return `No sessions match "${searchQuery.value.trim()}"`
+  if (filter.value === 'pinned') return 'No pinned sessions'
+  return 'No sessions this week'
+})
+
+function clearFilters() {
+  searchQuery.value = ''
+  filter.value = 'all'
+}
 
 function reload() {
   sessionStore.fetchSessions()
@@ -344,48 +357,46 @@ onMounted(() => {
 
     <!-- Session list -->
     <ScrollArea class="flex-1">
-      <!-- Loading skeletons (UX-08): shape of the rows, no spinner flash.
+      <!-- Loading skeletons (UX-08/09): shape of the rows, no spinner flash.
            A refresh with rows in place keeps the list instead. -->
-      <div
+      <ListSkeleton
         v-if="sessionStore.loading && sessionStore.sessions.length === 0"
-        class="divide-y divide-border"
-        aria-hidden="true"
-      >
-        <div
-          v-for="i in 6"
-          :key="i"
-          class="flex items-center gap-4 px-6 py-3"
-        >
-          <div class="h-2 w-2 shrink-0 rounded-full bg-muted" />
-          <div class="min-w-0 flex-1 space-y-2">
-            <div class="h-3.5 w-2/5 rounded bg-muted motion-safe:animate-pulse" />
-            <div class="h-3 w-1/3 rounded bg-muted/70 motion-safe:animate-pulse" />
-          </div>
-        </div>
-      </div>
+        :rows="6"
+      />
 
       <template v-else>
         <!-- Empty state -->
-        <div
-          v-if="filteredSessions.length === 0 && !searchQuery"
-          class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
+        <EmptyState
+          v-if="filteredSessions.length === 0 && !searchQuery.trim() && filter === 'all'"
+          title="No sessions yet"
+          description="Sessions keep your conversations organized. Create one to get started."
         >
-          <FolderOpen class="h-10 w-10" />
-          <p class="text-sm">No sessions yet</p>
-          <Button variant="outline" size="sm" @click="createDialogOpen = true">
-            <Plus class="mr-2 h-4 w-4" />
-            Create your first session
-          </Button>
-        </div>
+          <template #icon>
+            <FolderOpen class="h-10 w-10" />
+          </template>
+          <template #action>
+            <Button variant="outline" size="sm" @click="createDialogOpen = true">
+              <Plus class="mr-2 h-4 w-4" />
+              Create your first session
+            </Button>
+          </template>
+        </EmptyState>
 
-        <!-- No search results -->
-        <div
+        <!-- No search/filter results -->
+        <EmptyState
           v-else-if="filteredSessions.length === 0"
-          class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
+          :title="emptyResultTitle"
+          description="Try a different search term or filter."
         >
-          <Search class="h-8 w-8" />
-          <p class="text-sm">No sessions match "{{ searchQuery }}"</p>
-        </div>
+          <template #icon>
+            <Search class="h-8 w-8" />
+          </template>
+          <template #action>
+            <Button variant="outline" size="sm" @click="clearFilters">
+              Clear search and filters
+            </Button>
+          </template>
+        </EmptyState>
 
         <!-- Session items -->
         <div v-else class="divide-y divide-border">
