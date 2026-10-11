@@ -35,5 +35,5 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Final gates
 
-- [ ] **T5.1 [QA]** manual 6-turn scenario with memory + hooks at `cache_warn_ratio: 0.8`: turn 1 cold, later turns above threshold, only compaction/steering rewrites logged. Spec: DoD.
+- [ ] **T5.1 [QA]** manual 6-turn scenario with memory + hooks at `cache_warn_ratio: 0.8`: turn 1 cold, later turns' cached/total stable and high (0.8 target), only compaction/steering rewrites logged. Spec: DoD.
 - [ ] **T5.2 [QA]** full suite: `make build-frontend`, `gofmt -l .`, `go vet ./...`, `GOOS=darwin go build ./...`, `go test ./...`, `pnpm --dir webui test`.

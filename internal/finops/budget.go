@@ -284,11 +284,23 @@ func EndpointKind() string {
 }
 
 // cacheGuardWarned tracks the sessions already warned by the implicit-cache
-// guard so it fires at most once per session (process lifetime).
+// guard so it fires at most once per session (process lifetime). Sessions
+// removed from the store drop their entry via CacheGuardForget.
 var (
 	cacheGuardMu     sync.Mutex
 	cacheGuardWarned = map[string]bool{}
 )
+
+// CacheGuardForget drops a session's once-per-session guard state when the
+// session itself is removed, so the map cannot outgrow the live sessions.
+func CacheGuardForget(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	cacheGuardMu.Lock()
+	delete(cacheGuardWarned, sessionID)
+	cacheGuardMu.Unlock()
+}
 
 // CacheWarn reports whether the implicit-cache guard should fire for this
 // turn (prompt-cache PC-007): at most once per session, when a prompt large

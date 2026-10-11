@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"amurru/hakase/internal/finops"
 )
 
 func newTestSessionService(t *testing.T) *SessionService {
@@ -221,14 +223,20 @@ func TestAppendSummaryEvictsPriorSummaryAndLogsRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := svc.ActiveSessionID()
+
+	var addBuf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&addBuf)
+	defer log.SetOutput(old)
 	if err := svc.AppendSummary(id, "SUMMARY ONE"); err != nil {
 		t.Fatal(err)
 	}
+	if add := addBuf.String(); !strings.Contains(add, "direction=add") || !strings.Contains(add, "reason=summary") {
+		t.Fatalf("first-summary rewrite log = %q, want direction=add", add)
+	}
 
 	var buf bytes.Buffer
-	old := log.Writer()
 	log.SetOutput(&buf)
-	defer log.SetOutput(old)
 
 	if err := svc.AppendSummary(id, "SUMMARY TWO"); err != nil {
 		t.Fatal(err)
@@ -254,5 +262,25 @@ func TestAppendSummaryEvictsPriorSummaryAndLogsRewrite(t *testing.T) {
 	}
 	if inContext != 1 {
 		t.Fatalf("in-context summaries = %d, want exactly 1", inContext)
+	}
+}
+
+// TestDeleteSessionClearsCacheGuardState pins the PC-007 cleanup wiring: the
+// once-per-session guard state must not outlive the session it belongs to.
+func TestDeleteSessionClearsCacheGuardState(t *testing.T) {
+	svc := newTestSessionService(t)
+	if err := svc.RecordUsage("user", "q", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+	rec := finops.UsageRecord{Prompt: 5000, Total: 6000}
+	if ok, _ := finops.CacheWarn(id, rec, 0.8, "gemini"); !ok {
+		t.Fatal("guard should fire before the session is deleted")
+	}
+	if err := svc.DeleteSession(id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := finops.CacheWarn(id, rec, 0.8, "gemini"); !ok {
+		t.Fatal("deleting the session must clear its guard state")
 	}
 }

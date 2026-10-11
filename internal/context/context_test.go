@@ -229,6 +229,10 @@ func TestFitToBudgetNoTruncationUnderTrigger(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var lines []string
+	b.SetLogFunc(func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
 	session, err := svc.GetActiveSession()
 	if err != nil || session == nil {
 		t.Fatalf("session: %v %v", session, err)
@@ -238,6 +242,11 @@ func TestFitToBudgetNoTruncationUnderTrigger(t *testing.T) {
 	history = b.fitToBudget(session, history, []*genai.Content{genai.NewContentFromText("new", genai.RoleUser)}, &interfaces.ModelInfo{ContextWindow: 1_000_000})
 	if len(history) != before {
 		t.Fatalf("history truncated under trigger: %d -> %d", before, len(history))
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "cache: rewrite") {
+			t.Fatalf("no compaction must mean no rewrite log line: %q", l)
+		}
 	}
 }
 
@@ -322,7 +331,10 @@ func TestStageATrimsToolResultsOnly(t *testing.T) {
 
 	session, _ = svc.GetActiveSession()
 	history := b.buildHistory(session.Messages)
-	trimmed := b.stageATrimToolResults(session, history)
+	trimmed, changed := b.stageATrimToolResults(session, history)
+	if !changed {
+		t.Fatal("stage a must report a trim when a tool result was in context")
+	}
 
 	// Tool result removed; text messages kept.
 	unwanted := WrapUntrustedData("tool output here")
@@ -557,7 +569,7 @@ func TestFitToBudgetLogsOneRewriteLine(t *testing.T) {
 			continue
 		}
 		rewrites++
-		for _, want := range []string{"direction=shrink", "tokens ", "reason=compaction", "stages="} {
+		for _, want := range []string{"direction=shrink", "tokens ", "reason=compaction", "stages=snip"} {
 			if !strings.Contains(l, want) {
 				t.Fatalf("rewrite line missing %q: %q", want, l)
 			}

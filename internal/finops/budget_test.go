@@ -184,6 +184,32 @@ func TestCacheWarn(t *testing.T) {
 	if ok, msg := CacheWarn("s5", large, 0.8, ""); !ok || !strings.Contains(msg, "unknown") {
 		t.Errorf("missing endpoint kind must render as unknown: %v %q", ok, msg)
 	}
+	// Boundary: a prompt at exactly the floor fires (spec: "at or above").
+	if ok, _ := CacheWarn("s6", UsageRecord{Prompt: 1024, Total: 1024}, 0.8, "gemini"); !ok {
+		t.Error("prompt at the implicit-cache floor must fire the guard")
+	}
+	// The ratio value no longer thresholds (PC-007): any positive value
+	// enables the guard.
+	if ok, _ := CacheWarn("s7", large, 0.05, "gemini"); !ok {
+		t.Error("any positive ratio enables the guard")
+	}
+}
+
+// TestCacheGuardForget pins the session-delete cleanup: dropping a session's
+// guard state re-arms the once-per-session warning for it.
+func TestCacheGuardForget(t *testing.T) {
+	rec := UsageRecord{Prompt: 5000, Total: 6000}
+	if ok, _ := CacheWarn("forget-1", rec, 0.8, "gemini"); !ok {
+		t.Fatal("first warning should fire")
+	}
+	if ok, _ := CacheWarn("forget-1", rec, 0.8, "gemini"); ok {
+		t.Fatal("second warning in the same session must not fire")
+	}
+	CacheGuardForget("forget-1")
+	if ok, _ := CacheWarn("forget-1", rec, 0.8, "gemini"); !ok {
+		t.Error("forget must re-arm the guard")
+	}
+	CacheGuardForget("") // empty id must be a no-op, not a panic
 }
 
 func TestBudgetPct(t *testing.T) {

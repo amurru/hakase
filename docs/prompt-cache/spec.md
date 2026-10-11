@@ -171,7 +171,7 @@ Steering drifts too: appended after tool events on every call
 - Prefix-stability tests green (across calls and turns, CRLF/NFC, freeze-once,
   single user occurrence, project snapshot).
 - With memory and hooks enabled: turn 1 cold, later turns' cached/total stable
-  and above `cache_warn_ratio` (0.8 in the verification run), and no
+  and high (0.8 target in the verification run), and no
   non-compaction rewrites in the log.
 - Docs updated: `docs/context-hygiene/spec.md` (request assembly contract),
   `docs/auto-memory/spec.md` D5, `docs/finops/spec.md` FO-005 telemetry note.
