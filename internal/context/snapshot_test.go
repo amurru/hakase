@@ -133,3 +133,27 @@ func TestNoSnapshotNoBlock(t *testing.T) {
 		t.Fatalf("unbound assembly carries a snapshot block: %v", got)
 	}
 }
+
+// TestFrozenBlockOrderMemoryThenSnapshot pins the frozen-section order
+// from renderFrozenTurn (spec D5): the rendered store leads, memory
+// precedes the project snapshot, and the live tail follows both.
+func TestFrozenBlockOrderMemoryThenSnapshot(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	newSnapshotSession(t, svc, "task_order_1", "order please")
+	b.SetMemoryProvider(func(ctx agent.Context) string { return "MEMORY-ORDER-BLOCK" })
+	live := []*genai.Content{genai.NewContentFromText("order please", genai.RoleUser)}
+
+	got := contentTexts(assembleWithSnapshot(t, b, "task_order_1", testSnapshotBlock, live, newFakeInvocationState()))
+	idxMemory, idxSnap := -1, -1
+	for i, txt := range got {
+		switch {
+		case txt == "MEMORY-ORDER-BLOCK":
+			idxMemory = i
+		case strings.Contains(txt, "GIT WORKSPACE"):
+			idxSnap = i
+		}
+	}
+	if idxMemory != 1 || idxSnap != 2 {
+		t.Fatalf("frozen order = %v (memory idx %d, snapshot idx %d), want store, memory, snapshot", got, idxMemory, idxSnap)
+	}
+}

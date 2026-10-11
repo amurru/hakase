@@ -223,7 +223,8 @@ func (h *HistoryBuilder) UserPromptProvider() func(ctx agent.Context) (string, b
 }
 
 // reserveUserPrompt atomically claims one prompt key; rollbackUserPrompt
-// releases an empty render. Mirrors reserveMemory/rollbackMemory.
+// releases an empty render. Same reserve/rollback contract as the
+// SessionStart slots below.
 func (h *HistoryBuilder) reserveUserPrompt(key string) bool {
 	h.promptMu.Lock()
 	defer h.promptMu.Unlock()
@@ -664,7 +665,9 @@ func (h *HistoryBuilder) persistSessionStart(ctx agent.Context, session *sesspkg
 	}
 	prependSessionStart(session, "HOOK SESSIONSTART CONTEXT:\n"+block)
 	if h.svc != nil {
-		_ = h.svc.SaveSession(session)
+		if err := h.svc.SaveSession(session); err != nil {
+			h.logfSafe("⚠ [context] sessionstart persist failed: %v", err)
+		}
 	}
 }
 

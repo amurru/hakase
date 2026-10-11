@@ -2,11 +2,17 @@ package context
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"amurru/hakase/internal/interfaces"
 	sesspkg "amurru/hakase/internal/session"
 
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/genai"
 )
 
 // TestSessionStartPersistsAtStoreHead pins PC-004: the hook block is
@@ -172,5 +178,129 @@ func TestSilentHookDoesNotRefire(t *testing.T) {
 	}
 	if hasSessionStart(loaded) {
 		t.Fatalf("silent hook must persist nothing: %+v", loaded.Messages)
+	}
+}
+
+// countSessionStart counts persisted sessionstart blocks in a session (the
+// persist-once idempotency marker occurrences).
+func countSessionStart(sess *sesspkg.Session) int {
+	n := 0
+	for _, msg := range sess.Messages {
+		if msg.Kind == sesspkg.MessageKindSessionStart {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSessionStartReplaysAcrossRestart pins the cross-process half of
+// PC-004: a fresh builder (empty hookSeen, as after a process restart)
+// over a store that already carries the persisted sessionstart block
+// replays it from history and never consults the provider again.
+func TestSessionStartReplaysAcrossRestart(t *testing.T) {
+	b1, svc := newTestBuilder(t)
+	sess := newMemorySession(t, svc, "task_hook_restart", "restart")
+	b1.SetSessionStartProvider(func(ctx agent.Context) (string, bool) { return "HOOK CTX", true })
+	if texts := runMemoryCallback(t, b1, "task_hook_restart"); !containsBlock(texts, "HOOK CTX") {
+		t.Fatalf("first process must persist the block: %v", texts)
+	}
+
+	// Fresh builder over the same store: only the persisted marker can
+	// keep the block single, the in-memory slot is empty.
+	b2 := NewHistoryBuilder(svc)
+	b2.SetModelInfo(&interfaces.ModelInfo{ContextWindow: 100_000, MaxInputTokens: 90_000})
+	calls := 0
+	b2.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
+		calls++
+		return "SECOND RENDER", true
+	})
+	texts := runMemoryCallback(t, b2, "task_hook_restart")
+	if !containsBlock(texts, "HOOK CTX") {
+		t.Fatalf("persisted block must replay after restart: %v", texts)
+	}
+	if containsBlock(texts, "SECOND RENDER") {
+		t.Fatalf("provider rendered again after restart: %v", texts)
+	}
+	if calls != 0 {
+		t.Fatalf("provider consulted %d times after restart, want 0", calls)
+	}
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countSessionStart(loaded); n != 1 {
+		t.Fatalf("persisted sessionstart messages = %d, want 1", n)
+	}
+}
+
+// TestSessionStartConcurrentFirstCallsPersistOnce pins the reserve gate:
+// concurrent first model calls of one session (each callback loads its own
+// session copy, so no caller sees another's un-saved marker) must persist
+// exactly one sessionstart message and invoke the provider exactly once.
+func TestSessionStartConcurrentFirstCallsPersistOnce(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	sess := newMemorySession(t, svc, "task_hook_race", "race")
+	var calls int64
+	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
+		atomic.AddInt64(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // widen the check-then-act window
+		return "HOOK CTX", true
+	})
+
+	const runs = 8
+	var wg sync.WaitGroup
+	for i := 0; i < runs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			live := genai.NewContentFromText("current", genai.RoleUser)
+			req := &model.LLMRequest{Contents: []*genai.Content{live}}
+			cctx := &testCallbackContext{
+				userContent: live,
+				sessionID:   "task_hook_race",
+				state:       newFakeInvocationState(),
+			}
+			if _, err := b.BeforeModelCallback(cctx, req); err != nil {
+				t.Errorf("callback: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("provider invoked %d times across %d concurrent first calls, want 1", got, runs)
+	}
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countSessionStart(loaded); n != 1 {
+		t.Fatalf("persisted sessionstart messages = %d, want 1", n)
+	}
+}
+
+// TestSessionStartEmptySessionPersists pins the brand-new path: with no
+// persisted messages yet, the hook block still lands at the store head,
+// is persisted as the session's first message, and renders ahead of the
+// live prompt on the first request.
+func TestSessionStartEmptySessionPersists(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	sess, err := svc.CreateSession("brand-new-hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	interfaces.RegisterTaskSession("task_hook_empty", sess.ID)
+	t.Cleanup(func() { interfaces.UnregisterTask("task_hook_empty") })
+	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) { return "HOOK CTX", true })
+
+	texts := runMemoryCallback(t, b, "task_hook_empty")
+	if len(texts) != 2 || !strings.Contains(texts[0], "HOOK CTX") || texts[1] != "current" {
+		t.Fatalf("empty-session hook = %v, want [hook, current]", texts)
+	}
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 1 || loaded.Messages[0].Kind != sesspkg.MessageKindSessionStart {
+		t.Fatalf("store = %+v, want exactly one sessionstart head message", loaded.Messages)
 	}
 }

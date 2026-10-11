@@ -326,14 +326,17 @@ too late (CVE-2025-59536), sandbox-writes-settings persistence
   `hakase hooks trust`.
 - `RunSessionStart(ctx) string`: user + trusted-project SessionStart
   groups, once per hakase session (fallback TaskID, then once per process
-  for session-less surfaces), rollback-friendly empty return (mirrors
-  `reserveMemory`/`rollbackMemory` so mid-session trust grants fire later).
+  for session-less surfaces), rollback-friendly empty return (a
+  nothing-ran render stays eligible so mid-session trust grants fire later).
 
 ### Spec HK-104: SessionStart injection
 
-- `HistoryBuilder` gains a second provider slot (`SetSessionStartProvider`
-  + reserve/rollback, mirroring the memory slot) spliced at the head
-  alongside the memory block (hook block first).
+- `HistoryBuilder` gains a provider slot (`SetSessionStartProvider` +
+  reserve/rollback). The rendered block is persisted once at the head of
+  the session store (prompt-cache PC-004, message kind `sessionstart`)
+  before the session's first render, then replays from history on every
+  later call and turn. A nothing-ran render rolls the slot back; a silent
+  but executed hook settles it without persisting anything.
 - `internal/agent/hooks_session.go`: `wireHookSessionStart(cfg, hb,
   runner)` — no-op unless the runner can ever fire SessionStart (user
   groups or project layer enabled).
@@ -359,7 +362,8 @@ too late (CVE-2025-59536), sandbox-writes-settings persistence
 - [ ] The agent cannot write `*/.hakase/hooks.json` or
       `~/.hakase/hooks-trust.json` via file tools.
 - [ ] A trusted SessionStart hook's stdout reaches the model's first turn
-      exactly once per session.
+      exactly once per session (persisted at the store head; replayed from
+      history on later turns).
 - [ ] Full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).
 
 ## Explicitly deferred (not in Phase 2)
