@@ -4,41 +4,65 @@ import (
 	"strings"
 	"testing"
 
+	sesspkg "amurru/hakase/internal/session"
+
 	"google.golang.org/adk/v2/agent"
 )
 
-// TestSessionStartHookInjectsOncePerSession mirrors the memory one-shot
-// contract under frozen-turn assembly: the hook block lands ahead of memory
-// in the frozen section (after the rendered store) on the first call and
-// never re-injects.
-func TestSessionStartHookInjectsOncePerSession(t *testing.T) {
+// TestSessionStartPersistsAtStoreHead pins PC-004: the hook block is
+// persisted once at the store head before the first render and replays
+// from history on every later call and turn — never a frozen block.
+func TestSessionStartPersistsAtStoreHead(t *testing.T) {
 	b, svc := newTestBuilder(t)
-	newMemorySession(t, svc, "task_hook_1", "one")
+	sess := newMemorySession(t, svc, "task_hook_1", "one")
 	b.SetMemoryProvider(func(ctx agent.Context) string { return "AUTO MEMORY BLOCK" })
 	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) { return "HOOK CTX", true })
 
 	texts := runMemoryCallback(t, b, "task_hook_1")
-	// Frozen order preserves head precedence (freshest first): the hook
-	// block follows the rendered store, memory follows the hook.
-	if len(texts) < 3 || !strings.HasPrefix(texts[1], "HOOK SESSIONSTART CONTEXT:") {
-		t.Fatalf("hook block not ahead of memory: %v", texts)
+	// Store head first, then the rest of history, then the frozen memory
+	// block ahead of the run's own contents.
+	if len(texts) < 3 || !strings.Contains(texts[0], "HOOK CTX") {
+		t.Fatalf("hook block not at the store head: %v", texts)
+	}
+	if !strings.Contains(texts[1], "hello-one") {
+		t.Fatalf("history must follow the hook block: %v", texts)
 	}
 	if texts[2] != "AUTO MEMORY BLOCK" {
-		t.Fatalf("memory block must follow the hook block: %v", texts)
+		t.Fatalf("memory block must follow history in the frozen section: %v", texts)
 	}
-	if !strings.Contains(texts[0], "hello-one") {
-		t.Fatalf("rendered store must lead: %v", texts)
+	// Persisted exactly once, at the head, as a sessionstart message.
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, txt := range runMemoryCallback(t, b, "task_hook_1") {
-		if strings.Contains(txt, "HOOK SESSIONSTART") {
-			t.Fatalf("hook block re-injected on second call: %v", txt)
+	if len(loaded.Messages) == 0 || loaded.Messages[0].Kind != sesspkg.MessageKindSessionStart {
+		t.Fatalf("head message = %+v, want one sessionstart persist", loaded.Messages)
+	}
+	// Second turn: replays from the store (exactly one occurrence) and
+	// the provider is not consulted again.
+	n := 0
+	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
+		n++
+		return "HOOK CTX", true
+	})
+	texts2 := runMemoryCallback(t, b, "task_hook_1")
+	count := 0
+	for _, txt := range texts2 {
+		if strings.Contains(txt, "HOOK CTX") {
+			count++
 		}
+	}
+	if count != 1 {
+		t.Fatalf("hook block occurs %d times on turn 2, want 1: %v", count, texts2)
+	}
+	if n != 0 {
+		t.Fatalf("provider consulted on turn 2 after persist (%d calls)", n)
 	}
 }
 
 func TestSessionStartHookEmptyRollsBack(t *testing.T) {
 	b, svc := newTestBuilder(t)
-	newMemorySession(t, svc, "task_hook_late", "late")
+	sess := newMemorySession(t, svc, "task_hook_late", "late")
 	block := ""
 	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
 		called := block
@@ -50,12 +74,19 @@ func TestSessionStartHookEmptyRollsBack(t *testing.T) {
 
 	for _, txt := range runMemoryCallback(t, b, "task_hook_late") {
 		if strings.Contains(txt, "HOOK SESSIONSTART") {
-			t.Fatalf("empty provider must not inject: %v", txt)
+			t.Fatalf("empty provider must not persist: %v", txt)
 		}
+	}
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasSessionStart(loaded) {
+		t.Fatalf("nothing-ran render must persist nothing: %+v", loaded.Messages)
 	}
 	texts := runMemoryCallback(t, b, "task_hook_late")
 	if len(texts) == 0 || !containsBlock(texts, "HOOK CTX") {
-		t.Fatalf("late hook block must appear on a later call: %v", texts)
+		t.Fatalf("late hook block must persist and replay: %v", texts)
 	}
 }
 
@@ -120,11 +151,11 @@ func TestUserPromptNilProviderNoop(t *testing.T) {
 
 // TestSilentHookDoesNotRefire pins the rollback-on-empty fix at the
 // builder level: a provider that ran but rendered nothing (ran=true)
-// must not be re-invoked on later calls — only a nothing-ran render
-// (ran=false) rolls the slot back.
+// settles the persist-once slot without persisting anything — only a
+// nothing-ran render (ran=false) rolls the slot back.
 func TestSilentHookDoesNotRefire(t *testing.T) {
 	b, svc := newTestBuilder(t)
-	newMemorySession(t, svc, "task_hook_silent", "one")
+	sess := newMemorySession(t, svc, "task_hook_silent", "one")
 	calls := 0
 	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) {
 		calls++
@@ -134,5 +165,12 @@ func TestSilentHookDoesNotRefire(t *testing.T) {
 	runMemoryCallback(t, b, "task_hook_silent")
 	if calls != 1 {
 		t.Errorf("silent provider invoked %d times, want exactly 1", calls)
+	}
+	loaded, err := svc.Store().Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasSessionStart(loaded) {
+		t.Fatalf("silent hook must persist nothing: %+v", loaded.Messages)
 	}
 }

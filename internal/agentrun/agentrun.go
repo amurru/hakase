@@ -231,10 +231,13 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	// Project-bound sessions (project-registry DP-7): anchor the run to the
 	// registered project's checkout so git tools default there (resolveRepoDir
 	// consults project.RootFrom), pin the effective sandbox to the checkout
-	// when the host sandbox is active (per-run workspace roots), and inject a
-	// fresh per-session GIT WORKSPACE snapshot ahead of the user message.
-	// Delegated runs inherit the ctx root and sandbox override (delegate.go
-	// reuses the agent.Context as the sub-run ctx).
+	// when the host sandbox is active (per-run workspace roots), and render
+	// a fresh per-turn GIT WORKSPACE snapshot for the history builder's
+	// frozen turn block (prompt-cache PC-005). The snapshot rides the run
+	// context — the persisted user message stays the bare prompt, so the
+	// store render dedups exactly and the prompt appears once. Delegated
+	// runs inherit the ctx root and sandbox override (delegate.go reuses
+	// the agent.Context as the sub-run ctx).
 	if bind != nil {
 		// Register the active run against the bound project before the first
 		// agent step so the registry refuses to sync/delete under it.
@@ -245,10 +248,7 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 		runCtx = WithBoundSandbox(runCtx, checkout)
 		if snap, serr := projectWorkspaceSnapshot(runCtx, checkout); serr == nil && strings.TrimSpace(snap) != "" {
 			header := fmt.Sprintf("\n### GIT WORKSPACE — session bound to registered project %q\n(checkout: %s)\n%s", bind.Name, checkout, snap)
-			msg = &genai.Content{
-				Role:  content.Role,
-				Parts: append([]*genai.Part{{Text: header}}, content.Parts...),
-			}
+			runCtx = project.WithSnapshot(runCtx, header)
 		}
 	}
 

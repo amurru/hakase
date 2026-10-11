@@ -14,10 +14,10 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 2 - context classes + project snapshot (PR B)
 
-- [ ] **T2.1 [BE]** SessionStart persist-once: insert at store head before the first render of a session. Spec: PC-004.
-- [ ] **T2.2 [BE]** `internal/agentrun/agentrun.go:246-252`: snapshot becomes a frozen turn block; no user-content mutation. Spec: PC-005.
-- [ ] **T2.3 [QA]** update `memory_test.go` / `sessionstart_test.go` (blocks after user content, never prepended; `remember` visible next turn); snapshot single occurrence + freshness. Spec: PC-004/005.
-- [ ] **T2.4 [DOCS]** rewrite `docs/auto-memory/spec.md` D5 (frozen turn block, not one-shot head injection). Spec: D5.
+- [x] **T2.1 [BE]** SessionStart persist-once: insert at store head before the first render of a session. Spec: PC-004.
+- [x] **T2.2 [BE]** `internal/agentrun/agentrun.go:246-252`: snapshot becomes a frozen turn block; no user-content mutation. Spec: PC-005.
+- [x] **T2.3 [QA]** update `memory_test.go` / `sessionstart_test.go` (blocks after user content, never prepended; `remember` visible next turn); snapshot single occurrence + freshness. Spec: PC-004/005.
+- [x] **T2.4 [DOCS]** rewrite `docs/auto-memory/spec.md` D5 (frozen turn block, not one-shot head injection). Spec: D5.
 
 ## Phase 3 - compaction + telemetry (PR C)
 
