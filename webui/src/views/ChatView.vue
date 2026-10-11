@@ -65,6 +65,7 @@ const {
   isStreaming,
   connected,
   sendMessage,
+  stopRun,
   connect,
   onApprovalEvent,
   onApprovalTimeoutEvent,
@@ -801,7 +802,9 @@ onMounted(() => {
         <!-- Input area -->
         <ChatInput
           :disabled="false"
+          :streaming="isStreaming"
           @send="handleSend"
+          @stop="stopRun"
         />
       </div>
 

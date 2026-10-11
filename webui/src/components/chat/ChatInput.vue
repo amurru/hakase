@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { Send, Paperclip } from '@lucide/vue'
+import { Send, Square, Paperclip } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import AttachmentPicker, { type FileAttachment } from './AttachmentPicker.vue'
 import VoiceRecorder from './VoiceRecorder.vue'
@@ -8,14 +8,19 @@ import { suggestCommands, type SlashCommand } from '@/lib/slash'
 
 const emit = defineEmits<{
   send: [content: string, attachments?: FileAttachment[]]
+  stop: []
 }>()
 
 defineProps<{
   disabled?: boolean
+  streaming?: boolean
 }>()
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const content = ref('')
+// Soft composer budget: counter only, no hard block (mirrors TUI intent).
+const MAX_COMPOSER_CHARS = 8000
+const charCount = computed(() => content.value.length)
 const attachments = ref<FileAttachment[]>([])
 const pickerRef = ref<InstanceType<typeof AttachmentPicker> | null>(null)
 
@@ -228,6 +233,19 @@ onMounted(() => {
         />
       </div>
       <Button
+        v-if="streaming"
+        size="icon"
+        variant="destructive"
+        class="h-10 w-10 shrink-0 rounded-xl"
+        :disabled="disabled"
+        title="Stop the current run"
+        aria-label="Stop the current run"
+        @click="emit('stop')"
+      >
+        <Square class="h-4 w-4" />
+      </Button>
+      <Button
+        v-else
         size="icon"
         class="h-10 w-10 shrink-0 rounded-xl"
         :disabled="(!content.trim() && attachments.length === 0) || disabled"
@@ -239,8 +257,16 @@ onMounted(() => {
       </Button>
     </div>
 
-    <p class="mt-1.5 text-[11px] text-muted-foreground/50">
-      Enter to send, Shift+Enter for newline, / for commands, @ to attach files, Ctrl+V to paste images
-    </p>
+    <div class="mt-1.5 flex items-center justify-between gap-2">
+      <p class="text-[11px] text-muted-foreground/50">
+        Enter to send · Shift+Enter newline · / commands · @ files
+      </p>
+      <span
+        class="shrink-0 text-[11px] tabular-nums"
+        :class="charCount > MAX_COMPOSER_CHARS ? 'text-destructive' : 'text-muted-foreground/50'"
+      >
+        {{ charCount.toLocaleString() }} / {{ MAX_COMPOSER_CHARS.toLocaleString() }}
+      </span>
+    </div>
   </div>
 </template>

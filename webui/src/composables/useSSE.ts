@@ -323,6 +323,21 @@ export function useSSE(sessionId: () => string | null) {
     sidekickNotes.value.push(note)
   }
 
+  // stopRun cancels the in-flight agent turn (POST /sessions/{id}/stop,
+  // the web mirror of /stop). The run unwinds through the driver's error
+  // path, so done still arrives and the stream closes normally. A 404
+  // (nothing running) or transport failure stays silent: the stream's own
+  // done/error handling already reflects reality.
+  async function stopRun() {
+    const sid = sessionId()
+    if (!sid) return
+    try {
+      await apiFetch(`/sessions/${sid}/stop`, { method: 'POST', body: {} })
+    } catch {
+      // Silent - see above.
+    }
+  }
+
   function scheduleReconnect(sid: string) {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
@@ -375,7 +390,9 @@ export function useSSE(sessionId: () => string | null) {
       }
     } catch (err) {
       lastError.value = err instanceof Error ? err.message : 'Failed to send message'
-      isStreaming.value = false
+      // Streaming state is owned by the done event, not the POST: a failed
+      // POST (e.g. 429 under the per-session cap) must not clear the
+      // indicator while an earlier run is still in flight.
     }
   }
 
@@ -441,6 +458,7 @@ export function useSSE(sessionId: () => string | null) {
     askSidekick,
     pushSidekickNote,
     sendMessage,
+    stopRun,
     clearMessages,
     connect,
     onApprovalEvent,
