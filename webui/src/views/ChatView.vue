@@ -600,6 +600,22 @@ async function runCompact(focus: string) {
   }
 }
 
+// --- Execution canvas discoverability (UX-10): the header toggle carries
+// a text label plus an activity dot until the panel has been opened once.
+const CANVAS_SEEN_KEY = 'hakase_canvas_seen'
+const canvasSeen = ref(localStorage.getItem(CANVAS_SEEN_KEY) === '1')
+const canvasDot = computed(
+  () => canvasStore.sortedNodes.length > 0 && !canvasStore.panelOpen && !canvasSeen.value,
+)
+
+function toggleCanvas() {
+  canvasStore.panelOpen = !canvasStore.panelOpen
+  if (canvasStore.panelOpen && !canvasSeen.value) {
+    canvasSeen.value = true
+    localStorage.setItem(CANVAS_SEEN_KEY, '1')
+  }
+}
+
 // --- Restore-to-here (docs/session-rewind/spec.md, issue #21) ---
 // The snapshot taken just before a user prompt rewinds the conversation to
 // the state before it. Preselection matches the SERVER transcript position
@@ -746,13 +762,21 @@ onMounted(() => {
         </Badge>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="sm"
+          class="relative gap-1.5 text-xs"
           :class="canvasStore.panelOpen ? 'text-primary' : 'text-muted-foreground'"
           title="Toggle execution canvas"
           aria-label="Toggle execution canvas"
-          @click="canvasStore.panelOpen = !canvasStore.panelOpen"
+          :aria-expanded="canvasStore.panelOpen"
+          @click="toggleCanvas"
         >
           <Workflow class="h-4 w-4" />
+          <span class="hidden sm:inline">Canvas</span>
+          <span
+            v-if="canvasDot"
+            class="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-emerald-500"
+            aria-hidden="true"
+          />
         </Button>
       </div>
     </div>
