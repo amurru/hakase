@@ -840,15 +840,16 @@ onMounted(() => {
             </div>
 
             <!-- Loading history: skeleton rows, same column as the list -->
-            <div v-if="isLoadingHistory" class="mx-auto w-full max-w-3xl py-4">
+            <div v-if="isLoadingHistory" class="mx-auto w-full max-w-3xl py-4 xl:max-w-4xl">
               <ListSkeleton :rows="5" />
             </div>
 
             <!-- Message list. Wrapper stays out of the empty state: its
                  padding would add dead scroll below the h-full empty panel
                  and pin a scrollbar over the composer. Centered readable
-                 column (UX-04); the rail still measures prompt anchors. -->
-            <div v-if="messages.length" class="mx-auto w-full max-w-3xl py-4">
+                 column (UX-04), widened at xl so wide viewports do not read
+                 as empty gutters; the rail still measures prompt anchors. -->
+            <div v-if="messages.length" class="mx-auto w-full max-w-3xl py-4 xl:max-w-4xl">
               <template v-for="(msg, i) in messages" :key="msg.id">
                 <div
                   v-if="showDayDivider(i)"
