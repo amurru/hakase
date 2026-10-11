@@ -290,12 +290,197 @@ func (h *HistoryBuilder) logfSafe(format string, args ...any) {
 	}
 }
 
-// BeforeModelCallback prepends persisted conversation history to the request
-// before the real model call. Returning (nil, nil) lets the call proceed.
+// frozenStateKey is the ADK invocation-state slot holding the turn's
+// frozen context payload (prompt-cache PC-002, spec D3). `temp:` values
+// live for the invocation only and are never persisted, so the payload is
+// rendered once per turn (the first model call) and spliced read-only
+// while the slot survives. stateGet/stateSet are recover-guarded and
+// report failure instead of panicking: a context without state degrades to
+// re-rendering the (already reserved) sources on later calls, and the
+// caller logs that. The guard makes mid-turn mutation by the normal path
+// impossible; it is not a structural barrier.
+const frozenStateKey = "temp:hakase.frozen_tail"
+
+// steeringStateKey remembers how many steering blocks were already spliced
+// in this invocation, so the rewrite log fires on an actual mid-turn
+// arrival instead of on every later model call.
+const steeringStateKey = "temp:hakase.steering_injected"
+
+// stateGet reads one invocation-state slot; ok is false when the context
+// carries no state or the key is absent.
+func stateGet(ctx agent.Context, key string) (any, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	var st interface {
+		Get(string) (any, error)
+	}
+	func() {
+		defer func() { _ = recover() }()
+		st = ctx.State()
+	}()
+	if st == nil {
+		return nil, false
+	}
+	v, err := st.Get(key)
+	if err != nil || v == nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// stateSet writes one invocation-state slot; false reports the degraded
+// path (no state, a failed write, or a panic inside the state object).
+func stateSet(ctx agent.Context, key string, v any) bool {
+	if ctx == nil {
+		return false
+	}
+	ok := false
+	func() {
+		defer func() { _ = recover() }()
+		if st := ctx.State(); st != nil {
+			ok = st.Set(key, v) == nil
+		}
+	}()
+	return ok
+}
+
+// loadFrozenTurn returns the frozen block texts stored for this invocation.
+// ok is false when nothing was stored yet (the caller must render and
+// store) or when the context carries no state (degraded: render fresh).
+func loadFrozenTurn(ctx agent.Context) (texts []string, ok bool) {
+	v, ok := stateGet(ctx, frozenStateKey)
+	if !ok {
+		return nil, false
+	}
+	return decodeFrozenTexts(v)
+}
+
+// storeFrozenTurn records the turn's frozen block texts in invocation
+// state. A false return is the degraded path (test mocks without state, or
+// a failed write); the caller still splices the freshly rendered blocks
+// into the current request and logs the condition.
+func storeFrozenTurn(ctx agent.Context, texts []string) bool {
+	return stateSet(ctx, frozenStateKey, encodeFrozenTexts(texts))
+}
+
+// decodeStateCount reads a small integer invocation-state slot, accepting
+// the in-memory int form and the JSON-round-tripped float64.
+func decodeStateCount(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
+}
+
+// encodeFrozenTexts converts block texts to a JSON-safe invocation-state
+// value (plain strings survive the durable ADK service's marshal round).
+func encodeFrozenTexts(texts []string) any {
+	out := make([]any, 0, len(texts))
+	for _, t := range texts {
+		out = append(out, t)
+	}
+	return out
+}
+
+// decodeFrozenTexts reads back encodeFrozenTexts, accepting the in-memory
+// ([]string / []any) and JSON-round-tripped forms.
+func decodeFrozenTexts(v any) ([]string, bool) {
+	switch t := v.(type) {
+	case []string:
+		return t, true
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	case map[string]any:
+		if raw, ok := t["texts"]; ok {
+			return decodeFrozenTexts(raw)
+		}
+	}
+	return nil, false
+}
+
+// frozenContents rebuilds the user-role contents for stored block texts.
+// Pure: no provider, queue, or filesystem reads.
+func frozenContents(texts []string) []*genai.Content {
+	out := make([]*genai.Content, 0, len(texts))
+	for _, t := range texts {
+		if t == "" {
+			continue
+		}
+		out = append(out, genai.NewContentFromText(t, genai.RoleUser))
+	}
+	return out
+}
+
+// lastPersistedUser returns the session's most recent user-role message
+// (the dedup anchor for the live leading content).
+func lastPersistedUser(session *sesspkg.Session) (sesspkg.Message, bool) {
+	if session == nil {
+		return sesspkg.Message{}, false
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if session.Messages[i].Role == "user" {
+			return session.Messages[i], true
+		}
+	}
+	return sesspkg.Message{}, false
+}
+
+// splitLiveTail drops the live leading user content when it matches the
+// last persisted user message (render-from-store, PC-001): the store's
+// render already carries those bytes, so keeping the live copy would
+// duplicate the prompt and fork the prefix. Returns the un-persisted ADK
+// tail (tool calls/results) and whether the match held.
+func splitLiveTail(contents []*genai.Content, session *sesspkg.Session) (tail []*genai.Content, matched bool) {
+	if len(contents) == 0 {
+		return nil, true
+	}
+	last, ok := lastPersistedUser(session)
+	if !ok || contents[0] == nil || contents[0].Role != genai.RoleUser {
+		return contents, false
+	}
+	// Tool-protocol traffic is never the live copy of a persisted message:
+	// a durable resume re-enters the runner with the human answer as a
+	// user-role FunctionResponse (resume.go), which is textless and would
+	// otherwise match an attachment-only anchor below. Refuse to drop it.
+	for _, p := range contents[0].Parts {
+		if p != nil && p.FunctionResponse != nil {
+			return contents, false
+		}
+	}
+	// The persisted anchor was normalized at ingestion (PC-001); normalize
+	// the live copy the same way so a CRLF or NFD live send still matches
+	// its stored bytes instead of duplicating the prompt.
+	if !CurrentUserMessageMatches(last, sesspkg.NormalizeIngestedText(ContentText(contents[0]))) {
+		return contents, false
+	}
+	return contents[1:], true
+}
+
+// BeforeModelCallback assembles the model request under invariant P
+// (prompt-cache spec D1/D4):
 //
-// The callback fires once per LLM call; within one r.Run the tool loop makes
+//	[rendered store][frozen turn blocks][steering][un-persisted run tail]
+//
+// The rendered store is append-only between compactions; the frozen blocks
+// are evaluated once per turn and read from ADK invocation state on later
+// calls; steering is live per call; the tail is ADK's own tool
+// calls/results. Returning (nil, nil) lets the call proceed.
+//
+// The callback fires once per LLM call; within one run the tool loop makes
 // several calls and ADK rebuilds req.Contents from session events each time
-// (those events never contain our file-backed history), so we prepend on
+// (those events never contain our file-backed history), so we assemble on
 // every call rather than tracking InvocationID. Each call receives a fresh
 // request built from the ADK session, so there is no duplication risk.
 func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
@@ -323,169 +508,209 @@ func (h *HistoryBuilder) BeforeModelCallback(ctx agent.Context, req *model.LLMRe
 		}
 	}
 
-	// Session-start auto-memory: reserve the session's one shot atomically,
-	// render, and splice the block at the very head of the request via
-	// defer, so it fires on every return path below - including brand-new
-	// sessions with no persisted history, where the history prepend never
-	// runs. An empty block (no notes yet, or the store read failed) rolls
-	// the reservation back so the session stays eligible for a later call.
-	var memoryContent *genai.Content
-	if h.reserveMemory(session.ID) {
-		if block := h.memoryProvider(ctx); block != "" {
-			memoryContent = genai.NewContentFromText(block, genai.RoleUser)
-		} else {
-			h.rollbackMemory(session.ID)
-		}
-	}
-	// SessionStart hooks: same one-shot reservation, spliced AHEAD of the
-	// memory block (hook context is the freshest per-session signal).
-	var hookContent *genai.Content
-	if h.reserveSessionStart(session.ID) {
-		// Roll back only when nothing ran: a silent-but-executed hook
-		// must not re-fire on the next model call, while an all-skipped
-		// slot (untrusted/disabled) stays armed for later grants.
-		if block, ran := h.hookProvider(ctx); block != "" {
-			hookContent = genai.NewContentFromText("HOOK SESSIONSTART CONTEXT:\n"+block, genai.RoleUser)
-		} else if !ran {
-			h.rollbackSessionStart(session.ID)
-		}
-	}
-	// UserPromptSubmit hooks: per-prompt reservation on the latest user
-	// message, spliced ahead of everything (the turn's freshest signal).
-	var promptContent *genai.Content
-	if pkey := promptKey(session); h.reserveUserPrompt(pkey) {
-		if block, ran := h.promptProvider(ctx); block != "" {
-			promptContent = genai.NewContentFromText("HOOK PROMPT CONTEXT:\n"+block, genai.RoleUser)
-		} else if !ran {
-			h.rollbackUserPrompt(pkey)
-		}
-	}
-	defer func() {
-		if memoryContent != nil {
-			req.Contents = append([]*genai.Content{memoryContent}, req.Contents...)
-		}
-		if hookContent != nil {
-			req.Contents = append([]*genai.Content{hookContent}, req.Contents...)
-		}
-		if promptContent != nil {
-			req.Contents = append([]*genai.Content{promptContent}, req.Contents...)
-		}
-	}()
+	// Sidekick notes are persist-only (PC-003): drain the queue into the
+	// session before rendering the store, so a mid-turn note lands after
+	// the current user message in sequence order and stays there on every
+	// later call and turn. No special-case tail exclusion.
+	h.persistSidekickNotes(session)
 
-	if len(session.Messages) == 0 {
+	// Frozen turn context (PC-002): the first model call of the turn
+	// evaluates the reserve gates and sources once and stores the payload
+	// in invocation state; later calls splice it read-only.
+	frozenTexts, haveFrozen := loadFrozenTurn(ctx)
+	firstCall := !haveFrozen
+	if firstCall {
+		frozenTexts = h.renderFrozenTurn(ctx, session)
+		if !storeFrozenTurn(ctx, frozenTexts) {
+			h.logfSafe("cache: frozen turn state unavailable; blocks re-render per call")
+		}
+	}
+	frozen := frozenContents(frozenTexts)
+
+	// Split the live leading user content: when it matches the last
+	// persisted user message the store render already carries it.
+	tail, matched := splitLiveTail(req.Contents, session)
+	if !matched && len(session.Messages) > 0 {
+		h.logfSafe("cache: live user content unmatched; keeping live copy")
+	}
+
+	// Live steering (pending queue) joins the frozen insertion section per
+	// call: it sits after the frozen prefix so a mid-turn arrival extends
+	// the tail without rewriting the prefix. The arrival itself is a
+	// logged tail rewrite.
+	var steering []*genai.Content
+	if h.pending != nil && h.pending.Len() > 0 {
+		for _, q := range h.pending.Snapshot() {
+			steering = append(steering, util.SteeringContent(q))
+		}
+		// A pre-turn queue is spliced identically on the first call and
+		// must stay silent on later calls; only an increase over the count
+		// already spliced this turn is a logged tail rewrite. The count
+		// lives in invocation state, so it resets every turn.
+		prev, havePrev := 0, false
+		if v, ok := stateGet(ctx, steeringStateKey); ok {
+			prev, havePrev = decodeStateCount(v)
+		}
+		if len(steering) > prev && (havePrev || !firstCall) {
+			h.logfSafe("cache: steering arrival mid-turn, tail rewrite (%d queued)", len(steering))
+		}
+		if !havePrev || len(steering) != prev {
+			_ = stateSet(ctx, steeringStateKey, len(steering))
+		}
+	}
+
+	if len(session.Messages) == 0 && len(frozen) == 0 && len(steering) == 0 {
 		return nil, nil
 	}
 
-	currentText := ""
-	if uc := ctx.UserContent(); uc != nil {
-		currentText = ContentText(uc)
-	}
-
-	// Build history: summaries first, then in-context transcript, skipping
-	// the current user message (it is already persisted and in req.Contents).
-	history := h.buildHistory(session.Messages, currentText)
-	if len(history) == 0 {
-		return nil, nil
-	}
+	// Render the store: summaries first, then the in-context transcript in
+	// sequence order — including the current user message (the live copy
+	// was dropped above).
+	history := h.buildHistory(session.Messages)
 
 	// Fit history into the budget (cascade stages a+b when over trigger).
 	h.modelInfoMu.RLock()
 	info := h.modelInfo
 	h.modelInfoMu.RUnlock()
-	history = h.fitToBudget(session, history, req.Contents, info)
+	budgetCurrent := make([]*genai.Content, 0, len(frozen)+len(steering)+len(tail))
+	budgetCurrent = append(budgetCurrent, frozen...)
+	budgetCurrent = append(budgetCurrent, steering...)
+	budgetCurrent = append(budgetCurrent, tail...)
+	history = h.fitToBudget(session, history, budgetCurrent, info)
 
-	// Prepend, do not replace: ADK manages the current run's contents
-	// (user message + tool calls + results).
-	current := req.Contents
-	req.Contents = append(history, current...)
-
-	// Live reconcile: if a project context file (AGENTS.md) changed
-	// mid-session, inject a one-shot update notice at the head of the current
-	// run's contents so the model follows the updated instructions. The
-	// notice is not persisted; the model's next response reflects the change.
-	if notice := ContextUpdateNotice(); notice != "" {
-		h.logfSafe("⚠ project context files changed; update notice injected")
-		noticeContent := genai.NewContentFromText(notice, genai.RoleUser)
-		req.Contents = append(append(append([]*genai.Content{}, history...), noticeContent), current...)
-	}
-
-	// Environment staleness: if disk free or available memory drifted
-	// materially since the startup snapshot, inject a one-shot notice so the
-	// model re-checks live state instead of trusting stale values. Follows
-	// the same pattern as the context update notice above.
-	if notice := env.EnvStalenessNotice(); notice != "" {
-		h.logfSafe("⚠ system state changed; environment update notice injected")
-		noticeContent := genai.NewContentFromText(notice, genai.RoleUser)
-		req.Contents = append(append(append([]*genai.Content{}, history...), noticeContent), current...)
-	}
-
-	// Steer queued user messages (typed while the agent was busy) into the
-	// tail of the request as the most recent user intent. Injected on every
-	// model call: ADK rebuilds req.Contents fresh per call from session
-	// events (which never contain the queue), so re-injecting keeps the
-	// steering active for the whole run. The queue drains at agentDoneMsg.
-	if h.pending != nil && h.pending.Len() > 0 {
-		for _, q := range h.pending.Snapshot() {
-			req.Contents = append(req.Contents, util.SteeringContent(q))
-		}
-	}
-
-	// Inject sidekick advisory notes (watchdog) as a user-role reminder so the
-	// model reviews them before responding. Notes are also persisted to the
-	// session (InContext) so they remain visible across turns (NotesInContext).
-	if h.sidekick != nil && h.sidekick.Len() > 0 && session != nil {
-		var sb strings.Builder
-		sb.WriteString("SIDEKICK ADVISORY NOTES — review these before responding:")
-		for _, n := range h.sidekick.Pending() {
-			sb.WriteString(fmt.Sprintf("\n- [%s] %s", n.Severity, n.Text))
-			session.AddMessageWithMeta("sidekick", n.Text, "", 0, sesspkg.MessageKindSidekick)
-		}
-		req.Contents = append(req.Contents, genai.NewContentFromText(sb.String(), genai.RoleUser))
-		// Persist sidekick notes so they survive a crash before the next
-		// natural save point.
-		if h.svc != nil {
-			_ = h.svc.SaveSession(session)
-		}
-	}
+	// Assemble per invariant P. No harness content is ever appended after
+	// the ADK tail.
+	assembled := make([]*genai.Content, 0, len(history)+len(frozen)+len(steering)+len(tail))
+	assembled = append(assembled, history...)
+	assembled = append(assembled, frozen...)
+	assembled = append(assembled, steering...)
+	assembled = append(assembled, tail...)
+	req.Contents = assembled
 	return nil, nil
 }
 
+// renderFrozenTurn evaluates the turn-injected sources exactly once per
+// turn: the one-shot reserve gates (memory, SessionStart, per-prompt
+// hooks) plus the live notices (context-file updates, environment
+// staleness). A mid-turn change renders into the NEXT turn's frozen set.
+// Order preserves the previous head precedence (freshest first): prompt,
+// SessionStart, memory, then notices.
+func (h *HistoryBuilder) renderFrozenTurn(ctx agent.Context, session *sesspkg.Session) []string {
+	var texts []string
+
+	// UserPromptSubmit hooks: per-prompt reservation on the latest user
+	// message. Empty renders without a run roll back (stay eligible).
+	if pkey := promptKey(session); h.reserveUserPrompt(pkey) {
+		if block, ran := h.promptProvider(ctx); block != "" {
+			texts = append(texts, "HOOK PROMPT CONTEXT:\n"+block)
+		} else if !ran {
+			h.rollbackUserPrompt(pkey)
+		}
+	}
+	// SessionStart hooks: one-shot reservation; only a nothing-ran render
+	// rolls back, a silent-but-executed hook must not re-fire.
+	if h.reserveSessionStart(session.ID) {
+		if block, ran := h.hookProvider(ctx); block != "" {
+			texts = append(texts, "HOOK SESSIONSTART CONTEXT:\n"+block)
+		} else if !ran {
+			h.rollbackSessionStart(session.ID)
+		}
+	}
+	// Session-start auto-memory: one-shot reservation; an empty block
+	// rolls back so the session stays eligible for a later call.
+	if h.reserveMemory(session.ID) {
+		if block := h.memoryProvider(ctx); block != "" {
+			texts = append(texts, block)
+		} else {
+			h.rollbackMemory(session.ID)
+		}
+	}
+
+	// Live reconcile: project context files changed mid-session. Frozen
+	// per turn so the notice text is byte-identical across the turn's
+	// calls; a change landing mid-turn renders next turn.
+	if notice := ContextUpdateNotice(); notice != "" {
+		h.logfSafe("⚠ project context files changed; update notice injected")
+		texts = append(texts, notice)
+	}
+	// Environment staleness: same frozen treatment as the update notice.
+	if notice := env.EnvStalenessNotice(); notice != "" {
+		h.logfSafe("⚠ system state changed; environment update notice injected")
+		texts = append(texts, notice)
+	}
+	return texts
+}
+
+// persistSidekickNotes drains the sidekick advisory queue into the session
+// (InContext) so notes render from the store in sequence order. Persisted
+// before the next natural save point so they survive a crash.
+func (h *HistoryBuilder) persistSidekickNotes(session *sesspkg.Session) {
+	if h.sidekick == nil || h.sidekick.Len() == 0 || session == nil {
+		return
+	}
+	for _, n := range h.sidekick.Pending() {
+		session.AddMessageWithMeta("sidekick", n.Text, "", 0, sesspkg.MessageKindSidekick)
+	}
+	if h.svc != nil {
+		_ = h.svc.SaveSession(session)
+	}
+}
+
 // buildHistory converts persisted messages to genai contents: summaries
-// first, then the in-context transcript. The current user message (deduped
-// against ctx.UserContent) is skipped since ADK already carries it.
-func (h *HistoryBuilder) buildHistory(msgs []sesspkg.Message, currentText string) []*genai.Content {
+// first, then the in-context transcript in sequence order. Every in-context
+// message renders from its stored bytes (render-from-store, PC-001),
+// including the current user message — the live copy is dropped by
+// splitLiveTail when it matches, so the prompt appears exactly once.
+func (h *HistoryBuilder) buildHistory(msgs []sesspkg.Message) []*genai.Content {
 	var summaries, history []*genai.Content
 	for _, msg := range msgs {
 		if !msg.InContext {
 			continue
 		}
 		if msg.Kind == sesspkg.MessageKindSummary {
-			summaries = append(summaries, MessageToContent(msg))
+			summaries = append(summaries, h.renderMessage(msg))
 			continue
 		}
-		// Dedup: skip the current user message (persisted at send time).
-		// Attachment-bearing messages persist only the bare prompt while the
-		// in-flight request also carries the attachment parts, so compare by
-		// prefix rather than plain equality.
-		if msg.Role == "user" && CurrentUserMessageMatches(msg, currentText) {
-			continue
-		}
-		history = append(history, MessageToContent(msg))
+		history = append(history, h.renderMessage(msg))
 	}
 	return append(summaries, history...)
 }
 
+// renderMessage converts one persisted message to request content,
+// logging `cache: attachment drift` when an attachment's on-disk bytes no
+// longer match the persist-time hash (PC-001). Changed bytes after the
+// attachment invalidate the prefix cache, so the drift is observable.
+func (h *HistoryBuilder) renderMessage(msg sesspkg.Message) *genai.Content {
+	for _, att := range msg.Attachments {
+		if att.Hash == "" {
+			continue
+		}
+		if current := sesspkg.HashAttachmentFile(att.Path); current != att.Hash {
+			name := att.Name
+			if name == "" {
+				name = att.Path
+			}
+			h.logfSafe("cache: attachment drift %q (persisted bytes changed)", name)
+			break
+		}
+	}
+	return MessageToContent(msg)
+}
+
 // currentUserMessageMatches reports whether the in-flight request's user
 // content corresponds to the given persisted user message (dedup guard for
-// buildHistory).
+// splitLiveTail).
 func CurrentUserMessageMatches(msg sesspkg.Message, currentText string) bool {
 	if currentText == msg.Content {
 		return true
 	}
 	// Attachment-bearing messages persist the bare prompt; the request text
 	// is the prompt followed by any attachment parts (text files), so a
-	// prefix match means the same message.
-	if len(msg.Attachments) > 0 && currentText != "" && strings.HasPrefix(currentText, msg.Content) {
+	// prefix match means the same message. An empty stored prompt cannot
+	// prefix-match anything: that degenerate case belongs to the
+	// attachment-only arm below, so nothing with text is ever dropped by
+	// accident.
+	if len(msg.Attachments) > 0 && msg.Content != "" && currentText != "" && strings.HasPrefix(currentText, msg.Content) {
 		return true
 	}
 	// Image-only messages persist no text and the request carries only the
@@ -602,12 +827,12 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 
 	// Stage (a): trim tool-output transcripts. Tool results are the cheapest
 	// to evict (they were already used to produce the agent's answer).
-	history = h.stageATrimToolResults(session, history, currentTextOf(current))
+	history = h.stageATrimToolResults(session, history)
 
 	// Stage (b): deterministic snip. Archive oldest messages until the tail
 	// fits the target; keep the recent ~20k tokens + last 2 turns verbatim.
 	if currentTokens+util.EstimateContentsTokens(history)+reserveTokens > int(target) {
-		history = h.StageBSnip(session, history, currentTextOf(current), currentTokens, reserveTokens, target)
+		history = h.StageBSnip(session, history, currentTokens, reserveTokens, target)
 	}
 
 	// Stage (c): async summarization, only if still over target. The summary
@@ -619,23 +844,10 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 	return history
 }
 
-// currentTextOf returns the concatenated text of the current contents for
-// re-dedup after trimming (the callback may fire multiple times per turn).
-func currentTextOf(contents []*genai.Content) string {
-	if len(contents) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, c := range contents {
-		b.WriteString(ContentText(c))
-	}
-	return b.String()
-}
-
 // stageATrimToolResults marks tool_result messages out-of-context so they no
 // longer enter the request, keeping the tool_use record. Returns the history
 // rebuilt from the surviving messages.
-func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history []*genai.Content, currentText string) []*genai.Content {
+func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history []*genai.Content) []*genai.Content {
 	changed := false
 	for i := range session.Messages {
 		msg := &session.Messages[i]
@@ -648,7 +860,7 @@ func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history
 	}
 	if changed {
 		h.persistSnapshot(session)
-		return h.buildHistory(session.Messages, currentText)
+		return h.buildHistory(session.Messages)
 	}
 	return history
 }
@@ -658,9 +870,7 @@ func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history
 // within the target budget. The last 2 turns are always kept verbatim.
 // Oldest-first eviction naturally preserves ~20k recent tokens whenever the
 // budget allows; on tight budgets the budget wins over the recency heuristic.
-// currentText is re-applied during history rebuild so the current user
-// message stays deduped (it is already in the run's contents).
-func (h *HistoryBuilder) StageBSnip(session *sesspkg.Session, history []*genai.Content, currentText string, currentTokens, reserveTokens int, target int64) []*genai.Content {
+func (h *HistoryBuilder) StageBSnip(session *sesspkg.Session, history []*genai.Content, currentTokens, reserveTokens int, target int64) []*genai.Content {
 	// Hard keep region: the last 2 user turns (never evicted).
 	last2TurnStart := -1
 	userCount := 0
@@ -696,7 +906,7 @@ func (h *HistoryBuilder) StageBSnip(session *sesspkg.Session, history []*genai.C
 		changed = true
 		h.logfSafe("⚠ [context] Evicted message seq %d (role: %s, kind: %s, tokens: %d) at %s",
 			session.Messages[i].Sequence, session.Messages[i].Role, session.Messages[i].Kind, session.Messages[i].Tokens, time.Now().Format(time.RFC3339))
-		if int64(util.EstimateContentsTokens(h.buildHistory(session.Messages, currentText))) <= int64(budget) {
+		if int64(util.EstimateContentsTokens(h.buildHistory(session.Messages))) <= int64(budget) {
 			break
 		}
 	}
@@ -704,7 +914,7 @@ func (h *HistoryBuilder) StageBSnip(session *sesspkg.Session, history []*genai.C
 	if changed {
 		h.persistSnapshot(session)
 	}
-	return h.buildHistory(session.Messages, currentText)
+	return h.buildHistory(session.Messages)
 }
 
 // persistSnapshot saves the session's current message state to disk (the

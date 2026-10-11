@@ -2461,7 +2461,7 @@ func (m *AppModel) compactSession(focus string) tea.Cmd {
 	before, _ := m.sessionFillPercent()
 
 	// Deterministic snip: archive oldest messages, keep the last 2 turns.
-	CurrentHistoryBuilder.StageBSnip(session, nil, "", 0, 8000, 0)
+	CurrentHistoryBuilder.StageBSnip(session, nil, 0, 8000, 0)
 
 	// Async LLM summarization of the surviving transcript (falls back to the
 	// deterministic snip on failure).

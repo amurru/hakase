@@ -1,11 +1,16 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -80,6 +85,11 @@ type AttachmentRef struct {
 	Path  string `json:"path"`
 	MIME  string `json:"mime"`
 	Label string `json:"label,omitempty"` // chip text, e.g. "@file.go" or "[image 1]"
+	// Hash is the sha256 hex of the file bytes at persist time ("" when the
+	// file was unreadable). The renderer logs `cache: attachment drift` when
+	// the re-read hash differs, since changed bytes invalidate the prefix
+	// cache after the attachment. Additive: old session files omit it.
+	Hash string `json:"hash,omitempty"`
 }
 
 // TaskRef is an embedded snapshot of task metadata stored directly
@@ -132,9 +142,37 @@ func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int,
 	s.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, kind, nil)
 }
 
+// NormalizeIngestedText canonicalizes persisted message text once at
+// ingestion (prompt-cache PC-001): CRLF/CR become LF, then Unicode NFC.
+// The renderer is a pure function of these stored bytes, so live sends and
+// replays emit identical output for identical prompts.
+func NormalizeIngestedText(s string) string {
+	if s == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return norm.NFC.String(s)
+}
+
+// HashAttachmentFile returns the sha256 hex of the file at path, or "" when
+// it cannot be read.
+func HashAttachmentFile(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 // AddMessageWithMetaAndAttachments is AddMessageWithMeta plus a persisted
 // attachment list.
 func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking string, tokens int, kind string, atts []AttachmentRef) {
+	content = NormalizeIngestedText(content)
 	// Persist-time tool-output cap (Spec CX-003)
 	if kind == MessageKindToolResult {
 		limit := 8192
@@ -143,6 +181,13 @@ func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking strin
 		}
 		if count := utf8.RuneCountInString(content); count > limit {
 			content = string([]rune(content)[:limit]) + fmt.Sprintf("\n...[truncated %d chars]", count-limit)
+		}
+	}
+	// Snapshot each attachment's content hash so the renderer can detect
+	// on-disk drift between the live send and later replays.
+	for i := range atts {
+		if atts[i].Hash == "" {
+			atts[i].Hash = HashAttachmentFile(atts[i].Path)
 		}
 	}
 	s.Messages = append(s.Messages, Message{

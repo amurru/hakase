@@ -160,7 +160,7 @@ func (h *HistoryBuilder) fallbackCompaction(sessionID string) {
 	if err != nil || session == nil {
 		return
 	}
-	h.StageBSnip(session, nil, "", 0, 8000, 0)
+	h.StageBSnip(session, nil, 0, 8000, 0)
 }
 
 // buildSummarizePrompt assembles the 9-section summarization prompt from the

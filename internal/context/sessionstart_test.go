@@ -8,8 +8,9 @@ import (
 )
 
 // TestSessionStartHookInjectsOncePerSession mirrors the memory one-shot
-// contract: the hook block lands at the very head (ahead of memory) on the
-// first call and never re-injects.
+// contract under frozen-turn assembly: the hook block lands ahead of memory
+// in the frozen section (after the rendered store) on the first call and
+// never re-injects.
 func TestSessionStartHookInjectsOncePerSession(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_hook_1", "one")
@@ -17,11 +18,16 @@ func TestSessionStartHookInjectsOncePerSession(t *testing.T) {
 	b.SetSessionStartProvider(func(ctx agent.Context) (string, bool) { return "HOOK CTX", true })
 
 	texts := runMemoryCallback(t, b, "task_hook_1")
-	if len(texts) == 0 || !strings.HasPrefix(texts[0], "HOOK SESSIONSTART CONTEXT:") {
-		t.Fatalf("hook block not at head: %v", texts)
+	// Frozen order preserves head precedence (freshest first): the hook
+	// block follows the rendered store, memory follows the hook.
+	if len(texts) < 3 || !strings.HasPrefix(texts[1], "HOOK SESSIONSTART CONTEXT:") {
+		t.Fatalf("hook block not ahead of memory: %v", texts)
 	}
-	if len(texts) < 2 || texts[1] != "AUTO MEMORY BLOCK" {
+	if texts[2] != "AUTO MEMORY BLOCK" {
 		t.Fatalf("memory block must follow the hook block: %v", texts)
+	}
+	if !strings.Contains(texts[0], "hello-one") {
+		t.Fatalf("rendered store must lead: %v", texts)
 	}
 	for _, txt := range runMemoryCallback(t, b, "task_hook_1") {
 		if strings.Contains(txt, "HOOK SESSIONSTART") {
@@ -48,7 +54,7 @@ func TestSessionStartHookEmptyRollsBack(t *testing.T) {
 		}
 	}
 	texts := runMemoryCallback(t, b, "task_hook_late")
-	if len(texts) == 0 || !strings.Contains(texts[0], "HOOK CTX") {
+	if len(texts) == 0 || !containsBlock(texts, "HOOK CTX") {
 		t.Fatalf("late hook block must appear on a later call: %v", texts)
 	}
 }
@@ -59,7 +65,7 @@ func TestSessionStartNilProviderNoop(t *testing.T) {
 	// No provider set: the memory path is unaffected.
 	b.SetMemoryProvider(func(ctx agent.Context) string { return "AUTO MEMORY BLOCK" })
 	texts := runMemoryCallback(t, b, "task_hook_nil")
-	if len(texts) == 0 || texts[0] != "AUTO MEMORY BLOCK" {
+	if !containsBlock(texts, "AUTO MEMORY BLOCK") {
 		t.Fatalf("nil hook provider must leave memory injection intact: %v", texts)
 	}
 }
@@ -74,8 +80,8 @@ func TestUserPromptFiresPerPromptNotPerCall(t *testing.T) {
 	})
 
 	texts := runMemoryCallback(t, b, "task_prompt_1")
-	if len(texts) == 0 || !strings.HasPrefix(texts[0], "HOOK PROMPT CONTEXT:") {
-		t.Fatalf("prompt block not at head: %v", texts)
+	if !containsBlock(texts, "HOOK PROMPT CONTEXT:") {
+		t.Fatalf("prompt block missing from frozen section: %v", texts)
 	}
 	// Same prompt, second model call of the turn: no re-fire.
 	n := calls
@@ -93,7 +99,7 @@ func TestUserPromptFiresPerPromptNotPerCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	texts = runMemoryCallback(t, b, "task_prompt_1")
-	if len(texts) == 0 || !strings.HasPrefix(texts[0], "HOOK PROMPT CONTEXT:") {
+	if !containsBlock(texts, "HOOK PROMPT CONTEXT:") {
 		t.Fatalf("new prompt must refire: %v", texts)
 	}
 	if calls != 2 {
