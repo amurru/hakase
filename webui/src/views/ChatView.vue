@@ -360,6 +360,41 @@ watch(
   },
 )
 
+// --- Transcript grouping (UX-04): day dividers + avatar grouping.
+// Consecutive same-role messages within COMPACT_GAP_MS render compact (no
+// avatar, tighter spacing) so turns read as turns, not message soup.
+const COMPACT_GAP_MS = 5 * 60 * 1000
+
+function dayLabel(ts: number): string {
+  const d = new Date(ts)
+  const now = new Date()
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const dayDiff = Math.round((startOf(now) - startOf(d)) / 86400000)
+  if (dayDiff <= 0) return 'Today'
+  if (dayDiff === 1) return 'Yesterday'
+  return d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: now.getFullYear() === d.getFullYear() ? undefined : 'numeric',
+  })
+}
+
+function showDayDivider(index: number): boolean {
+  if (index === 0) return messages.value.length > 1
+  const prev = messages.value[index - 1]
+  const cur = messages.value[index]
+  if (!prev || !cur) return false
+  return new Date(prev.timestamp || 0).toDateString() !== new Date(cur.timestamp || 0).toDateString()
+}
+
+function isCompact(index: number): boolean {
+  if (index === 0) return false
+  const prev = messages.value[index - 1]
+  const cur = messages.value[index]
+  if (!prev || !cur || prev.role !== cur.role) return false
+  return Math.abs((cur.timestamp || 0) - (prev.timestamp || 0)) < COMPACT_GAP_MS
+}
+
 // Load session history
 async function loadSessionHistory(sid: string) {
   isLoadingHistory.value = true
@@ -768,15 +803,27 @@ onMounted(() => {
 
             <!-- Message list. Wrapper stays out of the empty state: its
                  padding would add dead scroll below the h-full empty panel
-                 and pin a scrollbar over the composer. -->
-            <div v-if="messages.length" class="py-4">
-              <MessageBubble
-                v-for="msg in messages"
-                :key="msg.id"
-                :message="msg"
-                :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
-                @restore="openRestoreDialog(msg)"
-              />
+                 and pin a scrollbar over the composer. Centered readable
+                 column (UX-04); the rail still measures prompt anchors. -->
+            <div v-if="messages.length" class="mx-auto w-full max-w-3xl py-4">
+              <template v-for="(msg, i) in messages" :key="msg.id">
+                <div
+                  v-if="showDayDivider(i)"
+                  class="flex items-center gap-3 px-4 py-3"
+                >
+                  <div class="h-px flex-1 bg-border" />
+                  <span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {{ dayLabel(msg.timestamp || Date.now()) }}
+                  </span>
+                  <div class="h-px flex-1 bg-border" />
+                </div>
+                <MessageBubble
+                  :message="msg"
+                  :compact="isCompact(i)"
+                  :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
+                  @restore="openRestoreDialog(msg)"
+                />
+              </template>
             </div>
 
             <!-- Sidekick advisory notes: quiet inline chips, never notifications -->

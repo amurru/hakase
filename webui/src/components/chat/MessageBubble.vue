@@ -8,6 +8,7 @@ import ThinkingBlock from './ThinkingBlock.vue'
 const props = defineProps<{
   message: ChatMessage
   streaming?: boolean
+  compact?: boolean
 }>()
 
 // Restore-to-here is offered on persisted user prompts only: the snapshot
@@ -45,12 +46,14 @@ async function copyContent() {
 
 <template>
   <div
-    class="flex gap-3 px-4 py-3"
-    :class="isUser ? 'flex-row-reverse' : 'flex-row'"
+    class="flex gap-3 px-4"
+    :class="[isUser ? 'flex-row-reverse' : 'flex-row', compact ? 'py-1' : 'py-3']"
     :data-message-id="message.id"
   >
-    <!-- Avatar -->
+    <!-- Avatar: hidden on grouped follow-ups, keeping a spacer so the
+         bubble edge stays aligned with the group. -->
     <div
+      v-if="!compact"
       class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
       :class="isUser
         ? 'bg-primary/20 text-primary'
@@ -59,6 +62,7 @@ async function copyContent() {
       <User v-if="isUser" class="h-4 w-4" />
       <Bot v-else class="h-4 w-4" />
     </div>
+    <div v-else class="w-8 shrink-0" aria-hidden="true" />
 
     <!-- Content -->
     <div
