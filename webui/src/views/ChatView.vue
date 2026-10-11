@@ -680,27 +680,27 @@ onMounted(() => {
 <template>
   <div class="flex h-full flex-col">
     <!-- Header with session info + context warning -->
-    <div class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
-      <div class="flex items-center gap-3">
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-2">
+      <div class="flex min-w-0 flex-1 items-center gap-3">
         <!-- Title: double-click to rename inline. Enter or the check button
              accepts; clicking outside the edit region cancels. -->
         <div
           v-if="isRenamingTitle"
           ref="titleEditWrap"
-          class="flex items-center gap-1"
+          class="flex min-w-0 items-center gap-1"
           @dblclick.stop
         >
           <Input
             ref="titleInput"
             v-model="renameTitleValue"
-            class="h-7 w-56 text-sm"
+            class="h-7 w-full max-w-56 text-sm"
             @keydown.enter.prevent="commitTitleRename"
             @keydown.escape.prevent="cancelTitleRename"
           />
           <Button
             variant="ghost"
             size="icon-xs"
-            class="text-emerald-500 hover:text-emerald-400"
+            class="shrink-0 text-emerald-500 hover:text-emerald-400"
             title="Accept new name"
             aria-label="Accept new name"
             @click="commitTitleRename"
@@ -710,7 +710,7 @@ onMounted(() => {
         </div>
         <span
           v-else
-          class="cursor-text text-sm font-medium text-foreground"
+          class="cursor-text truncate text-sm font-medium text-foreground"
           title="Double-click to rename"
           @dblclick="startTitleRename"
         >
@@ -719,7 +719,7 @@ onMounted(() => {
         <Badge
           v-if="appStore.activeProjectName"
           variant="secondary"
-          class="gap-1 text-xs"
+          class="hidden shrink-0 gap-1 text-xs sm:inline-flex"
           :title="projectDirtyDetail
             ? `Session bound to ${appStore.activeProjectName} - working tree has changes: ${projectDirtyDetail}`
             : `Session bound to registered project ${appStore.activeProjectName}`"
@@ -737,20 +737,20 @@ onMounted(() => {
         </Badge>
         <span
           v-if="isStreaming"
-          class="flex items-center gap-1.5 text-xs text-primary"
+          class="flex shrink-0 items-center gap-1.5 text-xs text-primary"
         >
           <Loader2 class="h-3 w-3 animate-spin" />
-          Streaming...
+          <span class="hidden min-[420px]:inline">Streaming...</span>
         </span>
         <span
           v-else-if="connected"
-          class="text-xs text-emerald-500"
+          class="hidden shrink-0 text-xs text-emerald-500 min-[420px]:inline"
         >
           Connected
         </span>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex shrink-0 items-center gap-2">
         <!-- Context warning badge -->
         <Badge
           v-if="contextWarning"

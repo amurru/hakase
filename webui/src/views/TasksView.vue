@@ -248,7 +248,9 @@ onMounted(() => {
                       <Button
                         variant="ghost"
                         size="sm"
-                        class="h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100"
+                        class="h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                        title="Delete task"
+                        aria-label="Delete task"
                         @click="handleDelete(task)"
                       >
                         <Trash2 class="h-3 w-3 text-muted-foreground" />

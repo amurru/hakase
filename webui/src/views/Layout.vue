@@ -61,7 +61,7 @@ const statusColor = computed(() => {
     case 'connected':
       return 'bg-emerald-500'
     case 'connecting':
-      return 'bg-amber-500 animate-pulse'
+      return 'bg-amber-500 motion-safe:animate-pulse'
     case 'disconnected':
       return 'bg-red-500'
   }
