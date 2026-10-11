@@ -33,6 +33,7 @@ export interface SSEClarify {
 
 export interface SSEUsage {
   tokens: number
+  cached?: number
   percent: number
   cost_usd?: number
   budget_pct?: number
@@ -166,6 +167,7 @@ export function useSSE(sessionId: () => string | null) {
         const data: SSEUsage = JSON.parse(e.data)
         appStore.setContextUsage(data.tokens, undefined)
         appStore.setTotalTokens(data.tokens)
+        appStore.setCachedTokens(typeof data.cached === 'number' ? data.cached : 0)
         appStore.setCostMeter(data.cost_usd ?? -1, data.budget_pct ?? -1)
         // percent from the server overrides our calculation
         if (data.percent > 0) {

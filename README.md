@@ -260,7 +260,7 @@ Opt-in metering that answers "what did that cost": every turn records its full u
 }
 ```
 
-Budgets enforce at the turn boundary over rolling windows (24h/7d/30d/session-lifetime): `warn` toasts and continues, `block` stops the run pre-turn with a legible denial chained into the audit trail (`decision: budget_blocked`). The prompt-cache guard warns when a turn's cached/total ratio falls below `cache_warn_ratio` (a cache-buster hint). Live surfaces: turn cost + budget fill in the TUI status bar and web header (SSE `usage` v2: `cost_usd`, `budget_pct`), `GET /api/stats` (`?since=24h&by=model`), and `hakase stats`. Run spans carry `gen_ai.usage.*` + `cost.usd`. Env overrides: `HAKASE_FINOPS_ENABLED`, `HAKASE_FINOPS_ENFORCE`, `HAKASE_BUDGET_DAILY_USD`. See [docs/finops/](docs/finops/).
+Budgets enforce at the turn boundary over rolling windows (24h/7d/30d/session-lifetime): `warn` toasts and continues, `block` stops the run pre-turn with a legible denial chained into the audit trail (`decision: budget_blocked`). The prompt-cache guard warns once per session when a large prompt reports zero cached tokens (`cache_warn_ratio` enables it), naming the endpoint and the explicit-caching escape hatch. Live surfaces: turn cost + budget fill in the TUI status bar and web header (SSE `usage` v2: `cost_usd`, `budget_pct`, `cached`), `GET /api/stats` (`?since=24h&by=model`), and `hakase stats`. Run spans carry `gen_ai.usage.*` + `cost.usd`. Env overrides: `HAKASE_FINOPS_ENABLED`, `HAKASE_FINOPS_ENFORCE`, `HAKASE_BUDGET_DAILY_USD`. See [docs/finops/](docs/finops/).
 
 ---
 

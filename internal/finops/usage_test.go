@@ -47,6 +47,22 @@ func TestTotalTokensFallback(t *testing.T) {
 	}
 }
 
+// TestCacheReadLine pins the PC-007 per-turn telemetry format "cache read
+// X/Y (Z%)": X cached, Y prompt, Z the cached share of the prompt.
+func TestCacheReadLine(t *testing.T) {
+	if line, ok := CacheReadLine(UsageRecord{}); ok || line != "" {
+		t.Errorf("prompt-less record = %q, %v; want no line", line, ok)
+	}
+	line, ok := CacheReadLine(UsageRecord{Prompt: 4000, Cached: 1200})
+	if !ok || line != "cache read 1200/4000 (30%)" {
+		t.Errorf("CacheReadLine = %q, %v; want \"cache read 1200/4000 (30%%)\"", line, ok)
+	}
+	// Rounding: 1/3 reads as 33%.
+	if line, _ := CacheReadLine(UsageRecord{Prompt: 3, Cached: 1}); line != "cache read 1/3 (33%)" {
+		t.Errorf("rounding = %q, want 33%%", line)
+	}
+}
+
 func TestSubFloorsAtZero(t *testing.T) {
 	now := UsageRecord{Prompt: 100, Candidates: 40, Cached: 60, Thoughts: 10, ToolUse: 20, Total: 170}
 	prev := UsageRecord{Prompt: 60, Candidates: 40, Cached: 70, Thoughts: 4, ToolUse: 20, Total: 150}

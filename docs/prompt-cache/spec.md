@@ -148,8 +148,9 @@ Steering drifts too: appended after tool events on every call
   and the SSE payload (`internal/web/sse/bridge.go:254`); per-turn log line
   `cache read X/Y (Z%)`.
 - Implicit-cache guard: warn once per session when cached tokens are zero
-  while prompt tokens exceed the model minimum; the message names the endpoint
-  kind and the explicit-caching escape hatch.
+  while prompt tokens exceed the model minimum (the Flash-class 1024-token
+  implicit-cache floor); the message names the endpoint kind and the
+  explicit-caching escape hatch.
 - Keepalive and `prompt_cache_key` stay deferred/optional.
 - Tests: `OnUsage` carries cached; the guard fires on a synthetic zero-cache
   run and not on a warm one.
@@ -170,7 +171,7 @@ Steering drifts too: appended after tool events on every call
 - Prefix-stability tests green (across calls and turns, CRLF/NFC, freeze-once,
   single user occurrence, project snapshot).
 - With memory and hooks enabled: turn 1 cold, later turns' cached/total stable
-  and above `cache_warn_ratio` (0.8 in the verification run), and no
+  and high (0.8 target in the verification run), and no
   non-compaction rewrites in the log.
 - Docs updated: `docs/context-hygiene/spec.md` (request assembly contract),
   `docs/auto-memory/spec.md` D5, `docs/finops/spec.md` FO-005 telemetry note.

@@ -19,13 +19,17 @@ type recordingSink struct {
 	logs   []string
 	events []interfaces.GraphEvent
 	done   bool
+	tokens int
+	cached int
 }
 
 func (s *recordingSink) OnStream(sessionID, content, thinking string) {}
 
 func (s *recordingSink) OnLog(sessionID, line string) { s.logs = append(s.logs, line) }
 
-func (s *recordingSink) OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int) {
+func (s *recordingSink) OnUsage(sessionID string, tokens, cached, percent int, costUSD float64, budgetPct int) {
+	s.tokens = tokens
+	s.cached = cached
 }
 
 func (s *recordingSink) OnDone(sessionID string) { s.done = true }
@@ -247,5 +251,15 @@ func TestGraphTrackerUsageDeltas(t *testing.T) {
 	if d.Usage.Prompt != 50 || d.Usage.Candidates != 20 || d.Usage.Cached != 30 ||
 		d.Usage.Thoughts != 5 || d.Usage.ToolUse != 10 || d.Usage.Total != 80 {
 		t.Errorf("bad per-tool delta: %+v", d.Usage)
+	}
+}
+
+// TestEmitUsageCarriesCached pins PC-007: the prompt-cache read reaches the
+// transport sink alongside the token count.
+func TestEmitUsageCarriesCached(t *testing.T) {
+	sink := &recordingSink{}
+	emitUsage(sink, "sess-1", finops.UsageRecord{Prompt: 1000, Candidates: 300, Cached: 250, Total: 1300})
+	if sink.tokens != 1300 || sink.cached != 250 {
+		t.Fatalf("sink got tokens=%d cached=%d, want 1300/250", sink.tokens, sink.cached)
 	}
 }

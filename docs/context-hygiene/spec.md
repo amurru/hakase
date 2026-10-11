@@ -35,6 +35,15 @@ Governing issue: TBD (Tier-3 proposal, P0-2). Reference: Pi lazy skills, agentsk
 
 - `skills_index_mode` (eager vs search-stub auto), `skills_search_threshold`, `tool_output_max_chars`, `context_durable_pins`. Follow the `hybrid_search` byte-identical-when-off precedent (`config.json.example:49`; `search_expansion` lives only in `config.go:218`).
 
+### Spec CX-005: request-assembly contract (prompt-cache PC-001..PC-007)
+
+- A model request is `[rendered store][frozen turn blocks][steering][un-persisted run tail]` (invariant P, `docs/prompt-cache/spec.md` D1); the rendered store is append-only between compactions.
+- Render-from-store: persisted messages render from their stored bytes (LF/NFC-normalized at ingestion, `<UNTRUSTED_DATA>`-wrapped); the live leading user copy is dropped only when it exactly matches the persisted anchor.
+- Turn-injected context (memory, project snapshot, prompt hooks, notices) is evaluated on the first model call of a turn and frozen in invocation state (`temp:` key); a mid-turn change renders into the next turn's frozen set.
+- SessionStart hook context is persist-once at the store head (`sessionstart` message kind) before the session's first render, then replays from history. It is NOT a durable pin: compaction may reclaim it like any other history message, the per-message eviction log records it, and the aggregate rewrite line below records the occurrence (decided 2026-10-11, issue #113).
+- Sanctioned prefix rewrites: compaction (logged once per occurrence, `cache: rewrite direction=shrink tokens X->Y reason=compaction stages=...`) and a steering arrival mid-turn (logged). A summary landing evicts the prior summary in the same save and logs `reason=summary`.
+- Durable pins (CX-003) remain the only eviction exemption.
+
 ## Non-goals
 
 - Eager-to-lazy migration under threshold, embedding rerank for skill search (keyword first), AGENTS.md total-ceiling redesign (same hygiene applies, separate ticket).

@@ -884,31 +884,51 @@ func (h *HistoryBuilder) fitToBudget(session *sesspkg.Session, history []*genai.
 		return history
 	}
 
-	h.logfSafe("⚠ context compaction scheduled: history %d + current %d tokens, budget %d", historyTokens, currentTokens, effectiveMax)
+	// One rewrite log line per compaction occurrence (prompt-cache D7/PC-006):
+	// direction, tokens before/after, reason, and the cascade stages that ran.
+	// Evictions inside the stages log per message; this is the aggregate line
+	// the verification greps for. Stages name only what actually changed
+	// something, so the line never claims a no-op.
+	before := int(historyTokens) + currentTokens
+	var stages []string
 
 	// Stage (a): trim tool-output transcripts. Tool results are the cheapest
 	// to evict (they were already used to produce the agent's answer).
-	history = h.stageATrimToolResults(session, history)
+	var trimmed bool
+	history, trimmed = h.stageATrimToolResults(session, history)
+	if trimmed {
+		stages = append(stages, "tool-trim")
+	}
 
 	// Stage (b): deterministic snip. Archive oldest messages until the tail
 	// fits the target; keep the recent ~20k tokens + last 2 turns verbatim.
 	if currentTokens+util.EstimateContentsTokens(history)+reserveTokens > int(target) {
+		stages = append(stages, "snip")
 		history = h.StageBSnip(session, history, currentTokens, reserveTokens, target)
 	}
 
 	// Stage (c): async summarization, only if still over target. The summary
 	// is picked up on the next turn; UI never blocks.
 	if currentTokens+util.EstimateContentsTokens(history)+reserveTokens > int(target) {
+		stages = append(stages, "summarize")
 		h.ScheduleSummarize(session.ID, "")
 	}
+
+	after := util.EstimateContentsTokens(history) + currentTokens
+	stageText := strings.Join(stages, "+")
+	if stageText == "" {
+		stageText = "none"
+	}
+	h.logfSafe("⚠ cache: rewrite direction=shrink tokens %d->%d reason=compaction stages=%s", before, after, stageText)
 
 	return history
 }
 
 // stageATrimToolResults marks tool_result messages out-of-context so they no
 // longer enter the request, keeping the tool_use record. Returns the history
-// rebuilt from the surviving messages.
-func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history []*genai.Content) []*genai.Content {
+// rebuilt from the surviving messages and whether anything was trimmed (the
+// rewrite log's stage list must not claim a no-op stage).
+func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history []*genai.Content) ([]*genai.Content, bool) {
 	changed := false
 	for i := range session.Messages {
 		msg := &session.Messages[i]
@@ -921,9 +941,9 @@ func (h *HistoryBuilder) stageATrimToolResults(session *sesspkg.Session, history
 	}
 	if changed {
 		h.persistSnapshot(session)
-		return h.buildHistory(session.Messages)
+		return h.buildHistory(session.Messages), true
 	}
-	return history
+	return history, false
 }
 
 // stageBSnip archives oldest in-context messages (flips InContext=false,

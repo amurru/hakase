@@ -199,13 +199,16 @@ func TestEventBridgeUsage(t *testing.T) {
 	_, ch := b.Subscribe("sess-1")
 	defer b.Unsubscribe("sess-1", 1)
 
-	b.SendUsage("sess-1", 1234, 42, 0.023, 60)
+	b.SendUsage("sess-1", 1234, 300, 42, 0.023, 60)
 
 	select {
 	case data := <-ch:
 		validateSSE(t, data, "usage", func(payload map[string]any) {
 			if int(payload["tokens"].(float64)) != 1234 {
 				t.Errorf("expected tokens=1234, got %v", payload["tokens"])
+			}
+			if int(payload["cached"].(float64)) != 300 {
+				t.Errorf("expected cached=300, got %v", payload["cached"])
 			}
 			if int(payload["percent"].(float64)) != 42 {
 				t.Errorf("expected percent=42, got %v", payload["percent"])

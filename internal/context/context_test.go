@@ -1,6 +1,7 @@
 package context
 
 import (
+	"fmt"
 	"iter"
 	"path/filepath"
 	"strings"
@@ -228,6 +229,10 @@ func TestFitToBudgetNoTruncationUnderTrigger(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var lines []string
+	b.SetLogFunc(func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
 	session, err := svc.GetActiveSession()
 	if err != nil || session == nil {
 		t.Fatalf("session: %v %v", session, err)
@@ -237,6 +242,11 @@ func TestFitToBudgetNoTruncationUnderTrigger(t *testing.T) {
 	history = b.fitToBudget(session, history, []*genai.Content{genai.NewContentFromText("new", genai.RoleUser)}, &interfaces.ModelInfo{ContextWindow: 1_000_000})
 	if len(history) != before {
 		t.Fatalf("history truncated under trigger: %d -> %d", before, len(history))
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "cache: rewrite") {
+			t.Fatalf("no compaction must mean no rewrite log line: %q", l)
+		}
 	}
 }
 
@@ -321,7 +331,10 @@ func TestStageATrimsToolResultsOnly(t *testing.T) {
 
 	session, _ = svc.GetActiveSession()
 	history := b.buildHistory(session.Messages)
-	trimmed := b.stageATrimToolResults(session, history)
+	trimmed, changed := b.stageATrimToolResults(session, history)
+	if !changed {
+		t.Fatal("stage a must report a trim when a tool result was in context")
+	}
 
 	// Tool result removed; text messages kept.
 	unwanted := WrapUntrustedData("tool output here")
@@ -520,5 +533,80 @@ func TestDurablePinSurvivalReconstruction(t *testing.T) {
 	}
 	if !foundPin {
 		t.Errorf("durable pin constraint was wrongly evicted during compaction")
+	}
+}
+
+// TestFitToBudgetLogsOneRewriteLine pins PC-006/D7: every compaction logs
+// exactly one rewrite line carrying direction, tokens before/after, and
+// reason (plus the stages that ran).
+func TestFitToBudgetLogsOneRewriteLine(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	b.SetModelInfo(&interfaces.ModelInfo{ContextWindow: 40_000})
+	var lines []string
+	b.SetLogFunc(func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
+
+	for i := 0; i < 20; i++ {
+		big := string(make([]byte, 4000)) // ~1000 tokens estimated
+		if err := svc.RecordUsage("user", big, "", 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RecordUsage("agent", big, "", 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session, err := svc.GetActiveSession()
+	if err != nil || session == nil {
+		t.Fatalf("session: %v %v", session, err)
+	}
+	history := b.buildHistory(session.Messages)
+	_ = b.fitToBudget(session, history, []*genai.Content{genai.NewContentFromText("new", genai.RoleUser)}, &interfaces.ModelInfo{ContextWindow: 40_000})
+
+	rewrites := 0
+	for _, l := range lines {
+		if !strings.Contains(l, "cache: rewrite") {
+			continue
+		}
+		rewrites++
+		for _, want := range []string{"direction=shrink", "tokens ", "reason=compaction", "stages=snip"} {
+			if !strings.Contains(l, want) {
+				t.Fatalf("rewrite line missing %q: %q", want, l)
+			}
+		}
+	}
+	if rewrites != 1 {
+		t.Fatalf("rewrite lines = %d, want exactly 1\nlogs: %v", rewrites, lines)
+	}
+}
+
+// TestSummaryReplayCarriesExactlyOne pins PC-006's replay half: after two
+// compactions, the rendered history contains only the newest summary.
+func TestSummaryReplayCarriesExactlyOne(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	if err := svc.RecordUsage("user", "q1", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordUsage("agent", "a1", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+	if err := svc.AppendSummary(id, "SUMMARY ONE"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AppendSummary(id, "SUMMARY TWO"); err != nil {
+		t.Fatal(err)
+	}
+
+	session, err := svc.Store().Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(contentTexts(b.buildHistory(session.Messages)), "\x00")
+	if strings.Contains(joined, "SUMMARY ONE") {
+		t.Fatalf("prior summary replayed:\n%s", joined)
+	}
+	if n := strings.Count(joined, "SUMMARY TWO"); n != 1 {
+		t.Fatalf("newest summary occurrences = %d, want exactly 1:\n%s", n, joined)
 	}
 }

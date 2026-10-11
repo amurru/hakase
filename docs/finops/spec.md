@@ -37,12 +37,13 @@ Env: `HAKASE_BUDGET_DAILY_USD`, `HAKASE_FINOPS_ENFORCE`. Follows the `hybrid_sea
 
 ### Spec FO-004: surfaces
 
-- SSE `internal/web/sse/bridge.go:252-259` `SendUsage` extended `{tokens,percent,cost_usd,budget_pct}` back-compat. TUI `ui.go:1936-1983` adds $ + budget bar. Webui `stores/app.ts:27-33`, `useSSE.ts:161-173`, `views/Layout.vue:170-193`, `useNotifications.ts:61-76` adds cost meter + toast. New `GET /api/stats` next to the chat API handlers (`handlers/chat.go`, e.g. canvas backfill `GetGraph:683-694` - new route, not an extension of it).
+- SSE `internal/web/sse/bridge.go:252-259` `SendUsage` extended `{tokens,cached,percent,cost_usd,budget_pct}` back-compat (cached added by prompt-cache PC-007). TUI `ui.go:1936-1983` adds $ + budget bar. Webui `stores/app.ts:27-33`, `useSSE.ts:161-173`, `views/Layout.vue:170-193`, `useNotifications.ts:61-76` adds cost meter + toast. New `GET /api/stats` next to the chat API handlers (`handlers/chat.go`, e.g. canvas backfill `GetGraph:683-694` - new route, not an extension of it).
 - CLI `hakase stats [--format table|json] [--since] [--by model|session|tool|day]`, `hakase stats session <id>`, `hakase stats budgets`. New `internal/cli/stats.go` with `init()` + `registerCommand` (mirror `internal/cli/session.go`, `internal/cli/skill.go` pattern). JSON emits Langfuse-compatible `usage_details/cost_details`.
 
-### Spec FO-005: prompt-cache guard
+### Spec FO-005: prompt-cache telemetry + implicit-cache guard
 
-- Per-turn `cached/total` ratio; warn below `cache_warn_ratio`. Addresses OpenClaw date-field cache-buster class. `buildTimeReminder` day-keyed pattern (`agent.go:349`, day key `agent.go:311,375`) is the template: no per-request-unique bytes in prefix.
+- `cached` rides `EventSink.OnUsage` and the SSE usage payload (`{tokens, cached, percent, cost_usd, budget_pct}`); the webui header renders the cached share as a cache chip. Per-turn log line `cache read X/Y (Z%)` (cached/prompt).
+- Implicit-cache guard (prompt-cache PC-007): warns at most once per session when a prompt at or above the implicit-cache floor (1024 tokens, Flash-class minimum) reports zero cached tokens; `cache_warn_ratio` gates the guard (`<=0` disables) and the message names the endpoint kind plus the explicit-caching escape hatch (Gemini `cachedContent`). Addresses the OpenClaw date-field cache-buster class; `buildTimeReminder` day-keyed pattern (`agent.go:349`, day key `agent.go:311,375`) is the template: no per-request-unique bytes in prefix.
 
 ## Non-goals
 

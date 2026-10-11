@@ -21,11 +21,12 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 3 - compaction + telemetry (PR C)
 
-- [ ] **T3.1 [BE]** `AppendSummary` evicts the prior summary in the same save (`internal/session/session_service.go:212-227`). Spec: PC-006.
-- [ ] **T3.2 [BE]** one rewrite log line in `fitToBudget` (`context.go:563-620`) and summary landing: direction, tokens before/after, reason. Spec: PC-006.
-- [ ] **T3.3 [BE]** `cached` in `EventSink.OnUsage` + SSE payload + webui chip; per-turn `cache read X/Y (Z%)` log; implicit-cache guard (reuse `cache_warn_ratio`, once per session, endpoint kind + escape hatch). Spec: PC-007.
-- [ ] **T3.4 [QA]** one-summary replay test; rewrite log test; `OnUsage` carries cached; guard fires on synthetic zero-cache run only. Spec: PC-006/007.
-- [ ] **T3.5 [DOCS]** request-assembly contract in `docs/context-hygiene/spec.md`; FO-005 telemetry note in `docs/finops/spec.md`; ROADMAP status update. Spec: DoD.
+- [x] **T3.1 [BE]** `AppendSummary` evicts the prior summary in the same save (`internal/session/session_service.go:212-227`). Spec: PC-006.
+- [x] **T3.2 [BE]** one rewrite log line in `fitToBudget` (`context.go:563-620`) and summary landing: direction, tokens before/after, reason. Spec: PC-006.
+- [x] **T3.3 [BE]** `cached` in `EventSink.OnUsage` + SSE payload + webui chip; per-turn `cache read X/Y (Z%)` log; implicit-cache guard (reuse `cache_warn_ratio`, once per session, endpoint kind + escape hatch). Spec: PC-007.
+- [x] **T3.4 [QA]** one-summary replay test; rewrite log test; `OnUsage` carries cached; guard fires on synthetic zero-cache run only. Spec: PC-006/007.
+- [x] **T3.5 [DOCS]** request-assembly contract in `docs/context-hygiene/spec.md`; FO-005 telemetry note in `docs/finops/spec.md`; ROADMAP status update. Spec: DoD.
+- [x] **T3.6 [DOCS]** resolve #113: compaction-reclaim note for the persist-once SessionStart class (accept, not a durable pin). Spec: PC-004/D1.
 
 ## Phase 4 - optional provider knobs
 
@@ -34,5 +35,5 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Final gates
 
-- [ ] **T5.1 [QA]** manual 6-turn scenario with memory + hooks at `cache_warn_ratio: 0.8`: turn 1 cold, later turns above threshold, only compaction/steering rewrites logged. Spec: DoD.
+- [ ] **T5.1 [QA]** manual 6-turn scenario with memory + hooks at `cache_warn_ratio: 0.8`: turn 1 cold, later turns' cached/total stable and high (0.8 target), only compaction/steering rewrites logged. Spec: DoD.
 - [ ] **T5.2 [QA]** full suite: `make build-frontend`, `gofmt -l .`, `go vet ./...`, `GOOS=darwin go build ./...`, `go test ./...`, `pnpm --dir webui test`.

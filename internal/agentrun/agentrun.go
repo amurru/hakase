@@ -42,7 +42,8 @@ type EventSink interface {
 	OnLog(sessionID, line string)
 	// OnUsage reports a token usage update with the turn cost so far and
 	// the budget fill percent (SSE v2 fields; transports may ignore them).
-	OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int)
+	// cached carries the prompt-cache read for the turn (PC-007).
+	OnUsage(sessionID string, tokens, cached, percent int, costUSD float64, budgetPct int)
 	// OnDone signals the turn has completed (success, error, or panic).
 	OnDone(sessionID string)
 	// OnGraphEvent reports one structured execution-canvas event (agent
@@ -331,8 +332,7 @@ outer:
 				}
 				lastUsage = &rec
 				graph.observeUsage(rec)
-				cost, _ := finops.CostOf(rec)
-				sink.OnUsage(sessionID, int(rec.TotalTokens()), 0, cost, finops.BudgetPct())
+				emitUsage(sink, sessionID, rec)
 			}
 			if ev.Content != nil {
 				for _, part := range ev.Content.Parts {
@@ -368,7 +368,12 @@ outer:
 		break
 	}
 	if lastUsage != nil {
-		if ok, msg := finops.CacheWarn(*lastUsage, cacheWarnRatio()); ok {
+		// Per-turn cache telemetry (PC-007): "cache read X/Y (Z%)" on the
+		// server log, then the once-per-session implicit-cache guard.
+		if line, ok := finops.CacheReadLine(*lastUsage); ok {
+			log.Printf("%s", line)
+		}
+		if ok, msg := finops.CacheWarn(sessionID, *lastUsage, cacheWarnRatio(), finops.EndpointKind()); ok {
 			sink.OnLog(sessionID, msg)
 		}
 	}
@@ -400,6 +405,13 @@ func cacheWarnRatio() float64 {
 		return s.Budgets.CacheWarnRatio
 	}
 	return 0
+}
+
+// emitUsage forwards one usage record to the transport sink: tokens and the
+// prompt-cache read (PC-007) alongside cost and budget fill.
+func emitUsage(sink EventSink, sessionID string, rec finops.UsageRecord) {
+	cost, _ := finops.CostOf(rec)
+	sink.OnUsage(sessionID, int(rec.TotalTokens()), int(rec.Cached), 0, cost, finops.BudgetPct())
 }
 
 // projectLabel renders the bound project's name for the tracing run span;

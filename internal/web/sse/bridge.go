@@ -250,10 +250,12 @@ func (b *EventBridge) SendTask(sessionID string, task map[string]any, action str
 }
 
 // SendUsage sends a token usage update (SSE v2: cost_usd and budget_pct
-// are additive; older clients ignore unknown fields).
-func (b *EventBridge) SendUsage(sessionID string, tokens int, percent int, costUSD float64, budgetPct int) {
+// are additive; older clients ignore unknown fields). cached carries the
+// prompt-cache read for the turn (PC-007).
+func (b *EventBridge) SendUsage(sessionID string, tokens, cached int, percent int, costUSD float64, budgetPct int) {
 	payload, _ := json.Marshal(map[string]any{
 		"tokens":     tokens,
+		"cached":     cached,
 		"percent":    percent,
 		"cost_usd":   costUSD,
 		"budget_pct": budgetPct,

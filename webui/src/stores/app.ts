@@ -31,6 +31,7 @@ export const useAppStore = defineStore('app', () => {
   // (empty for plain local sessions); the chat header renders it as a chip.
   const activeProjectName = ref('')
   const totalTokens = ref(0)
+  const cachedTokens = ref(0)
   const costUsd = ref(0)
   const budgetPct = ref(0)
   const thinkingEnabled = ref(false)
@@ -78,6 +79,12 @@ export const useAppStore = defineStore('app', () => {
     totalTokens.value = tokens
   }
 
+  // setCachedTokens records the prompt-cache read from SSE usage events
+  // (PC-007 additive field; older servers omit it and the chip stays 0).
+  function setCachedTokens(tokens: number) {
+    cachedTokens.value = tokens
+  }
+
   // setCostMeter records the turn cost and budget fill from SSE v2 usage
   // events (additive fields; older servers omit them and the meter stays 0).
   function setCostMeter(cost: number, pct: number) {
@@ -97,6 +104,7 @@ export const useAppStore = defineStore('app', () => {
     activeSessionTitle,
     activeProjectName,
     totalTokens,
+    cachedTokens,
     costUsd,
     budgetPct,
     setCostMeter,
@@ -108,6 +116,7 @@ export const useAppStore = defineStore('app', () => {
     setActiveSessionTitle,
     setActiveProjectName,
     setTotalTokens,
+    setCachedTokens,
     toggleThinking,
   }
 })
