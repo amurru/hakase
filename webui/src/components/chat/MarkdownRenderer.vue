@@ -127,12 +127,12 @@ function attachCopyButtons(root: HTMLElement) {
 <template>
   <div
     ref="rootEl"
-    class="markdown-body prose prose-invert prose-sm max-w-none
+    class="markdown-body prose dark:prose-invert prose-sm max-w-none
            prose-headings:tracking-tight prose-headings:text-foreground
            prose-p:text-foreground/90 prose-p:leading-relaxed
            prose-a:text-primary prose-a:no-underline hover:prose-a:underline
            prose-strong:text-foreground prose-strong:font-semibold
-           prose-code:text-amber-300/90 prose-code:font-mono prose-code:text-[0.85em]
+           prose-code:text-amber-700 dark:prose-code:text-amber-300/90 prose-code:font-mono prose-code:text-[0.85em]
            prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
            prose-code:before:content-none prose-code:after:content-none
            prose-pre:bg-transparent prose-pre:p-0 prose-pre:my-4

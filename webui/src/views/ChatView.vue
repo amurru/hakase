@@ -218,6 +218,12 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onTitleEditMouseDown)
 })
 
+// Empty-state command chips (discoverability): one click sends the slash
+// command through the normal handleSend path (usage chips explain args).
+const emptyStateCommands = SLASH_COMMANDS.filter((c) =>
+  ['new', 'sidekick', 'compact', 'help'].includes(c.name),
+)
+
 // Auto-scroll logic
 function scrollToBottom() {
   nextTick(() => {
@@ -816,8 +822,21 @@ onMounted(() => {
               </div>
               <p class="text-sm">Start a conversation</p>
               <p class="text-xs text-muted-foreground/60">
-                Type a message below to begin
+                Type a message below to begin, or try a command
               </p>
+              <div class="mt-1 flex flex-wrap items-center justify-center gap-1.5">
+                <Button
+                  v-for="cmd in emptyStateCommands"
+                  :key="cmd.name"
+                  variant="outline"
+                  size="sm"
+                  class="h-7 gap-1.5 px-2.5 font-mono text-xs"
+                  :title="cmd.description"
+                  @click="handleSend(`/${cmd.name}`)"
+                >
+                  /{{ cmd.name }}
+                </Button>
+              </div>
             </div>
 
             <!-- Loading history: skeleton rows, same column as the list -->

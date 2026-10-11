@@ -78,6 +78,7 @@ async function handleSubmit() {
               v-model="username"
               placeholder="Enter your username"
               autocomplete="username"
+              autofocus
               :disabled="loading"
               @keyup.enter="handleSubmit"
             />

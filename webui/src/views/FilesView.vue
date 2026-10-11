@@ -418,7 +418,7 @@ onMounted(loadRoot)
           <!-- Markdown rendered -->
           <div
             v-else-if="fileContent?.content && isMarkdown(selectedName)"
-            class="prose prose-invert max-w-none p-6 text-sm"
+            class="prose dark:prose-invert max-w-none p-6 text-sm"
             v-html="highlightedContent"
           />
 
