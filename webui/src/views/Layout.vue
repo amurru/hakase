@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useThemeStore } from '@/stores/theme'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import NotificationContainer from '@/components/NotificationContainer.vue'
 import ApprovalModal from '@/components/approval/ApprovalModal.vue'
 import ClarifyModal from '@/components/clarify/ClarifyModal.vue'
@@ -13,10 +19,30 @@ import {
   Sun,
   Moon,
   Menu,
+  Gauge,
 } from '@lucide/vue'
 
+const route = useRoute()
 const appStore = useAppStore()
 const themeStore = useThemeStore()
+
+// Section breadcrumb for the header (UX-03).
+const sectionLabels: Record<string, string> = {
+  chat: 'Chat',
+  sessions: 'Sessions',
+  projects: 'Projects',
+  tasks: 'Tasks',
+  knowledge: 'Knowledge',
+  memory: 'Memory',
+  hooks: 'Hooks',
+  skills: 'Skills',
+  mcp: 'MCP',
+  cron: 'Cron',
+  channels: 'Channels',
+  files: 'Files',
+  settings: 'Settings',
+}
+const sectionLabel = computed(() => sectionLabels[route.path.replace('/', '')] ?? 'Hakase')
 
 const contextPercent = computed(() => {
   if (appStore.contextMax === 0) return 0
@@ -97,36 +123,35 @@ onUnmounted(() => {
     <div class="flex flex-1 flex-col overflow-hidden">
       <!-- Header -->
       <header class="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
-        <div class="flex items-center gap-3">
+        <div class="flex min-w-0 items-center gap-3">
           <Button
             variant="ghost"
             size="sm"
-            class="h-8 w-8 p-0 lg:hidden"
+            class="h-8 w-8 shrink-0 p-0 lg:hidden"
             aria-label="Open navigation"
             title="Open navigation"
             @click="mobileOpen = true"
           >
             <Menu class="h-4 w-4" />
           </Button>
-          <span class="text-sm font-medium">{{ appStore.modelName }}</span>
-          <div class="flex items-center gap-2">
-            <div class="flex items-center gap-1.5">
-              <span class="relative flex h-2 w-2">
-                <span
-                  class="absolute inline-flex h-full w-full rounded-full opacity-75"
-                  :class="[statusColor]"
-                />
-                <span
-                  class="relative inline-flex h-2 w-2 rounded-full"
-                  :class="[statusColor]"
-                />
-              </span>
-              <span class="text-xs text-muted-foreground capitalize">{{ appStore.connectionStatus }}</span>
-            </div>
+          <span class="truncate text-sm font-semibold">{{ sectionLabel }}</span>
+          <span class="hidden shrink-0 text-sm text-muted-foreground/50 sm:inline">{{ appStore.modelName }}</span>
+          <div class="flex shrink-0 items-center gap-1.5">
+            <span class="relative flex h-2 w-2">
+              <span
+                class="absolute inline-flex h-full w-full rounded-full opacity-75"
+                :class="[statusColor]"
+              />
+              <span
+                class="relative inline-flex h-2 w-2 rounded-full"
+                :class="[statusColor]"
+              />
+            </span>
+            <span class="hidden text-xs text-muted-foreground capitalize sm:inline">{{ appStore.connectionStatus }}</span>
           </div>
         </div>
 
-        <div class="flex items-center gap-4">
+        <div class="flex shrink-0 items-center gap-1">
           <!-- Theme toggle -->
           <Button
             variant="ghost"
@@ -139,23 +164,46 @@ onUnmounted(() => {
             <Sun v-if="themeStore.theme === 'dark'" class="h-4 w-4" />
             <Moon v-else class="h-4 w-4" />
           </Button>
-          <!-- Context usage -->
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground whitespace-nowrap">Context</span>
-            <Progress :model-value="contextPercent" class="h-1.5 w-24" />
-            <span class="text-xs text-muted-foreground tabular-nums">{{ contextPercent }}%</span>
-          </div>
-          <!-- Prompt-cache read (PC-007; hidden until a usage event lands) -->
-          <div v-if="appStore.totalTokens > 0" class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground whitespace-nowrap">Cache</span>
-            <span class="text-xs text-muted-foreground tabular-nums">{{ cachePct }}%</span>
-          </div>
-          <!-- Cost meter (FinOps SSE v2; hidden until the first usage event) -->
-          <div v-if="appStore.costUsd > 0" class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground whitespace-nowrap tabular-nums">${{ appStore.costUsd.toFixed(4) }}</span>
-            <Progress v-if="appStore.budgetPct > 0" :model-value="appStore.budgetPct" class="h-1.5 w-16" />
-            <span v-if="appStore.budgetPct > 0" class="text-xs text-muted-foreground tabular-nums">{{ appStore.budgetPct }}%</span>
-          </div>
+          <!-- Usage popover: one meter in the header, details on demand
+               (UX-03). Context/Cache/Cost no longer crowd the bar. -->
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="gap-1.5 text-muted-foreground"
+                title="Model usage details"
+                aria-label="Model usage details"
+              >
+                <Gauge class="h-4 w-4" />
+                <span class="text-xs tabular-nums">{{ contextPercent }}%</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-64 p-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-xs font-medium text-muted-foreground">Context</span>
+                <span class="text-xs tabular-nums text-muted-foreground">{{ contextPercent }}%</span>
+              </div>
+              <Progress :model-value="contextPercent" class="mt-1.5 h-1.5 w-full" />
+              <div v-if="appStore.totalTokens > 0" class="mt-2.5 flex items-center justify-between gap-2">
+                <span class="text-xs font-medium text-muted-foreground">Prompt-cache read</span>
+                <span class="text-xs tabular-nums text-muted-foreground">{{ cachePct }}%</span>
+              </div>
+              <div v-if="appStore.costUsd > 0" class="mt-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-xs font-medium text-muted-foreground">Cost this turn</span>
+                  <span class="text-xs tabular-nums text-muted-foreground">${{ appStore.costUsd.toFixed(4) }}</span>
+                </div>
+                <div v-if="appStore.budgetPct > 0" class="mt-1.5 flex items-center gap-2">
+                  <Progress :model-value="appStore.budgetPct" class="h-1.5 flex-1" />
+                  <span class="text-xs tabular-nums text-muted-foreground">{{ appStore.budgetPct }}%</span>
+                </div>
+              </div>
+              <p v-if="appStore.totalTokens === 0 && appStore.costUsd === 0" class="mt-2.5 text-[11px] text-muted-foreground/60">
+                Token and cost meters appear here once the first turn streams usage.
+              </p>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
