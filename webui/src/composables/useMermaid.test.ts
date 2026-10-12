@@ -61,4 +61,60 @@ describe('useMermaid hydrate', () => {
     },
     20_000,
   )
+
+  it(
+    'defers the fallback while streaming and commits it after',
+    async () => {
+      document.body.innerHTML = htmlWithPlaceholder('!!!broken')
+
+      const root = document.body.querySelector('div') as HTMLElement
+      const mermaid = useMermaid()
+      mermaid.hydrate(root, true)
+      // The half-streamed source must not flash chip+code: it stays pending.
+      await vi.waitFor(
+        () => {
+          const host = root.querySelector('.mermaid-placeholder') as HTMLElement | null
+          expect(host).not.toBeNull()
+          expect(host!.dataset.rendered).toBe('pending')
+        },
+        { timeout: 15_000, interval: 25 },
+      )
+      let host = root.querySelector('.mermaid-placeholder') as HTMLElement | null
+      expect(host!.querySelector('.mermaid-error-code')).toBeNull()
+
+      // Stream end (same source, no longer deferred) commits the fallback.
+      mermaid.hydrate(root, false)
+      await vi.waitFor(
+        () => {
+          const el = root.querySelector('.mermaid-placeholder') as HTMLElement | null
+          expect(el).not.toBeNull()
+          expect(el!.dataset.rendered).toBe('error')
+          expect(el!.querySelector('.mermaid-error-code')).not.toBeNull()
+        },
+        { timeout: 15_000, interval: 25 },
+      )
+      host = root.querySelector('.mermaid-placeholder') as HTMLElement | null
+      expect(host!.querySelector('.mermaid-error-code')).not.toBeNull()
+    },
+    20_000,
+  )
+
+  it(
+    'still renders a valid source while deferred',
+    async () => {
+      document.body.innerHTML = htmlWithPlaceholder('graph LR\nA-->B')
+
+      const root = document.body.querySelector('div') as HTMLElement
+      useMermaid().hydrate(root, true)
+      await vi.waitFor(
+        () => {
+          const host = root.querySelector('.mermaid-render') as HTMLElement | null
+          expect(host).not.toBeNull()
+          expect(host!.querySelector('svg')).not.toBeNull()
+        },
+        { timeout: 15_000, interval: 25 },
+      )
+    },
+    20_000,
+  )
 })

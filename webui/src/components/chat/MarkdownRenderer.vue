@@ -19,12 +19,18 @@ function afterRender() {
   nextTick(() => {
     if (!rootEl.value) return
     attachCopyButtons(rootEl.value)
-    mermaid.hydrate(rootEl.value)
+    // Defer mermaid error fallbacks while this message streams: partial
+    // fences fail to parse and would otherwise flash chip+code per delta.
+    mermaid.hydrate(rootEl.value, props.streaming === true)
   })
 }
 
 onMounted(afterRender)
 watch(() => props.content, afterRender)
+// Re-run when streaming ends with unchanged content so a deferred failure
+// commits its fallback (or a completed fence renders) instead of hanging
+// in the pending state.
+watch(() => props.streaming, afterRender)
 onBeforeUnmount(() => mermaid.dispose())
 
 function handleImageClick(e: Event) {
