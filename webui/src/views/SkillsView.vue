@@ -5,6 +5,7 @@ import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   RefreshCw,
   Power,
@@ -104,24 +105,44 @@ onMounted(loadSkills)
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-4">
-      <!-- Loading -->
-      <div v-if="loading && skills.length === 0" class="flex h-40 items-center justify-center text-sm text-muted-foreground">
-        Loading skills...
-      </div>
-      <div v-else-if="error && skills.length === 0" class="flex h-40 flex-col items-center justify-center gap-2">
-        <div class="flex items-center gap-2 text-sm text-destructive">
-          <AlertCircle class="h-4 w-4 shrink-0" />
-          <span>{{ error }}</span>
+      <!-- Loading: card shapes, no layout shift on swap-in -->
+      <div
+        v-if="loading && skills.length === 0"
+        class="flex flex-col gap-3"
+        aria-hidden="true"
+      >
+        <div
+          v-for="i in 2"
+          :key="i"
+          class="space-y-2 rounded-lg border border-border p-4"
+        >
+          <div class="h-4 w-1/3 rounded bg-muted motion-safe:animate-pulse" />
+          <div class="h-3 w-2/3 rounded bg-muted/70 motion-safe:animate-pulse" />
         </div>
-        <Button variant="ghost" size="sm" @click="loadSkills">
-          Retry
-        </Button>
       </div>
-      <div v-else-if="skills.length === 0" class="flex h-40 flex-col items-center justify-center text-muted-foreground">
-        <Sparkles class="mb-2 h-8 w-8 opacity-50" />
-        <p class="text-sm">No skills found</p>
-        <p class="mt-1 text-xs">Python skills live in ./skills/skills.json; markdown skills are discovered from .agents/skills/ and similar directories</p>
-      </div>
+      <EmptyState
+        v-else-if="error && skills.length === 0"
+        title="Could not load skills"
+        :description="error"
+      >
+        <template #icon>
+          <AlertCircle class="h-10 w-10 text-destructive/70" />
+        </template>
+        <template #action>
+          <Button variant="outline" size="sm" @click="loadSkills">
+            Retry
+          </Button>
+        </template>
+      </EmptyState>
+      <EmptyState
+        v-else-if="skills.length === 0"
+        title="No skills found"
+        description="Python skills live in ./skills/skills.json; markdown skills are discovered from .agents/skills/ and similar directories"
+      >
+        <template #icon>
+          <Sparkles class="h-10 w-10" />
+        </template>
+      </EmptyState>
       <div v-else>
         <div class="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
           <span>{{ enabledCount() }} of {{ skills.length }} skills enabled</span>

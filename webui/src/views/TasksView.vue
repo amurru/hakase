@@ -14,7 +14,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Plus, RefreshCw, Trash2, ArrowRight } from '@lucide/vue'
+import EmptyState from '@/components/EmptyState.vue'
+import { Plus, RefreshCw, Trash2, ArrowRight, ListTodo, CircleAlert } from '@lucide/vue'
 
 const store = useTaskStore()
 
@@ -136,7 +137,59 @@ onMounted(() => {
 
     <!-- Kanban board -->
     <div class="flex-1 overflow-x-auto p-4">
-      <div class="flex gap-4" style="min-width: max-content">
+      <!-- Loading skeletons: column shapes, no layout shift on swap-in -->
+      <div
+        v-if="store.loading && store.tasks.length === 0"
+        class="flex gap-4"
+        style="min-width: max-content"
+        aria-hidden="true"
+      >
+        <div
+          v-for="i in 3"
+          :key="i"
+          class="flex w-72 shrink-0 flex-col gap-2 rounded-lg border border-border bg-muted/30 p-2"
+        >
+          <div class="h-4 w-1/2 rounded bg-muted motion-safe:animate-pulse" />
+          <div class="h-20 rounded-md bg-muted/70 motion-safe:animate-pulse" />
+          <div class="h-20 rounded-md bg-muted/70 motion-safe:animate-pulse" />
+        </div>
+      </div>
+
+      <!-- Load error with retry: a failed load must not read as empty -->
+      <EmptyState
+        v-else-if="store.loadError && store.tasks.length === 0"
+        title="Could not load tasks"
+        :description="store.loadError"
+      >
+        <template #icon>
+          <CircleAlert class="h-10 w-10 text-destructive/70" />
+        </template>
+        <template #action>
+          <Button variant="outline" size="sm" @click="store.fetchTasks()">
+            <RefreshCw class="mr-2 h-4 w-4" />
+            Retry
+          </Button>
+        </template>
+      </EmptyState>
+
+      <!-- Board empty state -->
+      <EmptyState
+        v-else-if="!store.loading && store.tasks.length === 0"
+        title="No tasks yet"
+        description="Break the work down into trackable pieces. Tasks persist across sessions."
+      >
+        <template #icon>
+          <ListTodo class="h-10 w-10" />
+        </template>
+        <template #action>
+          <Button size="sm" @click="createOpen = true">
+            <Plus class="mr-1 h-4 w-4" />
+            New Task
+          </Button>
+        </template>
+      </EmptyState>
+
+      <div v-else class="flex gap-4" style="min-width: max-content">
         <div
           v-for="status in columns"
           :key="status"
@@ -212,7 +265,9 @@ onMounted(() => {
                       <Button
                         variant="ghost"
                         size="sm"
-                        class="h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100"
+                        class="h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                        title="Delete task"
+                        aria-label="Delete task"
                         @click="handleDelete(task)"
                       >
                         <Trash2 class="h-3 w-3 text-muted-foreground" />

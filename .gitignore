@@ -101,3 +101,5 @@ webui/dist/
 internal/web/dist/
 *.part
 /dist/
+
+.lavish/

@@ -206,6 +206,13 @@ type ChatAPI struct {
 	semMu         sync.Mutex
 	runSemaphores map[string]*sessionSem
 
+	// activeRuns tracks in-flight agent runs per session so POST
+	// /sessions/{id}/stop can cancel them (web mirror of the TUI /stop
+	// command). Handles are registered by runAgentTask and removed when
+	// the run ends; stop removes and cancels whatever remains.
+	runMu      sync.Mutex
+	activeRuns map[string]map[*runHandle]struct{}
+
 	// restoreMu/restoring serialize snapshot restores per session: a restore
 	// mutates the session file, so PostMessage must refuse while one is in
 	// flight (the run semaphore alone cannot — the user message is recorded
@@ -259,9 +266,11 @@ func RegisterChatRoutes(r ChatRouter, bridge *sse.EventBridge, sessionSvc *hakas
 		history:       history,
 		driver:        agentrun.NewForTransport(runner, sessionSvc, "web"),
 		runSemaphores: make(map[string]*sessionSem),
+		activeRuns:    make(map[string]map[*runHandle]struct{}),
 	}
 
 	r.Post("/sessions/{id}/messages", api.PostMessage)
+	r.Post("/sessions/{id}/stop", api.PostStop)
 	r.Get("/sessions/{id}/stream", api.StreamSSE)
 	r.Get("/sessions/{id}/graph", api.GetGraph)
 	r.Post("/sessions/{id}/sidekick", api.PostSidekick)
@@ -647,7 +656,16 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 		api.semMu.Unlock()
 
 		content := genai.NewContentFromParts(parts, genai.RoleUser)
-		go api.runAgentTask(context.Background(), sessionID, content)
+		// Pre-register the run's cancellable context BEFORE returning 202: a
+		// stop arriving between the 202 and the goroutine's first line must
+		// still cancel this run instead of 404ing while it continues.
+		// runAgentTask registers its own handle too (a child of this ctx),
+		// so both entry points below stay stoppable.
+		runCtx, untrack := api.trackRun(sessionID, context.Background())
+		go func() {
+			defer untrack()
+			api.runAgentTask(runCtx, sessionID, content)
+		}()
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
@@ -712,7 +730,79 @@ func (api *ChatAPI) runAgentTask(ctx context.Context, sessionID string, content 
 	if api.driver == nil {
 		return
 	}
-	api.driver.RunTurn(ctx, sessionID, content, bridgeSink{b: api.bridge})
+	// Track the run under a child context so POST /sessions/{id}/stop can
+	// cancel it mid-turn. Cancellation unwinds the ADK iterator with an
+	// error, which the driver reports as "Error: ..." + done — the same
+	// surface as provider failures, so the UI needs no new event kind.
+	runCtx, untrack := api.trackRun(sessionID, ctx)
+	defer untrack()
+	api.driver.RunTurn(runCtx, sessionID, content, bridgeSink{b: api.bridge})
+}
+
+// runHandle is one tracked agent run; the cancel func aborts its turn.
+type runHandle struct {
+	cancel context.CancelFunc
+}
+
+// trackRun registers a cancellable child of ctx for sessionID and returns
+// the child plus an unregister func the run calls when it ends.
+func (api *ChatAPI) trackRun(sessionID string, ctx context.Context) (context.Context, func()) {
+	runCtx, cancel := context.WithCancel(ctx)
+	h := &runHandle{cancel: cancel}
+	api.runMu.Lock()
+	if api.activeRuns == nil {
+		api.activeRuns = make(map[string]map[*runHandle]struct{})
+	}
+	set := api.activeRuns[sessionID]
+	if set == nil {
+		set = make(map[*runHandle]struct{})
+		api.activeRuns[sessionID] = set
+	}
+	set[h] = struct{}{}
+	api.runMu.Unlock()
+	return runCtx, func() {
+		api.runMu.Lock()
+		defer api.runMu.Unlock()
+		if set, ok := api.activeRuns[sessionID]; ok {
+			delete(set, h)
+			if len(set) == 0 {
+				delete(api.activeRuns, sessionID)
+			}
+		}
+	}
+}
+
+// stopRuns cancels every tracked run for sessionID. It reports whether any
+// run was tracked; untracked sessions (nothing in flight) return false.
+func (api *ChatAPI) stopRuns(sessionID string) bool {
+	api.runMu.Lock()
+	set := api.activeRuns[sessionID]
+	delete(api.activeRuns, sessionID)
+	api.runMu.Unlock()
+	for h := range set {
+		h.cancel()
+	}
+	return len(set) > 0
+}
+
+// PostStop handles POST /api/sessions/{id}/stop: it cancels every tracked
+// agent run for the session (web mirror of the TUI /stop command). The run
+// unwinds through the driver's normal error path, so the client still gets
+// done and the SSE stream closes cleanly. 404 when no run is in flight.
+func (api *ChatAPI) PostStop(w http.ResponseWriter, r *http.Request) {
+	sessionID := chatSessionID(r)
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	if !api.stopRuns(sessionID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active run for this session"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":     "stopping",
+		"session_id": sessionID,
+	})
 }
 
 // StreamSSE handles GET /api/sessions/{id}/stream.

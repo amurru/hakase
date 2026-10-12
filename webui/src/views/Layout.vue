@@ -1,41 +1,47 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
-import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import NotificationContainer from '@/components/NotificationContainer.vue'
 import ApprovalModal from '@/components/approval/ApprovalModal.vue'
 import ClarifyModal from '@/components/clarify/ClarifyModal.vue'
+import SidebarNav from '@/components/SidebarNav.vue'
 import {
-  MessageSquare,
-  FolderOpen,
-  FolderGit2,
-  ListTodo,
-  BookOpen,
-  Brain,
-  PlugZap,
-  Wand2,
-  Puzzle,
-  Clock,
-  Files,
-  Send,
-  Settings,
-  LogOut,
-  Bot,
-  Loader2,
   Sun,
   Moon,
+  Menu,
+  Gauge,
 } from '@lucide/vue'
 
 const route = useRoute()
 const appStore = useAppStore()
-const authStore = useAuthStore()
 const themeStore = useThemeStore()
+
+// Section breadcrumb for the header (UX-03).
+const sectionLabels: Record<string, string> = {
+  chat: 'Chat',
+  sessions: 'Sessions',
+  projects: 'Projects',
+  tasks: 'Tasks',
+  knowledge: 'Knowledge',
+  memory: 'Memory',
+  hooks: 'Hooks',
+  skills: 'Skills',
+  mcp: 'MCP',
+  cron: 'Cron',
+  channels: 'Channels',
+  files: 'Files',
+  settings: 'Settings',
+}
+const sectionLabel = computed(() => sectionLabels[route.path.replace('/', '')] ?? 'Hakase')
 
 const contextPercent = computed(() => {
   if (appStore.contextMax === 0) return 0
@@ -54,36 +60,68 @@ const statusColor = computed(() => {
     case 'connected':
       return 'bg-emerald-500'
     case 'connecting':
-      return 'bg-amber-500 animate-pulse'
+      return 'bg-amber-500 motion-safe:animate-pulse'
     case 'disconnected':
       return 'bg-red-500'
   }
 })
 
-const navItems = [
-  { to: '/chat', label: 'Chat', icon: MessageSquare },
-  { to: '/sessions', label: 'Sessions', icon: FolderOpen },
-  { to: '/projects', label: 'Projects', icon: FolderGit2 },
-  { to: '/tasks', label: 'Tasks', icon: ListTodo },
-  { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
-  { to: '/memory', label: 'Memory', icon: Brain },
-  { to: '/hooks', label: 'Hooks', icon: PlugZap },
-  { to: '/skills', label: 'Skills', icon: Wand2 },
-  { to: '/mcp', label: 'MCP', icon: Puzzle },
-  { to: '/cron', label: 'Cron', icon: Clock },
-  { to: '/channels', label: 'Channels', icon: Send },
-  { to: '/files', label: 'Files', icon: Files },
-  { to: '/settings', label: 'Settings', icon: Settings },
-]
+// Sidebar state (UX-02): collapsible on desktop (persisted), drawer on
+// mobile. The drawer closes on Escape.
+const COLLAPSED_KEY = 'hakase_sidebar_collapsed'
+const collapsed = ref(localStorage.getItem(COLLAPSED_KEY) === '1')
+const mobileOpen = ref(false)
+// Refs for drawer focus management (open: focus in; close: focus back).
+const menuButton = ref<{ $el: HTMLButtonElement } | null>(null)
+const drawerAside = ref<HTMLElement | null>(null)
 
-function isActive(path: string) {
-  return route.path === path
+function toggleCollapsed() {
+  collapsed.value = !collapsed.value
+  localStorage.setItem(COLLAPSED_KEY, collapsed.value ? '1' : '0')
 }
 
-function handleLogout() {
-  authStore.logout()
-  window.location.href = '/login'
+function onDrawerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    mobileOpen.value = false
+    return
+  }
+  // Keep tab cycling inside the modal drawer while it is open.
+  if (e.key !== 'Tab' || !drawerAside.value) return
+  const items = [...drawerAside.value.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )]
+  if (items.length === 0) return
+  const first = items[0]!
+  const last = items[items.length - 1]!
+  const active = document.activeElement as HTMLElement | null
+  if (e.shiftKey && (active === first || !drawerAside.value.contains(active))) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
+
+watch(mobileOpen, (open) => {
+  if (open) {
+    document.addEventListener('keydown', onDrawerKeydown)
+    // Move focus into the dialog; keyboard users otherwise keep tabbing
+    // through the page behind the overlay.
+    nextTick(() => {
+      drawerAside.value
+        ?.querySelector<HTMLElement>('a[href], button:not([disabled])')
+        ?.focus()
+    })
+  } else {
+    document.removeEventListener('keydown', onDrawerKeydown)
+    menuButton.value?.$el?.focus()
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onDrawerKeydown)
+})
 </script>
 
 <template>
@@ -94,74 +132,56 @@ function handleLogout() {
     <!-- Approval Modal (global overlay) -->
     <ApprovalModal />
 
-    <!-- Sidebar -->
-    <aside class="flex w-56 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground">
-      <!-- Logo -->
-      <div class="flex h-14 items-center gap-2 px-4">
-        <Bot class="h-6 w-6 text-primary" />
-        <span class="text-lg font-semibold tracking-tight">Hakase</span>
-      </div>
-
-      <Separator />
-
-      <!-- Navigation -->
-      <ScrollArea class="flex-1 py-2">
-        <nav class="flex flex-col gap-1 px-2">
-          <RouterLink
-            v-for="item in navItems"
-            :key="item.to"
-            :to="item.to"
-            class="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            :class="[
-              isActive(item.to)
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                : 'text-sidebar-foreground/70',
-            ]"
-          >
-            <component :is="item.icon" class="h-4 w-4 shrink-0" />
-            {{ item.label }}
-          </RouterLink>
-        </nav>
-      </ScrollArea>
-
-      <!-- Sidebar footer -->
-      <div class="border-t border-sidebar-border p-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          class="w-full justify-start gap-2 text-sidebar-foreground/70 hover:text-sidebar-foreground"
-          @click="handleLogout"
-        >
-          <LogOut class="h-4 w-4" />
-          <span>Log out</span>
-        </Button>
-      </div>
+    <!-- Sidebar (desktop): grouped nav, collapsible to icons. -->
+    <aside
+      class="hidden shrink-0 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground transition-[width] lg:flex"
+      :class="collapsed ? 'w-16' : 'w-56'"
+    >
+      <SidebarNav :collapsed="collapsed" @toggle-collapse="toggleCollapsed" />
     </aside>
+
+    <!-- Sidebar (mobile): overlay drawer below lg. -->
+    <div v-if="mobileOpen" class="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+      <div class="absolute inset-0 bg-black/60" @click="mobileOpen = false" />
+      <aside ref="drawerAside" class="absolute inset-y-0 left-0 flex w-72 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground">
+        <SidebarNav :show-collapse="false" @navigate="mobileOpen = false" @toggle-collapse="toggleCollapsed" />
+      </aside>
+    </div>
 
     <!-- Main area -->
     <div class="flex flex-1 flex-col overflow-hidden">
       <!-- Header -->
       <header class="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
-        <div class="flex items-center gap-3">
-          <span class="text-sm font-medium">{{ appStore.modelName }}</span>
-          <div class="flex items-center gap-2">
-            <div class="flex items-center gap-1.5">
-              <span class="relative flex h-2 w-2">
-                <span
-                  class="absolute inline-flex h-full w-full rounded-full opacity-75"
-                  :class="[statusColor]"
-                />
-                <span
-                  class="relative inline-flex h-2 w-2 rounded-full"
-                  :class="[statusColor]"
-                />
-              </span>
-              <span class="text-xs text-muted-foreground capitalize">{{ appStore.connectionStatus }}</span>
-            </div>
+        <div class="flex min-w-0 items-center gap-3">
+          <Button
+            ref="menuButton"
+            variant="ghost"
+            size="sm"
+            class="h-8 w-8 shrink-0 p-0 lg:hidden"
+            aria-label="Open navigation"
+            title="Open navigation"
+            @click="mobileOpen = true"
+          >
+            <Menu class="h-4 w-4" />
+          </Button>
+          <span class="truncate text-sm font-semibold">{{ sectionLabel }}</span>
+          <span class="hidden shrink-0 text-sm text-muted-foreground/50 sm:inline">{{ appStore.modelName }}</span>
+          <div class="flex shrink-0 items-center gap-1.5">
+            <span class="relative flex h-2 w-2">
+              <span
+                class="absolute inline-flex h-full w-full rounded-full opacity-75"
+                :class="[statusColor]"
+              />
+              <span
+                class="relative inline-flex h-2 w-2 rounded-full"
+                :class="[statusColor]"
+              />
+            </span>
+            <span class="hidden text-xs text-muted-foreground capitalize sm:inline">{{ appStore.connectionStatus }}</span>
           </div>
         </div>
 
-        <div class="flex items-center gap-4">
+        <div class="flex shrink-0 items-center gap-1">
           <!-- Theme toggle -->
           <Button
             variant="ghost"
@@ -174,23 +194,46 @@ function handleLogout() {
             <Sun v-if="themeStore.theme === 'dark'" class="h-4 w-4" />
             <Moon v-else class="h-4 w-4" />
           </Button>
-          <!-- Context usage -->
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground whitespace-nowrap">Context</span>
-            <Progress :model-value="contextPercent" class="h-1.5 w-24" />
-            <span class="text-xs text-muted-foreground tabular-nums">{{ contextPercent }}%</span>
-          </div>
-          <!-- Prompt-cache read (PC-007; hidden until a usage event lands) -->
-          <div v-if="appStore.totalTokens > 0" class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground whitespace-nowrap">Cache</span>
-            <span class="text-xs text-muted-foreground tabular-nums">{{ cachePct }}%</span>
-          </div>
-          <!-- Cost meter (FinOps SSE v2; hidden until the first usage event) -->
-          <div v-if="appStore.costUsd > 0" class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground whitespace-nowrap tabular-nums">${{ appStore.costUsd.toFixed(4) }}</span>
-            <Progress v-if="appStore.budgetPct > 0" :model-value="appStore.budgetPct" class="h-1.5 w-16" />
-            <span v-if="appStore.budgetPct > 0" class="text-xs text-muted-foreground tabular-nums">{{ appStore.budgetPct }}%</span>
-          </div>
+          <!-- Usage popover: one meter in the header, details on demand
+               (UX-03). Context/Cache/Cost no longer crowd the bar. -->
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="gap-1.5 text-muted-foreground"
+                title="Model usage details"
+                aria-label="Model usage details"
+              >
+                <Gauge class="h-4 w-4" />
+                <span class="text-xs tabular-nums">{{ contextPercent }}%</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-64 p-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-xs font-medium text-muted-foreground">Context</span>
+                <span class="text-xs tabular-nums text-muted-foreground">{{ contextPercent }}%</span>
+              </div>
+              <Progress :model-value="contextPercent" class="mt-1.5 h-1.5 w-full" />
+              <div v-if="appStore.totalTokens > 0" class="mt-2.5 flex items-center justify-between gap-2">
+                <span class="text-xs font-medium text-muted-foreground">Prompt-cache read</span>
+                <span class="text-xs tabular-nums text-muted-foreground">{{ cachePct }}%</span>
+              </div>
+              <div v-if="appStore.costUsd > 0" class="mt-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-xs font-medium text-muted-foreground">Cost this turn</span>
+                  <span class="text-xs tabular-nums text-muted-foreground">${{ appStore.costUsd.toFixed(4) }}</span>
+                </div>
+                <div v-if="appStore.budgetPct > 0" class="mt-1.5 flex items-center gap-2">
+                  <Progress :model-value="appStore.budgetPct" class="h-1.5 flex-1" />
+                  <span class="text-xs tabular-nums text-muted-foreground">{{ appStore.budgetPct }}%</span>
+                </div>
+              </div>
+              <p v-if="appStore.totalTokens === 0 && appStore.costUsd === 0" class="mt-2.5 text-[11px] text-muted-foreground/60">
+                Token and cost meters appear here once the first turn streams usage.
+              </p>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
@@ -199,28 +242,15 @@ function handleLogout() {
         <RouterView />
       </main>
 
-      <!-- Status bar -->
-      <footer class="flex h-8 shrink-0 items-center justify-between border-t border-border bg-muted/50 px-4">
+      <!-- Status bar: token count only. The session title already shows in
+           the chat header (and renames there), so repeating it here tripled
+           the same string on screen. -->
+      <footer class="flex h-8 shrink-0 items-center border-t border-border bg-muted/50 px-4">
         <div class="flex items-center gap-3 text-xs text-muted-foreground">
-          <span v-if="appStore.activeSessionTitle" class="max-w-64 truncate">
-            {{ appStore.activeSessionTitle }}
-          </span>
-          <span v-else>No active session</span>
           <span v-if="appStore.totalTokens > 0" class="tabular-nums">
             {{ appStore.totalTokens.toLocaleString() }} tokens
           </span>
-        </div>
-        <div class="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-6 px-2 text-xs"
-            :class="appStore.thinkingEnabled ? 'text-primary' : 'text-muted-foreground'"
-            @click="appStore.toggleThinking"
-          >
-            <Loader2 v-if="appStore.thinkingEnabled" class="mr-1 h-3 w-3 animate-spin" />
-            Thinking
-          </Button>
+          <span v-else-if="!appStore.activeSessionTitle">No active session</span>
         </div>
       </footer>
     </div>

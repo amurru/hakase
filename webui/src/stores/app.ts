@@ -34,7 +34,6 @@ export const useAppStore = defineStore('app', () => {
   const cachedTokens = ref(0)
   const costUsd = ref(0)
   const budgetPct = ref(0)
-  const thinkingEnabled = ref(false)
 
   function setModelName(name: string) {
     modelName.value = name
@@ -92,10 +91,6 @@ export const useAppStore = defineStore('app', () => {
     if (typeof pct === 'number' && pct >= 0) budgetPct.value = Math.min(100, Math.round(pct))
   }
 
-  function toggleThinking() {
-    thinkingEnabled.value = !thinkingEnabled.value
-  }
-
   return {
     modelName,
     connectionStatus,
@@ -108,7 +103,6 @@ export const useAppStore = defineStore('app', () => {
     costUsd,
     budgetPct,
     setCostMeter,
-    thinkingEnabled,
     setModelName,
     loadModelName,
     setConnectionStatus,
@@ -117,6 +111,5 @@ export const useAppStore = defineStore('app', () => {
     setActiveProjectName,
     setTotalTokens,
     setCachedTokens,
-    toggleThinking,
   }
 })

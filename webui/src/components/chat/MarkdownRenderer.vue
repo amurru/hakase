@@ -89,19 +89,37 @@ function handleCopy(e: Event) {
 function attachCopyButtons(root: HTMLElement) {
   for (const pre of root.querySelectorAll<HTMLElement>('pre')) {
     if (pre.classList.contains('mermaid-error-code')) continue
-    if (pre.querySelector('.copy-code-button')) continue
     if (!pre.querySelector('code')) continue
 
-    const btn = document.createElement('button')
-    btn.type = 'button'
-    btn.className = 'copy-code-button'
-    btn.setAttribute('aria-label', 'Copy code')
-    btn.innerHTML = `
-      <svg class="copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-      <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-    `
-    btn.addEventListener('click', handleCopy)
-    pre.appendChild(btn)
+    if (!pre.querySelector('.copy-code-button')) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'copy-code-button'
+      btn.setAttribute('aria-label', 'Copy code')
+      btn.innerHTML = `
+        <svg class="copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+        <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      `
+      btn.addEventListener('click', handleCopy)
+      pre.appendChild(btn)
+    }
+
+    // Wrap toggle: long lines scroll by default; one click wraps them.
+    // Pressed state stays visible so wrapped blocks are recognizable.
+    if (!pre.querySelector('.wrap-code-button')) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'wrap-code-button'
+      btn.setAttribute('aria-label', 'Toggle code wrapping')
+      btn.setAttribute('aria-pressed', 'false')
+      btn.textContent = 'wrap'
+      btn.addEventListener('click', () => {
+        const pressed = btn.getAttribute('aria-pressed') === 'true'
+        btn.setAttribute('aria-pressed', String(!pressed))
+        pre.classList.toggle('code-wrap', !pressed)
+      })
+      pre.appendChild(btn)
+    }
   }
 }
 </script>
@@ -109,12 +127,12 @@ function attachCopyButtons(root: HTMLElement) {
 <template>
   <div
     ref="rootEl"
-    class="markdown-body prose prose-invert prose-sm max-w-none
+    class="markdown-body prose dark:prose-invert prose-sm max-w-none
            prose-headings:tracking-tight prose-headings:text-foreground
            prose-p:text-foreground/90 prose-p:leading-relaxed
            prose-a:text-primary prose-a:no-underline hover:prose-a:underline
            prose-strong:text-foreground prose-strong:font-semibold
-           prose-code:text-amber-300/90 prose-code:font-mono prose-code:text-[0.85em]
+           prose-code:text-amber-700 dark:prose-code:text-amber-300/90 prose-code:font-mono prose-code:text-[0.85em]
            prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
            prose-code:before:content-none prose-code:after:content-none
            prose-pre:bg-transparent prose-pre:p-0 prose-pre:my-4
@@ -130,7 +148,7 @@ function attachCopyButtons(root: HTMLElement) {
 <style>
 .markdown-body pre {
   position: relative;
-  background: hsl(var(--muted));
+  background: var(--muted);
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-x: auto;
@@ -140,7 +158,7 @@ function attachCopyButtons(root: HTMLElement) {
 .markdown-body pre code {
   background: transparent !important;
   padding: 0 !important;
-  color: hsl(var(--foreground));
+  color: var(--foreground);
   font-size: 0.8125rem;
   line-height: 1.7;
 }
@@ -154,13 +172,13 @@ function attachCopyButtons(root: HTMLElement) {
 
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   padding: 0.5rem 0.75rem;
   text-align: left;
 }
 
 .markdown-body th {
-  background: hsl(var(--muted));
+  background: var(--muted);
   font-weight: 600;
 }
 
@@ -173,7 +191,7 @@ function attachCopyButtons(root: HTMLElement) {
 }
 
 .markdown-body a {
-  color: hsl(var(--primary));
+  color: var(--primary);
 }
 
 .markdown-body ul {
@@ -197,9 +215,9 @@ function attachCopyButtons(root: HTMLElement) {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 0.375rem;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--muted));
-  color: hsl(var(--muted-foreground));
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease;
@@ -207,9 +225,55 @@ function attachCopyButtons(root: HTMLElement) {
 .markdown-body pre:hover .copy-code-button {
   opacity: 1;
 }
+/* Wrap toggle: sits left of copy, stays visible while wrapping is on. */
+.markdown-body pre.code-wrap code {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+}
+.markdown-body .wrap-code-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  height: 1.75rem;
+  padding: 0 0.5rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.markdown-body pre:hover .wrap-code-button,
+.markdown-body .wrap-code-button:focus-visible {
+  opacity: 1;
+}
+/* Touch devices have no hover: the toggle stays visible so there is
+   something to tap (mirrors the message toolbar behavior). */
+@media (pointer: coarse) {
+  .markdown-body .wrap-code-button {
+    opacity: 1;
+  }
+}
+.markdown-body .wrap-code-button[aria-pressed="true"] {
+  opacity: 1;
+  color: var(--foreground);
+  background: var(--accent);
+}
+.markdown-body .wrap-code-button:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+}
 .markdown-body .copy-code-button .check-icon {
   display: none;
-  color: hsl(var(--chart-2));
+  color: var(--chart-2);
 }
 .markdown-body .copy-code-button.copied .check-icon {
   display: block;
@@ -224,7 +288,7 @@ function attachCopyButtons(root: HTMLElement) {
   overflow-x: auto;
   display: flex;
   justify-content: center;
-  background: hsl(var(--muted));
+  background: var(--muted);
   border-radius: 0.5rem;
   padding: 1rem;
 }
@@ -236,7 +300,7 @@ function attachCopyButtons(root: HTMLElement) {
 .markdown-body .mermaid-placeholder {
   margin: 1rem 0;
   border-radius: 0.5rem;
-  background: hsl(var(--muted));
+  background: var(--muted);
   min-height: 3rem;
 }
 
@@ -248,22 +312,22 @@ function attachCopyButtons(root: HTMLElement) {
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: hsl(var(--destructive-foreground));
-  background: hsl(var(--destructive));
+  color: var(--destructive-foreground);
+  background: var(--destructive);
   border-radius: 0.25rem;
 }
 
 .markdown-body .mermaid-error-code {
   margin: 0.5rem;
   padding: 0.75rem;
-  background: hsl(var(--muted));
-  color: hsl(var(--muted-foreground));
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-x: auto;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   border-radius: 0.375rem;
 }
 </style>

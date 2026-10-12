@@ -24,8 +24,9 @@ import { useProjectsStore, type ProjectStatus } from '@/stores/projects'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageRail from '@/components/chat/MessageRail.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow, ArrowDown, FoldHorizontal, UnfoldHorizontal } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -63,8 +64,8 @@ const {
   messages,
   sidekickNotes,
   isStreaming,
-  connected,
   sendMessage,
+  stopRun,
   connect,
   onApprovalEvent,
   onApprovalTimeoutEvent,
@@ -216,14 +217,37 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onTitleEditMouseDown)
 })
 
+// Empty-state command chips (discoverability): one click sends the slash
+// command through the normal handleSend path (usage chips explain args).
+const emptyStateCommands = SLASH_COMMANDS.filter((c) =>
+  ['new', 'sidekick', 'compact', 'help'].includes(c.name),
+)
+
 // Auto-scroll logic
 function scrollToBottom() {
+  // Double rAF: Vue flushes DOM in nextTick, but markdown/mermaid hydration
+  // grows the transcript afterwards - the second frame re-pins to the true
+  // bottom after that layout settles.
   nextTick(() => {
-    const el = scrollContainer.value
-    if (el) {
-      el.scrollTop = el.scrollHeight
-    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // Re-check: a streaming update may have scheduled this while the
+        // user scrolled up in the meantime - never yank them back down.
+        if (isUserScrolledUp.value) return
+        const el = scrollContainer.value
+        if (el) {
+          el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+        }
+      })
+    })
   })
+}
+
+// jumpToLatest backs the floating "Latest" pill: the user asked for the
+// bottom, so the scrolled-up flag clears unconditionally.
+function jumpToLatest() {
+  isUserScrolledUp.value = false
+  scrollToBottom()
 }
 
 function handleScroll() {
@@ -359,6 +383,41 @@ watch(
   },
 )
 
+// --- Transcript grouping (UX-04): day dividers + avatar grouping.
+// Consecutive same-role messages within COMPACT_GAP_MS render compact (no
+// avatar, tighter spacing) so turns read as turns, not message soup.
+const COMPACT_GAP_MS = 5 * 60 * 1000
+
+function dayLabel(ts: number): string {
+  const d = new Date(ts)
+  const now = new Date()
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const dayDiff = Math.round((startOf(now) - startOf(d)) / 86400000)
+  if (dayDiff <= 0) return 'Today'
+  if (dayDiff === 1) return 'Yesterday'
+  return d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: now.getFullYear() === d.getFullYear() ? undefined : 'numeric',
+  })
+}
+
+function showDayDivider(index: number): boolean {
+  if (index === 0) return messages.value.length > 1
+  const prev = messages.value[index - 1]
+  const cur = messages.value[index]
+  if (!prev || !cur) return false
+  return new Date(prev.timestamp || 0).toDateString() !== new Date(cur.timestamp || 0).toDateString()
+}
+
+function isCompact(index: number): boolean {
+  if (index === 0) return false
+  const prev = messages.value[index - 1]
+  const cur = messages.value[index]
+  if (!prev || !cur || prev.role !== cur.role) return false
+  return Math.abs((cur.timestamp || 0) - (prev.timestamp || 0)) < COMPACT_GAP_MS
+}
+
 // Load session history
 async function loadSessionHistory(sid: string) {
   isLoadingHistory.value = true
@@ -424,6 +483,11 @@ async function loadSessionHistory(sid: string) {
 
 // Handle send message
 async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
+  // The user's own send always returns to the bottom: without this, sending
+  // while scrolled up (reading history) leaves the stuck scrolled-up flag
+  // set and every subsequent auto-scroll no-ops - the transcript looks
+  // frozen while new messages pile up below the fold.
+  isUserScrolledUp.value = false
   // Known slash commands route locally - never to the main model. Unknown
   // "/xyz" tokens fall through as ordinary text (they may be paths).
   // Parse before session creation so /new and /compact avoid an unnecessary
@@ -436,6 +500,7 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
     if (!sessionId.value && cmd.name !== 'new' && cmd.name !== 'compact') {
       // Commands like /help that don't need a session at all
       await executeSlash(cmd.name, cmd.args)
+      scrollToBottom()
       return
     }
     messages.value.push({
@@ -446,6 +511,7 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
       timestamp: Date.now(),
     })
     await executeSlash(cmd.name, cmd.args)
+    scrollToBottom()
     return
   }
 
@@ -478,6 +544,9 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
       data: a.data,
     })),
   )
+  // Pin to the freshly pushed user message; the stream watchers keep it
+  // pinned from here unless the user scrolls up deliberately.
+  scrollToBottom()
   // SSE connection will be started by useSSE.sendMessage
 }
 
@@ -524,6 +593,8 @@ async function executeSlash(name: string, args: string) {
 }
 
 function note(severity: string, text: string) {
+  // Agent-run feedback renders as an inline sidekick chip, never a toast
+  // (UX-11): the transcript stays the single audit trail of a run.
   pushSidekickNote({ id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, severity, text, timestamp: Date.now() })
 }
 
@@ -560,6 +631,33 @@ async function runCompact(focus: string) {
     const msg = err instanceof Error ? err.message : 'compact failed'
     note('warning', msg)
   }
+}
+
+// --- Execution canvas discoverability (UX-10): the header toggle carries
+// a text label plus an activity dot until the panel has been opened once.
+const CANVAS_SEEN_KEY = 'hakase_canvas_seen'
+const canvasSeen = ref(localStorage.getItem(CANVAS_SEEN_KEY) === '1')
+const canvasDot = computed(
+  () => canvasStore.sortedNodes.length > 0 && !canvasStore.panelOpen && !canvasSeen.value,
+)
+
+function toggleCanvas() {
+  canvasStore.panelOpen = !canvasStore.panelOpen
+  if (canvasStore.panelOpen && !canvasSeen.value) {
+    canvasSeen.value = true
+    localStorage.setItem(CANVAS_SEEN_KEY, '1')
+  }
+}
+
+// Transcript width preference: wide (full rows, default) or narrow (a
+// centered readable measure). Persisted per browser.
+const CHAT_WIDTH_KEY = 'hakase_chat_width'
+const transcriptNarrow = ref(localStorage.getItem(CHAT_WIDTH_KEY) === 'narrow')
+const transcriptWrapClass = computed(() => (transcriptNarrow.value ? 'mx-auto max-w-3xl' : ''))
+
+function toggleTranscriptWidth() {
+  transcriptNarrow.value = !transcriptNarrow.value
+  localStorage.setItem(CHAT_WIDTH_KEY, transcriptNarrow.value ? 'narrow' : 'wide')
 }
 
 // --- Restore-to-here (docs/session-rewind/spec.md, issue #21) ---
@@ -626,27 +724,27 @@ onMounted(() => {
 <template>
   <div class="flex h-full flex-col">
     <!-- Header with session info + context warning -->
-    <div class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
-      <div class="flex items-center gap-3">
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-2">
+      <div class="flex min-w-0 flex-1 items-center gap-3">
         <!-- Title: double-click to rename inline. Enter or the check button
              accepts; clicking outside the edit region cancels. -->
         <div
           v-if="isRenamingTitle"
           ref="titleEditWrap"
-          class="flex items-center gap-1"
+          class="flex min-w-0 items-center gap-1"
           @dblclick.stop
         >
           <Input
             ref="titleInput"
             v-model="renameTitleValue"
-            class="h-7 w-56 text-sm"
+            class="h-7 w-full max-w-56 text-sm"
             @keydown.enter.prevent="commitTitleRename"
             @keydown.escape.prevent="cancelTitleRename"
           />
           <Button
             variant="ghost"
             size="icon-xs"
-            class="text-emerald-500 hover:text-emerald-400"
+            class="shrink-0 text-emerald-500 hover:text-emerald-400"
             title="Accept new name"
             aria-label="Accept new name"
             @click="commitTitleRename"
@@ -656,7 +754,7 @@ onMounted(() => {
         </div>
         <span
           v-else
-          class="cursor-text text-sm font-medium text-foreground"
+          class="cursor-text truncate text-sm font-medium text-foreground"
           title="Double-click to rename"
           @dblclick="startTitleRename"
         >
@@ -665,7 +763,7 @@ onMounted(() => {
         <Badge
           v-if="appStore.activeProjectName"
           variant="secondary"
-          class="gap-1 text-xs"
+          class="hidden shrink-0 gap-1 text-xs sm:inline-flex"
           :title="projectDirtyDetail
             ? `Session bound to ${appStore.activeProjectName} - working tree has changes: ${projectDirtyDetail}`
             : `Session bound to registered project ${appStore.activeProjectName}`"
@@ -683,20 +781,17 @@ onMounted(() => {
         </Badge>
         <span
           v-if="isStreaming"
-          class="flex items-center gap-1.5 text-xs text-primary"
+          class="flex shrink-0 items-center gap-1.5 text-xs text-primary"
         >
           <Loader2 class="h-3 w-3 animate-spin" />
-          Streaming...
+          <span class="hidden min-[420px]:inline">Streaming...</span>
         </span>
-        <span
-          v-else-if="connected"
-          class="text-xs text-emerald-500"
-        >
-          Connected
-        </span>
+        <!-- Connection state lives in the app header; repeating it here
+             doubled the status noise, so the chat header shows only the
+             transient streaming state. -->
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex shrink-0 items-center gap-2">
         <!-- Context warning badge -->
         <Badge
           v-if="contextWarning"
@@ -708,13 +803,33 @@ onMounted(() => {
         </Badge>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="sm"
+          class="gap-1.5 text-xs text-muted-foreground"
+          title="Toggle transcript width"
+          aria-label="Toggle transcript width"
+          @click="toggleTranscriptWidth"
+        >
+          <FoldHorizontal v-if="transcriptNarrow" class="h-4 w-4" />
+          <UnfoldHorizontal v-else class="h-4 w-4" />
+          <span class="hidden sm:inline">{{ transcriptNarrow ? 'Narrow' : 'Wide' }}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          class="relative gap-1.5 text-xs"
           :class="canvasStore.panelOpen ? 'text-primary' : 'text-muted-foreground'"
           title="Toggle execution canvas"
           aria-label="Toggle execution canvas"
-          @click="canvasStore.panelOpen = !canvasStore.panelOpen"
+          :aria-expanded="canvasStore.panelOpen"
+          @click="toggleCanvas"
         >
           <Workflow class="h-4 w-4" />
+          <span class="hidden sm:inline">Canvas</span>
+          <span
+            v-if="canvasDot"
+            class="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-emerald-500"
+            aria-hidden="true"
+          />
         </Button>
       </div>
     </div>
@@ -753,33 +868,56 @@ onMounted(() => {
               </div>
               <p class="text-sm">Start a conversation</p>
               <p class="text-xs text-muted-foreground/60">
-                Type a message below to begin
+                Type a message below to begin, or try a command
               </p>
+              <div class="mt-1 flex flex-wrap items-center justify-center gap-1.5">
+                <Button
+                  v-for="cmd in emptyStateCommands"
+                  :key="cmd.name"
+                  variant="outline"
+                  size="sm"
+                  class="h-7 gap-1.5 px-2.5 font-mono text-xs"
+                  :title="cmd.description"
+                  @click="handleSend(`/${cmd.name}`)"
+                >
+                  /{{ cmd.name }}
+                </Button>
+              </div>
             </div>
 
-            <!-- Loading indicator -->
-            <div
-              v-if="isLoadingHistory"
-              class="flex h-full items-center justify-center"
-            >
-              <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
+            <!-- Loading history: skeleton rows in the same full-width flow -->
+            <div v-if="isLoadingHistory" :class="['w-full py-4', transcriptWrapClass]">
+              <ListSkeleton :rows="5" />
             </div>
 
             <!-- Message list. Wrapper stays out of the empty state: its
                  padding would add dead scroll below the h-full empty panel
-                 and pin a scrollbar over the composer. -->
-            <div v-if="messages.length" class="py-4">
-              <MessageBubble
-                v-for="msg in messages"
-                :key="msg.id"
-                :message="msg"
-                :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
-                @restore="openRestoreDialog(msg)"
-              />
+                 and pin a scrollbar over the composer. Full-width rows (no
+                 centered measure): bubbles carry their own max width, and
+                 the rail still measures prompt anchors. -->
+            <div v-if="messages.length" :class="['w-full py-4', transcriptWrapClass]">
+              <template v-for="(msg, i) in messages" :key="msg.id">
+                <div
+                  v-if="showDayDivider(i)"
+                  class="flex items-center gap-3 px-4 py-3"
+                >
+                  <div class="h-px flex-1 bg-border" />
+                  <span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {{ dayLabel(msg.timestamp || Date.now()) }}
+                  </span>
+                  <div class="h-px flex-1 bg-border" />
+                </div>
+                <MessageBubble
+                  :message="msg"
+                  :compact="isCompact(i)"
+                  :streaming="isStreaming && msg === messages[messages.length - 1] && msg.role === 'agent'"
+                  @restore="openRestoreDialog(msg)"
+                />
+              </template>
             </div>
 
             <!-- Sidekick advisory notes: quiet inline chips, never notifications -->
-            <div v-if="sidekickNotes.length" class="px-4 pb-3">
+            <div v-if="sidekickNotes.length" :class="['px-4 pb-3', transcriptWrapClass]">
               <div
                 v-for="note in sidekickNotes"
                 :key="note.id"
@@ -796,12 +934,27 @@ onMounted(() => {
             :active-id="activeTickId"
             @select="jumpToMessage"
           />
+          <!-- Jump-to-latest pill: appears when scrolled up with content
+               below the fold (streaming or after a stuck scroll), so the
+               bottom is always one click away. -->
+          <button
+            v-if="isUserScrolledUp && messages.length > 0"
+            type="button"
+            class="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-popover px-3 py-1.5 text-xs shadow-lg transition-colors hover:bg-accent"
+            aria-label="Jump to latest message"
+            @click="jumpToLatest"
+          >
+            <ArrowDown class="h-3.5 w-3.5" />
+            Latest
+          </button>
         </div>
 
         <!-- Input area -->
         <ChatInput
           :disabled="false"
+          :streaming="isStreaming"
           @send="handleSend"
+          @stop="stopRun"
         />
       </div>
 
