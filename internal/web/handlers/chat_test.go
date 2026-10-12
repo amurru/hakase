@@ -292,6 +292,36 @@ func TestPostMessageBadRequest(t *testing.T) {
 	}
 }
 
+// TestPostMessageThinkingLevel pins the per-turn effort override contract:
+// garbage is rejected loudly, valid levels (including legacy aliases) are
+// accepted, and omitting the field stays accepted (server default applies).
+func TestPostMessageThinkingLevel(t *testing.T) {
+	_, _, _, router := newTestChatAPI(t)
+
+	w := postMessage(t, router, "ses-1", `{"content":"hi","thinking_level":"uber"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid thinking_level, got %d: %s", w.Code, w.Body.String())
+	}
+
+	for _, body := range []string{
+		`{"content":"hi"}`,
+		`{"content":"hi","thinking_level":""}`,
+		`{"content":"hi","thinking_level":"off"}`,
+		`{"content":"hi","thinking_level":"minimal"}`,
+		`{"content":"hi","thinking_level":"low"}`,
+		`{"content":"hi","thinking_level":"medium"}`,
+		`{"content":"hi","thinking_level":"high"}`,
+		`{"content":"hi","thinking_level":"HIGH"}`,
+		`{"content":"hi","thinking_level":"maximum"}`,
+		`{"content":"hi","thinking_level":"xhigh"}`,
+	} {
+		w := postMessage(t, router, "ses-1", body)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("body %s: expected 202, got %d: %s", body, w.Code, w.Body.String())
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // attachment handling
 // ---------------------------------------------------------------------------

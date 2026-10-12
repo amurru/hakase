@@ -2185,26 +2185,26 @@ A second, independently-configured model (the "sidekick") runs alongside you. ` 
 }
 
 // BuildGenerationConfig maps the configured thinking level to a
-// GenerateContentConfig. "off" disables thoughts; a named level ("low",
-// "high", "maximum", "xhigh", ...) is passed through verbatim to the
-// provider. An empty level returns nil so the provider default applies.
+// GenerateContentConfig. "off" disables thoughts; "on"/"default" take the
+// provider default depth; a named level ("minimal", "low", "medium", "high")
+// is passed through verbatim to the provider. Legacy aliases ("maximum",
+// "xhigh") resolve to HIGH — both providers reject anything stronger, so
+// passing them through broke every turn. An empty level returns a config
+// with no ThinkingConfig so the provider default applies; an unrecognized
+// level falls back to provider-default thinking (thoughts included) rather
+// than emitting a config the provider will reject.
 func BuildGenerationConfig(level string) *genai.GenerateContentConfig {
 	gc := &genai.GenerateContentConfig{
 		MaxOutputTokens: LoopGuardConfig(deps.LoopGuard).MaxOutputTokens,
 	}
-	if level == "" {
+	norm, err := NormalizeThinkingLevel(level)
+	if err != nil {
+		norm = "default"
+	}
+	if norm == "" {
 		return gc
 	}
-	tc := &genai.ThinkingConfig{IncludeThoughts: true}
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "off":
-		tc.IncludeThoughts = false
-	case "on", "default":
-		// Provider default level; only IncludeThoughts is set.
-	default:
-		tc.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(strings.TrimSpace(level)))
-	}
-	gc.ThinkingConfig = tc
+	gc.ThinkingConfig = thinkingConfigFor(norm)
 	return gc
 }
 
@@ -2556,6 +2556,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		Toolsets:              researcherToolsets,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
@@ -2642,6 +2643,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}, // 👈 Attached skill tools here!
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
@@ -2688,6 +2690,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		Tools:                 append(append(fileOpsTools, gitTools...), visionTool),
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
@@ -2863,6 +2866,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			historyBuilder.BeforeModelCallback,
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},

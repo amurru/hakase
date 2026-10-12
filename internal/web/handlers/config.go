@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/config"
 )
 
@@ -357,10 +358,8 @@ func validateConfigUpdate(req map[string]interface{}) error {
 		}
 	}
 	if v, ok := req["thinking_level"].(string); ok && v != "" {
-		switch v {
-		case "off", "low", "medium", "high", "maximum", "xhigh":
-		default:
-			return fmt.Errorf("invalid thinking_level %q", v)
+		if _, err := hakaseagent.NormalizeThinkingLevel(v); err != nil {
+			return err
 		}
 	}
 	if v, ok := req["system_env"].(map[string]interface{}); ok {

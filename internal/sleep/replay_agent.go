@@ -212,6 +212,7 @@ func runAgenticReplay(ctx context.Context, llm model.LLM, tools []tool.Tool, tim
 		// No Toolsets: MCP and web-search fallback stay off in replay.
 		GenerateContentConfig: &genai.GenerateContentConfig{},
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			hakaseagent.ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			hakaseagent.ToolResultGuard,
 		},

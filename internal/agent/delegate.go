@@ -405,7 +405,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, ToolResultGuard},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{ThinkingOverrideCallback, vision.VisionInjectionCallback, ToolResultGuard},
 		BeforeToolCallbacks:   hookBefore,
 		AfterToolCallbacks:    hookAfter,
 	})

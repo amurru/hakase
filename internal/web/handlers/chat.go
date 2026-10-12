@@ -585,8 +585,9 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content     string               `json:"content"`
-		Attachments []incomingAttachment `json:"attachments,omitempty"`
+		Content       string               `json:"content"`
+		Attachments   []incomingAttachment `json:"attachments,omitempty"`
+		ThinkingLevel string               `json:"thinking_level,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -594,6 +595,14 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Content) == "" && len(req.Attachments) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content or attachments required"})
+		return
+	}
+	// Per-turn effort override: empty means "no override, use the server's
+	// configured thinking_level". Anything else must normalize or the run
+	// would carry a level neither provider honors.
+	thinkingLevel, err := hakaseagent.NormalizeThinkingLevel(req.ThinkingLevel)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -660,8 +669,11 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 		// stop arriving between the 202 and the goroutine's first line must
 		// still cancel this run instead of 404ing while it continues.
 		// runAgentTask registers its own handle too (a child of this ctx),
-		// so both entry points below stay stoppable.
-		runCtx, untrack := api.trackRun(sessionID, context.Background())
+		// so both entry points below stay stoppable. The per-turn thinking
+		// override rides the context to ThinkingOverrideCallback (a ctx
+		// value, so RunTurn's signature and the channel transports are
+		// untouched); WithCancel preserves values down the chain.
+		runCtx, untrack := api.trackRun(sessionID, hakaseagent.WithThinkingLevel(context.Background(), thinkingLevel))
 		go func() {
 			defer untrack()
 			api.runAgentTask(runCtx, sessionID, content)

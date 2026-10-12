@@ -26,7 +26,7 @@ The highest-value gap: the most valuable skills (`SKILL.md` under `.agents/skill
 - `go.mod:29-30`: `google.golang.org/adk/v2 v2.1.0`, `google.golang.org/genai v1.63.0`.
 - `internal/agent/provider.go:25-30`: `LLMProvider{CreateModel, ValidateConfig, GetDefaultModel, GetModelInfo}`. `GeminiProvider` via `gemini.NewModel`, `OpenAIProvider` via `openaimodel.NewModel` (marked EXPERIMENTAL in our own comment). Factory `ProviderFactory` at `provider.go:285-294`.
 - `SetupRunner` (`internal/agent/agent.go:1863-1875`): `ProviderFactory -> ValidateConfig -> CreateModel(EffectiveModelName, APIKey) -> deps.Model`. Secondaries in the same function: sidekick second model (`1882-1894`), cheap summarizer `hctx.SummarizeModel` when `cfg.SummaryModel` differs (`1900-1904`, non-fatal), vision model via `ResolveVisionProviderFn` (`1940-1949`, impl in `cmd/hakase/main.go:301-314`).
-- `BuildGenerationConfig` (`agent.go:1731-1749`): `MaxOutputTokens` from LoopGuard + `ThinkingConfig{IncludeThoughts, ThinkingLevel}` from `thinking_level` (`off/low/medium/high/maximum/xhigh`). Replay must reuse it, not hand-roll generation config.
+- `BuildGenerationConfig` (`agent.go:1731-1749`): `MaxOutputTokens` from LoopGuard + `ThinkingConfig{IncludeThoughts, ThinkingLevel}` from `thinking_level` (canonical `off/minimal/low/medium/high`; legacy `maximum`/`xhigh` normalize to `high`). Replay must reuse it, not hand-roll generation config.
 
 Consequence: any replay harness goes through `ProviderFactory` + `ModelPromptFn`-style `llm.GenerateContent`, never direct genai calls, or `openai-compatible` breaks.
 

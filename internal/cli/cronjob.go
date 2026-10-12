@@ -898,7 +898,7 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, hakaseagent.ToolResultGuard},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{hakaseagent.ThinkingOverrideCallback, vision.VisionInjectionCallback, hakaseagent.ToolResultGuard},
 	})
 	if err != nil {
 		log(fmt.Sprintf("[cron] job %s failed to create sub-agent: %v", job.ID, err))
