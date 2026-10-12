@@ -15,7 +15,6 @@ import ApprovalModal from '@/components/approval/ApprovalModal.vue'
 import ClarifyModal from '@/components/clarify/ClarifyModal.vue'
 import SidebarNav from '@/components/SidebarNav.vue'
 import {
-  Loader2,
   Sun,
   Moon,
   Menu,
@@ -215,24 +214,12 @@ onUnmounted(() => {
       <!-- Status bar: token count only. The session title already shows in
            the chat header (and renames there), so repeating it here tripled
            the same string on screen. -->
-      <footer class="flex h-8 shrink-0 items-center justify-between border-t border-border bg-muted/50 px-4">
+      <footer class="flex h-8 shrink-0 items-center border-t border-border bg-muted/50 px-4">
         <div class="flex items-center gap-3 text-xs text-muted-foreground">
           <span v-if="appStore.totalTokens > 0" class="tabular-nums">
             {{ appStore.totalTokens.toLocaleString() }} tokens
           </span>
           <span v-else-if="!appStore.activeSessionTitle">No active session</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-6 px-2 text-xs"
-            :class="appStore.thinkingEnabled ? 'text-primary' : 'text-muted-foreground'"
-            @click="appStore.toggleThinking"
-          >
-            <Loader2 v-if="appStore.thinkingEnabled" class="mr-1 h-3 w-3 animate-spin" />
-            Thinking
-          </Button>
         </div>
       </footer>
     </div>
