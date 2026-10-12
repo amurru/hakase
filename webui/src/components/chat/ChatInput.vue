@@ -229,6 +229,7 @@ onMounted(() => {
           v-model="content"
           placeholder="Type a message... / for commands"
           rows="1"
+          dir="auto"
           class="block w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none"
           :disabled="disabled"
           @input="autoResize(); resetPalette()"

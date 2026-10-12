@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { renderMarkdown } from '@/lib/markdown'
+import { detectDirection } from '@/lib/rtl'
 import { useMermaid } from '@/composables/useMermaid'
 import ImageLightbox from './ImageLightbox.vue'
 
@@ -14,6 +15,11 @@ const mermaid = useMermaid()
 const lightbox = ref<InstanceType<typeof ImageLightbox>>()
 
 const rendered = computed(() => renderMarkdown(props.content))
+
+// Self-contained base direction from the first strong character, so every
+// MarkdownRenderer (chat transcript, canvas inspector) aligns RTL prose
+// without its host having to pass direction down.
+const baseDir = computed(() => detectDirection(props.content ?? ''))
 
 function afterRender() {
   nextTick(() => {
@@ -133,6 +139,7 @@ function attachCopyButtons(root: HTMLElement) {
 <template>
   <div
     ref="rootEl"
+    :dir="baseDir"
     class="markdown-body prose dark:prose-invert prose-sm max-w-none
            prose-headings:tracking-tight prose-headings:text-foreground
            prose-p:text-foreground/90 prose-p:leading-relaxed
@@ -335,5 +342,15 @@ function attachCopyButtons(root: HTMLElement) {
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 0.375rem;
+}
+
+/* RTL answers (dir set from the message's first strong character): prose
+   aligns right, but code blocks and diagrams stay LTR so source never
+   mirrors and diagrams keep their layout. */
+.markdown-body[dir='rtl'] pre,
+.markdown-body[dir='rtl'] .mermaid-render,
+.markdown-body[dir='rtl'] .mermaid-placeholder {
+  direction: ltr;
+  text-align: left;
 }
 </style>

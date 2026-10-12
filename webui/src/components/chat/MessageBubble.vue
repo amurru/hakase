@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Copy, Check, History } from '@lucide/vue'
 import type { ChatMessage } from '@/composables/useSSE'
+import { detectDirection } from '@/lib/rtl'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 
@@ -20,6 +21,11 @@ const canRestore = computed(
 const emit = defineEmits<{ restore: [] }>()
 
 const isUser = computed(() => props.message.role === 'user')
+
+// Base text direction from the message's first strong character: RTL answers
+// (Arabic, Hebrew, ...) align right, everything else keeps the LTR default.
+// Code blocks and diagrams re-pin to LTR in CSS so they never mirror.
+const contentDir = computed(() => detectDirection(props.message.content ?? ''))
 
 // Short clock time for the hover toolbar (HH:MM in locale order).
 const timeLabel = computed(() => {
@@ -68,7 +74,7 @@ async function copyContent() {
       class="flex max-w-[80%] flex-col items-end gap-1"
     >
       <div class="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground">
-        <div class="whitespace-pre-wrap">{{ message.content }}</div>
+        <div class="whitespace-pre-wrap" :dir="contentDir">{{ message.content }}</div>
       </div>
       <div
         v-if="!streaming"
@@ -105,7 +111,7 @@ async function copyContent() {
       v-else
       class="flex min-w-0 flex-1 flex-col items-start gap-1"
     >
-      <div class="w-full min-w-0 text-sm leading-relaxed">
+      <div class="w-full min-w-0 text-sm leading-relaxed" :dir="contentDir">
         <ThinkingBlock
           v-if="message.thinking"
           :content="message.thinking"
