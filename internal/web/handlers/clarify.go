@@ -103,17 +103,12 @@ func (g *WebClarifyGate) AskClarify(ctx context.Context, req interfaces.ClarifyR
 	g.pending[clarifyID] = resp
 	g.mu.Unlock()
 
-	// Emit SSE clarify prompt on the gate's routing topic; the payload
-	// carries the asking run's session (request wins over the gate's fixed
-	// session) so channel transports can route it to the bound conversation.
-	g.bridge.SendClarifyPrompt(
-		g.sessionID,
-		g.promptSession(req.SessionID),
-		clarifyID,
-		req.Question,
-		req.Choices,
-		req.MultiSelect,
-	)
+	// Emit the clarify prompt on the global topic (channel transports)
+	// and mirror it onto the asking run's session topic (web UI stream).
+	// The browser subscribes only to its session topic, so without the
+	// mirror the prompt never reaches the modal.
+	routeSession := g.promptSession(req.SessionID)
+	g.publishPrompt(routeSession, clarifyID, req.Question, req.Choices, req.MultiSelect)
 
 	// Wait for response, context cancellation, or timeout.
 	expiry := g.ClarifyExpiry()
@@ -135,8 +130,20 @@ func (g *WebClarifyGate) AskClarify(ctx context.Context, req interfaces.ClarifyR
 		g.mu.Lock()
 		delete(g.pending, clarifyID)
 		g.mu.Unlock()
-		g.sendClarifyTimeout(clarifyID)
+		g.sendClarifyTimeout(clarifyID, routeSession)
 		return interfaces.ClarifyResponse{TimedOut: true}, nil
+	}
+}
+
+// publishPrompt fans a prompt out to the gate's routing topic (the
+// global topic channel transports subscribe to) and, when the asking
+// run's session is known and differs, mirrors it onto that session
+// topic so the web UI stream carries it. The payload already carries
+// the session, so each surface shows only its own prompts.
+func (g *WebClarifyGate) publishPrompt(routeSession, id, question string, choices []string, multiSelect bool) {
+	g.bridge.SendClarifyPrompt(g.sessionID, routeSession, id, question, choices, multiSelect)
+	if routeSession != "" && routeSession != g.sessionID {
+		g.bridge.SendClarifyPrompt(routeSession, routeSession, id, question, choices, multiSelect)
 	}
 }
 
@@ -172,9 +179,14 @@ func (g *WebClarifyGate) RespondClarify(clarifyID string, response interfaces.Cl
 	}
 }
 
-// sendClarifyTimeout emits a clarify_timeout SSE event.
-func (g *WebClarifyGate) sendClarifyTimeout(clarifyID string) {
-	g.bridge.SendClarifyTimeout(g.sessionID, clarifyID)
+// sendClarifyTimeout emits a clarify_timeout SSE event on the routing
+// topic and mirrors it onto the asking run's session topic (same split
+// as publishPrompt), so a stale web modal always clears.
+func (g *WebClarifyGate) sendClarifyTimeout(id, routeSession string) {
+	g.bridge.SendClarifyTimeout(g.sessionID, id)
+	if routeSession != "" && routeSession != g.sessionID {
+		g.bridge.SendClarifyTimeout(routeSession, id)
+	}
 }
 
 // ClarifyAPI handles clarify response endpoints.

@@ -116,18 +116,12 @@ func (g *WebApprovalGate) AskApproval(ctx context.Context, req interfaces.Approv
 	g.pending[approvalID] = p
 	g.mu.Unlock()
 
-	// Emit SSE approval prompt on the gate's routing topic; the payload
-	// carries the asking run's session (request wins over the gate's fixed
-	// session) so channel transports can route it to the bound conversation.
-	g.bridge.SendApprovalPrompt(
-		g.sessionID,
-		g.promptSession(req.SessionID),
-		approvalID,
-		req.Tool,
-		req.Risk,
-		req.Reason,
-		req.Command,
-	)
+	// Emit the approval prompt on the global topic (channel transports)
+	// and mirror it onto the asking run's session topic (web UI stream).
+	// The browser subscribes only to its session topic, so without the
+	// mirror the prompt never reaches the modal.
+	routeSession := g.promptSession(req.SessionID)
+	g.publishPrompt(routeSession, approvalID, req.Tool, req.Risk, req.Reason, req.Command)
 
 	// Wait for response, context cancellation, or timeout.
 	expiry := g.ApprovalExpiry()
@@ -149,8 +143,20 @@ func (g *WebApprovalGate) AskApproval(ctx context.Context, req interfaces.Approv
 		g.mu.Lock()
 		delete(g.pending, approvalID)
 		g.mu.Unlock()
-		g.sendApprovalTimeout(approvalID)
+		g.sendApprovalTimeout(approvalID, routeSession)
 		return false, nil
+	}
+}
+
+// publishPrompt fans a prompt out to the gate's routing topic (the
+// global topic channel transports subscribe to) and, when the asking
+// run's session is known and differs, mirrors it onto that session
+// topic so the web UI stream carries it. The payload already carries
+// the session, so each surface shows only its own prompts.
+func (g *WebApprovalGate) publishPrompt(routeSession, approvalID, tool, risk, reason, command string) {
+	g.bridge.SendApprovalPrompt(g.sessionID, routeSession, approvalID, tool, risk, reason, command)
+	if routeSession != "" && routeSession != g.sessionID {
+		g.bridge.SendApprovalPrompt(routeSession, routeSession, approvalID, tool, risk, reason, command)
 	}
 }
 
@@ -186,9 +192,14 @@ func (g *WebApprovalGate) RespondApproval(approvalID string, approved bool) bool
 	}
 }
 
-// sendApprovalTimeout emits an approval_timeout SSE event.
-func (g *WebApprovalGate) sendApprovalTimeout(approvalID string) {
+// sendApprovalTimeout emits an approval_timeout SSE event on the routing
+// topic and mirrors it onto the asking run's session topic (same split
+// as publishPrompt), so a stale web modal always clears.
+func (g *WebApprovalGate) sendApprovalTimeout(approvalID, routeSession string) {
 	g.bridge.SendApprovalTimeout(g.sessionID, approvalID)
+	if routeSession != "" && routeSession != g.sessionID {
+		g.bridge.SendApprovalTimeout(routeSession, approvalID)
+	}
 }
 
 // ApprovalAPI handles approval response endpoints.

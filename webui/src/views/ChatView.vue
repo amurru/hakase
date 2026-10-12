@@ -80,10 +80,19 @@ const {
   clearMessages,
 } = useSSE(() => sessionId.value)
 
-// Wire SSE approval/clarify events to their Pinia stores
-onApprovalEvent((data) => approvalStore.handleApprovalEvent(data))
+// Wire SSE approval/clarify events to their Pinia stores. Prompts carry
+// the asking run's session; ignore ones for other sessions so a second
+// tab's run never pops a modal here (topic routing already scopes this,
+// the check is belt-and-braces).
+onApprovalEvent((data) => {
+  if (data.session_id && data.session_id !== sessionId.value) return
+  approvalStore.handleApprovalEvent(data)
+})
 onApprovalTimeoutEvent((id) => approvalStore.handleApprovalTimeout(id))
-onClarifyEvent((data) => clarifyStore.handleClarifyEvent(data))
+onClarifyEvent((data) => {
+  if (data.session_id && data.session_id !== sessionId.value) return
+  clarifyStore.handleClarifyEvent(data)
+})
 onClarifyTimeoutEvent((data) => clarifyStore.handleClarifyTimeout(data))
 
 // Wire notification handlers for delegation and cron SSE events

@@ -18,6 +18,7 @@ export interface ChatMessage {
 
 export interface SSEApproval {
   id: string
+  session_id?: string
   tool: string
   risk: string
   reason: string
@@ -26,6 +27,7 @@ export interface SSEApproval {
 
 export interface SSEClarify {
   id: string
+  session_id?: string
   question: string
   choices: string[]
   multi_select: boolean

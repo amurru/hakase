@@ -129,6 +129,16 @@ func (api *ChatAPI) ResurrectInterruptedPrompts(ctx context.Context) (int, error
 				strDetail(p.Record.Detail, "risk"),
 				strDetail(p.Record.Detail, "reason"),
 				strDetail(p.Record.Detail, "command"))
+			// Mirror onto the session topic: the browser subscribes only
+			// to its session, never the global topic (same split as the
+			// live gates).
+			if sess := p.Record.HakaseSessionID; sess != "" {
+				ag.bridge.SendApprovalPrompt(sess, sess, promptID,
+					strDetail(p.Record.Detail, "tool"),
+					strDetail(p.Record.Detail, "risk"),
+					strDetail(p.Record.Detail, "reason"),
+					strDetail(p.Record.Detail, "command"))
+			}
 			n++
 		case hakasesession.PauseGateClarify:
 			cg.TrackResurrected(promptID, p.Record.PauseID)
@@ -136,6 +146,12 @@ func (api *ChatAPI) ResurrectInterruptedPrompts(ctx context.Context) (int, error
 				strDetail(p.Record.Detail, "question"),
 				sliceDetail(p.Record.Detail, "choices"),
 				boolDetail(p.Record.Detail, "multi_select"))
+			if sess := p.Record.HakaseSessionID; sess != "" {
+				cg.bridge.SendClarifyPrompt(sess, sess, promptID,
+					strDetail(p.Record.Detail, "question"),
+					sliceDetail(p.Record.Detail, "choices"),
+					boolDetail(p.Record.Detail, "multi_select"))
+			}
 			n++
 		default:
 			log.Printf("resurrect: unknown gate %q for pause %s", p.Record.Gate, p.Record.PauseID)
