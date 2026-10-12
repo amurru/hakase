@@ -21,6 +21,7 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/skill"
+	"amurru/hakase/internal/util"
 	"amurru/hakase/internal/vision"
 
 	"google.golang.org/adk/v2/agent"
@@ -203,11 +204,11 @@ func AgenticTarget(opts AgenticOpts) (TargetRunner, error) {
 // plan M2: exceeding it aborts the task with an error.
 func runAgenticReplay(ctx context.Context, llm model.LLM, tools []tool.Tool, timeout time.Duration, maxToolCalls int, skillBody string, task skill.MarkdownTask) (string, []string, error) {
 	sub, err := llmagent.New(llmagent.Config{
-		Name:        "sleep_replay",
-		Description: "Offline replay sub-agent for skill validation. Runs one task and returns text.",
-		Instruction: "You are an offline replay probe. Follow the skill document, complete the task, and reply with your final answer as text.\n\n## Skill\n" + skillBody,
-		Model:       llm,
-		Tools:       tools,
+		Name:                "sleep_replay",
+		Description:         "Offline replay sub-agent for skill validation. Runs one task and returns text.",
+		InstructionProvider: util.StaticInstruction("You are an offline replay probe. Follow the skill document, complete the task, and reply with your final answer as text.\n\n## Skill\n" + skillBody),
+		Model:               llm,
+		Tools:               tools,
 		// No Toolsets: MCP and web-search fallback stay off in replay.
 		GenerateContentConfig: &genai.GenerateContentConfig{},
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{

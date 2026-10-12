@@ -2540,7 +2540,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
 		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction: HakaseSystemInstruction + ContextBlockFor(
+		InstructionProvider: util.StaticInstruction(HakaseSystemInstruction + ContextBlockFor(
 			"web_researcher",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
@@ -2548,7 +2548,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"web_researcher",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              researcherToolsets,
@@ -2616,7 +2616,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
 		Description: "Specialist agent for executing Python code, data analysis, parsing JSON/CSV, and managing learned skills.",
-		Instruction: CodeInterpreterSystemInstruction + ContextBlockFor(
+		InstructionProvider: util.StaticInstruction(CodeInterpreterSystemInstruction + ContextBlockFor(
 			"code_interpreter",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
@@ -2628,7 +2628,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"code_interpreter",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model: model,
 		Tools: []tool.Tool{
 			pythonTool,
@@ -2669,7 +2669,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:        "general_purpose",
 		Description: "General-purpose agent for workspace tasks: file operations, git operations, content management, and general-purpose execution.",
-		Instruction: GeneralPurposeSystemInstruction + ContextBlockFor(
+		InstructionProvider: util.StaticInstruction(GeneralPurposeSystemInstruction + ContextBlockFor(
 			"general_purpose",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
@@ -2681,7 +2681,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"general_purpose",
 			gitBlock,
 			gitBlockAgents,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model:                 model,
 		Tools:                 append(append(fileOpsTools, gitTools...), visionTool),
 		GenerateContentConfig: genCfg,
@@ -2841,7 +2841,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction: buildOrchestratorInstruction(
+		InstructionProvider: util.StaticInstruction(buildOrchestratorInstruction(
 			installedSkills,
 			cfg,
 		) + ContextBlockFor(
@@ -2856,7 +2856,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"orchestrator",
 			gitBlock,
 			gitBlockAgents,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model:                 model,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{

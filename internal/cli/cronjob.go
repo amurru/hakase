@@ -893,7 +893,7 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 	subAgent, err := llmagent.New(llmagent.Config{
 		Name:                  fmt.Sprintf("cron_%s", job.ID),
 		Description:           "Scheduled cron job agent",
-		Instruction:           buildCronInstruction(job.Name),
+		InstructionProvider:   util.StaticInstruction(buildCronInstruction(job.Name)),
 		Model:                 currentModel,
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,

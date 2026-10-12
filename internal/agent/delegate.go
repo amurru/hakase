@@ -400,7 +400,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	subAgent, err := llmagent.New(llmagent.Config{
 		Name:                  fmt.Sprintf("delegate_%s", agentLabel),
 		Description:           fmt.Sprintf("Delegated sub-agent for %s tasks", agentLabel),
-		Instruction:           buildSubAgentInstruction(input.AgentName, input.Context),
+		InstructionProvider:   util.StaticInstruction(buildSubAgentInstruction(input.AgentName, input.Context)),
 		Model:                 deps.Model,
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
