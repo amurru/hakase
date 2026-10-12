@@ -26,7 +26,7 @@ import MessageRail from '@/components/chat/MessageRail.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow, ArrowDown } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow, ArrowDown, FoldHorizontal, UnfoldHorizontal } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -646,6 +646,17 @@ function toggleCanvas() {
   }
 }
 
+// Transcript width preference: wide (full rows, default) or narrow (a
+// centered readable measure). Persisted per browser.
+const CHAT_WIDTH_KEY = 'hakase_chat_width'
+const transcriptNarrow = ref(localStorage.getItem(CHAT_WIDTH_KEY) === 'narrow')
+const transcriptWrapClass = computed(() => (transcriptNarrow.value ? 'mx-auto max-w-3xl' : ''))
+
+function toggleTranscriptWidth() {
+  transcriptNarrow.value = !transcriptNarrow.value
+  localStorage.setItem(CHAT_WIDTH_KEY, transcriptNarrow.value ? 'narrow' : 'wide')
+}
+
 // --- Restore-to-here (docs/session-rewind/spec.md, issue #21) ---
 // The snapshot taken just before a user prompt rewinds the conversation to
 // the state before it. Preselection matches the SERVER transcript position
@@ -790,6 +801,18 @@ onMounted(() => {
         <Button
           variant="ghost"
           size="sm"
+          class="gap-1.5 text-xs text-muted-foreground"
+          title="Toggle transcript width"
+          aria-label="Toggle transcript width"
+          @click="toggleTranscriptWidth"
+        >
+          <FoldHorizontal v-if="transcriptNarrow" class="h-4 w-4" />
+          <UnfoldHorizontal v-else class="h-4 w-4" />
+          <span class="hidden sm:inline">{{ transcriptNarrow ? 'Narrow' : 'Wide' }}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           class="relative gap-1.5 text-xs"
           :class="canvasStore.panelOpen ? 'text-primary' : 'text-muted-foreground'"
           title="Toggle execution canvas"
@@ -860,7 +883,7 @@ onMounted(() => {
             </div>
 
             <!-- Loading history: skeleton rows in the same full-width flow -->
-            <div v-if="isLoadingHistory" class="w-full py-4">
+            <div v-if="isLoadingHistory" :class="['w-full py-4', transcriptWrapClass]">
               <ListSkeleton :rows="5" />
             </div>
 
@@ -869,7 +892,7 @@ onMounted(() => {
                  and pin a scrollbar over the composer. Full-width rows (no
                  centered measure): bubbles carry their own max width, and
                  the rail still measures prompt anchors. -->
-            <div v-if="messages.length" class="w-full py-4">
+            <div v-if="messages.length" :class="['w-full py-4', transcriptWrapClass]">
               <template v-for="(msg, i) in messages" :key="msg.id">
                 <div
                   v-if="showDayDivider(i)"
@@ -891,7 +914,7 @@ onMounted(() => {
             </div>
 
             <!-- Sidekick advisory notes: quiet inline chips, never notifications -->
-            <div v-if="sidekickNotes.length" class="px-4 pb-3">
+            <div v-if="sidekickNotes.length" :class="['px-4 pb-3', transcriptWrapClass]">
               <div
                 v-for="note in sidekickNotes"
                 :key="note.id"
