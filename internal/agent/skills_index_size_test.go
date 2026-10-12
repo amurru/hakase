@@ -106,21 +106,21 @@ func TestSkillsIndexThresholdAndStub(t *testing.T) {
 	// 1. Force search-stub mode
 	stubCfg := &config.Config{SkillsIndexMode: "search-stub"}
 	blockStub := getSkillsPrompt(md, func(string) {}, stubCfg)
-	if !strings.Contains(blockStub, "skills installed; call search_skills{query}") {
+	if !strings.Contains(blockStub, "skills installed; call the search_skills tool") {
 		t.Errorf("expected search-stub prompt to contain stub line, got:\n%s", blockStub)
 	}
 
 	// 2. Auto mode with low threshold forces stub
 	lowThreshCfg := &config.Config{SkillsIndexMode: "auto", SkillsSearchThreshold: 1}
 	blockLow := getSkillsPrompt(md, func(string) {}, lowThreshCfg)
-	if !strings.Contains(blockLow, "skills installed; call search_skills{query}") {
+	if !strings.Contains(blockLow, "skills installed; call the search_skills tool") {
 		t.Errorf("expected low-threshold prompt to contain stub line, got:\n%s", blockLow)
 	}
 
 	// 3. Eager mode bypasses threshold
 	eagerCfg := &config.Config{SkillsIndexMode: "eager", SkillsSearchThreshold: 1}
 	blockEager := getSkillsPrompt(md, func(string) {}, eagerCfg)
-	if strings.Contains(blockEager, "call search_skills{query}") {
+	if strings.Contains(blockEager, "call the search_skills tool") {
 		t.Errorf("expected eager prompt NOT to contain stub line")
 	}
 }

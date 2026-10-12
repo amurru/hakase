@@ -17,7 +17,7 @@ Governing issue: TBD (Tier-3 proposal, P0-2). Reference: Pi lazy skills, agentsk
 ### Spec CX-001: index clamp + stub + search
 
 - Clamp each description ~200-300 chars at word boundary. Flat per-skill budget already rejected in test comment; clamp is per-description bound.
-- Stub text when over threshold: `N skills installed; call search_skills{query}`.
+- Stub text when over threshold: `N skills installed; call the search_skills tool with a query to find matching skills` (brace-free: ADK treats every `{identifier}` in system instructions as session-state templating and aborts the run when the key does not exist, so the stub must never use the `search_skills{query}` form).
 - `search_skills{query, limit=5}`: substring/BM25 over name+description only (reuse `hctx.Tokenize` + `score.go`), returns name + full description, nothing else. Same construction as `CreateLoadMarkdownSkillTool` (index map + one fresh re-scan on miss), read-only, no approval, audit-logged. Register in both tool lists (`agent.go:2364,2514`).
 
 ### Spec CX-002: KB caps

@@ -1214,9 +1214,14 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc, cfg ...*config
 	var sb strings.Builder
 	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
 
-	// Over threshold or search-stub mode: emit stub text.
+	// Over threshold or search-stub mode: emit stub text. NOTE: this string
+	// becomes part of agent system instructions, and ADK's instruction
+	// processor treats every {identifier} as session-state templating
+	// (a missing key aborts the whole run with ErrStateKeyNotExist).
+	// Keep this text brace-free: write "the search_skills tool with a
+	// query", never "search_skills{query}".
 	if mode == "search-stub" || (mode == "auto" && totalSkills > threshold) {
-		fmt.Fprintf(&sb, "%d skills installed; call search_skills{query}\n", totalSkills)
+		fmt.Fprintf(&sb, "%d skills installed; call the search_skills tool with a query to find matching skills\n", totalSkills)
 		return sb.String()
 	}
 

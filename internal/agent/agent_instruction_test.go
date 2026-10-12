@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/skill"
 )
 
 // TestOrchestratorInstructionContainsSubAgentGuidance verifies that
@@ -158,6 +159,27 @@ INSTALLED SKILLS:
 		"general_purpose":  GeneralPurposeSystemInstruction,
 		"delegated sub-agent": buildSubAgentInstruction("general_purpose",
 			representativeContext),
+	}
+
+	// The skills-index stub path (search-stub mode, or auto mode over the
+	// threshold) is also rendered into the orchestrator instruction. A
+	// brace-style tool invocation there (e.g. "search_skills{query}")
+	// aborts every run, so pin both stub triggers brace-free. Synthetic
+	// skills keep the test hermetic (no dependency on the working tree's
+	// installed skill count).
+	stubSkills := []skill.MarkdownSkill{
+		{Frontmatter: skill.MarkdownSkillFrontmatter{Name: "s1", Description: "first test skill"}},
+		{Frontmatter: skill.MarkdownSkillFrontmatter{Name: "s2", Description: "second test skill"}},
+	}
+	stubCfgs := map[string]*config.Config{
+		"orchestrator (search-stub skills)": {SkillsIndexMode: "search-stub"},
+		"orchestrator (over-threshold skills)": {
+			SkillsIndexMode: "auto", SkillsSearchThreshold: 1,
+		},
+	}
+	for name, cfg := range stubCfgs {
+		prompts[name] = buildOrchestratorInstruction(
+			getSkillsPrompt(stubSkills, func(string) {}, cfg), cfg)
 	}
 
 	// Mirror ADK's placeholderRegex: {+[^{}]*}+
