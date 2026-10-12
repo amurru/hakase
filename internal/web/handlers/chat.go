@@ -656,7 +656,16 @@ func (api *ChatAPI) PostMessage(w http.ResponseWriter, r *http.Request) {
 		api.semMu.Unlock()
 
 		content := genai.NewContentFromParts(parts, genai.RoleUser)
-		go api.runAgentTask(context.Background(), sessionID, content)
+		// Pre-register the run's cancellable context BEFORE returning 202: a
+		// stop arriving between the 202 and the goroutine's first line must
+		// still cancel this run instead of 404ing while it continues.
+		// runAgentTask registers its own handle too (a child of this ctx),
+		// so both entry points below stay stoppable.
+		runCtx, untrack := api.trackRun(sessionID, context.Background())
+		go func() {
+			defer untrack()
+			api.runAgentTask(runCtx, sessionID, content)
+		}()
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{

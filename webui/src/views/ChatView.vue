@@ -231,6 +231,9 @@ function scrollToBottom() {
   nextTick(() => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
+        // Re-check: a streaming update may have scheduled this while the
+        // user scrolled up in the meantime - never yank them back down.
+        if (isUserScrolledUp.value) return
         const el = scrollContainer.value
         if (el) {
           el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })

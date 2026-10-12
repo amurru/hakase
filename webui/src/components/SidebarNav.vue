@@ -26,6 +26,9 @@ import {
 
 defineProps<{
   collapsed?: boolean
+  // The mobile drawer renders expanded and uncollapsible: the button would
+  // silently mutate persisted desktop state with no visible effect.
+  showCollapse?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -76,8 +79,12 @@ function isActive(path: string) {
 }
 
 function handleLogout() {
-  authStore.logout()
-  window.location.href = '/login'
+  // Await the logout POST before navigating: an immediate full-page
+  // navigation can abort the in-flight request and leave the server
+  // session alive. State clears regardless (see auth store).
+  void authStore.logout().finally(() => {
+    window.location.href = '/login'
+  })
 }
 </script>
 
@@ -132,6 +139,7 @@ function handleLogout() {
       :class="collapsed ? 'flex flex-col items-center gap-1' : 'flex flex-col gap-1'"
     >
       <Button
+        v-if="showCollapse ?? true"
         variant="ghost"
         size="sm"
         :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"

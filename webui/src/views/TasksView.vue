@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import EmptyState from '@/components/EmptyState.vue'
-import { Plus, RefreshCw, Trash2, ArrowRight, ListTodo } from '@lucide/vue'
+import { Plus, RefreshCw, Trash2, ArrowRight, ListTodo, CircleAlert } from '@lucide/vue'
 
 const store = useTaskStore()
 
@@ -154,6 +154,23 @@ onMounted(() => {
           <div class="h-20 rounded-md bg-muted/70 motion-safe:animate-pulse" />
         </div>
       </div>
+
+      <!-- Load error with retry: a failed load must not read as empty -->
+      <EmptyState
+        v-else-if="store.loadError && store.tasks.length === 0"
+        title="Could not load tasks"
+        :description="store.loadError"
+      >
+        <template #icon>
+          <CircleAlert class="h-10 w-10 text-destructive/70" />
+        </template>
+        <template #action>
+          <Button variant="outline" size="sm" @click="store.fetchTasks()">
+            <RefreshCw class="mr-2 h-4 w-4" />
+            Retry
+          </Button>
+        </template>
+      </EmptyState>
 
       <!-- Board empty state -->
       <EmptyState

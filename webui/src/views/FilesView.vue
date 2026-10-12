@@ -465,26 +465,40 @@ onMounted(loadRoot)
   display: block;
   overflow-x: auto;
   padding: 1rem;
-  background: oklch(0.145 0 0);
+  background: var(--muted);
   border-radius: 0.375rem;
+}
+.dark .prose :deep(pre code) {
+  background: oklch(0.145 0 0);
 }
 
 .prose :deep(h1),
 .prose :deep(h2),
 .prose :deep(h3) {
+  color: var(--foreground);
+}
+.dark .prose :deep(h1),
+.dark .prose :deep(h2),
+.dark .prose :deep(h3) {
   color: oklch(0.985 0 0);
 }
 
 .prose :deep(p) {
+  color: var(--foreground);
+}
+.dark .prose :deep(p) {
   color: oklch(0.85 0 0);
 }
 
 .prose :deep(a) {
+  color: var(--primary);
+}
+.dark .prose :deep(a) {
   color: oklch(0.6 0.17 162.48);
 }
 
 .prose :deep(code:not(pre code)) {
-  background: oklch(0.269 0 0);
+  background: var(--muted);
   padding: 0.125rem 0.25rem;
   border-radius: 0.25rem;
   font-size: 0.8125rem;
@@ -492,19 +506,33 @@ onMounted(loadRoot)
 
 .prose :deep(ul),
 .prose :deep(ol) {
+  color: var(--foreground);
+}
+.dark .prose :deep(ul),
+.dark .prose :deep(ol) {
   color: oklch(0.85 0 0);
 }
 
 .prose :deep(blockquote) {
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+.dark .prose :deep(blockquote) {
   border-color: oklch(0.269 0 0);
   color: oklch(0.708 0 0);
 }
 
 .prose :deep(table) {
+  color: var(--foreground);
+}
+.dark .prose :deep(table) {
   color: oklch(0.85 0 0);
 }
 
 .prose :deep(th) {
+  background: var(--muted);
+}
+.dark .prose :deep(th) {
   background: oklch(0.205 0 0);
 }
 </style>

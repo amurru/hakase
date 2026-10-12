@@ -185,7 +185,11 @@ func (api *ChatAPI) AnswerResurrectedApproval(ctx context.Context, promptID stri
 	}
 	go func() {
 		defer sem.release()
-		api.runAgentTask(context.Background(), rec.Record.HakaseSessionID, input)
+		// Pre-register like PostMessage so a stop racing the resume still
+		// cancels the redriven turn.
+		runCtx, untrack := api.trackRun(rec.Record.HakaseSessionID, context.Background())
+		defer untrack()
+		api.runAgentTask(runCtx, rec.Record.HakaseSessionID, input)
 	}()
 	return http.StatusAccepted, map[string]string{"status": "redriving", "session_id": rec.Record.HakaseSessionID}
 }

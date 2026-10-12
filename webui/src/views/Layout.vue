@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useThemeStore } from '@/stores/theme'
@@ -71,6 +71,9 @@ const statusColor = computed(() => {
 const COLLAPSED_KEY = 'hakase_sidebar_collapsed'
 const collapsed = ref(localStorage.getItem(COLLAPSED_KEY) === '1')
 const mobileOpen = ref(false)
+// Refs for drawer focus management (open: focus in; close: focus back).
+const menuButton = ref<{ $el: HTMLButtonElement } | null>(null)
+const drawerAside = ref<HTMLElement | null>(null)
 
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
@@ -78,14 +81,41 @@ function toggleCollapsed() {
 }
 
 function onDrawerKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') mobileOpen.value = false
+  if (e.key === 'Escape') {
+    mobileOpen.value = false
+    return
+  }
+  // Keep tab cycling inside the modal drawer while it is open.
+  if (e.key !== 'Tab' || !drawerAside.value) return
+  const items = [...drawerAside.value.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )]
+  if (items.length === 0) return
+  const first = items[0]!
+  const last = items[items.length - 1]!
+  const active = document.activeElement as HTMLElement | null
+  if (e.shiftKey && (active === first || !drawerAside.value.contains(active))) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
 
 watch(mobileOpen, (open) => {
   if (open) {
     document.addEventListener('keydown', onDrawerKeydown)
+    // Move focus into the dialog; keyboard users otherwise keep tabbing
+    // through the page behind the overlay.
+    nextTick(() => {
+      drawerAside.value
+        ?.querySelector<HTMLElement>('a[href], button:not([disabled])')
+        ?.focus()
+    })
   } else {
     document.removeEventListener('keydown', onDrawerKeydown)
+    menuButton.value?.$el?.focus()
   }
 })
 
@@ -113,8 +143,8 @@ onUnmounted(() => {
     <!-- Sidebar (mobile): overlay drawer below lg. -->
     <div v-if="mobileOpen" class="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
       <div class="absolute inset-0 bg-black/60" @click="mobileOpen = false" />
-      <aside class="absolute inset-y-0 left-0 flex w-72 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground">
-        <SidebarNav @navigate="mobileOpen = false" @toggle-collapse="toggleCollapsed" />
+      <aside ref="drawerAside" class="absolute inset-y-0 left-0 flex w-72 flex-col border-r border-border bg-sidebar-background text-sidebar-foreground">
+        <SidebarNav :show-collapse="false" @navigate="mobileOpen = false" @toggle-collapse="toggleCollapsed" />
       </aside>
     </div>
 
@@ -124,6 +154,7 @@ onUnmounted(() => {
       <header class="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
         <div class="flex min-w-0 items-center gap-3">
           <Button
+            ref="menuButton"
             variant="ghost"
             size="sm"
             class="h-8 w-8 shrink-0 p-0 lg:hidden"

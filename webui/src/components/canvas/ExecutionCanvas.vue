@@ -108,17 +108,18 @@ watch(
         <Controls position="bottom-left" />
         <MiniMap position="bottom-right" pannable zoomable />
       </VueFlow>
-      <!-- Onboarding: the graph is empty until the first run streams events.
+      <!-- Onboarding: neutral wording that stays true when the history
+           fetch failed (empty graph then means "unknown", not "none").
            Pointer-transparent so panning still works underneath. -->
       <div
         v-if="store.sortedNodes.length === 0 && store.backfillLoaded"
         class="pointer-events-none absolute inset-0 flex items-center justify-center p-6"
       >
         <div class="max-w-xs text-center">
-          <p class="text-sm font-medium text-foreground/80">No runs yet</p>
+          <p class="text-sm font-medium text-foreground/80">No graph data yet</p>
           <p class="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Agent runs and tool calls appear here as a live graph.
-            Select any node to inspect it.
+            Agent runs and tool calls appear here as a live graph once this
+            session has activity. Select any node to inspect it.
           </p>
         </div>
       </div>

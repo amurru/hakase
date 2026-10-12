@@ -63,6 +63,26 @@ func TestTrackRunStopRuns(t *testing.T) {
 	}
 }
 
+// A stop arriving before the run goroutine's first line must still cancel
+// the accepted run: PostMessage pre-registers the run ctx, and the run body
+// derives its tracked ctx from it, so pre-cancellation propagates.
+func TestStopBeforeRunStarts(t *testing.T) {
+	api, _, _, _ := newTestChatAPI(t)
+
+	runCtx, untrack := api.trackRun("ses-race", context.Background())
+	defer untrack()
+	if !api.stopRuns("ses-race") {
+		t.Fatal("stop should report the pre-registered run")
+	}
+	child, childDone := api.trackRun("ses-race", runCtx)
+	defer childDone()
+	select {
+	case <-child.Done():
+	default:
+		t.Fatal("run starting after a pre-stop must observe cancellation")
+	}
+}
+
 // PostStop cancels a tracked run and answers 202 with the session id.
 func TestPostStopCancelsRun(t *testing.T) {
 	api, _, _, r := newTestChatAPI(t)

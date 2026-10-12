@@ -255,6 +255,13 @@ function attachCopyButtons(root: HTMLElement) {
 .markdown-body .wrap-code-button:focus-visible {
   opacity: 1;
 }
+/* Touch devices have no hover: the toggle stays visible so there is
+   something to tap (mirrors the message toolbar behavior). */
+@media (pointer: coarse) {
+  .markdown-body .wrap-code-button {
+    opacity: 1;
+  }
+}
 .markdown-body .wrap-code-button[aria-pressed="true"] {
   opacity: 1;
   color: var(--foreground);
