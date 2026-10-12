@@ -260,11 +260,13 @@ diagram, class diagram, ER diagram, Gantt chart, etc. - as a Mermaid diagram
 embedded in markdown using a mermaid fenced code block. Do NOT draw diagrams
 with ASCII art or box-drawing characters.
 
+Edge labels use pipes: ` + "`A -->|text| B`" + `. Never ` + "`A -->[text] B`" + ` - brackets are node shapes, not labels.
+
 Example:
 ` + "```mermaid" + `
 graph TD
     A[Start] --> B[Process]
-    B --> C[Done]
+    B -->|done| C[Done]
 ` + "```" + `
 `
 
