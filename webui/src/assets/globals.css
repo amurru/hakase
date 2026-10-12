@@ -2,38 +2,87 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Self-hosted Geist + Geist Mono (no webfont CDN in production). */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("/fonts/geist-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("/fonts/geist-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("/fonts/geist-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("/fonts/geist-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("/fonts/geist-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("/fonts/geist-mono-500.woff2") format("woff2");
+}
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 :root {
-  --background: oklch(0.98 0.008 105);
+  --background: oklch(0.975 0.006 260);
   --foreground: oklch(0.22 0.02 260);
-  --card: oklch(1 0 0);
+  --card: oklch(0.995 0.003 260);
   --card-foreground: oklch(0.22 0.02 260);
-  --popover: oklch(1 0 0);
+  --popover: oklch(0.995 0.003 260);
   --popover-foreground: oklch(0.22 0.02 260);
   --primary: oklch(0.52 0.21 275);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.94 0.012 100);
+  --secondary: oklch(0.94 0.008 260);
   --secondary-foreground: oklch(0.25 0.02 260);
-  --muted: oklch(0.94 0.012 100);
+  --muted: oklch(0.94 0.008 260);
   --muted-foreground: oklch(0.52 0.025 260);
-  --accent: oklch(0.92 0.03 280);
+  --accent: oklch(0.92 0.025 277);
   --accent-foreground: oklch(0.35 0.12 275);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.9 0.012 100);
-  --input: oklch(0.88 0.012 100);
+  --border: oklch(0.895 0.008 260);
+  --input: oklch(0.875 0.008 260);
   --ring: oklch(0.52 0.21 275);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.965 0.01 100);
+  --sidebar: oklch(0.96 0.007 260);
   --sidebar-foreground: oklch(0.25 0.02 260);
   --sidebar-primary: oklch(0.52 0.21 275);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.9 0.035 280);
+  --sidebar-accent: oklch(0.9 0.03 277);
   --sidebar-accent-foreground: oklch(0.35 0.12 275);
-  --sidebar-border: oklch(0.9 0.012 100);
+  --sidebar-border: oklch(0.895 0.008 260);
   --sidebar-ring: oklch(0.52 0.21 275);
 }
 

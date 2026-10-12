@@ -178,7 +178,7 @@ onMounted(() => {
          the middle, send on the right. focus-within carries the highlight so
          the textarea itself stays borderless. -->
     <div
-      class="flex items-end gap-1.5 rounded-2xl border border-border bg-muted/50 p-1.5 transition-colors focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30"
+      class="flex items-end gap-1.5 rounded-2xl border border-border bg-muted/50 p-1.5 transition-all focus-within:border-primary/50 focus-within:shadow-[0_12px_32px_-16px_var(--primary)] focus-within:ring-1 focus-within:ring-primary/30"
     >
       <Button
         variant="ghost"
