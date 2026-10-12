@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   Dialog,
   DialogContent,
@@ -297,32 +298,54 @@ onMounted(loadServers)
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-4">
-      <!-- Loading -->
-      <div v-if="loading && servers.length === 0" class="flex h-40 items-center justify-center text-sm text-muted-foreground">
-        Loading servers...
+      <!-- Loading: card shapes, no layout shift on swap-in -->
+      <div
+        v-if="loading && servers.length === 0"
+        class="flex flex-col gap-3"
+        aria-hidden="true"
+      >
+        <div
+          v-for="i in 2"
+          :key="i"
+          class="space-y-2 rounded-lg border border-border p-4"
+        >
+          <div class="h-4 w-1/3 rounded bg-muted motion-safe:animate-pulse" />
+          <div class="h-3 w-2/3 rounded bg-muted/70 motion-safe:animate-pulse" />
+        </div>
       </div>
 
       <!-- Error -->
-      <div v-else-if="error && servers.length === 0" class="flex h-40 flex-col items-center justify-center gap-2">
-        <div class="flex items-center gap-2 text-sm text-destructive">
-          <AlertCircle class="h-4 w-4 shrink-0" />
-          <span>{{ error }}</span>
-        </div>
-        <Button variant="ghost" size="sm" @click="loadServers">
-          Retry
-        </Button>
-      </div>
+      <EmptyState
+        v-else-if="error && servers.length === 0"
+        title="Could not load MCP servers"
+        :description="error"
+      >
+        <template #icon>
+          <AlertCircle class="h-10 w-10 text-destructive/70" />
+        </template>
+        <template #action>
+          <Button variant="outline" size="sm" @click="loadServers">
+            Retry
+          </Button>
+        </template>
+      </EmptyState>
 
       <!-- Empty state -->
-      <div v-else-if="servers.length === 0" class="flex h-40 flex-col items-center justify-center text-muted-foreground">
-        <Server class="mb-2 h-8 w-8 opacity-50" />
-        <p class="text-sm">No MCP servers configured</p>
-        <p class="mt-1 text-xs">Add a server with the button above, or configure the "mcp" block in config.json</p>
-        <Button size="sm" class="mt-3" @click="openAdd">
-          <Plus class="mr-1 h-4 w-4" />
-          Add Server
-        </Button>
-      </div>
+      <EmptyState
+        v-else-if="servers.length === 0"
+        title="No MCP servers configured"
+        description="Add a server with the button above, or configure the &quot;mcp&quot; block in config.json"
+      >
+        <template #icon>
+          <Server class="h-10 w-10" />
+        </template>
+        <template #action>
+          <Button size="sm" @click="openAdd">
+            <Plus class="mr-1 h-4 w-4" />
+            Add Server
+          </Button>
+        </template>
+      </EmptyState>
 
       <!-- Server list -->
       <div v-else class="flex flex-col gap-3">

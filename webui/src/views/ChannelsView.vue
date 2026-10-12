@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import EmptyState from '@/components/EmptyState.vue'
 import { RefreshCw, KeyRound, Trash2, Copy, Send, Power, Loader2, AlertCircle } from '@lucide/vue'
 
 const status = ref<TelegramChannelStatus | null>(null)
@@ -260,9 +261,16 @@ onUnmounted(() => {
         <!-- Chat bindings -->
         <div class="space-y-2">
           <h3 class="text-sm font-medium">Chats ({{ status.chats.length }})</h3>
-          <div v-if="status.chats.length === 0" class="text-sm text-muted-foreground">
-            No chats have talked to the bot yet.
-          </div>
+          <EmptyState
+            v-if="status.chats.length === 0"
+            compact
+            title="No chats yet"
+            description="No chats have talked to the bot yet."
+          >
+            <template #icon>
+              <Send class="h-6 w-6 opacity-50" />
+            </template>
+          </EmptyState>
           <div
             v-for="c in status.chats"
             :key="c.chat_id"
