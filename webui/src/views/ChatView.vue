@@ -26,7 +26,7 @@ import MessageRail from '@/components/chat/MessageRail.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { FileAttachment } from '@/components/chat/AttachmentPicker.vue'
-import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow } from '@lucide/vue'
+import { AlertTriangle, Loader2, Info, AlertCircle, Lightbulb, GitBranch, Check, Workflow, ArrowDown } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -225,12 +225,26 @@ const emptyStateCommands = SLASH_COMMANDS.filter((c) =>
 
 // Auto-scroll logic
 function scrollToBottom() {
+  // Double rAF: Vue flushes DOM in nextTick, but markdown/mermaid hydration
+  // grows the transcript afterwards - the second frame re-pins to the true
+  // bottom after that layout settles.
   nextTick(() => {
-    const el = scrollContainer.value
-    if (el) {
-      el.scrollTop = el.scrollHeight
-    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = scrollContainer.value
+        if (el) {
+          el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+        }
+      })
+    })
   })
+}
+
+// jumpToLatest backs the floating "Latest" pill: the user asked for the
+// bottom, so the scrolled-up flag clears unconditionally.
+function jumpToLatest() {
+  isUserScrolledUp.value = false
+  scrollToBottom()
 }
 
 function handleScroll() {
@@ -466,6 +480,11 @@ async function loadSessionHistory(sid: string) {
 
 // Handle send message
 async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
+  // The user's own send always returns to the bottom: without this, sending
+  // while scrolled up (reading history) leaves the stuck scrolled-up flag
+  // set and every subsequent auto-scroll no-ops - the transcript looks
+  // frozen while new messages pile up below the fold.
+  isUserScrolledUp.value = false
   // Known slash commands route locally - never to the main model. Unknown
   // "/xyz" tokens fall through as ordinary text (they may be paths).
   // Parse before session creation so /new and /compact avoid an unnecessary
@@ -478,6 +497,7 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
     if (!sessionId.value && cmd.name !== 'new' && cmd.name !== 'compact') {
       // Commands like /help that don't need a session at all
       await executeSlash(cmd.name, cmd.args)
+      scrollToBottom()
       return
     }
     messages.value.push({
@@ -488,6 +508,7 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
       timestamp: Date.now(),
     })
     await executeSlash(cmd.name, cmd.args)
+    scrollToBottom()
     return
   }
 
@@ -520,6 +541,9 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
       data: a.data,
     })),
   )
+  // Pin to the freshly pushed user message; the stream watchers keep it
+  // pinned from here unless the user scrolls up deliberately.
+  scrollToBottom()
   // SSE connection will be started by useSSE.sendMessage
 }
 
@@ -884,6 +908,19 @@ onMounted(() => {
             :active-id="activeTickId"
             @select="jumpToMessage"
           />
+          <!-- Jump-to-latest pill: appears when scrolled up with content
+               below the fold (streaming or after a stuck scroll), so the
+               bottom is always one click away. -->
+          <button
+            v-if="isUserScrolledUp && messages.length > 0"
+            type="button"
+            class="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-popover px-3 py-1.5 text-xs shadow-lg transition-colors hover:bg-accent"
+            aria-label="Jump to latest message"
+            @click="jumpToLatest"
+          >
+            <ArrowDown class="h-3.5 w-3.5" />
+            Latest
+          </button>
         </div>
 
         <!-- Input area -->
