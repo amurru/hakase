@@ -196,6 +196,17 @@ function normalizeUnitsSystem(v: unknown): 'metric' | 'imperial' {
     : 'metric'
 }
 
+// normalizeThinkingLevel maps legacy alias values the server still accepts
+// (maximum/xhigh, saved before they were canonicalized to high) onto the
+// Settings select's option set, so an old config renders as its effective
+// level instead of a blank select. Unknown values fall back to default.
+function normalizeThinkingLevel(v: string): string {
+  const norm = v.trim().toLowerCase()
+  if (norm === 'maximum' || norm === 'xhigh') return 'high'
+  if (['', 'off', 'minimal', 'low', 'medium', 'high'].includes(norm)) return norm
+  return ''
+}
+
 function fillForm(cfg: ConfigResponse['config']) {
   original.value = cfg
   const sb = asObj(cfg.sandbox)
@@ -213,7 +224,7 @@ function fillForm(cfg: ConfigResponse['config']) {
     base_url: asStr(cfg.base_url),
     summary_model: asStr(cfg.summary_model),
     fallback_providers: asList(cfg.fallback_providers),
-    thinking_level: asStr(cfg.thinking_level),
+    thinking_level: normalizeThinkingLevel(asStr(cfg.thinking_level)),
     chat_buffer_size: asNum(cfg.chat_buffer_size) || 1000,
     task_checkpoint: asBool(cfg.task_checkpoint),
     search_expansion: asBool(cfg.search_expansion),
@@ -813,12 +824,14 @@ onMounted(loadConfig)
                 >
                   <option value="">(provider default)</option>
                   <option value="off">off</option>
+                  <option value="minimal">minimal</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
                   <option value="high">high</option>
-                  <option value="maximum">maximum</option>
-                  <option value="xhigh">xhigh</option>
                 </select>
+                <p class="text-[11px] text-muted-foreground">
+                  Server default; the chat composer can override it per message.
+                </p>
               </div>
 
               <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">

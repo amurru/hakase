@@ -353,7 +353,11 @@ export function useSSE(sessionId: () => string | null) {
     }, reconnectDelay)
   }
 
-  async function sendMessage(content: string, attachments?: Array<{ name: string; path: string; mime: string; label: string; data?: string }>) {
+  async function sendMessage(
+    content: string,
+    attachments?: Array<{ name: string; path: string; mime: string; label: string; data?: string }>,
+    thinkingLevel?: string,
+  ) {
     const sid = sessionId()
     if (!sid || (!content.trim() && (!attachments || attachments.length === 0))) return
 
@@ -384,6 +388,10 @@ export function useSSE(sessionId: () => string | null) {
         body: {
           content: content.trim(),
           ...(atts && atts.length > 0 ? { attachments: atts } : {}),
+          // Per-message effort override; omitted on the server default so the
+          // backend's configured thinking_level applies. Empty means "no
+          // override" - never send an empty string.
+          ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
         },
       })
 

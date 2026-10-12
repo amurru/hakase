@@ -552,6 +552,8 @@ async function handleSend(content: string, fileAttachments?: FileAttachment[]) {
       label: a.label,
       data: a.data,
     })),
+    // Sticky composer effort selection; '' sends no override (server default).
+    appStore.thinkingLevel || undefined,
   )
   // Pin to the freshly pushed user message; the stream watchers keep it
   // pinned from here unless the user scrolls up deliberately.

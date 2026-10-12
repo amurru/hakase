@@ -3,6 +3,7 @@ import { ref, computed, nextTick, onMounted } from 'vue'
 import { Send, Square, Paperclip } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import AttachmentPicker, { type FileAttachment } from './AttachmentPicker.vue'
+import ThinkingLevelMenu from './ThinkingLevelMenu.vue'
 import VoiceRecorder from './VoiceRecorder.vue'
 import { suggestCommands, type SlashCommand } from '@/lib/slash'
 
@@ -197,6 +198,9 @@ onMounted(() => {
         :disabled="disabled"
         @transcription="handleTranscription"
       />
+      <!-- Reasoning-effort selector: sticky per-message override, sent as
+           thinking_level with the chat POST (server default when unset). -->
+      <ThinkingLevelMenu :disabled="disabled" />
       <div class="relative min-w-0 flex-1">
         <!-- Slash command palette -->
         <ul
