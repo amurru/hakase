@@ -115,7 +115,7 @@ function handleLogout() {
           :class="[
             collapsed && 'justify-center px-0',
             isActive(item.to)
-              ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+              ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-[inset_2px_0_0_0_var(--sidebar-primary)]'
               : 'text-sidebar-foreground/70',
           ]"
           @click="emit('navigate')"
