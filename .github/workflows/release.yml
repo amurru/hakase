@@ -107,17 +107,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        # --prerelease: this is a 0.x alpha line, so every tag is a
-        # prerelease. Without it GitHub's "latest release" points at an
-        # alpha and upgrade tooling follows it as if it were stable. Only
-        # applies at creation - the `gh release view` guard below means a
-        # re-run on an existing tag will not re-flag it, so a release
-        # created by an older revision of this file needs `gh release edit
-        # <tag> --prerelease` by hand.
+        # Prerelease flagging is tag-driven: `-alpha` / `-beta` / `-rc` tags
+        # are flagged `--prerelease` at creation so GitHub's "latest release"
+        # never points at an unstable line; stable tags (e.g. `v0.1.0`) ship
+        # as full releases. Only applies at creation - the `gh release view`
+        # guard below means a re-run on an existing tag will not re-flag it,
+        # so a release created by an older revision of this file needs
+        # `gh release edit <tag> [--prerelease|--latest]` by hand.
         run: |
           set -euo pipefail
+          PRE=""
+          case "$TAG" in
+            *-alpha*|*-beta*|*-rc*) PRE="--prerelease" ;;
+          esac
           gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes --prerelease
+            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $PRE
           gh release upload "$TAG" --clobber dist-release/hakase-"$TAG"-linux-amd64 \
             dist-release/hakase-"$TAG"-linux-arm64 \
             dist-release/*.deb dist-release/*.rpm SHA256SUMS.txt

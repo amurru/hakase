@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/amurru/hakase/main/packaging/install.sh | sh
-#   curl -fsSL ... | sh -s -- --version v0.1.0-alpha.10 --to /usr/local/bin
+#   curl -fsSL ... | sh -s -- --version v0.1.0 --to /usr/local/bin
 #
 # Flags & Environment:
 #   --version <tag>      | HAKASE_VERSION     Release tag to install (default: latest release tag)
