@@ -59,7 +59,11 @@ type ConfigResponse struct {
 	// (values never returned). HasSidekickAPIKey reports the sidekick key.
 	HasTelegramBotToken    bool `json:"has_telegram_bot_token"`
 	HasTelegramPairingCode bool `json:"has_telegram_pairing_code"`
-	HasSidekickAPIKey      bool `json:"has_sidekick_api_key"`
+	// HasDiscordBotToken / HasDiscordPairingCode mirror the Telegram flags
+	// for the Discord DM transport.
+	HasDiscordBotToken    bool `json:"has_discord_bot_token"`
+	HasDiscordPairingCode bool `json:"has_discord_pairing_code"`
+	HasSidekickAPIKey     bool `json:"has_sidekick_api_key"`
 	// EffectiveModel is the model the agent will actually use, resolved from the
 	// configured model_name or the provider default. Exposed so the web UI can
 	// label the active model without recomputing provider defaults client-side.
@@ -92,6 +96,8 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 	hasOpenAIVideoKey := cfg.Media.OpenAIVideoKey != ""
 	hasTelegramToken := cfg.Channels.Telegram.BotToken != ""
 	hasTelegramPairingCode := cfg.Channels.Telegram.PairingCode != ""
+	hasDiscordToken := cfg.Channels.Discord.BotToken != ""
+	hasDiscordPairingCode := cfg.Channels.Discord.PairingCode != ""
 	hasSidekickKey := cfg.Sidekick.APIKey != ""
 	// Blank secrets before returning.
 	cfg.APIKey = ""
@@ -101,6 +107,8 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.Media.OpenAIVideoKey = ""
 	cfg.Channels.Telegram.BotToken = ""
 	cfg.Channels.Telegram.PairingCode = ""
+	cfg.Channels.Discord.BotToken = ""
+	cfg.Channels.Discord.PairingCode = ""
 	cfg.Sidekick.APIKey = ""
 
 	_, statErr := os.Stat(path)
@@ -116,6 +124,8 @@ func (api *ConfigAPI) GetConfig(w http.ResponseWriter, r *http.Request) {
 		HasOpenAIVideoKey:      hasOpenAIVideoKey,
 		HasTelegramBotToken:    hasTelegramToken,
 		HasTelegramPairingCode: hasTelegramPairingCode,
+		HasDiscordBotToken:     hasDiscordToken,
+		HasDiscordPairingCode:  hasDiscordPairingCode,
 		HasSidekickAPIKey:      hasSidekickKey,
 		EffectiveModel:         cfg.EffectiveModelName(),
 		Config:                 *cfg,
@@ -175,6 +185,10 @@ var apiKeyControlKeys = []string{
 	"clear_telegram_bot_token",
 	"telegram_pairing_code",
 	"clear_telegram_pairing_code",
+	"discord_bot_token",
+	"clear_discord_bot_token",
+	"discord_pairing_code",
+	"clear_discord_pairing_code",
 }
 
 // UpdateConfig handles PUT /api/config. The request body is a partial JSON
@@ -227,11 +241,14 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			delete(m, secret)
 		}
 	}
-	// Same guard for the channels block (bot token, static pairing code).
+	// Same guard for the channels block (bot tokens, static pairing codes).
+	// Both transports are write-only through top-level control keys.
 	if m, ok := req["channels"].(map[string]interface{}); ok {
-		if tg, ok := m["telegram"].(map[string]interface{}); ok {
-			delete(tg, "bot_token")
-			delete(tg, "pairing_code")
+		for _, transport := range []string{"telegram", "discord"} {
+			if tg, ok := m[transport].(map[string]interface{}); ok {
+				delete(tg, "bot_token")
+				delete(tg, "pairing_code")
+			}
 		}
 	}
 
@@ -265,13 +282,19 @@ func (api *ConfigAPI) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			setMediaSecret(raw, k, v)
 		}
 	}
-	// Telegram channel secrets live nested under channels.telegram and are
-	// managed through the same write-only control-key pattern.
+	// Telegram and Discord channel secrets live nested under
+	// channels.<transport> and are managed through the same write-only
+	// control-key pattern.
 	for _, k := range []string{"bot_token", "pairing_code"} {
 		if clear, ok := req["clear_telegram_"+k].(bool); ok && clear {
-			clearTelegramSecret(raw, k)
+			clearChannelSecret(raw, "telegram", k)
 		} else if v, ok := req["telegram_"+k].(string); ok && v != "" {
-			setTelegramSecret(raw, k, v)
+			setChannelSecret(raw, "telegram", k, v)
+		}
+		if clear, ok := req["clear_discord_"+k].(bool); ok && clear {
+			clearChannelSecret(raw, "discord", k)
+		} else if v, ok := req["discord_"+k].(string); ok && v != "" {
+			setChannelSecret(raw, "discord", k, v)
 		}
 	}
 
@@ -316,29 +339,40 @@ func clearMediaSecret(raw map[string]interface{}, key string) {
 	delete(raw, key)
 }
 
-// setTelegramSecret stores v under raw["channels"]["telegram"][key], creating
+// setChannelSecret stores v under raw["channels"][channel][key], creating
 // the nested objects when absent or not objects.
-func setTelegramSecret(raw map[string]interface{}, key, v string) {
+func setChannelSecret(raw map[string]interface{}, channel, key, v string) {
 	ch, ok := raw["channels"].(map[string]interface{})
 	if !ok {
 		ch = map[string]interface{}{}
 	}
-	tg, ok := ch["telegram"].(map[string]interface{})
+	tr, ok := ch[channel].(map[string]interface{})
 	if !ok {
-		tg = map[string]interface{}{}
+		tr = map[string]interface{}{}
 	}
-	tg[key] = v
-	ch["telegram"] = tg
+	tr[key] = v
+	ch[channel] = tr
 	raw["channels"] = ch
+}
+
+// clearChannelSecret removes key from raw["channels"][channel].
+func clearChannelSecret(raw map[string]interface{}, channel, key string) {
+	if ch, ok := raw["channels"].(map[string]interface{}); ok {
+		if tr, ok := ch[channel].(map[string]interface{}); ok {
+			delete(tr, key)
+		}
+	}
+}
+
+// setTelegramSecret stores v under raw["channels"]["telegram"][key], creating
+// the nested objects when absent or not objects.
+func setTelegramSecret(raw map[string]interface{}, key, v string) {
+	setChannelSecret(raw, "telegram", key, v)
 }
 
 // clearTelegramSecret removes key from raw["channels"]["telegram"].
 func clearTelegramSecret(raw map[string]interface{}, key string) {
-	if ch, ok := raw["channels"].(map[string]interface{}); ok {
-		if tg, ok := ch["telegram"].(map[string]interface{}); ok {
-			delete(tg, key)
-		}
-	}
+	clearChannelSecret(raw, "telegram", key)
 }
 
 // validateConfigUpdate checks enum-constrained fields before they hit disk.
@@ -442,6 +476,22 @@ func validateConfigUpdate(req map[string]interface{}) error {
 		if v, ok := req["clear_"+k]; ok {
 			if _, isBool := v.(bool); !isBool {
 				return fmt.Errorf("clear_%s must be a boolean", k)
+			}
+		}
+	}
+	// Channel secret controls (telegram_* / discord_*) follow the same
+	// contract: values must be non-empty strings, clear flags booleans.
+	for _, prefix := range []string{"telegram_", "discord_"} {
+		for _, k := range []string{"bot_token", "pairing_code"} {
+			if v, ok := req[prefix+k]; ok {
+				if s, isStr := v.(string); !isStr || s == "" {
+					return fmt.Errorf("%s%s must be a non-empty string to set a new key", prefix, k)
+				}
+			}
+			if v, ok := req["clear_"+prefix+k]; ok {
+				if _, isBool := v.(bool); !isBool {
+					return fmt.Errorf("clear_%s%s must be a boolean", prefix, k)
+				}
 			}
 		}
 	}

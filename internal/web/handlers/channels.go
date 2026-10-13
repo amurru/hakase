@@ -75,45 +75,55 @@ type channelStatusDTO struct {
 }
 
 // Status handles GET /api/channels - the Settings UI's channel overview.
+// Returns one section per transport ("telegram", "discord"); paired users
+// and chats are filtered by their state-key prefix, and the shared pending
+// pairing expiry is reported on both sections.
 func (api *ChannelsAPI) Status(w http.ResponseWriter, r *http.Request) {
-	enabled := api.telegramEnabled()
 	running := api.running != nil && api.running()
 
-	dto := channelStatusDTO{
-		Enabled:     enabled,
-		Running:     running,
-		PairedUsers: []pairedUserDTO{},
-		Chats:       []chatDTO{},
+	build := func(name string, enabled bool) channelStatusDTO {
+		dto := channelStatusDTO{
+			Enabled:     enabled,
+			Running:     running,
+			PairedUsers: []pairedUserDTO{},
+			Chats:       []chatDTO{},
+		}
+		if api.store != nil {
+			st := api.store.Get()
+			for _, u := range st.PairedUsers {
+				if u.Channel != name {
+					continue
+				}
+				dto.PairedUsers = append(dto.PairedUsers, pairedUserDTO{
+					Channel:  u.Channel,
+					UserID:   u.UserID,
+					Username: u.Username,
+					PairedAt: u.PairedAt.UTC().Format(time.RFC3339),
+				})
+			}
+			if pp := st.PendingPairing; pp != nil {
+				dto.Pending = &pendingPairingDTO{ExpiresAt: pp.ExpiresAt.UTC().Format(time.RFC3339)}
+			}
+			for key, chat := range st.Chats {
+				id, ok := strings.CutPrefix(key, name+":")
+				if !ok {
+					continue
+				}
+				chatID, err := strconv.ParseInt(id, 10, 64)
+				if err != nil {
+					continue
+				}
+				dto.Chats = append(dto.Chats, chatDTO{ChatID: chatID, SessionID: chat.SessionID, Notify: chat.Notify})
+			}
+		}
+		return dto
 	}
-	if api.store != nil {
-		st := api.store.Get()
-		for _, u := range st.PairedUsers {
-			if u.Channel != "telegram" {
-				continue
-			}
-			dto.PairedUsers = append(dto.PairedUsers, pairedUserDTO{
-				Channel:  u.Channel,
-				UserID:   u.UserID,
-				Username: u.Username,
-				PairedAt: u.PairedAt.UTC().Format(time.RFC3339),
-			})
-		}
-		if pp := st.PendingPairing; pp != nil {
-			dto.Pending = &pendingPairingDTO{ExpiresAt: pp.ExpiresAt.UTC().Format(time.RFC3339)}
-		}
-		for key, chat := range st.Chats {
-			id, ok := strings.CutPrefix(key, "telegram:")
-			if !ok {
-				continue
-			}
-			chatID, err := strconv.ParseInt(id, 10, 64)
-			if err != nil {
-				continue
-			}
-			dto.Chats = append(dto.Chats, chatDTO{ChatID: chatID, SessionID: chat.SessionID, Notify: chat.Notify})
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]channelStatusDTO{"telegram": dto})
+
+	telegramEnabled, discordEnabled := api.channelsEnabled()
+	writeJSON(w, http.StatusOK, map[string]channelStatusDTO{
+		"telegram": build("telegram", telegramEnabled),
+		"discord":  build("discord", discordEnabled),
+	})
 }
 
 // PairingCode handles POST /api/channels/pairing-code. It generates (or
@@ -183,13 +193,21 @@ func (api *ChannelsAPI) Revoke(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "removed": removed})
 }
 
-// telegramEnabled resolves the config file's channels.telegram state the same
-// way GetConfig does (missing file = config-from-env = still checked there).
-func (api *ChannelsAPI) telegramEnabled() bool {
+// channelsEnabled resolves the config file's channels state the same way
+// GetConfig does (missing file = config-from-env = still checked there).
+// Returns (telegram, discord).
+func (api *ChannelsAPI) channelsEnabled() (bool, bool) {
 	path := resolveConfigPath("config.json")
 	cfg, err := config.LoadConfig(path)
 	if err != nil {
-		return false
+		return false, false
 	}
-	return cfg.Channels.Telegram.EnabledWithToken()
+	return cfg.Channels.Telegram.EnabledWithToken(), cfg.Channels.Discord.EnabledWithToken()
+}
+
+// telegramEnabled resolves the config file's channels.telegram state the same
+// way GetConfig does (missing file = config-from-env = still checked there).
+func (api *ChannelsAPI) telegramEnabled() bool {
+	enabled, _ := api.channelsEnabled()
+	return enabled
 }

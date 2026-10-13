@@ -15,7 +15,7 @@ export interface ChannelChat {
   notify: boolean
 }
 
-export interface TelegramChannelStatus {
+export interface ChannelStatus {
   enabled: boolean
   running: boolean
   paired_users: PairedChannelUser[]
@@ -23,7 +23,10 @@ export interface TelegramChannelStatus {
   chats: ChannelChat[]
 }
 
-export type ChannelsStatus = Record<string, TelegramChannelStatus>
+// TelegramChannelStatus is kept as an alias for existing imports.
+export type TelegramChannelStatus = ChannelStatus
+
+export type ChannelsStatus = Record<string, ChannelStatus>
 
 export interface PairingCodeResponse {
   code: string
@@ -39,11 +42,19 @@ export function requestPairingCode(): Promise<PairingCodeResponse> {
   return apiFetch<PairingCodeResponse>('/channels/pairing-code', { method: 'POST' })
 }
 
-export function revokeTelegramUser(userId: number): Promise<void> {
+export function revokeChannelUser(userId: number, channel: string): Promise<void> {
   return apiFetch('/channels/revoke', {
     method: 'POST',
-    body: { user_id: userId, channel: 'telegram' },
+    body: { user_id: userId, channel },
   }) as Promise<void>
+}
+
+export function revokeTelegramUser(userId: number): Promise<void> {
+  return revokeChannelUser(userId, 'telegram')
+}
+
+export function revokeDiscordUser(userId: number): Promise<void> {
+  return revokeChannelUser(userId, 'discord')
 }
 
 // Token and enablement go through the config API: the token is write-only
@@ -65,9 +76,26 @@ export async function setTelegramEnabled(enabled: boolean): Promise<void> {
   })
 }
 
+export async function saveDiscordToken(token: string): Promise<void> {
+  await apiFetch('/config', { method: 'PUT', body: { discord_bot_token: token } })
+}
+
+export async function clearDiscordToken(): Promise<void> {
+  await apiFetch('/config', { method: 'PUT', body: { clear_discord_bot_token: true } })
+}
+
+export async function setDiscordEnabled(enabled: boolean): Promise<void> {
+  await apiFetch('/config', {
+    method: 'PUT',
+    body: { channels: { discord: { enabled } } },
+  })
+}
+
 export interface ConfigSecretFlags {
   has_telegram_bot_token?: boolean
   has_telegram_pairing_code?: boolean
+  has_discord_bot_token?: boolean
+  has_discord_pairing_code?: boolean
 }
 
 export function fetchSecretFlags(): Promise<ConfigSecretFlags> {
