@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -160,18 +162,41 @@ func NormalizeIngestedText(s string) string {
 	return norm.NFC.String(s)
 }
 
+// maxAttachmentHashBytes caps drift-detection hashing. Creation paths
+// already size-cap attachments (web: 200KB text / 10MB image); the hash
+// re-read must never turn a session-supplied path into an unbounded read.
+const maxAttachmentHashBytes = 32 << 20
+
 // HashAttachmentFile returns the sha256 hex of the file at path, or "" when
-// it cannot be read.
+// it cannot be safely read. Empty paths, non-regular files (directories,
+// devices, fifos - a fifo would block the reader forever), files over
+// maxAttachmentHashBytes, and any I/O error all yield "". Callers treat ""
+// as "unknown, skip the drift check", so rejected paths fail safe. The path
+// is cleaned before use, the content is streamed (constant memory), and only
+// the hash is returned, never file bytes, so a tampered session path cannot
+// exfiltrate data through this function.
 func HashAttachmentFile(path string) string {
-	if path == "" {
+	clean := filepath.Clean(path)
+	if clean == "." {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	st, err := os.Stat(clean)
+	if err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	if st.Size() > maxAttachmentHashBytes {
+		return ""
+	}
+	f, err := os.Open(clean)
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // AddMessageWithMetaAndAttachments is AddMessageWithMeta plus a persisted

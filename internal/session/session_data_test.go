@@ -198,6 +198,42 @@ func TestAttachmentHashSnapshot(t *testing.T) {
 	}
 }
 
+func TestHashAttachmentFileRejectsUnsafePaths(t *testing.T) {
+	for _, path := range []string{"", ".", "/nonexistent/hakase-attach.txt"} {
+		if h := HashAttachmentFile(path); h != "" {
+			t.Fatalf("HashAttachmentFile(%q) = %q, want empty", path, h)
+		}
+	}
+	// Directories are not hashable.
+	if h := HashAttachmentFile(t.TempDir()); h != "" {
+		t.Fatalf("HashAttachmentFile(dir) = %q, want empty", h)
+	}
+	// Files over the cap fail safe instead of loading into memory. A
+	// sparse truncate keeps the test instant.
+	dir := t.TempDir()
+	big := dir + "/big.bin"
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxAttachmentHashBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if h := HashAttachmentFile(big); h != "" {
+		t.Fatalf("HashAttachmentFile(oversize) = %q, want empty", h)
+	}
+	// A regular file at the boundary still hashes.
+	small := dir + "/small.bin"
+	if err := os.WriteFile(small, []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if h := HashAttachmentFile(small); h == "" {
+		t.Fatal("HashAttachmentFile(small regular file) must hash")
+	}
+}
+
 func TestNormalizeLegacyMessages(t *testing.T) {
 	// Legacy file: no in_context field anywhere -> all messages become true.
 	legacy := &Session{Messages: []Message{
