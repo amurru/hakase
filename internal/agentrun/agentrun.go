@@ -300,6 +300,11 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
+		// Per-pass markers for the pseudo-XML repair below: only this pass's
+		// model text is scanned (the buffer accumulates across passes), and
+		// only when the pass dispatched no native function call.
+		passMark := contentBuf.Len()
+		sawFunctionCall := false
 		for ev, err := range d.Runner.Run(runCtx, hakaseagent.ResumeUserID, taskID, msg, adkagent.RunConfig{}) {
 			if err != nil {
 				// Malformed tool-call JSON: re-enter the runner with a
@@ -346,6 +351,7 @@ outer:
 						}
 					}
 					if part.FunctionCall != nil {
+						sawFunctionCall = true
 						sink.OnLog(sessionID,
 							fmt.Sprintf("Call: %s(%v)", part.FunctionCall.Name, part.FunctionCall.Args),
 						)
@@ -363,6 +369,16 @@ outer:
 		if parseErr != nil {
 			log.Printf("agentrun: tool call repair for session %s (attempt %d): %v", sessionID, attempt+1, parseErr)
 			msg = hakaseagent.ToolCallRepairMessage(parseErr, attempt)
+			continue
+		}
+		// Pseudo-XML tool call: the model wrote a <tool_call> block instead
+		// of dispatching a native function call, so nothing executed and the
+		// raw markup is the visible answer. Re-enter with a corrective
+		// message under the same attempt budget as the JSON repair.
+		if !sawFunctionCall && attempt < hakaseagent.MaxToolCallRepairAttempts &&
+			hakaseagent.ContainsPseudoToolCall(contentBuf.String()[passMark:]) {
+			log.Printf("agentrun: pseudo tool call repair for session %s (attempt %d)", sessionID, attempt+1)
+			msg = hakaseagent.PseudoToolCallRepairMessage(attempt)
 			continue
 		}
 		break

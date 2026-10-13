@@ -24,6 +24,42 @@ func IsToolCallJSONErr(err error) bool {
 		strings.Contains(msg, "openai: parse streamed function args")
 }
 
+// PseudoToolCallCloseTag is the marker of a model-emitted XML tool call: a
+// literal </tool_call> block in the model's text output. Some
+// OpenAI-compatible models intermittently emit this pseudo-format instead of
+// a native function call, so nothing executes and the raw XML leaks into the
+// chat as the answer. Only the closing tag counts: a bare prose mention of
+// tool calls (or a call truncated by the output cap before it closed) must
+// not trigger a repair round.
+const PseudoToolCallCloseTag = "</tool_call>"
+
+// ContainsPseudoToolCall reports whether the model's text output for one
+// pass contains a complete XML pseudo tool call that was never dispatched
+// as a native function call. Matching is case-insensitive; nil-safe.
+func ContainsPseudoToolCall(text string) bool {
+	if text == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(text), PseudoToolCallCloseTag)
+}
+
+// PseudoToolCallRepairMessage builds a corrective user message for the model
+// after it emitted an XML <tool_call> block instead of a native function
+// call. It states that nothing was executed and orders a native re-emit
+// without markup wrappers (models that reach for pseudo-XML also tend to
+// echo the UNTRUSTED_DATA guard tag around it). When attempt is positive,
+// the message is prefixed with "Attempt %d: ".
+func PseudoToolCallRepairMessage(attempt int) *genai.Content {
+	var sb strings.Builder
+	if attempt > 0 {
+		fmt.Fprintf(&sb, "Attempt %d: ", attempt)
+	}
+	sb.WriteString("Your previous message contained an XML <tool_call> block instead of a native function call, so no tool was executed. ")
+	sb.WriteString("Re-emit the call using the native function-calling mechanism (a proper function call part with the tool name and JSON arguments). ")
+	sb.WriteString("Do not write XML tags and do not wrap the call in UNTRUSTED_DATA or any other markup.")
+	return genai.NewContentFromText(sb.String(), genai.RoleUser)
+}
+
 // ToolCallRepairMessage builds a corrective user message for the model after a
 // tool call was rejected because its JSON arguments were malformed. The
 // message includes the parse error, instructs the model to escape every

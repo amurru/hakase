@@ -500,6 +500,11 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	attempt := 0
 	for {
 		repaired := false
+		// Per-pass markers for the pseudo-XML repair below: only this pass's
+		// model text is scanned (summary accumulates across passes), and only
+		// when the pass dispatched no native function call.
+		passMark := summary.Len()
+		sawFunctionCall := false
 		for ev, runErr := range subRunner.Run(guardCtx, "delegator", taskID, msg, agent.RunConfig{}) {
 			if runErr != nil {
 				if IsToolCallJSONErr(runErr) && attempt < MaxToolCallRepairAttempts {
@@ -536,6 +541,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 						}
 					}
 					if part.FunctionCall != nil {
+						sawFunctionCall = true
 						if isFileOpTool(part.FunctionCall.Name) {
 							filesModified = append(filesModified, extractFilePath(part.FunctionCall.Args))
 						}
@@ -547,6 +553,20 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 						util.DebugEvent("subagent_tool_response", "task_id", taskID, "agent", agentLabel, "tool", part.FunctionResponse.Name, "response", part.FunctionResponse.Response)
 					}
 				}
+			}
+		}
+		if !repaired && finalErr == nil {
+			// Pseudo-XML tool call: the sub-agent wrote a <tool_call> block
+			// instead of dispatching a native function call, so nothing
+			// executed. Re-enter with a corrective message under the same
+			// attempt budget as the JSON repair. Skipped when the pass
+			// already failed outright (finalErr set) — that path aborts.
+			if !sawFunctionCall && attempt < MaxToolCallRepairAttempts &&
+				ContainsPseudoToolCall(summary.String()[passMark:]) {
+				util.DebugWarn("pseudo_tool_call_repair", "agent", agentLabel, "attempt", attempt+1)
+				msg = PseudoToolCallRepairMessage(attempt)
+				attempt++
+				repaired = true
 			}
 		}
 		if !repaired {
