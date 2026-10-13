@@ -98,12 +98,12 @@ function onOpenChange(open: boolean) {
 <template>
   <Dialog :open="store.isOpen" @update:open="onOpenChange">
     <DialogContent
-      class="sm:max-w-md border-blue-500/30 dark:border-blue-400/20"
+      class="sm:max-w-md"
       :show-close-button="false"
     >
       <DialogHeader>
-        <DialogTitle class="flex items-center gap-2 text-blue-400">
-          <AlertCircle class="h-5 w-5" />
+        <DialogTitle class="flex items-center gap-2">
+          <AlertCircle class="h-5 w-5 text-primary" />
           Clarification Needed
         </DialogTitle>
         <DialogDescription v-if="store.currentClarify">
@@ -145,7 +145,7 @@ function onOpenChange(open: boolean) {
             :key="choice"
             class="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2.5 cursor-pointer transition-colors hover:bg-muted/60"
             :class="{
-              'border-blue-500/50 bg-blue-500/10': selectedChoices.includes(choice),
+              'border-primary/60 bg-primary/10': selectedChoices.includes(choice),
             }"
             @click="toggleChoice(choice)"
           >
@@ -154,13 +154,13 @@ function onOpenChange(open: boolean) {
               v-if="!store.currentClarify!.multiSelect"
               class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2"
               :class="{
-                'border-blue-400': selectedChoices.includes(choice),
+                'border-primary': selectedChoices.includes(choice),
                 'border-muted-foreground/40': !selectedChoices.includes(choice),
               }"
             >
               <span
                 v-if="selectedChoices.includes(choice)"
-                class="h-2 w-2 rounded-full bg-blue-400"
+                class="h-2 w-2 rounded-full bg-primary"
               />
             </span>
             <!-- Checkbox (multi-select) -->
@@ -168,13 +168,13 @@ function onOpenChange(open: boolean) {
               v-else
               class="flex h-4 w-4 shrink-0 items-center justify-center rounded border-2"
               :class="{
-                'border-blue-400 bg-blue-400': selectedChoices.includes(choice),
+                'border-primary bg-primary': selectedChoices.includes(choice),
                 'border-muted-foreground/40': !selectedChoices.includes(choice),
               }"
             >
               <svg
                 v-if="selectedChoices.includes(choice)"
-                class="h-3 w-3 text-white"
+                class="h-3 w-3 text-primary-foreground"
                 viewBox="0 0 12 12"
                 fill="none"
               >
@@ -196,7 +196,7 @@ function onOpenChange(open: boolean) {
           <textarea
             v-model="freeText"
             rows="3"
-            class="w-full rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 resize-none"
+            class="w-full rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus-visible:outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-3 resize-none"
             placeholder="Type your answer..."
           />
         </div>
@@ -214,7 +214,6 @@ function onOpenChange(open: boolean) {
           <Button
             size="sm"
             :disabled="!canSubmit"
-            class="bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
             @click="handleSubmit"
           >
             Submit
@@ -233,7 +232,6 @@ function onOpenChange(open: boolean) {
           class="h-1.5 flex-1"
           :class="{
             'bg-amber-500/20': countdownPercent < 25,
-            'bg-blue-500/20': countdownPercent >= 25,
           }"
         />
         <span

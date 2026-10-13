@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import EmptyState from '@/components/EmptyState.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 
 import {
   Dialog,
@@ -24,7 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Plus, Search, MoreVertical, Archive, ArchiveRestore, Trash2, MessageSquare, Loader2, FolderOpen, GitBranch, Pencil, ChevronDown, ChevronRight } from '@lucide/vue'
+import { Plus, Search, MoreVertical, Archive, ArchiveRestore, Trash2, MessageSquare, Loader2, FolderOpen, GitBranch, Pencil, ChevronDown, ChevronRight, Pin, PinOff, RotateCw } from '@lucide/vue'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -46,6 +48,33 @@ const renameDialogOpen = ref(false)
 const renameTitle = ref('')
 const renaming = ref(false)
 const showArchived = ref(false)
+
+// Pinned sessions (UX-08): local-only ordering aid, persisted per browser.
+// Pinned rows sort first and carry a pin mark; the pin travels with the id,
+// not the list position, so refreshes keep it.
+const PINNED_KEY = 'hakase_pinned_sessions'
+function readPinned(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PINNED_KEY) ?? '[]')
+    return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
+const pinnedIds = ref<string[]>(readPinned())
+function isPinned(session: SessionSummary): boolean {
+  return pinnedIds.value.includes(session.id)
+}
+function togglePin(session: SessionSummary) {
+  pinnedIds.value = isPinned(session)
+    ? pinnedIds.value.filter((id) => id !== session.id)
+    : [...pinnedIds.value, session.id]
+  localStorage.setItem(PINNED_KEY, JSON.stringify(pinnedIds.value))
+}
+
+// List filters (UX-08): search text plus one cheap chip.
+const filter = ref<'all' | 'pinned' | 'week'>('all')
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 
 // Registered projects that are ready to be bound to a new session (DP-7).
 const readyProjects = computed(() => projects.value.filter((p) => p.status === 'ready'))
@@ -79,10 +108,35 @@ async function handleCreate() {
 }
 
 const filteredSessions = computed(() => {
-  if (!searchQuery.value.trim()) return sessionStore.sessions
-  const q = searchQuery.value.toLowerCase()
-  return sessionStore.sessions.filter((s) => s.title.toLowerCase().includes(q))
+  const q = searchQuery.value.trim().toLowerCase()
+  const now = Date.now()
+  const list = sessionStore.sessions.filter((s) => {
+    if (q && !s.title.toLowerCase().includes(q)) return false
+    if (filter.value === 'pinned' && !isPinned(s)) return false
+    if (filter.value === 'week' && now - new Date(s.updated_at).getTime() > WEEK_MS) return false
+    return true
+  })
+  // Pinned rows sort first; everything else keeps server order.
+  return [...list].sort((a, b) => Number(isPinned(b)) - Number(isPinned(a)))
 })
+
+const pinnedCount = computed(() => sessionStore.sessions.filter((s) => isPinned(s)).length)
+
+const emptyResultTitle = computed(() => {
+  if (searchQuery.value.trim()) return `No sessions match "${searchQuery.value.trim()}"`
+  if (filter.value === 'pinned') return 'No pinned sessions'
+  return 'No sessions this week'
+})
+
+function clearFilters() {
+  searchQuery.value = ''
+  filter.value = 'all'
+}
+
+function reload() {
+  sessionStore.fetchSessions()
+  sessionStore.fetchArchivedSessions()
+}
 
 function relativeTime(dateStr: string): string {
   const now = Date.now()
@@ -244,8 +298,8 @@ onMounted(() => {
       </Dialog>
     </div>
 
-    <!-- Search bar -->
-    <div class="shrink-0 border-b border-border px-6 py-3">
+    <!-- Search + filters -->
+    <div class="shrink-0 space-y-2 border-b border-border px-6 py-3">
       <div class="relative">
         <Search class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -254,40 +308,95 @@ onMounted(() => {
           class="pl-9"
         />
       </div>
+      <div class="flex items-center gap-1.5" role="group" aria-label="Session filters">
+        <Button
+          size="sm"
+          :variant="filter === 'all' ? 'secondary' : 'ghost'"
+          class="h-7 px-2.5 text-xs"
+          @click="filter = 'all'"
+        >
+          All
+        </Button>
+        <Button
+          size="sm"
+          :variant="filter === 'pinned' ? 'secondary' : 'ghost'"
+          class="h-7 gap-1 px-2.5 text-xs"
+          @click="filter = 'pinned'"
+        >
+          <Pin class="h-3 w-3" />
+          Pinned
+          <span class="tabular-nums text-muted-foreground">{{ pinnedCount }}</span>
+        </Button>
+        <Button
+          size="sm"
+          :variant="filter === 'week' ? 'secondary' : 'ghost'"
+          class="h-7 px-2.5 text-xs"
+          @click="filter = 'week'"
+        >
+          This week
+        </Button>
+      </div>
+      <!-- Load error with retry (UX-09); the previous list stays in place -->
+      <div
+        v-if="sessionStore.loadError"
+        role="alert"
+        class="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      >
+        <span class="min-w-0 flex-1 truncate">{{ sessionStore.loadError }}</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          class="h-6 shrink-0 gap-1 px-2 text-xs text-destructive hover:text-destructive"
+          @click="reload"
+        >
+          <RotateCw class="h-3 w-3" />
+          Retry
+        </Button>
+      </div>
     </div>
 
     <!-- Session list -->
     <ScrollArea class="flex-1">
-      <!-- Loading -->
-      <div
-        v-if="sessionStore.loading"
-        class="flex items-center justify-center py-16"
-      >
-        <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
+      <!-- Loading skeletons (UX-08/09): shape of the rows, no spinner flash.
+           A refresh with rows in place keeps the list instead. -->
+      <ListSkeleton
+        v-if="sessionStore.loading && sessionStore.sessions.length === 0"
+        :rows="6"
+      />
 
       <template v-else>
         <!-- Empty state -->
-        <div
-          v-if="filteredSessions.length === 0 && !searchQuery"
-          class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
+        <EmptyState
+          v-if="filteredSessions.length === 0 && !searchQuery.trim() && filter === 'all'"
+          title="No sessions yet"
+          description="Sessions keep your conversations organized. Create one to get started."
         >
-          <FolderOpen class="h-10 w-10" />
-          <p class="text-sm">No sessions yet</p>
-          <Button variant="outline" size="sm" @click="createDialogOpen = true">
-            <Plus class="mr-2 h-4 w-4" />
-            Create your first session
-          </Button>
-        </div>
+          <template #icon>
+            <FolderOpen class="h-10 w-10" />
+          </template>
+          <template #action>
+            <Button variant="outline" size="sm" @click="createDialogOpen = true">
+              <Plus class="mr-2 h-4 w-4" />
+              Create your first session
+            </Button>
+          </template>
+        </EmptyState>
 
-        <!-- No search results -->
-        <div
+        <!-- No search/filter results -->
+        <EmptyState
           v-else-if="filteredSessions.length === 0"
-          class="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground"
+          :title="emptyResultTitle"
+          description="Try a different search term or filter."
         >
-          <Search class="h-8 w-8" />
-          <p class="text-sm">No sessions match "{{ searchQuery }}"</p>
-        </div>
+          <template #icon>
+            <Search class="h-8 w-8" />
+          </template>
+          <template #action>
+            <Button variant="outline" size="sm" @click="clearFilters">
+              Clear search and filters
+            </Button>
+          </template>
+        </EmptyState>
 
         <!-- Session items -->
         <div v-else class="divide-y divide-border">
@@ -308,6 +417,11 @@ onMounted(() => {
             <!-- Content -->
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
+                <Pin
+                  v-if="isPinned(session)"
+                  class="h-3 w-3 shrink-0 text-muted-foreground"
+                  aria-label="Pinned"
+                />
                 <p class="truncate text-sm font-medium">{{ session.title }}</p>
                 <Badge
                   v-if="isActiveSession(session)"
@@ -340,13 +454,18 @@ onMounted(() => {
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  class="opacity-0 group-hover:opacity-100 transition-opacity"
+                  class="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                   @click.stop
                 >
                   <MoreVertical class="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem @click="togglePin(session)">
+                  <PinOff v-if="isPinned(session)" class="mr-2 h-4 w-4" />
+                  <Pin v-else class="mr-2 h-4 w-4" />
+                  {{ isPinned(session) ? 'Unpin' : 'Pin to top' }}
+                </DropdownMenuItem>
                 <DropdownMenuItem @click="openRename(session)">
                   <Pencil class="mr-2 h-4 w-4" />
                   Rename
@@ -418,7 +537,7 @@ onMounted(() => {
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    class="opacity-0 group-hover:opacity-100 transition-opacity"
+                    class="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                     @click.stop
                   >
                     <MoreVertical class="h-4 w-4" />

@@ -30,10 +30,13 @@ type ClarifyResponse struct {
 
 // ClarifyInput is the schema for the clarify tool as seen by the model.
 // doc tags are injected into the inferred JSON schema by util.NewDocTool.
+// Choices is a util.StringSlice: providers occasionally serialize the
+// array as a JSON string, and the tolerant form keeps the question
+// alive instead of failing schema validation.
 type ClarifyInput struct {
-	Question    string   `json:"question" doc:"The question to ask the user (required)."`
-	Choices     []string `json:"choices,omitempty" doc:"Optional predefined answer choices (up to 4). Omit for an open-ended question."`
-	MultiSelect bool     `json:"multi_select,omitempty" doc:"When true, the user may select multiple choices. Only applies when choices are provided."`
+	Question    string           `json:"question" doc:"The question to ask the user (required)."`
+	Choices     util.StringSlice `json:"choices,omitempty" doc:"Optional predefined answer choices (up to 4). Omit for an open-ended question."`
+	MultiSelect bool             `json:"multi_select,omitempty" doc:"When true, the user may select multiple choices. Only applies when choices are provided."`
 }
 
 // ClarifyOutput is the tool result returned to the model.
@@ -103,7 +106,7 @@ func registerClarifyTool() (tool.Tool, error) {
 	}, func(ctx agent.Context, input ClarifyInput) (ClarifyOutput, error) {
 		resp, err := askClarify(ctx, ClarifyRequest{
 			Question:    input.Question,
-			Choices:     input.Choices,
+			Choices:     []string(input.Choices),
 			MultiSelect: input.MultiSelect,
 			SessionID:   interfaces.SessionIDFromCtx(ctx),
 		})
@@ -112,7 +115,7 @@ func registerClarifyTool() (tool.Tool, error) {
 		}
 		return ClarifyOutput{
 			Question:       input.Question,
-			ChoicesOffered: input.Choices,
+			ChoicesOffered: []string(input.Choices),
 			UserResponse:   resp.Answer,
 			Canceled:       resp.Canceled,
 			TimedOut:       resp.TimedOut,

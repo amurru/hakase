@@ -2292,6 +2292,11 @@ func (m *AppModel) runAgentTask(content *genai.Content, taskID string) {
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
+		// Per-pass markers for the pseudo-XML repair below: only this pass's
+		// model text is scanned, and only when the pass dispatched no native
+		// function call.
+		var passText strings.Builder
+		sawFunctionCall := false
 		for ev, err := range m.r.Run(runCtx, "user-1", taskID, msg, agent.RunConfig{}) {
 			if err != nil {
 				if hakaseagent.IsToolCallJSONErr(err) && attempt < hakaseagent.MaxToolCallRepairAttempts {
@@ -2347,6 +2352,7 @@ outer:
 								p.Send(agentStreamMsg{Thinking: trimmed})
 							}
 						} else {
+							passText.WriteString(part.Text)
 							p.Send(agentStreamMsg{Content: part.Text})
 						}
 					}
@@ -2365,6 +2371,7 @@ outer:
 						)
 					}
 					if part.FunctionCall != nil {
+						sawFunctionCall = true
 						util.DebugEvent("agent_tool_call", "tool", part.FunctionCall.Name, "args", part.FunctionCall.Args)
 					}
 					if part.FunctionResponse != nil && p != nil {
@@ -2381,13 +2388,29 @@ outer:
 			msg = hakaseagent.ToolCallRepairMessage(parseErr, attempt)
 			continue
 		}
+		// Pseudo-XML tool call: the model wrote a <tool_call> block instead
+		// of dispatching a native function call, so nothing executed and the
+		// raw markup is the visible answer. Re-enter with a corrective
+		// message under the same attempt budget as the JSON repair.
+		if !sawFunctionCall && attempt < hakaseagent.MaxToolCallRepairAttempts &&
+			hakaseagent.ContainsPseudoToolCall(passText.String()) {
+			util.DebugWarn("pseudo_tool_call_repair", "task_id", taskID, "attempt", attempt+1)
+			msg = hakaseagent.PseudoToolCallRepairMessage(attempt)
+			continue
+		}
 		break
 	}
 
 	if p != nil {
 		p.Send(agentStreamMsg{})
 		if lastUsage != nil {
-			if ok, msg := finops.CacheWarn(*lastUsage, tuiCacheRatio()); ok {
+			// Per-turn cache telemetry (PC-007) and the once-per-session
+			// implicit-cache guard, keyed on the active session (an empty
+			// key disables the guard, matching the shared contract).
+			if line, ok := finops.CacheReadLine(*lastUsage); ok {
+				util.DebugEvent("cache_read", "line", line)
+			}
+			if ok, msg := finops.CacheWarn(m.sessionService.ActiveSessionID(), *lastUsage, tuiCacheRatio(), finops.EndpointKind()); ok {
 				p.Send(agentLogMsg(msg))
 			}
 			util.DebugEvent("usage", "prompt_tokens", lastUsage.Prompt, "candidates_tokens", lastUsage.Candidates, "cached_tokens", lastUsage.Cached, "thoughts_tokens", lastUsage.Thoughts, "tool_use_tokens", lastUsage.ToolUse, "total_tokens", lastUsage.Total)
@@ -2461,7 +2484,7 @@ func (m *AppModel) compactSession(focus string) tea.Cmd {
 	before, _ := m.sessionFillPercent()
 
 	// Deterministic snip: archive oldest messages, keep the last 2 turns.
-	CurrentHistoryBuilder.StageBSnip(session, nil, "", 0, 8000, 0)
+	CurrentHistoryBuilder.StageBSnip(session, nil, 0, 8000, 0)
 
 	// Async LLM summarization of the surviving transcript (falls back to the
 	// deterministic snip on failure).

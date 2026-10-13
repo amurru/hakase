@@ -88,7 +88,7 @@ async function copy(value: string) {
     <div class="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
       <span
         class="h-1.5 w-1.5 rounded-full"
-        :class="node.status === 'completed' ? 'bg-emerald-500' : node.status === 'running' ? 'bg-primary animate-pulse' : 'bg-red-400'"
+        :class="node.status === 'completed' ? 'bg-emerald-500' : node.status === 'running' ? 'bg-primary motion-safe:animate-pulse' : 'bg-red-400'"
       />
       <span>{{ node.status }}</span>
       <span v-if="node.durationMs !== undefined" class="font-mono">{{ formatDuration(node.durationMs) }}</span>

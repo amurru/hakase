@@ -137,7 +137,11 @@ func runServer(args []string, serveSPA bool) int {
 	home := config.HakaseHome()
 	credsPath := filepath.Join(home, "credentials.json")
 	if _, err := os.Stat(credsPath); os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr, "Run 'hakase auth set-password' first")
+		fmt.Fprintln(os.Stderr,
+			"hakase web: no admin login found at "+credsPath+".\n\n"+
+				"Create one with:\n"+
+				"  hakase auth set-password\n"+
+				"or run 'hakase init' to configure hakase and set the admin login together.")
 		return 1
 	}
 
@@ -152,6 +156,10 @@ func runServer(args []string, serveSPA bool) int {
 	// Load config.
 	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
 	if err != nil {
+		if config.IsNoConfig(err) {
+			fmt.Fprintf(os.Stderr, "hakase: %v\n", err)
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "hakase: failed to load config: %v\n", err)
 		return 1
 	}

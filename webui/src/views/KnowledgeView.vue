@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 // No Textarea component - using native textarea styled to match
 import { ScrollArea } from '@/components/ui/scroll-area'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   Dialog,
   DialogContent,
@@ -363,8 +364,17 @@ onMounted(loadNotes)
         <ScrollArea class="h-full">
           <div class="p-2">
             <!-- Loading -->
-            <div v-if="loading && notes.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-              Loading...
+            <div
+              v-if="loading && notes.length === 0"
+              class="space-y-2 p-4"
+              aria-hidden="true"
+            >
+              <div
+                v-for="i in 4"
+                :key="i"
+                class="h-4 rounded bg-muted motion-safe:animate-pulse"
+                :style="{ width: `${85 - i * 12}%` }"
+              />
             </div>
 
             <!-- Error -->
@@ -379,11 +389,16 @@ onMounted(loadNotes)
             </div>
 
             <!-- Empty state -->
-            <div v-else-if="filteredNotes.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-              <FileText class="mx-auto mb-2 h-6 w-6 opacity-50" />
-              <p v-if="searchQuery">No matching notes</p>
-              <p v-else>No notes yet</p>
-            </div>
+            <EmptyState
+              v-else-if="filteredNotes.length === 0"
+              compact
+              :title="searchQuery ? 'No matching notes' : 'No notes yet'"
+              :description="searchQuery ? 'Try a different search term.' : 'Ask the agent to remember something.'"
+            >
+              <template #icon>
+                <FileText class="h-6 w-6 opacity-50" />
+              </template>
+            </EmptyState>
 
             <!-- Note items -->
             <button
@@ -600,12 +615,12 @@ onMounted(loadNotes)
               @click="handleContentClick"
             >
               <div
-                class="markdown-body prose prose-invert prose-sm max-w-none
+                class="markdown-body prose dark:prose-invert prose-sm max-w-none
                        prose-headings:tracking-tight prose-headings:text-foreground
                        prose-p:text-foreground/90 prose-p:leading-relaxed
                        prose-a:text-primary prose-a:no-underline hover:prose-a:underline
                        prose-strong:text-foreground prose-strong:font-semibold
-                       prose-code:text-amber-300/90 prose-code:font-mono prose-code:text-[0.85em]
+                       prose-code:text-amber-700 dark:prose-code:text-amber-300/90 prose-code:font-mono prose-code:text-[0.85em]
                        prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
                        prose-code:before:content-none prose-code:after:content-none
                        prose-pre:bg-transparent prose-pre:p-0 prose-pre:my-4
@@ -663,7 +678,7 @@ onMounted(loadNotes)
 
 <style scoped>
 .markdown-body :deep(pre) {
-  background: hsl(var(--muted));
+  background: var(--muted);
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-x: auto;
@@ -673,7 +688,7 @@ onMounted(loadNotes)
 .markdown-body :deep(pre code) {
   background: transparent !important;
   padding: 0 !important;
-  color: hsl(var(--foreground));
+  color: var(--foreground);
   font-size: 0.8125rem;
   line-height: 1.7;
 }
@@ -687,13 +702,13 @@ onMounted(loadNotes)
 
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   padding: 0.5rem 0.75rem;
   text-align: left;
 }
 
 .markdown-body :deep(th) {
-  background: hsl(var(--muted));
+  background: var(--muted);
   font-weight: 600;
 }
 
@@ -706,7 +721,7 @@ onMounted(loadNotes)
 }
 
 .markdown-body :deep(a) {
-  color: hsl(var(--primary));
+  color: var(--primary);
 }
 
 .markdown-body :deep(ul) {

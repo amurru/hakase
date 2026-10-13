@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-10-10. Living index of planned work. The GitHub issues are
+Last updated: 2026-10-11. Living index of planned work. The GitHub issues are
 the source of truth for status — update this file only when priorities or
 scope change, not when individual boxes tick.
 
@@ -107,6 +107,49 @@ per-item notes live in the issues, not here.
    pilot, then artifacts + `plugin.Plugin`; skills toolset + A2A deferred.
    Cloud backends stay opt-in only. Design: `docs/adk-adoption/`
    (AD-001..AD-005).
+6. **Prompt-cache stability** - Phases 1-3 landed 2026-10-11
+   (`docs/prompt-cache/`, PC-001..PC-007): one canonical renderer plus a
+   per-turn frozen context block assembled at the end of the rendered store,
+   so requests are append-only between logged compactions; single-rewrite
+   summaries with rewrite log lines, `cached` usage telemetry with a cache
+   chip, and a once-per-session implicit-cache guard. Fixes the
+   head-injection, live/replay byte-drift, and project-snapshot dedup
+   findings; no schema changes. Phase 4 (`prompt_cache_key`, keepalive)
+   optional, deferred.
+
+## Tier 4 — Onboarding & distribution (2026-10-10)
+
+Friction found while auditing the first-run path. `hakase init` plus friendly
+first-run errors shipped first (see CHANGELOG); `doctor`, the installer/arm64
+asset, and the README quickstart have since landed — the remaining install &
+distribution slices in item 2 are open.
+
+1. **`hakase doctor` preflight** — shipped (2026-10-10, `hakase doctor`):
+   checks toolchain (Go/Node/pnpm/Python/ffmpeg/whisper/piper), config
+   validity, active sandbox mode, provider + MCP reachability, and credentials/JWT
+   presence, printing a fix hint for every failed check. `python3` is the only
+   hard-required binary (skill venv runtime); `go`/`node`/`pnpm` warn as
+   build-only. Design: `docs/doctor/` (DR-001..DR-010).
+2. **Install & distribution** - sliced, in dependency order:
+   - **shipped: `curl | sh` installer + linux arm64 asset** - detects OS/arch,
+     downloads the release asset, verifies `SHA256SUMS.txt`, and installs to
+     `PATH`; release workflow publishes `hakase-<version>-linux-arm64`. Design:
+     `docs/release-distribution/`.
+   - **next: non-interactive `auth set-password`** (`--username`,
+     `--password-stdin`) with a first-run auto-provision, so a web image can
+     boot unattended (today `hakase web` hard-refuses without
+     `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`); prerequisite for
+     the container path.
+   - **then: Dockerfile + compose** as the zero-toolchain "try it" path
+     (`-e HAKASE_API_KEY`, `~/.hakase` volume).
+   - **deferred for now: prebuilt darwin binaries** (arm64+amd64) and a
+     Homebrew tap, so macOS can leave the source build (`README.md:55`);
+     revisit after the container path lands.
+3. **README quickstart rewrite** — shipped (2026-10-11, closes #104):
+   60-second install → `hakase init` → type block up top, env-var-only path
+   (`HAKASE_API_KEY` etc. via `envConfigSet`,
+   `internal/config/config.go:1230`), feature tables plus the source-build
+   "fresh clone gotcha" below the fold.
 
 ## Deferred ledger (intentionally not scheduled)
 

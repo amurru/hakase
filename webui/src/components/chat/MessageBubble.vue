@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Bot, User, Copy, Check, History } from '@lucide/vue'
+import { Copy, Check, History } from '@lucide/vue'
 import type { ChatMessage } from '@/composables/useSSE'
+import { detectDirection } from '@/lib/rtl'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 
 const props = defineProps<{
   message: ChatMessage
   streaming?: boolean
+  compact?: boolean
 }>()
 
 // Restore-to-here is offered on persisted user prompts only: the snapshot
@@ -19,6 +21,20 @@ const canRestore = computed(
 const emit = defineEmits<{ restore: [] }>()
 
 const isUser = computed(() => props.message.role === 'user')
+
+// Base text direction from the message's first strong character: RTL answers
+// (Arabic, Hebrew, ...) align right, everything else keeps the LTR default.
+// Code blocks and diagrams re-pin to LTR in CSS so they never mirror.
+const contentDir = computed(() => detectDirection(props.message.content ?? ''))
+
+// Short clock time for the hover toolbar (HH:MM in locale order).
+const timeLabel = computed(() => {
+  if (!props.message.timestamp) return ''
+  return new Date(props.message.timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+})
 const copied = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -44,71 +60,87 @@ async function copyContent() {
 </script>
 
 <template>
+  <!-- ChatGPT pattern: the assistant renders as plain full-measure text
+       (no bubble, no avatar); the user keeps a right-aligned bubble.
+       Grouped follow-ups only tighten spacing. -->
   <div
-    class="flex gap-3 px-4 py-3"
-    :class="isUser ? 'flex-row-reverse' : 'flex-row'"
+    class="group flex px-4"
+    :class="[isUser ? 'justify-end' : 'justify-start', compact ? 'py-1' : 'py-3']"
     :data-message-id="message.id"
   >
-    <!-- Avatar -->
+    <!-- User bubble -->
     <div
-      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
-      :class="isUser
-        ? 'bg-primary/20 text-primary'
-        : 'bg-muted text-muted-foreground'"
+      v-if="isUser"
+      class="flex max-w-[80%] flex-col items-end gap-1"
     >
-      <User v-if="isUser" class="h-4 w-4" />
-      <Bot v-else class="h-4 w-4" />
+      <div class="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground">
+        <div class="whitespace-pre-wrap" :dir="contentDir">{{ message.content }}</div>
+      </div>
+      <div
+        v-if="!streaming"
+        class="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
+      >
+        <span v-if="timeLabel" class="mr-1 text-[11px] tabular-nums text-muted-foreground/50">
+          {{ timeLabel }}
+        </span>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+          :title="copied ? 'Copied' : 'Copy message'"
+          :aria-label="copied ? 'Copied' : 'Copy message'"
+          @click="copyContent"
+        >
+          <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
+          <Copy v-else class="h-3 w-3" />
+        </button>
+        <button
+          v-if="canRestore"
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+          title="Restore conversation to before this message"
+          aria-label="Restore conversation to before this message"
+          @click="emit('restore')"
+        >
+          <History class="h-3 w-3" />
+        </button>
+      </div>
     </div>
 
-    <!-- Content -->
+    <!-- Assistant plain-text row -->
     <div
-      class="flex max-w-[80%] flex-col gap-1"
-      :class="isUser ? 'items-end' : 'items-start'"
+      v-else
+      class="flex min-w-0 flex-1 flex-col items-start gap-1"
     >
-      <!-- Bubble -->
-      <div
-        class="rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
-        :class="isUser
-          ? 'bg-primary text-primary-foreground rounded-br-md'
-          : 'bg-muted text-foreground rounded-bl-md'"
-      >
-        <!-- Thinking block (agent only) -->
+      <div class="w-full min-w-0 text-sm leading-relaxed" :dir="contentDir">
         <ThinkingBlock
-          v-if="!isUser && message.thinking"
+          v-if="message.thinking"
           :content="message.thinking"
         />
-
-        <!-- Message content -->
-        <div v-if="isUser" class="whitespace-pre-wrap">{{ message.content }}</div>
-        <MarkdownRenderer v-else :content="message.content" :streaming="streaming" />
-
+        <MarkdownRenderer :content="message.content" :streaming="streaming" />
         <!-- Streaming indicator -->
         <span
-          v-if="streaming && !isUser && message.content"
-          class="inline-block h-4 w-0.5 animate-pulse bg-foreground/50 ml-0.5 align-text-bottom"
+          v-if="streaming && message.content"
+          class="inline-block h-4 w-0.5 motion-safe:animate-pulse bg-foreground/50 ml-0.5 align-text-bottom"
         />
       </div>
-
-      <!-- Copy + restore buttons -->
-      <button
+      <div
         v-if="!streaming"
-        type="button"
-        class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
-        :title="copied ? 'Copied' : 'Copy message'"
-        @click="copyContent"
+        class="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
       >
-        <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
-        <Copy v-else class="h-3 w-3" />
-      </button>
-      <button
-        v-if="canRestore"
-        type="button"
-        class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
-        title="Restore conversation to before this message"
-        @click="emit('restore')"
-      >
-        <History class="h-3 w-3" />
-      </button>
+        <span v-if="timeLabel" class="mr-1 text-[11px] tabular-nums text-muted-foreground/50">
+          {{ timeLabel }}
+        </span>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
+          :title="copied ? 'Copied' : 'Copy message'"
+          :aria-label="copied ? 'Copied' : 'Copy message'"
+          @click="copyContent"
+        >
+          <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
+          <Copy v-else class="h-3 w-3" />
+        </button>
+      </div>
     </div>
   </div>
 </template>

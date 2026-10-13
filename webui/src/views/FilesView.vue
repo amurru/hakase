@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import TreeItem from '@/components/TreeItem.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   FileCode,
   FileImage,
@@ -271,8 +272,17 @@ onMounted(loadRoot)
         <ScrollArea class="h-full">
           <div class="p-2">
             <!-- Loading -->
-            <div v-if="loading && treeRoots.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-              Loading...
+            <div
+              v-if="loading && treeRoots.length === 0"
+              class="space-y-2 p-4"
+              aria-hidden="true"
+            >
+              <div
+                v-for="i in 4"
+                :key="i"
+                class="h-4 rounded bg-muted motion-safe:animate-pulse"
+                :style="{ width: `${85 - i * 12}%` }"
+              />
             </div>
 
             <!-- Error -->
@@ -288,9 +298,16 @@ onMounted(loadRoot)
 
             <!-- Tree -->
             <template v-else>
-              <div v-if="treeRoots.length === 0" class="p-4 text-center text-sm text-muted-foreground">
-                No files found
-              </div>
+              <EmptyState
+                v-if="treeRoots.length === 0"
+                compact
+                title="No files found"
+                description="The workspace is empty or unreadable."
+              >
+                <template #icon>
+                  <File class="h-8 w-8" />
+                </template>
+              </EmptyState>
               <TreeItem
                 v-for="node in treeRoots"
                 :key="node.entry.path"
@@ -307,12 +324,17 @@ onMounted(loadRoot)
       <!-- Content viewer -->
       <div class="flex flex-1 flex-col overflow-hidden">
         <!-- No file selected -->
-        <div v-if="!selectedPath" class="flex flex-1 items-center justify-center text-muted-foreground">
-          <div class="text-center">
+        <EmptyState
+          v-if="!selectedPath"
+          compact
+          title="Select a file to view"
+          description="Pick a file from the tree to preview it here."
+          class="flex-1"
+        >
+          <template #icon>
             <FileCode class="mx-auto mb-2 h-8 w-8 opacity-50" />
-            <p class="text-sm">Select a file to view</p>
-          </div>
-        </div>
+          </template>
+        </EmptyState>
 
         <!-- File header bar -->
         <div v-else class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
@@ -349,17 +371,36 @@ onMounted(loadRoot)
         <!-- Content area -->
         <div class="flex-1 overflow-auto">
           <!-- Loading -->
-          <div v-if="loading && selectedPath" class="flex h-full items-center justify-center text-muted-foreground">
-            <span class="text-sm">Loading...</span>
+          <div
+            v-if="loading && selectedPath"
+            class="space-y-2 p-6"
+            aria-hidden="true"
+          >
+            <div
+              v-for="i in 5"
+              :key="i"
+              class="h-4 rounded bg-muted motion-safe:animate-pulse"
+              :style="{ width: `${90 - i * 9}%` }"
+            />
           </div>
 
           <!-- Error -->
-          <div v-else-if="error && selectedPath" class="flex h-full items-center justify-center">
-            <div class="text-center">
-              <AlertCircle class="mx-auto mb-2 h-6 w-6 text-destructive" />
-              <p class="text-sm text-destructive">{{ error }}</p>
-            </div>
-          </div>
+          <EmptyState
+            v-else-if="error && selectedPath"
+            compact
+            title="Could not load this file"
+            :description="error"
+            class="h-full"
+          >
+            <template #icon>
+              <AlertCircle class="h-6 w-6 text-destructive" />
+            </template>
+            <template #action>
+              <Button variant="outline" size="sm" @click="selectFile(selectedPath)">
+                Retry
+              </Button>
+            </template>
+          </EmptyState>
 
           <!-- Image preview -->
           <div
@@ -377,7 +418,7 @@ onMounted(loadRoot)
           <!-- Markdown rendered -->
           <div
             v-else-if="fileContent?.content && isMarkdown(selectedName)"
-            class="prose prose-invert max-w-none p-6 text-sm"
+            class="prose dark:prose-invert max-w-none p-6 text-sm"
             v-html="highlightedContent"
           />
 
@@ -424,26 +465,40 @@ onMounted(loadRoot)
   display: block;
   overflow-x: auto;
   padding: 1rem;
-  background: oklch(0.145 0 0);
+  background: var(--muted);
   border-radius: 0.375rem;
+}
+.dark .prose :deep(pre code) {
+  background: oklch(0.145 0 0);
 }
 
 .prose :deep(h1),
 .prose :deep(h2),
 .prose :deep(h3) {
+  color: var(--foreground);
+}
+.dark .prose :deep(h1),
+.dark .prose :deep(h2),
+.dark .prose :deep(h3) {
   color: oklch(0.985 0 0);
 }
 
 .prose :deep(p) {
+  color: var(--foreground);
+}
+.dark .prose :deep(p) {
   color: oklch(0.85 0 0);
 }
 
 .prose :deep(a) {
+  color: var(--primary);
+}
+.dark .prose :deep(a) {
   color: oklch(0.6 0.17 162.48);
 }
 
 .prose :deep(code:not(pre code)) {
-  background: oklch(0.269 0 0);
+  background: var(--muted);
   padding: 0.125rem 0.25rem;
   border-radius: 0.25rem;
   font-size: 0.8125rem;
@@ -451,19 +506,33 @@ onMounted(loadRoot)
 
 .prose :deep(ul),
 .prose :deep(ol) {
+  color: var(--foreground);
+}
+.dark .prose :deep(ul),
+.dark .prose :deep(ol) {
   color: oklch(0.85 0 0);
 }
 
 .prose :deep(blockquote) {
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+.dark .prose :deep(blockquote) {
   border-color: oklch(0.269 0 0);
   color: oklch(0.708 0 0);
 }
 
 .prose :deep(table) {
+  color: var(--foreground);
+}
+.dark .prose :deep(table) {
   color: oklch(0.85 0 0);
 }
 
 .prose :deep(th) {
+  background: var(--muted);
+}
+.dark .prose :deep(th) {
   background: oklch(0.205 0 0);
 }
 </style>

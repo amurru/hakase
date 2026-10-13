@@ -1,5 +1,5 @@
 import { ref, onUnmounted, readonly } from 'vue'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, ApiError } from '@/lib/api'
 import { useAppStore } from '@/stores/app'
 import { parseSidekickEvent, type SidekickNote } from '@/lib/sidekick'
 
@@ -18,6 +18,7 @@ export interface ChatMessage {
 
 export interface SSEApproval {
   id: string
+  session_id?: string
   tool: string
   risk: string
   reason: string
@@ -26,6 +27,7 @@ export interface SSEApproval {
 
 export interface SSEClarify {
   id: string
+  session_id?: string
   question: string
   choices: string[]
   multi_select: boolean
@@ -33,6 +35,7 @@ export interface SSEClarify {
 
 export interface SSEUsage {
   tokens: number
+  cached?: number
   percent: number
   cost_usd?: number
   budget_pct?: number
@@ -166,6 +169,7 @@ export function useSSE(sessionId: () => string | null) {
         const data: SSEUsage = JSON.parse(e.data)
         appStore.setContextUsage(data.tokens, undefined)
         appStore.setTotalTokens(data.tokens)
+        appStore.setCachedTokens(typeof data.cached === 'number' ? data.cached : 0)
         appStore.setCostMeter(data.cost_usd ?? -1, data.budget_pct ?? -1)
         // percent from the server overrides our calculation
         if (data.percent > 0) {
@@ -321,6 +325,23 @@ export function useSSE(sessionId: () => string | null) {
     sidekickNotes.value.push(note)
   }
 
+  // stopRun cancels the in-flight agent turn (POST /sessions/{id}/stop,
+  // the web mirror of /stop). The run unwinds through the driver's error
+  // path, so done still arrives and the stream closes normally. A 404
+  // (nothing running - the run just finished) stays silent; anything else
+  // surfaces as a chip because the run may still be going and Stop looks
+  // like it worked.
+  async function stopRun() {
+    const sid = sessionId()
+    if (!sid) return
+    try {
+      await apiFetch(`/sessions/${sid}/stop`, { method: 'POST', body: {} })
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return
+      addNote('warning', `stop failed (${err instanceof Error ? err.message : 'request failed'}) - the run may still be going; try again`)
+    }
+  }
+
   function scheduleReconnect(sid: string) {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
@@ -332,7 +353,11 @@ export function useSSE(sessionId: () => string | null) {
     }, reconnectDelay)
   }
 
-  async function sendMessage(content: string, attachments?: Array<{ name: string; path: string; mime: string; label: string; data?: string }>) {
+  async function sendMessage(
+    content: string,
+    attachments?: Array<{ name: string; path: string; mime: string; label: string; data?: string }>,
+    thinkingLevel?: string,
+  ) {
     const sid = sessionId()
     if (!sid || (!content.trim() && (!attachments || attachments.length === 0))) return
 
@@ -363,6 +388,10 @@ export function useSSE(sessionId: () => string | null) {
         body: {
           content: content.trim(),
           ...(atts && atts.length > 0 ? { attachments: atts } : {}),
+          // Per-message effort override; omitted on the server default so the
+          // backend's configured thinking_level applies. Empty means "no
+          // override" - never send an empty string.
+          ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
         },
       })
 
@@ -373,7 +402,9 @@ export function useSSE(sessionId: () => string | null) {
       }
     } catch (err) {
       lastError.value = err instanceof Error ? err.message : 'Failed to send message'
-      isStreaming.value = false
+      // Streaming state is owned by the done event, not the POST: a failed
+      // POST (e.g. 429 under the per-session cap) must not clear the
+      // indicator while an earlier run is still in flight.
     }
   }
 
@@ -439,6 +470,7 @@ export function useSSE(sessionId: () => string | null) {
     askSidekick,
     pushSidekickNote,
     sendMessage,
+    stopRun,
     clearMessages,
     connect,
     onApprovalEvent,

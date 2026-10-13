@@ -76,6 +76,17 @@ func itoa(id int64) string {
 	return strconv.FormatInt(id, 10)
 }
 
+// displayName prefers the Discord display name, falling back to the username.
+func displayName(u *discordgo.User) string {
+	if u == nil {
+		return ""
+	}
+	if u.GlobalName != "" {
+		return u.GlobalName
+	}
+	return u.Username
+}
+
 // onMessageCreate routes inbound DM text: guild/self/empty drops, commands,
 // auth gate, pending clarify answers, run starts.
 func (b *Bot) onMessageCreate(_ *discordgo.Session, m *discordgo.MessageCreate) {
@@ -102,14 +113,18 @@ func (b *Bot) onMessageCreate(_ *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 	if strings.HasPrefix(text, "/") {
-		username := ""
-		if m.Author.GlobalName != "" {
-			username = m.Author.GlobalName
-		} else {
-			username = m.Author.Username
-		}
+		username := displayName(m.Author)
 		b.handleCommand(userID, username, text)
 		return
+	}
+	// Bare `pair CODE` (no slash) is the pairing mechanism the deny reply
+	// advertises - route it before the auth gate, otherwise an unpaired
+	// user following the instructions loops on the private-bot reply.
+	if fields := strings.Fields(text); len(fields) > 0 {
+		if first := strings.ToLower(fields[0]); first == "pair" || first == "start" {
+			b.cmdPair(userID, displayName(m.Author), fields[1:])
+			return
+		}
 	}
 	if !b.auth.IsAllowed(userID) {
 		if b.auth.DenyReplyAllowed(userID) {

@@ -49,11 +49,17 @@ export const useSessionStore = defineStore('session', () => {
   const archivedSessions = ref<SessionSummary[]>([])
   const activeSession = ref<ActiveSession | null>(null)
   const loading = ref(false)
+  // Last list-load failure, surfaced with a retry affordance (UX-09). Null
+  // on success; a failed refresh keeps the previous list in place.
+  const loadError = ref<string | null>(null)
 
   async function fetchSessions() {
     loading.value = true
+    loadError.value = null
     try {
       sessions.value = await apiFetch<SessionSummary[]>('/sessions')
+    } catch (e) {
+      loadError.value = e instanceof Error ? e.message : 'Failed to load sessions'
     } finally {
       loading.value = false
     }
@@ -159,6 +165,7 @@ export const useSessionStore = defineStore('session', () => {
     archivedSessions,
     activeSession,
     loading,
+    loadError,
     fetchSessions,
     fetchArchivedSessions,
     createSession,

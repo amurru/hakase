@@ -2,6 +2,7 @@ package finops
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -160,22 +161,55 @@ func TestCostOfRespectsActive(t *testing.T) {
 }
 
 func TestCacheWarn(t *testing.T) {
-	rec := UsageRecord{Prompt: 1000, Cached: 100, Total: 1500}
-	if ok, _ := CacheWarn(rec, 0); ok {
+	large := UsageRecord{Prompt: 5000, Total: 6000}
+	if ok, _ := CacheWarn("s1", large, 0, "gemini"); ok {
 		t.Error("zero ratio must disable the guard")
 	}
-	if ok, _ := CacheWarn(rec, 0.5); !ok {
-		t.Error("6.7% cached below 50% must warn")
+	if ok, _ := CacheWarn("s2", UsageRecord{Prompt: 5000, Cached: 100, Total: 6000}, 0.8, "gemini"); ok {
+		t.Error("a warm (nonzero cached) run must not fire the guard")
 	}
-	if ok, _ := CacheWarn(rec, 0.05); ok {
-		t.Error("6.7% cached above 5% must not warn")
+	if ok, _ := CacheWarn("s3", UsageRecord{Prompt: 300, Total: 400}, 0.8, "gemini"); ok {
+		t.Error("a below-minimum prompt must not fire the guard")
 	}
-	if ok, _ := CacheWarn(UsageRecord{}, 0.5); ok {
-		t.Error("zero total must not warn")
+	if ok, _ := CacheWarn("", large, 0.8, "gemini"); ok {
+		t.Error("an unkeyed session must not fire the guard")
 	}
-	if ok, msg := CacheWarn(rec, 0.5); !ok || msg == "" {
-		t.Errorf("warn must carry a message: %v %q", ok, msg)
+	ok, msg := CacheWarn("s4", large, 0.8, "gemini")
+	if !ok || !strings.Contains(msg, "gemini") || !strings.Contains(msg, "escape hatch") {
+		t.Errorf("guard must name the endpoint and the escape hatch: %v %q", ok, msg)
 	}
+	if ok, _ := CacheWarn("s4", large, 0.8, "gemini"); ok {
+		t.Error("the guard must fire at most once per session")
+	}
+	if ok, msg := CacheWarn("s5", large, 0.8, ""); !ok || !strings.Contains(msg, "unknown") {
+		t.Errorf("missing endpoint kind must render as unknown: %v %q", ok, msg)
+	}
+	// Boundary: a prompt at exactly the floor fires (spec: "at or above").
+	if ok, _ := CacheWarn("s6", UsageRecord{Prompt: 1024, Total: 1024}, 0.8, "gemini"); !ok {
+		t.Error("prompt at the implicit-cache floor must fire the guard")
+	}
+	// The ratio value no longer thresholds (PC-007): any positive value
+	// enables the guard.
+	if ok, _ := CacheWarn("s7", large, 0.05, "gemini"); !ok {
+		t.Error("any positive ratio enables the guard")
+	}
+}
+
+// TestCacheGuardForget pins the session-delete cleanup: dropping a session's
+// guard state re-arms the once-per-session warning for it.
+func TestCacheGuardForget(t *testing.T) {
+	rec := UsageRecord{Prompt: 5000, Total: 6000}
+	if ok, _ := CacheWarn("forget-1", rec, 0.8, "gemini"); !ok {
+		t.Fatal("first warning should fire")
+	}
+	if ok, _ := CacheWarn("forget-1", rec, 0.8, "gemini"); ok {
+		t.Fatal("second warning in the same session must not fire")
+	}
+	CacheGuardForget("forget-1")
+	if ok, _ := CacheWarn("forget-1", rec, 0.8, "gemini"); !ok {
+		t.Error("forget must re-arm the guard")
+	}
+	CacheGuardForget("") // empty id must be a no-op, not a panic
 }
 
 func TestBudgetPct(t *testing.T) {

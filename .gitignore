@@ -89,6 +89,7 @@ logs/
 
 # root build artifact (make build / go build -o hakase)
 /hakase
+/hakase-arm64
 
 # generated runtime artifacts
 outputs/
@@ -100,3 +101,5 @@ webui/dist/
 internal/web/dist/
 *.part
 /dist/
+
+.lavish/

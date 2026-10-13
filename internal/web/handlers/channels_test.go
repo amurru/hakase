@@ -38,8 +38,12 @@ func TestChannelsStatus(t *testing.T) {
 	err := store.Update(func(st *state.State) error {
 		st.PairedUsers = append(st.PairedUsers,
 			state.PairedUser{Channel: "telegram", UserID: 42, Username: "tester", PairedAt: time.Now()},
+			state.PairedUser{Channel: "discord", UserID: 99, Username: "dctester", PairedAt: time.Now()},
 		)
-		st.Chats = map[string]state.Chat{"telegram:42": {SessionID: "sess_1", Notify: true}}
+		st.Chats = map[string]state.Chat{
+			"telegram:42": {SessionID: "sess_1", Notify: true},
+			"discord:99":  {SessionID: "sess_2", Notify: false},
+		}
 		return nil
 	})
 	if err != nil {
@@ -59,14 +63,30 @@ func TestChannelsStatus(t *testing.T) {
 	if !ok {
 		t.Fatal("no telegram section")
 	}
+	dc, ok := resp["discord"]
+	if !ok {
+		t.Fatal("no discord section")
+	}
 	if !tg.Enabled || !tg.Running {
-		t.Errorf("enabled=%v running=%v, want true/true", tg.Enabled, tg.Running)
+		t.Errorf("telegram enabled=%v running=%v, want true/true", tg.Enabled, tg.Running)
+	}
+	if dc.Enabled {
+		t.Errorf("discord enabled=%v, want false (fixture has no discord token)", dc.Enabled)
+	}
+	if !dc.Running {
+		t.Errorf("discord running=%v, want true (shared service flag)", dc.Running)
 	}
 	if len(tg.PairedUsers) != 1 || tg.PairedUsers[0].UserID != 42 {
-		t.Errorf("paired users = %+v", tg.PairedUsers)
+		t.Errorf("telegram paired users = %+v", tg.PairedUsers)
+	}
+	if len(dc.PairedUsers) != 1 || dc.PairedUsers[0].UserID != 99 {
+		t.Errorf("discord paired users = %+v", dc.PairedUsers)
 	}
 	if len(tg.Chats) != 1 || tg.Chats[0].ChatID != 42 || !tg.Chats[0].Notify {
-		t.Errorf("chats = %+v", tg.Chats)
+		t.Errorf("telegram chats = %+v", tg.Chats)
+	}
+	if len(dc.Chats) != 1 || dc.Chats[0].ChatID != 99 || dc.Chats[0].Notify {
+		t.Errorf("discord chats = %+v", dc.Chats)
 	}
 }
 
@@ -201,6 +221,28 @@ func TestUpdateConfigTelegramTokenControls(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), newToken) || strings.Contains(string(data), oldToken) {
 		t.Fatalf("token not replaced: %s", data)
+	}
+
+	// A nested discord bot_token is stripped too, and the discord
+	// write-only control keys round-trip the same way.
+	if rec := put(`{"channels":{"discord":{"bot_token":"hax","enabled":true}}}`); rec.Code != http.StatusOK {
+		t.Fatalf("nested-token PUT = %d: %s", rec.Code, rec.Body.String())
+	}
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), "hax") {
+		t.Fatalf("nested discord bot_token must be stripped: %s", data)
+	}
+	discordToken := strings.Join([]string{"dc", "xo", "new"}, "")
+	if rec := put(`{"discord_bot_token":"` + discordToken + `"}`); rec.Code != http.StatusOK {
+		t.Fatalf("discord control-key PUT = %d: %s", rec.Code, rec.Body.String())
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), discordToken) {
+		t.Fatalf("discord token not stored: %s", data)
+	}
+	if rec := put(`{"clear_discord_bot_token":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("discord clear PUT = %d: %s", rec.Code, rec.Body.String())
+	}
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), discordToken) {
+		t.Fatalf("discord token not cleared: %s", data)
 	}
 
 	// clear_telegram_bot_token removes it.

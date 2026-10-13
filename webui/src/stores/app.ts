@@ -21,6 +21,37 @@ function effectiveModelName(cfg: ConfigModelInfo): string {
   return 'gemini-2.5-flash'
 }
 
+// Thinking-effort menu options for the composer selector. '' is the default:
+// no per-message override, the server's configured thinking_level applies.
+// The values mirror the backend allowlist (NormalizeThinkingLevel); 'maximum'
+// and 'xhigh' are legacy aliases the server maps to 'high', so the menu only
+// offers the canonical set.
+export interface ThinkingLevelOption {
+  value: string
+  label: string
+  hint: string
+}
+
+export const THINKING_LEVELS: ThinkingLevelOption[] = [
+  { value: '', label: 'Default', hint: 'Server setting' },
+  { value: 'off', label: 'Off', hint: 'No reasoning' },
+  { value: 'minimal', label: 'Minimal', hint: 'Fastest' },
+  { value: 'low', label: 'Low', hint: 'Quick' },
+  { value: 'medium', label: 'Medium', hint: 'Balanced' },
+  { value: 'high', label: 'High', hint: 'Deepest' },
+]
+
+const THINKING_LEVEL_STORAGE_KEY = 'hakase-thinking-level'
+
+function loadStoredThinkingLevel(): string {
+  try {
+    const raw = localStorage.getItem(THINKING_LEVEL_STORAGE_KEY) ?? ''
+    return THINKING_LEVELS.some((o) => o.value === raw) ? raw : ''
+  } catch {
+    return ''
+  }
+}
+
 export const useAppStore = defineStore('app', () => {
   const modelName = ref('gemini-2.5-flash')
   const connectionStatus = ref<'connected' | 'disconnected' | 'connecting'>('disconnected')
@@ -31,9 +62,13 @@ export const useAppStore = defineStore('app', () => {
   // (empty for plain local sessions); the chat header renders it as a chip.
   const activeProjectName = ref('')
   const totalTokens = ref(0)
+  const cachedTokens = ref(0)
   const costUsd = ref(0)
   const budgetPct = ref(0)
-  const thinkingEnabled = ref(false)
+  // Per-message thinking-effort override, sticky across reloads. '' means no
+  // override (the server's configured thinking_level applies); any other
+  // value is sent as thinking_level with each chat POST.
+  const thinkingLevel = ref(loadStoredThinkingLevel())
 
   function setModelName(name: string) {
     modelName.value = name
@@ -78,6 +113,12 @@ export const useAppStore = defineStore('app', () => {
     totalTokens.value = tokens
   }
 
+  // setCachedTokens records the prompt-cache read from SSE usage events
+  // (PC-007 additive field; older servers omit it and the chip stays 0).
+  function setCachedTokens(tokens: number) {
+    cachedTokens.value = tokens
+  }
+
   // setCostMeter records the turn cost and budget fill from SSE v2 usage
   // events (additive fields; older servers omit them and the meter stays 0).
   function setCostMeter(cost: number, pct: number) {
@@ -85,8 +126,22 @@ export const useAppStore = defineStore('app', () => {
     if (typeof pct === 'number' && pct >= 0) budgetPct.value = Math.min(100, Math.round(pct))
   }
 
-  function toggleThinking() {
-    thinkingEnabled.value = !thinkingEnabled.value
+  // setThinkingLevel records the composer's effort selection and persists
+  // it. Unknown values reset to the server default rather than sending a
+  // level the backend would reject.
+  function setThinkingLevel(level: string) {
+    const next = THINKING_LEVELS.some((o) => o.value === level) ? level : ''
+    thinkingLevel.value = next
+    try {
+      localStorage.setItem(THINKING_LEVEL_STORAGE_KEY, next)
+    } catch {
+      // Storage unavailable (private mode) - the selection still holds for
+      // this session.
+    }
+  }
+
+  function thinkingLevelLabel(level: string): string {
+    return THINKING_LEVELS.find((o) => o.value === level)?.label ?? 'Default'
   }
 
   return {
@@ -97,10 +152,13 @@ export const useAppStore = defineStore('app', () => {
     activeSessionTitle,
     activeProjectName,
     totalTokens,
+    cachedTokens,
     costUsd,
     budgetPct,
+    thinkingLevel,
     setCostMeter,
-    thinkingEnabled,
+    setThinkingLevel,
+    thinkingLevelLabel,
     setModelName,
     loadModelName,
     setConnectionStatus,
@@ -108,6 +166,6 @@ export const useAppStore = defineStore('app', () => {
     setActiveSessionTitle,
     setActiveProjectName,
     setTotalTokens,
-    toggleThinking,
+    setCachedTokens,
   }
 })

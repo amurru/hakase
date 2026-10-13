@@ -443,6 +443,17 @@ func (s *DurableADKService) AppendEvent(ctx context.Context, curSession adksessi
 	stored := trimADKTempDelta(event)
 	rec.Events = append(rec.Events, stored)
 	rec.UpdatedAt = event.Timestamp
+	// Mirror the engine's in-memory service: the caller's session object
+	// must observe the append, because the ADK node runtime builds every
+	// model request's contents from it (contents processor). Updating only
+	// the on-disk record left in-flight appends invisible until the next
+	// Get, so a whole invocation ran against the events it started with
+	// (issue #110).
+	inSession, _ := curSession.(*durableADKSession)
+	if inSession != nil {
+		inSession.events = append(inSession.events, stored)
+		inSession.updatedAt = event.Timestamp
+	}
 	if len(event.Actions.StateDelta) > 0 {
 		g, err := s.readGlobalLocked()
 		if err != nil {
@@ -455,6 +466,12 @@ func (s *DurableADKService) AppendEvent(ctx context.Context, curSession adksessi
 			rec.State = make(map[string]any)
 		}
 		mergeIntoStrMap(rec.State, sessionDelta)
+		// Engine parity: session-scoped deltas land on the passed
+		// session's state map too (app:/user: deltas live in the global
+		// state and are merged on the next Get).
+		if inSession != nil && inSession.state != nil {
+			mergeIntoStrMap(inSession.state, sessionDelta)
+		}
 		if err := s.writeGlobalLocked(g); err != nil {
 			return err
 		}

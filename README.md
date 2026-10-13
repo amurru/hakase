@@ -11,6 +11,50 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
 
 ---
 
+## Quickstart (60 seconds)
+
+1. **Install binary** (Linux x86_64 / arm64):
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/amurru/hakase/main/packaging/install.sh | sh
+   ```
+   *(For Debian/Ubuntu, Fedora/RHEL, Arch, Windows, or macOS, see [Install](#install) below.)*
+
+2. **Configure interactive wizard**:
+   ```bash
+   hakase init
+   ```
+   *(Writes `~/.hakase/config.json`. Pass `--local` to write `./config.json`, or copy [`config.minimal.json`](config.minimal.json).)*
+
+3. **Run the agent**:
+   ```bash
+   hakase
+   ```
+   Type your question and press `Enter`. The terminal TUI launches immediately.
+
+4. **(Optional) Run the web UI**:
+   ```bash
+   hakase auth set-password   # Create the admin login
+   hakase web                 # Open SPA + API on http://127.0.0.1:8080
+   ```
+
+### No config file? Use env vars
+
+You can run `hakase` without creating `config.json` by passing environment variables. Environment variables override `config.json` when present and require no configuration file on disk.
+
+**Gemini:**
+```bash
+HAKASE_PROVIDER=gemini HAKASE_API_KEY=your_api_key hakase
+```
+
+**OpenAI-compatible (Ollama):**
+```bash
+HAKASE_PROVIDER=openai-compatible HAKASE_MODEL=llama3.3 HAKASE_BASE_URL=http://localhost:11434/v1 hakase
+```
+
+Supported environment variables include `HAKASE_PROVIDER`, `HAKASE_MODEL`, `HAKASE_API_KEY`, and `HAKASE_BASE_URL` (plus `HAKASE_SUMMARY_MODEL`, `HAKASE_VISION_*`, `HAKASE_TELEGRAM_*`, `HAKASE_HOME`, etc.).
+
+---
+
 ## Overview
 
 **hakase** is an AI agent harness inspired by the Hermes Agent framework. It orchestrates multiple specialized sub-agents -- a **Web Researcher** and a **Code Interpreter** -- through a Google ADK root orchestrator, powered by configurable LLM providers (Gemini, OpenAI, or any OpenAI-compatible endpoint). Interaction happens either in a split-pane terminal TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), or in a browser through the bundled web UI (`hakase web`).
@@ -31,7 +75,25 @@ The agent can:
 
 ---
 
-## Quick Start
+## Install
+
+Prebuilt binaries and packages ship with every [release](https://github.com/amurru/hakase/releases) (checksums in `SHA256SUMS.txt`, SLSA L3 provenance in `multiple.intoto.jsonl`):
+
+| Platform | How |
+| -------- | --- |
+| Linux (any distro) | `curl -fsSL https://raw.githubusercontent.com/amurru/hakase/main/packaging/install.sh \| sh` |
+| Debian / Ubuntu | Download `hakase_<version>_amd64.deb` from the release, then `sudo apt install ./hakase_*.deb` |
+| Fedora / RHEL | Download `hakase-<version>.x86_64.rpm`, then `sudo rpm -i hakase-*.rpm` |
+| Arch | `yay -S hakase-bin` (AUR, [`packaging/aur/hakase-bin`](packaging/aur/hakase-bin)) |
+| Linux (manual) | Download `hakase-<version>-linux-amd64` or `hakase-<version>-linux-arm64`, `chmod +x`, run |
+| Windows | Download `hakase-<version>-windows-amd64.zip` and extract |
+| macOS / from source | See [Building from Source](#building-from-source) below (no prebuilt darwin binary yet) |
+
+Then run `hakase init` to create a config interactively (it writes `~/.hakase/config.json`; pass `--local` to write `./config.json`). To configure by hand instead, copy [`config.minimal.json`](config.minimal.json) and add your API key.
+
+---
+
+## Building from Source
 
 ### Prerequisites
 
@@ -41,27 +103,13 @@ The agent can:
 - An **API key** for your chosen provider -- Gemini, OpenAI, or an OpenAI-compatible endpoint (Ollama, vLLM). The required key depends on the `provider` field in `config.json`.
 - **Lightpanda** (optional) -- the MCP browser automation server at [lightpanda.ai](https://lightpanda.ai) (`http://localhost:9223/mcp` by default). **Not required**: without any browser MCP, hakase automatically exposes built-in keyless `web_search`/`web_fetch` tools so research works from the first run. Any spec-compliant browser MCP also works -- see [Browser MCP presets](docs/browser-mcp-presets.md).
 
-## Install
-
-Prebuilt binaries and packages ship with every [release](https://github.com/amurru/hakase/releases) (checksums in `SHA256SUMS.txt`, SLSA L3 provenance in `multiple.intoto.jsonl`):
-
-| Platform | How |
-| -------- | --- |
-| Debian / Ubuntu | Download `hakase_<version>_amd64.deb` from the release, then `sudo apt install ./hakase_*.deb` |
-| Fedora / RHEL | Download `hakase-<version>.x86_64.rpm`, then `sudo rpm -i hakase-*.rpm` |
-| Arch | `yay -S hakase-bin` (AUR, [`packaging/aur/hakase-bin`](packaging/aur/hakase-bin)) |
-| Linux (any distro) | Download `hakase-<version>-linux-amd64`, `chmod +x`, run |
-| Windows | Download `hakase-<version>-windows-amd64.zip` and extract |
-| macOS / from source | See [Quick Start](#quick-start) below (no prebuilt darwin binary yet) |
-
-Then continue with step 1 of the Quick Start (`cp config.json.example config.json` and add your API key).
-
-### Setup
+### Source Setup
 
 ```bash
-# 1. Clone and configure
-cp config.json.example config.json
-# Edit config.json with your API key (matching your provider) and MCP server URL
+# 1. Configure - interactive wizard (writes ~/.hakase/config.json)
+go run ./cmd/hakase/ init
+# ...or copy the template and edit it by hand:
+# cp config.minimal.json config.json
 
 # 2. Build the frontend (required once on a fresh clone)
 make build-frontend
@@ -75,7 +123,7 @@ Type your question and press `Enter`. The agent will research, analyze, and resp
 
 ```bash
 # 4. (Optional) Run the web UI instead
-go run ./cmd/hakase/ auth set-password   # one-time: create the admin login
+go run ./cmd/hakase/ auth set-password   # one-time: create the admin login (skippable if set in init)
 go run ./cmd/hakase/ web                 # SPA + API on http://127.0.0.1:8080
 ```
 
@@ -135,7 +183,7 @@ The SPA is Vue 3 + TypeScript + Vite + Tailwind 4 (Pinia, Vue Router, reka-ui, m
 
 > Before `web`/`serve` will start, create the admin login: `hakase auth set-password` (argon2id, stored at `~/.hakase/credentials.json` mode `0600`). The JWT secret lives at `~/.hakase/jwt-secret`. See [Authentication](#authentication) and [Reverse Proxy](#reverse-proxy-caddy).
 
-For the full API surface and SPA details, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#web-ui-development-flow) and [internal/web](../internal/web).
+For the full API surface and SPA details, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#web-ui-development-flow) and [internal/web](internal/web).
 
 ---
 
@@ -212,7 +260,7 @@ Opt-in metering that answers "what did that cost": every turn records its full u
 }
 ```
 
-Budgets enforce at the turn boundary over rolling windows (24h/7d/30d/session-lifetime): `warn` toasts and continues, `block` stops the run pre-turn with a legible denial chained into the audit trail (`decision: budget_blocked`). The prompt-cache guard warns when a turn's cached/total ratio falls below `cache_warn_ratio` (a cache-buster hint). Live surfaces: turn cost + budget fill in the TUI status bar and web header (SSE `usage` v2: `cost_usd`, `budget_pct`), `GET /api/stats` (`?since=24h&by=model`), and `hakase stats`. Run spans carry `gen_ai.usage.*` + `cost.usd`. Env overrides: `HAKASE_FINOPS_ENABLED`, `HAKASE_FINOPS_ENFORCE`, `HAKASE_BUDGET_DAILY_USD`. See [docs/finops/](docs/finops/).
+Budgets enforce at the turn boundary over rolling windows (24h/7d/30d/session-lifetime): `warn` toasts and continues, `block` stops the run pre-turn with a legible denial chained into the audit trail (`decision: budget_blocked`). The prompt-cache guard warns once per session when a large prompt reports zero cached tokens (`cache_warn_ratio` enables it), naming the endpoint and the explicit-caching escape hatch. Live surfaces: turn cost + budget fill in the TUI status bar and web header (SSE `usage` v2: `cost_usd`, `budget_pct`, `cached`), `GET /api/stats` (`?since=24h&by=model`), and `hakase stats`. Run spans carry `gen_ai.usage.*` + `cost.usd`. Env overrides: `HAKASE_FINOPS_ENABLED`, `HAKASE_FINOPS_ENFORCE`, `HAKASE_BUDGET_DAILY_USD`. See [docs/finops/](docs/finops/).
 
 ---
 
@@ -222,6 +270,8 @@ Running with no subcommand launches the TUI; `web`/`serve` start the HTTP server
 
 | Command | Action |
 | ------- | ------ |
+| `init` | Create a config and set up hakase for first use (interactive wizard) |
+| `doctor` | Preflight diagnostics (`--format table\|json`, `--skip-net`) for toolchain, config, provider, MCP, credentials |
 | `skill` | Manage markdown skills (`create`, `list`, `validate`, `evolve`) |
 | `task` | Manage the task board (`create`, `list`, `get`, `update`, `complete`, ...) |
 | `knowledge` | Manage the knowledge base (`list`, `read`, `search`, `lint`, `create`, `link`, `bench`) |
@@ -316,6 +366,13 @@ All fields are optional unless noted. See [docs/DEVELOPMENT.md#configuration-ref
 <details>
 <summary><b>Troubleshooting</b></summary>
 
+Run preflight diagnostics to audit your setup:
+```bash
+hakase doctor
+```
+It verifies toolchain binaries on PATH (`go`, `node`, `pnpm`, `python3`, `ffmpeg`, `whisper-cli`, `piper`), `config.json` validity, active sandbox mode, provider reachability, MCP server status, and admin credentials/JWT presence, offering actionable fix hints for any issues found.
+
+Common issues:
 - `unsupported provider: <name>` -- `provider` must be `gemini`, `openai`, or `openai-compatible` (empty defaults to `gemini`).
 - `gemini/openai provider requires an api_key` -- set `api_key` in `config.json` or `HAKASE_API_KEY`.
 - `openai-compatible` endpoint unreachable -- confirm `base_url` is running and serves an OpenAI-compatible API (e.g. Ollama at `http://localhost:11434/v1`).
@@ -476,7 +533,7 @@ hakase skill validate .agents/skills/my-skill
 hakase skill evolve --mutate          # darwinian-evolver pass over Python skills
 ```
 
-See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [.agents/skills/](../.agents/skills/).
+See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [.agents/skills/](.agents/skills/).
 
 ---
 
@@ -495,6 +552,7 @@ See [docs/DEVELOPMENT.md#skills-system](docs/DEVELOPMENT.md#skills-system) and [
 | [.agents/skills/hakase/SKILL.md](.agents/skills/hakase/SKILL.md) | Self-knowledge skill -- authoritative agent reference |
 | [CHANGELOG.md](CHANGELOG.md) | User-facing changes (Keep a Changelog, semver-ish) |
 | [config.json.example](config.json.example) | Full config template with defaults |
+| [config.minimal.json](config.minimal.json) | Minimal config (provider / model / api_key) for a first run - what `hakase init` writes |
 
 ---
 

@@ -1,8 +1,11 @@
 package context
 
 import (
+	"fmt"
+	"iter"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"amurru/hakase/internal/interfaces"
@@ -11,19 +14,76 @@ import (
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
 // testCallbackContext embeds agent.ContextMock (full interface) and overrides
-// the two methods the callback reads: UserContent and SessionID.
+// the methods the callback reads: UserContent, SessionID, and State (the
+// frozen-turn invocation slot, PC-002).
 type testCallbackContext struct {
 	agent.ContextMock
 	userContent *genai.Content
 	sessionID   string
+	state       *fakeInvocationState
 }
 
 func (c *testCallbackContext) UserContent() *genai.Content { return c.userContent }
 func (c *testCallbackContext) SessionID() string           { return c.sessionID }
+func (c *testCallbackContext) State() adksession.State {
+	if c.state == nil {
+		return nil
+	}
+	return c.state
+}
+
+// fakeInvocationState is an in-memory adksession.State backing the
+// frozen-turn slot in tests. One instance models one turn: callbacks
+// sharing it are calls of the same turn, a fresh instance is a new turn.
+type fakeInvocationState struct {
+	mu   sync.Mutex
+	vals map[string]any
+}
+
+func newFakeInvocationState() *fakeInvocationState {
+	return &fakeInvocationState{vals: make(map[string]any)}
+}
+
+func (s *fakeInvocationState) Get(key string) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.vals[key]
+	if !ok {
+		return nil, adksession.ErrStateKeyNotExist
+	}
+	return v, nil
+}
+
+func (s *fakeInvocationState) Set(key string, value any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vals == nil {
+		s.vals = make(map[string]any)
+	}
+	s.vals[key] = value
+	return nil
+}
+
+func (s *fakeInvocationState) All() iter.Seq2[string, any] {
+	s.mu.Lock()
+	snapshot := make(map[string]any, len(s.vals))
+	for k, v := range s.vals {
+		snapshot[k] = v
+	}
+	s.mu.Unlock()
+	return func(yield func(string, any) bool) {
+		for k, v := range snapshot {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
 
 func newTestBuilder(t *testing.T) (*HistoryBuilder, *sesspkg.SessionService) {
 	t.Helper()
@@ -57,10 +117,12 @@ func TestBuildHistoryRolesAndDedup(t *testing.T) {
 		t.Fatalf("session: %v %v", session, err)
 	}
 
-	// Dedup: the current user message (q2) matches ctx.UserContent.
-	history := b.buildHistory(session.Messages, "q2")
-	if len(history) != 2 {
-		t.Fatalf("history len = %d, want 2 (q1,a1)", len(history))
+	// Render-from-store (PC-001): every in-context message renders,
+	// including the current user message — the live copy is dropped by
+	// splitLiveTail when it matches, so dedup lives at assembly, not here.
+	history := b.buildHistory(session.Messages)
+	if len(history) != 3 {
+		t.Fatalf("history len = %d, want 3 (q1,a1,q2)", len(history))
 	}
 	if history[0].Role != genai.RoleUser {
 		t.Fatalf("history[0].Role = %q, want user", history[0].Role)
@@ -87,7 +149,7 @@ func TestBuildHistorySummaryFirst(t *testing.T) {
 	if err != nil || session == nil {
 		t.Fatalf("session: %v %v", session, err)
 	}
-	history := b.buildHistory(session.Messages, "")
+	history := b.buildHistory(session.Messages)
 	if len(history) != 2 {
 		t.Fatalf("history len = %d, want 2", len(history))
 	}
@@ -111,7 +173,7 @@ func TestBeforeModelCallbackPrependsHistory(t *testing.T) {
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{genai.NewContentFromText("q2", genai.RoleUser)},
 	}
-	cctx := &testCallbackContext{userContent: genai.NewContentFromText("q2", genai.RoleUser)}
+	cctx := &testCallbackContext{userContent: genai.NewContentFromText("q2", genai.RoleUser), state: newFakeInvocationState()}
 
 	resp, err := b.BeforeModelCallback(cctx, req)
 	if err != nil {
@@ -120,7 +182,8 @@ func TestBeforeModelCallbackPrependsHistory(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("callback must return nil response to proceed with the real call")
 	}
-	// History (q1,a1) prepended in front of current (q2); q2 deduped out.
+	// History (q1,a1) rendered from the store in front of the unmatched
+	// live (q2 was never persisted, so it is kept as the tail); q1 wrapped.
 	if len(req.Contents) != 3 {
 		t.Fatalf("contents len = %d, want 3", len(req.Contents))
 	}
@@ -166,15 +229,24 @@ func TestFitToBudgetNoTruncationUnderTrigger(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var lines []string
+	b.SetLogFunc(func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
 	session, err := svc.GetActiveSession()
 	if err != nil || session == nil {
 		t.Fatalf("session: %v %v", session, err)
 	}
-	history := b.buildHistory(session.Messages, "")
+	history := b.buildHistory(session.Messages)
 	before := len(history)
 	history = b.fitToBudget(session, history, []*genai.Content{genai.NewContentFromText("new", genai.RoleUser)}, &interfaces.ModelInfo{ContextWindow: 1_000_000})
 	if len(history) != before {
 		t.Fatalf("history truncated under trigger: %d -> %d", before, len(history))
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "cache: rewrite") {
+			t.Fatalf("no compaction must mean no rewrite log line: %q", l)
+		}
 	}
 }
 
@@ -200,7 +272,7 @@ func TestFitToBudgetStageBSnip(t *testing.T) {
 	if err != nil || session == nil {
 		t.Fatalf("session: %v %v", session, err)
 	}
-	history := b.buildHistory(session.Messages, "")
+	history := b.buildHistory(session.Messages)
 	trimmed := b.fitToBudget(session, history, []*genai.Content{genai.NewContentFromText("new", genai.RoleUser)}, &interfaces.ModelInfo{ContextWindow: 40_000})
 
 	// The tail (last 2 turns) must survive verbatim.
@@ -258,8 +330,11 @@ func TestStageATrimsToolResultsOnly(t *testing.T) {
 	}
 
 	session, _ = svc.GetActiveSession()
-	history := b.buildHistory(session.Messages, "q2")
-	trimmed := b.stageATrimToolResults(session, history, "q2")
+	history := b.buildHistory(session.Messages)
+	trimmed, changed := b.stageATrimToolResults(session, history)
+	if !changed {
+		t.Fatal("stage a must report a trim when a tool result was in context")
+	}
 
 	// Tool result removed; text messages kept.
 	unwanted := WrapUntrustedData("tool output here")
@@ -280,11 +355,11 @@ func TestStageATrimsToolResultsOnly(t *testing.T) {
 	}
 }
 
-// TestSnipPreservesDedup verifies that when the deterministic snip rebuilds
-// history, the current user message stays deduped (it is already in the run's
-// contents). Without the dedup re-application this would duplicate the current
-// turn inside the request.
-func TestSnipPreservesDedup(t *testing.T) {
+// TestSnipKeepsTailUserMessage verifies that when the deterministic snip
+// rebuilds history, the recent persisted user messages survive (they render
+// from the store; the live copy is dropped at assembly by splitLiveTail,
+// so the prompt appears exactly once — see TestAssembledRequestSingleUser).
+func TestSnipKeepsTailUserMessage(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	b.SetModelInfo(&interfaces.ModelInfo{ContextWindow: 40_000})
 
@@ -299,18 +374,38 @@ func TestSnipPreservesDedup(t *testing.T) {
 		}
 	}
 
-	currentPrompt := "the current user message"
 	session, err := svc.GetActiveSession()
 	if err != nil || session == nil {
 		t.Fatalf("session: %v %v", session, err)
 	}
-	history := b.buildHistory(session.Messages, currentPrompt)
-	trimmed := b.StageBSnip(session, history, currentPrompt, 1, 8000, int64(0.7*36000))
-
-	for _, c := range trimmed {
-		if c.Parts[0].Text == WrapUntrustedData(currentPrompt) {
-			t.Fatalf("current user message leaked back into history after snip")
+	// Mark the last persisted user message so we can find it after the snip.
+	lastIdx := -1
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if session.Messages[i].Role == "user" {
+			lastIdx = i
+			break
 		}
+	}
+	if lastIdx == -1 {
+		t.Fatal("no persisted user message")
+	}
+	session.Messages[lastIdx].Content = "the current user message"
+	if err := svc.Store().Save(session); err != nil {
+		t.Fatal(err)
+	}
+	session, _ = svc.GetActiveSession()
+
+	history := b.buildHistory(session.Messages)
+	trimmed := b.StageBSnip(session, history, 1, 8000, int64(0.7*36000))
+
+	found := false
+	for _, c := range trimmed {
+		if strings.Contains(ContentText(c), "the current user message") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tail user message evicted by snip (last 2 turns must survive)")
 	}
 }
 
@@ -350,6 +445,7 @@ func TestBeforeModelCallbackPerRunSession(t *testing.T) {
 		cctx := &testCallbackContext{
 			userContent: genai.NewContentFromText(current, genai.RoleUser),
 			sessionID:   sessionID,
+			state:       newFakeInvocationState(),
 		}
 		if _, err := b.BeforeModelCallback(cctx, req); err != nil {
 			t.Fatalf("callback: %v", err)
@@ -424,8 +520,8 @@ func TestDurablePinSurvivalReconstruction(t *testing.T) {
 	}
 
 	session, _ = svc.GetActiveSession()
-	history := b.buildHistory(session.Messages, "current prompt")
-	trimmed := b.StageBSnip(session, history, "current prompt", 100, 8000, int64(0.7*36000))
+	history := b.buildHistory(session.Messages)
+	trimmed := b.StageBSnip(session, history, 100, 8000, int64(0.7*36000))
 
 	// Verify that the durable pin survived in trimmed history
 	foundPin := false
@@ -437,5 +533,80 @@ func TestDurablePinSurvivalReconstruction(t *testing.T) {
 	}
 	if !foundPin {
 		t.Errorf("durable pin constraint was wrongly evicted during compaction")
+	}
+}
+
+// TestFitToBudgetLogsOneRewriteLine pins PC-006/D7: every compaction logs
+// exactly one rewrite line carrying direction, tokens before/after, and
+// reason (plus the stages that ran).
+func TestFitToBudgetLogsOneRewriteLine(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	b.SetModelInfo(&interfaces.ModelInfo{ContextWindow: 40_000})
+	var lines []string
+	b.SetLogFunc(func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
+
+	for i := 0; i < 20; i++ {
+		big := string(make([]byte, 4000)) // ~1000 tokens estimated
+		if err := svc.RecordUsage("user", big, "", 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RecordUsage("agent", big, "", 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session, err := svc.GetActiveSession()
+	if err != nil || session == nil {
+		t.Fatalf("session: %v %v", session, err)
+	}
+	history := b.buildHistory(session.Messages)
+	_ = b.fitToBudget(session, history, []*genai.Content{genai.NewContentFromText("new", genai.RoleUser)}, &interfaces.ModelInfo{ContextWindow: 40_000})
+
+	rewrites := 0
+	for _, l := range lines {
+		if !strings.Contains(l, "cache: rewrite") {
+			continue
+		}
+		rewrites++
+		for _, want := range []string{"direction=shrink", "tokens ", "reason=compaction", "stages=snip"} {
+			if !strings.Contains(l, want) {
+				t.Fatalf("rewrite line missing %q: %q", want, l)
+			}
+		}
+	}
+	if rewrites != 1 {
+		t.Fatalf("rewrite lines = %d, want exactly 1\nlogs: %v", rewrites, lines)
+	}
+}
+
+// TestSummaryReplayCarriesExactlyOne pins PC-006's replay half: after two
+// compactions, the rendered history contains only the newest summary.
+func TestSummaryReplayCarriesExactlyOne(t *testing.T) {
+	b, svc := newTestBuilder(t)
+	if err := svc.RecordUsage("user", "q1", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordUsage("agent", "a1", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+	if err := svc.AppendSummary(id, "SUMMARY ONE"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AppendSummary(id, "SUMMARY TWO"); err != nil {
+		t.Fatal(err)
+	}
+
+	session, err := svc.Store().Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(contentTexts(b.buildHistory(session.Messages)), "\x00")
+	if strings.Contains(joined, "SUMMARY ONE") {
+		t.Fatalf("prior summary replayed:\n%s", joined)
+	}
+	if n := strings.Count(joined, "SUMMARY TWO"); n != 1 {
+		t.Fatalf("newest summary occurrences = %d, want exactly 1:\n%s", n, joined)
 	}
 }

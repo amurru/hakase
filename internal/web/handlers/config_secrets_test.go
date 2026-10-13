@@ -16,10 +16,12 @@ import (
 // only booleans reporting that they are set. Fixture values are composed at
 // runtime so no credential-looking literals live in source.
 func TestGetConfigBlanksChannelAndSidekickSecrets(t *testing.T) {
-	botToken := strings.Join([]string{"tf", "xo", "t1"}, "")   // fake token
-	pairingCode := strings.Repeat("4", 6)                      // fake code
-	sidekickKey := strings.Join([]string{"sf", "k", "x1"}, "") // fake key
-	primaryKey := strings.Join([]string{"pf", "k", "x1"}, "")  // fake key
+	botToken := strings.Join([]string{"tf", "xo", "t1"}, "")     // fake token
+	pairingCode := strings.Repeat("4", 6)                        // fake code
+	discordToken := strings.Join([]string{"dc", "xo", "t1"}, "") // fake token
+	discordCode := strings.Repeat("5", 6)                        // fake code
+	sidekickKey := strings.Join([]string{"sf", "k", "x1"}, "")   // fake key
+	primaryKey := strings.Join([]string{"pf", "k", "x1"}, "")    // fake key
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -27,7 +29,7 @@ func TestGetConfigBlanksChannelAndSidekickSecrets(t *testing.T) {
 		"provider": "openai",
 		"model_name": "test-model",
 		"api_key": "` + primaryKey + `",
-		"channels": {"telegram": {"enabled": true, "bot_token": "` + botToken + `", "pairing_code": "` + pairingCode + `"}},
+		"channels": {"telegram": {"enabled": true, "bot_token": "` + botToken + `", "pairing_code": "` + pairingCode + `"}, "discord": {"enabled": true, "bot_token": "` + discordToken + `", "pairing_code": "` + discordCode + `"}},
 		"sidekick": {"enabled": true, "model_name": "m", "api_key": "` + sidekickKey + `"}
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -54,6 +56,8 @@ func TestGetConfigBlanksChannelAndSidekickSecrets(t *testing.T) {
 		"has_api_key":               resp.HasAPIKey,
 		"has_telegram_bot_token":    resp.HasTelegramBotToken,
 		"has_telegram_pairing_code": resp.HasTelegramPairingCode,
+		"has_discord_bot_token":     resp.HasDiscordBotToken,
+		"has_discord_pairing_code":  resp.HasDiscordPairingCode,
 		"has_sidekick_api_key":      resp.HasSidekickAPIKey,
 	} {
 		if !flag {
@@ -62,7 +66,7 @@ func TestGetConfigBlanksChannelAndSidekickSecrets(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, secret := range []string{botToken, pairingCode, sidekickKey, primaryKey} {
+	for _, secret := range []string{botToken, pairingCode, discordToken, discordCode, sidekickKey, primaryKey} {
 		if strings.Contains(body, secret) {
 			t.Errorf("GET /api/config leaked secret %q", secret)
 		}

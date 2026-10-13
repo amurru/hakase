@@ -56,12 +56,24 @@ func runTUICommand(args []string) int {
 	return 0
 }
 
+// fatalConfigError reports a config-load failure and exits. A missing
+// configuration is a first-run condition, not a bug, so its ErrNoConfig
+// message (which already carries FirstRunHint) is printed without the log
+// timestamp; every other load error stays fatal as before.
+func fatalConfigError(err error) {
+	if config.IsNoConfig(err) {
+		fmt.Fprintln(os.Stderr, "hakase: "+err.Error())
+		os.Exit(1)
+	}
+	log.Fatalf("Failed to load config: %v", err)
+}
+
 func runTUI() {
 	ctx := context.Background()
 
 	cfg, err := config.LoadConfig(config.ResolveConfigPath("config.json"))
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		fatalConfigError(err)
 	}
 
 	// Tracing (issue #18): install the OTLP provider before anything runs;

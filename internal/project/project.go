@@ -51,6 +51,36 @@ var (
 // ctxKey is the context key for a per-run project root.
 type ctxKey struct{}
 
+// snapshotKey carries the run's pre-rendered GIT WORKSPACE snapshot
+// (prompt-cache PC-005): agentrun renders it once per turn and the history
+// builder splices it as a frozen turn block. A plain string (not a struct)
+// keeps the plumbing visible in one place with the root above.
+type snapshotKey struct{}
+
+// WithSnapshot returns a context carrying the turn's project snapshot
+// ("" = session unbound, no block). Read once per turn by the history
+// builder's frozen-turn render; later model calls of the turn reuse the
+// frozen payload, so the snapshot is fresh per turn and byte-identical
+// within it.
+func WithSnapshot(ctx context.Context, snapshot string) context.Context {
+	return context.WithValue(ctx, snapshotKey{}, snapshot)
+}
+
+// SnapshotFrom returns the turn's project snapshot ("" when none).
+// ctx may be nil. Best-effort by contract: a context that cannot be
+// probed (half-initialized test mocks) yields "" instead of panicking,
+// so a snapshot lookup can never fail a model call.
+func SnapshotFrom(ctx context.Context) (snap string) {
+	if ctx == nil {
+		return ""
+	}
+	defer func() { _ = recover() }()
+	if v, ok := ctx.Value(snapshotKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // WithRoot returns a context whose project root is root, overriding the
 // process-wide root for everything downstream.
 func WithRoot(ctx context.Context, root string) context.Context {

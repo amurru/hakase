@@ -1,8 +1,13 @@
 package session
 
 import (
+	"bytes"
+	"log"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"amurru/hakase/internal/finops"
 )
 
 func newTestSessionService(t *testing.T) *SessionService {
@@ -206,5 +211,76 @@ func TestArchiveSessionClearsActivePointer(t *testing.T) {
 	}
 	if svc.ActiveSessionID() != "" {
 		t.Fatalf("active id = %q, want empty after archiving the active session", svc.ActiveSessionID())
+	}
+}
+
+// TestAppendSummaryEvictsPriorSummaryAndLogsRewrite pins PC-006: the prior
+// summary is evicted in the same save as the new one, and the rewrite is
+// logged once with direction, tokens before/after, and reason.
+func TestAppendSummaryEvictsPriorSummaryAndLogsRewrite(t *testing.T) {
+	svc := newTestSessionService(t)
+	if err := svc.RecordUsage("user", "q1", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+
+	var addBuf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&addBuf)
+	defer log.SetOutput(old)
+	if err := svc.AppendSummary(id, "SUMMARY ONE"); err != nil {
+		t.Fatal(err)
+	}
+	if add := addBuf.String(); !strings.Contains(add, "direction=add") || !strings.Contains(add, "reason=summary") {
+		t.Fatalf("first-summary rewrite log = %q, want direction=add", add)
+	}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+
+	if err := svc.AppendSummary(id, "SUMMARY TWO"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "cache: rewrite direction=replace") || !strings.Contains(got, "reason=summary") {
+		t.Fatalf("summary rewrite log missing fields: %q", got)
+	}
+
+	session, err := svc.Store().Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inContext := 0
+	for _, m := range session.Messages {
+		if m.Kind == MessageKindSummary && m.InContext {
+			inContext++
+			if m.Content != "SUMMARY TWO" {
+				t.Fatalf("in-context summary = %q, want the newest", m.Content)
+			}
+		}
+	}
+	if inContext != 1 {
+		t.Fatalf("in-context summaries = %d, want exactly 1", inContext)
+	}
+}
+
+// TestDeleteSessionClearsCacheGuardState pins the PC-007 cleanup wiring: the
+// once-per-session guard state must not outlive the session it belongs to.
+func TestDeleteSessionClearsCacheGuardState(t *testing.T) {
+	svc := newTestSessionService(t)
+	if err := svc.RecordUsage("user", "q", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	id := svc.ActiveSessionID()
+	rec := finops.UsageRecord{Prompt: 5000, Total: 6000}
+	if ok, _ := finops.CacheWarn(id, rec, 0.8, "gemini"); !ok {
+		t.Fatal("guard should fire before the session is deleted")
+	}
+	if err := svc.DeleteSession(id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := finops.CacheWarn(id, rec, 0.8, "gemini"); !ok {
+		t.Fatal("deleting the session must clear its guard state")
 	}
 }

@@ -402,6 +402,203 @@ func TestWebClarifyGate_Timeout(t *testing.T) {
 	}
 }
 
+// TestWebClarifyGate_MirrorsPromptToSessionTopic pins the WebUI
+// routing fix: production gates are built with a "" session, so the
+// prompt used to publish only to the global topic while the browser
+// subscribes solely to its session topic - the modal never opened.
+// The prompt (and its timeout) must reach both the global topic
+// (channels) and the asking run's session topic (web UI stream).
+func TestWebClarifyGate_MirrorsPromptToSessionTopic(t *testing.T) {
+	bridge := sse.NewEventBridge()
+	gate := NewWebClarifyGate(bridge, "", interfaces.ClarifyConfig{ExpirySeconds: 5})
+
+	sessSub, sessCh := bridge.Subscribe("sess-9")
+	defer bridge.Unsubscribe("sess-9", sessSub)
+	globSub, globCh := bridge.Subscribe("")
+	defer bridge.Unsubscribe("", globSub)
+
+	done := make(chan interfaces.ClarifyResponse, 1)
+	go func() {
+		resp, _ := gate.AskClarify(context.Background(), interfaces.ClarifyRequest{
+			Question: "Which?", Choices: []string{"a"}, SessionID: "sess-9",
+		})
+		done <- resp
+	}()
+
+	// Both surfaces get the prompt.
+	var clarifyID string
+	for name, ch := range map[string]<-chan []byte{"session": sessCh, "global": globCh} {
+		select {
+		case data := <-ch:
+			if !strings.Contains(string(data), "event: clarify\n") {
+				t.Fatalf("%s topic: want clarify event, got: %s", name, data)
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "data: ") {
+					var payload map[string]any
+					if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload); err != nil {
+						t.Fatalf("%s topic: bad payload: %v", name, err)
+					}
+					clarifyID, _ = payload["id"].(string)
+					if payload["session_id"] != "sess-9" {
+						t.Fatalf("%s topic: session_id = %v, want sess-9", name, payload["session_id"])
+					}
+				}
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout waiting for clarify event on %s topic", name)
+		}
+	}
+	if clarifyID == "" {
+		t.Fatal("no clarify id received")
+	}
+
+	if !gate.RespondClarify(clarifyID, interfaces.ClarifyResponse{Answer: []string{"a"}}) {
+		t.Fatal("RespondClarify not delivered")
+	}
+	select {
+	case resp := <-done:
+		if len(resp.Answer) != 1 || resp.Answer[0] != "a" {
+			t.Fatalf("answer = %v, want [a]", resp.Answer)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskClarify did not return after answer")
+	}
+}
+
+// TestWebClarifyGate_MirrorsTimeoutToSessionTopic pins the timeout half:
+// without the mirror a stale web modal never clears.
+func TestWebClarifyGate_MirrorsTimeoutToSessionTopic(t *testing.T) {
+	bridge := sse.NewEventBridge()
+	gate := NewWebClarifyGate(bridge, "", interfaces.ClarifyConfig{ExpirySeconds: 1})
+
+	sessSub, sessCh := bridge.Subscribe("sess-9")
+	defer bridge.Unsubscribe("sess-9", sessSub)
+
+	done := make(chan interfaces.ClarifyResponse, 1)
+	go func() {
+		resp, _ := gate.AskClarify(context.Background(), interfaces.ClarifyRequest{
+			Question: "Quick?", SessionID: "sess-9",
+		})
+		done <- resp
+	}()
+
+	// Consume the prompt frame, then expect the timeout on the session topic.
+	select {
+	case <-sessCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for clarify prompt on session topic")
+	}
+	select {
+	case resp := <-done:
+		if !resp.TimedOut {
+			t.Fatal("want TimedOut=true")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("AskClarify did not time out")
+	}
+	select {
+	case data := <-sessCh:
+		if !strings.Contains(string(data), "event: clarify_timeout") {
+			t.Fatalf("want clarify_timeout on session topic, got: %s", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for clarify_timeout on session topic")
+	}
+}
+
+// TestWebApprovalGate_MirrorsPromptToSessionTopic is the approval twin:
+// same global-only routing left the approval modal dead too.
+func TestWebApprovalGate_MirrorsPromptToSessionTopic(t *testing.T) {
+	bridge := sse.NewEventBridge()
+	gate := NewWebApprovalGate(bridge, "", interfaces.ApprovalConfig{ExpirySeconds: 5})
+
+	sessSub, sessCh := bridge.Subscribe("sess-9")
+	defer bridge.Unsubscribe("sess-9", sessSub)
+	globSub, globCh := bridge.Subscribe("")
+	defer bridge.Unsubscribe("", globSub)
+
+	done := make(chan bool, 1)
+	go func() {
+		approved, _ := gate.AskApproval(context.Background(), interfaces.ApprovalRequest{
+			Tool: "system_exec", Command: "ls", SessionID: "sess-9",
+		})
+		done <- approved
+	}()
+
+	var approvalID string
+	for name, ch := range map[string]<-chan []byte{"session": sessCh, "global": globCh} {
+		select {
+		case data := <-ch:
+			if !strings.Contains(string(data), "event: approval\n") {
+				t.Fatalf("%s topic: want approval event, got: %s", name, data)
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "data: ") {
+					var payload map[string]any
+					if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload); err != nil {
+						t.Fatalf("%s topic: bad payload: %v", name, err)
+					}
+					approvalID, _ = payload["id"].(string)
+				}
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout waiting for approval event on %s topic", name)
+		}
+	}
+	if approvalID == "" {
+		t.Fatal("no approval id received")
+	}
+	if !gate.RespondApproval(approvalID, true) {
+		t.Fatal("RespondApproval not delivered")
+	}
+	select {
+	case approved := <-done:
+		if !approved {
+			t.Fatal("want approved=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskApproval did not return after answer")
+	}
+}
+
+// TestWebApprovalGate_MirrorsTimeoutToSessionTopic pins the approval
+// timeout mirror on the session topic.
+func TestWebApprovalGate_MirrorsTimeoutToSessionTopic(t *testing.T) {
+	bridge := sse.NewEventBridge()
+	gate := NewWebApprovalGate(bridge, "", interfaces.ApprovalConfig{ExpirySeconds: 1})
+
+	sessSub, sessCh := bridge.Subscribe("sess-9")
+	defer bridge.Unsubscribe("sess-9", sessSub)
+
+	done := make(chan bool, 1)
+	go func() {
+		approved, _ := gate.AskApproval(context.Background(), interfaces.ApprovalRequest{
+			Tool: "system_exec", Command: "ls", SessionID: "sess-9",
+		})
+		done <- approved
+	}()
+
+	select {
+	case <-sessCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for approval prompt on session topic")
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("AskApproval did not time out")
+	}
+	select {
+	case data := <-sessCh:
+		if !strings.Contains(string(data), "event: approval_timeout") {
+			t.Fatalf("want approval_timeout on session topic, got: %s", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for approval_timeout on session topic")
+	}
+}
+
 // TestWebClarifyGate_UnknownID tests responding to an unknown clarify ID.
 func TestWebClarifyGate_UnknownID(t *testing.T) {
 	bridge := sse.NewEventBridge()

@@ -121,10 +121,18 @@ var webSearchFallback *fallbackSearchToolset
 // buildWebSearchFallback returns the prompt section describing the fallback
 // tools, or "" when the feature is disabled. Appended to the orchestrator
 // and web_researcher instructions.
+//
+// The tools hide dynamically while any research-capable MCP is connected,
+// but this text is static per process — so it states the visibility rule as
+// a hard constraint (only call tools in the current tool list) instead of
+// presenting web_search as always available. Without that rule the model
+// calls the advertised-but-hidden tool and every such call fails with a
+// tool-not-found result (ADK fakeTool), burning a round-trip.
 func buildWebSearchFallback(cfg *config.Config) string {
 	if !config.WebSearchEnabled(cfg) {
 		return ""
 	}
 	return `### WEB SEARCH FALLBACK:
-You have built-in keyless research tools: 'web_search' (DuckDuckGo with Wikipedia supplements; returns title/url/snippet per result, labeled by source) and 'web_fetch' (returns a URL's content as markdown; no JavaScript rendering or logins). Use them for quick lookups and reading pages, and cite the source URLs in research answers. These tools are hidden automatically whenever a browser or search MCP server is connected - in that case prefer the richer MCP browsing tools instead.`
+You have built-in keyless research tools: 'web_search' (DuckDuckGo with Wikipedia supplements; returns title/url/snippet per result, labeled by source) and 'web_fetch' (returns a URL's content as markdown; no JavaScript rendering or logins). Use them for quick lookups and reading pages, and cite the source URLs in research answers.
+CRITICAL VISIBILITY RULE: these two tools exist in your tool list ONLY while no browser or search MCP server is connected — they are hidden automatically otherwise. Before calling web_search or web_fetch, verify the name is in your current tool list. If it is absent, it is hidden: use the connected mcp_* browser/search tools instead, and never emit a call for it. Calling an absent tool always fails and wastes the turn.`
 }

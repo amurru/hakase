@@ -124,7 +124,7 @@ type ModelInfo struct {
 	ContextWindow   int64  // total context budget (tokens)
 	MaxInputTokens  int64  // max input-token allowance (0 when not reported separately)
 	ThinkingEnabled bool   // whether thinking/CoT is supported
-	ThinkingLevel   string // provider string: "maximum", "xhigh", etc.
+	ThinkingLevel   string // canonical level: "off", "minimal", "low", "medium", "high"
 	SupportsVision  *bool  // whether model accepts image input; nil = unknown
 	Source          string // "gemini" | "openai" | "openai-compatible"
 }

@@ -168,8 +168,8 @@ onUnmounted(() => {
 <template>
   <div class="inline-flex items-center gap-1.5">
     <!-- Active Recording Control UI -->
-    <div v-if="isRecording" class="flex items-center gap-2 rounded-xl bg-destructive/10 px-3 py-1.5 text-xs text-destructive animate-pulse">
-      <span class="h-2 w-2 rounded-full bg-destructive animate-ping"></span>
+    <div v-if="isRecording" class="flex items-center gap-2 rounded-xl bg-destructive/10 px-3 py-1.5 text-xs text-destructive motion-safe:animate-pulse">
+      <span class="h-2 w-2 rounded-full bg-destructive motion-safe:animate-ping"></span>
       <span class="font-mono font-medium">{{ formatTime(recordSeconds) }}</span>
       <Button
         variant="ghost"

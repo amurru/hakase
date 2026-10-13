@@ -1,6 +1,7 @@
 package context
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,12 +35,21 @@ func newMemorySession(t *testing.T, svc *sesspkg.SessionService, taskID, title s
 
 func runMemoryCallback(t *testing.T, b *HistoryBuilder, taskID string) []string {
 	t.Helper()
+	return runMemoryCallbackWithState(t, b, taskID, newFakeInvocationState())
+}
+
+// runMemoryCallbackWithState runs the callback with an explicit turn state:
+// calls sharing one state are calls of the same turn (frozen payload
+// reused); a fresh state is a new turn (sources re-evaluated).
+func runMemoryCallbackWithState(t *testing.T, b *HistoryBuilder, taskID string, st *fakeInvocationState) []string {
+	t.Helper()
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{genai.NewContentFromText("current", genai.RoleUser)},
 	}
 	cctx := &testCallbackContext{
 		userContent: genai.NewContentFromText("current", genai.RoleUser),
 		sessionID:   taskID,
+		state:       st,
 	}
 	if _, err := b.BeforeModelCallback(cctx, req); err != nil {
 		t.Fatalf("callback: %v", err)
@@ -53,22 +63,49 @@ func runMemoryCallback(t *testing.T, b *HistoryBuilder, taskID string) []string 
 	return texts
 }
 
-func TestMemoryInjectsOncePerSession(t *testing.T) {
+// TestMemoryRendersEveryTurnFrozenWithinTurn pins PC-004: the memory
+// block is re-rendered on the first call of every turn (so a remember
+// write lands on the next turn) and spliced byte-identically for the
+// rest of that turn. It sits after the rendered store, never prepended.
+func TestMemoryRendersEveryTurnFrozenWithinTurn(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_mem_1", "one")
-	b.SetMemoryProvider(func(ctx agent.Context) string { return "AUTO MEMORY BLOCK" })
+	var calls int64
+	b.SetMemoryProvider(func(ctx agent.Context) string {
+		n := atomic.AddInt64(&calls, 1)
+		return fmt.Sprintf("AUTO MEMORY BLOCK rev%d", n)
+	})
 
-	texts := runMemoryCallback(t, b, "task_mem_1")
-	// The block sits at the very head, ahead of persisted history and the
-	// run's own contents.
-	if len(texts) == 0 || texts[0] != "AUTO MEMORY BLOCK" {
-		t.Fatalf("memory block not at head: %v", texts)
+	turn := newFakeInvocationState()
+	texts := runMemoryCallbackWithState(t, b, "task_mem_1", turn)
+	if len(texts) != 3 || texts[1] != "AUTO MEMORY BLOCK rev1" {
+		t.Fatalf("memory block not in frozen section: %v", texts)
 	}
-	// Second call of the same session: not re-injected.
-	for _, txt := range runMemoryCallback(t, b, "task_mem_1") {
-		if strings.Contains(txt, "AUTO MEMORY BLOCK") {
-			t.Fatalf("memory block re-injected on second call: %v", texts)
+	if !strings.Contains(texts[0], "hello-one") {
+		t.Fatalf("rendered store must lead: %v", texts)
+	}
+	// Second call of the same turn: the frozen payload is spliced
+	// byte-identically, the provider is not re-invoked.
+	texts2 := runMemoryCallbackWithState(t, b, "task_mem_1", turn)
+	if strings.Join(texts2, "\x00") != strings.Join(texts, "\x00") {
+		t.Fatalf("same-turn splice differs:\n%v\nvs\n%v", texts2, texts)
+	}
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("provider invoked %d times in one turn, want exactly 1", got)
+	}
+	// New turn: re-rendered (a remember write would land here), and the
+	// stale revision does not leak across.
+	texts3 := runMemoryCallback(t, b, "task_mem_1")
+	if !containsBlock(texts3, "AUTO MEMORY BLOCK rev2") {
+		t.Fatalf("memory block missing on the new turn: %v", texts3)
+	}
+	for _, txt := range texts3 {
+		if strings.Contains(txt, "AUTO MEMORY BLOCK rev1") {
+			t.Fatalf("stale revision leaked into the new turn: %v", texts3)
 		}
+	}
+	if got := atomic.LoadInt64(&calls); got != 2 {
+		t.Fatalf("provider invoked %d times across two turns, want 2", got)
 	}
 }
 
@@ -101,28 +138,41 @@ func TestMemoryNilProviderNoop(t *testing.T) {
 	}
 }
 
-func TestMemoryEmptyBlockNotMarkedSeen(t *testing.T) {
+// TestMemoryLateWriteVisibleNextTurn pins the PC-004 freshness half: an
+// empty store renders nothing, and a note written mid-session (remember)
+// is visible on the very next turn — per-turn re-render, no gate to
+// roll back.
+func TestMemoryLateWriteVisibleNextTurn(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_mem_late", "late-notes")
 	block := ""
-	b.SetMemoryProvider(func(ctx agent.Context) string {
-		called := block
-		block = "AUTO MEMORY BLOCK" // empty on the first call, non-empty after
-		return called
-	})
+	b.SetMemoryProvider(func(ctx agent.Context) string { return block })
 
 	for _, txt := range runMemoryCallback(t, b, "task_mem_late") {
 		if strings.Contains(txt, "AUTO MEMORY") {
 			t.Fatalf("empty provider must not inject: %v", txt)
 		}
 	}
+	block = "AUTO MEMORY BLOCK"
 	texts := runMemoryCallback(t, b, "task_mem_late")
-	if len(texts) == 0 || texts[0] != "AUTO MEMORY BLOCK" {
-		t.Fatalf("block written mid-session must appear on a later call: %v", texts)
+	if len(texts) == 0 || !containsBlock(texts, "AUTO MEMORY BLOCK") {
+		t.Fatalf("block written mid-session must appear on the next turn: %v", texts)
 	}
 }
 
-func TestMemoryPerSessionIsolation(t *testing.T) {
+func containsBlock(texts []string, needle string) bool {
+	for _, txt := range texts {
+		if strings.Contains(txt, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestMemoryRendersPerSessionWithoutCrossLeak pins per-turn, per-session
+// correctness: every turn re-renders, and each session's assembly carries
+// only its own block.
+func TestMemoryRendersPerSessionWithoutCrossLeak(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_mem_A", "A")
 	newMemorySession(t, svc, "task_mem_B", "B")
@@ -130,76 +180,78 @@ func TestMemoryPerSessionIsolation(t *testing.T) {
 	calls := 0
 	b.SetMemoryProvider(func(ctx agent.Context) string {
 		calls++
-		return "AUTO MEMORY BLOCK"
+		return "MEM FOR " + ctx.SessionID()
 	})
 
-	runMemoryCallback(t, b, "task_mem_A")
-	runMemoryCallback(t, b, "task_mem_B")
-	runMemoryCallback(t, b, "task_mem_A")
-	if calls != 2 {
-		t.Fatalf("provider called %d times, want 2 (once per session)", calls)
+	textsA := runMemoryCallback(t, b, "task_mem_A")
+	textsB := runMemoryCallback(t, b, "task_mem_B")
+	textsA2 := runMemoryCallback(t, b, "task_mem_A")
+	if calls != 3 {
+		t.Fatalf("provider called %d times, want 3 (re-rendered every turn)", calls)
+	}
+	if !containsBlock(textsA, "MEM FOR task_mem_A") || containsBlock(textsA, "MEM FOR task_mem_B") {
+		t.Fatalf("session A leaked B's block: %v", textsA)
+	}
+	if !containsBlock(textsB, "MEM FOR task_mem_B") || containsBlock(textsB, "MEM FOR task_mem_A") {
+		t.Fatalf("session B leaked A's block: %v", textsB)
+	}
+	if !containsBlock(textsA2, "MEM FOR task_mem_A") {
+		t.Fatalf("session A lost its block on turn 2: %v", textsA2)
 	}
 }
 
-func TestMemoryReservationAtomicUnderConcurrency(t *testing.T) {
+// TestMemoryConcurrentTurnsEachRender pins per-turn semantics under
+// concurrency: concurrent turns (distinct invocation states, e.g.
+// stacked runs) each render their own block — the once-per-session gate
+// is gone, so every turn carries it.
+func TestMemoryConcurrentTurnsEachRender(t *testing.T) {
 	b, svc := newTestBuilder(t)
 	newMemorySession(t, svc, "task_mem_race", "race")
 
-	calls := 0
-	var callMu sync.Mutex
+	var calls int64
 	b.SetMemoryProvider(func(ctx agent.Context) string {
-		callMu.Lock()
-		calls++
-		callMu.Unlock()
-		time.Sleep(20 * time.Millisecond) // widen the check-then-act window
+		atomic.AddInt64(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // widen the interleave window
 		return "AUTO MEMORY BLOCK"
 	})
 
-	// Concurrent model calls for the same session (e.g. PostMessage stacking
-	// runs): the reservation must make the injection exactly-once, not
-	// check-then-mark per callback.
-	runOne := func() (int, error) {
+	runOne := func() bool {
 		req := &model.LLMRequest{
 			Contents: []*genai.Content{genai.NewContentFromText("current", genai.RoleUser)},
 		}
 		cctx := &testCallbackContext{
 			userContent: genai.NewContentFromText("current", genai.RoleUser),
 			sessionID:   "task_mem_race",
+			state:       newFakeInvocationState(),
 		}
 		if _, err := b.BeforeModelCallback(cctx, req); err != nil {
-			return 0, err
+			return false
 		}
-		n := 0
 		for _, c := range req.Contents {
 			if len(c.Parts) > 0 && strings.Contains(c.Parts[0].Text, "AUTO MEMORY BLOCK") {
-				n++
+				return true
 			}
 		}
-		return n, nil
+		return false
 	}
 
-	const callbacks = 8
+	const turns = 8
+	results := make([]bool, turns)
 	var wg sync.WaitGroup
-	var injected int64
-	errs := make(chan error, callbacks)
-	for i := 0; i < callbacks; i++ {
+	for i := 0; i < turns; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			n, err := runOne()
-			if err != nil {
-				errs <- err
-				return
-			}
-			atomic.AddInt64(&injected, int64(n))
-		}()
+			results[i] = runOne()
+		}(i)
 	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatalf("callback: %v", err)
+	for i, ok := range results {
+		if !ok {
+			t.Fatalf("turn %d rendered no memory block", i)
+		}
 	}
-	if got := atomic.LoadInt64(&injected); got != 1 {
-		t.Fatalf("block injected %d times across %d concurrent callbacks, want exactly 1", got, callbacks)
+	if got := atomic.LoadInt64(&calls); got != turns {
+		t.Fatalf("provider invoked %d times across %d turns, want %d", got, turns, turns)
 	}
 }

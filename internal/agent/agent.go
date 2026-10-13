@@ -260,11 +260,13 @@ diagram, class diagram, ER diagram, Gantt chart, etc. - as a Mermaid diagram
 embedded in markdown using a mermaid fenced code block. Do NOT draw diagrams
 with ASCII art or box-drawing characters.
 
+Edge labels use pipes: ` + "`A -->|text| B`" + `. Never ` + "`A -->[text] B`" + ` - brackets are node shapes, not labels.
+
 Example:
 ` + "```mermaid" + `
 graph TD
     A[Start] --> B[Process]
-    B --> C[Done]
+    B -->|done| C[Done]
 ` + "```" + `
 `
 
@@ -1214,9 +1216,14 @@ func getSkillsPrompt(mdSkills []skill.MarkdownSkill, log LogFunc, cfg ...*config
 	var sb strings.Builder
 	sb.WriteString("AVAILABLE PRE-LEARNED SKILLS:\n")
 
-	// Over threshold or search-stub mode: emit stub text.
+	// Over threshold or search-stub mode: emit stub text. NOTE: this string
+	// becomes part of agent system instructions, and ADK's instruction
+	// processor treats every {identifier} as session-state templating
+	// (a missing key aborts the whole run with ErrStateKeyNotExist).
+	// Keep this text brace-free: write "the search_skills tool with a
+	// query", never "search_skills{query}".
 	if mode == "search-stub" || (mode == "auto" && totalSkills > threshold) {
-		fmt.Fprintf(&sb, "%d skills installed; call search_skills{query}\n", totalSkills)
+		fmt.Fprintf(&sb, "%d skills installed; call the search_skills tool with a query to find matching skills\n", totalSkills)
 		return sb.String()
 	}
 
@@ -2178,26 +2185,26 @@ A second, independently-configured model (the "sidekick") runs alongside you. ` 
 }
 
 // BuildGenerationConfig maps the configured thinking level to a
-// GenerateContentConfig. "off" disables thoughts; a named level ("low",
-// "high", "maximum", "xhigh", ...) is passed through verbatim to the
-// provider. An empty level returns nil so the provider default applies.
+// GenerateContentConfig. "off" disables thoughts; "on"/"default" take the
+// provider default depth; a named level ("minimal", "low", "medium", "high")
+// is passed through verbatim to the provider. Legacy aliases ("maximum",
+// "xhigh") resolve to HIGH — both providers reject anything stronger, so
+// passing them through broke every turn. An empty level returns a config
+// with no ThinkingConfig so the provider default applies; an unrecognized
+// level falls back to provider-default thinking (thoughts included) rather
+// than emitting a config the provider will reject.
 func BuildGenerationConfig(level string) *genai.GenerateContentConfig {
 	gc := &genai.GenerateContentConfig{
 		MaxOutputTokens: LoopGuardConfig(deps.LoopGuard).MaxOutputTokens,
 	}
-	if level == "" {
+	norm, err := NormalizeThinkingLevel(level)
+	if err != nil {
+		norm = "default"
+	}
+	if norm == "" {
 		return gc
 	}
-	tc := &genai.ThinkingConfig{IncludeThoughts: true}
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "off":
-		tc.IncludeThoughts = false
-	case "on", "default":
-		// Provider default level; only IncludeThoughts is set.
-	default:
-		tc.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(strings.TrimSpace(level)))
-	}
-	gc.ThinkingConfig = tc
+	gc.ThinkingConfig = thinkingConfigFor(norm)
 	return gc
 }
 
@@ -2412,6 +2419,13 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// FinOps attribution (FO-002): usage events carry no model label, so the
 	// priced model name rides on the resolved primary model.
 	finops.ModelNameFunc = func() string { return modelName }
+	// Prompt-cache guard attribution (PC-007): the implicit-cache guard's
+	// message names the provider endpoint kind ("gemini" default).
+	endpointKind := cfg.Provider
+	if endpointKind == "" {
+		endpointKind = "gemini"
+	}
+	finops.EndpointKindFunc = func() string { return endpointKind }
 	skill.EvolveMutateFn = func(ctx context.Context, prompt string) (string, error) {
 		return ModelPromptFn(ctx, prompt)
 	}
@@ -2528,7 +2542,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	researcherAgent, _ := llmagent.New(llmagent.Config{
 		Name:        "web_researcher",
 		Description: "Specialist agent for searching the web, navigating pages, downloading files, and extracting content.",
-		Instruction: HakaseSystemInstruction + ContextBlockFor(
+		InstructionProvider: util.StaticInstruction(HakaseSystemInstruction + ContextBlockFor(
 			"web_researcher",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
@@ -2536,12 +2550,13 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"web_researcher",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model:                 model,
 		Tools:                 []tool.Tool{downloadTool, visionTool},
 		Toolsets:              researcherToolsets,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
@@ -2604,7 +2619,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	codeInterpreterAgent, err := llmagent.New(llmagent.Config{
 		Name:        "code_interpreter",
 		Description: "Specialist agent for executing Python code, data analysis, parsing JSON/CSV, and managing learned skills.",
-		Instruction: CodeInterpreterSystemInstruction + ContextBlockFor(
+		InstructionProvider: util.StaticInstruction(CodeInterpreterSystemInstruction + ContextBlockFor(
 			"code_interpreter",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
@@ -2616,7 +2631,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"code_interpreter",
 			envBlock,
 			cfg.SystemEnv.ApplyTo,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model: model,
 		Tools: []tool.Tool{
 			pythonTool,
@@ -2628,6 +2643,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		}, // 👈 Attached skill tools here!
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
@@ -2657,7 +2673,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	generalPurposeAgent, err := llmagent.New(llmagent.Config{
 		Name:        "general_purpose",
 		Description: "General-purpose agent for workspace tasks: file operations, git operations, content management, and general-purpose execution.",
-		Instruction: GeneralPurposeSystemInstruction + ContextBlockFor(
+		InstructionProvider: util.StaticInstruction(GeneralPurposeSystemInstruction + ContextBlockFor(
 			"general_purpose",
 			ctxBlock,
 			cfg.ContextFiles.ApplyTo,
@@ -2669,11 +2685,12 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"general_purpose",
 			gitBlock,
 			gitBlockAgents,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model:                 model,
 		Tools:                 append(append(fileOpsTools, gitTools...), visionTool),
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},
@@ -2802,8 +2819,8 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	}
 
 	// Agent-written auto-memory (docs/auto-memory/spec.md): orchestrator-only
-	// tools plus the session-start injection provider. When disabled, both
-	// are absent entirely so the model is never told about tools it lacks.
+	// tools plus the per-turn memory provider on the history builder. When
+	// disabled, both are absent entirely so the model is never told about tools it lacks.
 	if memoryTools, err := wireMemory(cfg, historyBuilder); err != nil {
 		return nil, err
 	} else if len(memoryTools) > 0 {
@@ -2829,7 +2846,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	rootAgent, err := llmagent.New(llmagent.Config{
 		Name:        "orchestrator",
 		Description: "Main orchestrator agent that delegates research and analysis tasks.",
-		Instruction: buildOrchestratorInstruction(
+		InstructionProvider: util.StaticInstruction(buildOrchestratorInstruction(
 			installedSkills,
 			cfg,
 		) + ContextBlockFor(
@@ -2844,11 +2861,12 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			"orchestrator",
 			gitBlock,
 			gitBlockAgents,
-		) + "\n\n" + unitsBlock,
+		) + "\n\n" + unitsBlock),
 		Model:                 model,
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			historyBuilder.BeforeModelCallback,
+			ThinkingOverrideCallback,
 			vision.VisionInjectionCallback,
 			ToolResultGuard,
 		},

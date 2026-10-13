@@ -59,12 +59,19 @@ export interface UpdateTaskPayload {
 export const useTaskStore = defineStore('tasks', () => {
   const tasks = ref<Task[]>([])
   const loading = ref(false)
+  // Last list-load failure, rendered with a retry action instead of the
+  // empty state (a failed load must not read as "no tasks"). Null on
+  // success; a failed refresh keeps the previous board in place.
+  const loadError = ref<string | null>(null)
 
   async function fetchTasks() {
     loading.value = true
+    loadError.value = null
     try {
       const data = await apiFetch<Task[]>('/tasks')
       tasks.value = data
+    } catch (e) {
+      loadError.value = e instanceof Error ? e.message : 'Failed to load tasks'
     } finally {
       loading.value = false
     }
@@ -99,5 +106,5 @@ export const useTaskStore = defineStore('tasks', () => {
     tasks.value = tasks.value.filter((t) => t.id !== id)
   }
 
-  return { tasks, loading, fetchTasks, createTask, updateTask, deleteTask }
+  return { tasks, loading, loadError, fetchTasks, createTask, updateTask, deleteTask }
 })

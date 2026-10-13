@@ -163,7 +163,7 @@ func TestMergeQueued(t *testing.T) {
 	}
 }
 
-func TestBeforeModelCallbackInjectsQueuedAtTail(t *testing.T) {
+func TestBeforeModelCallbackInjectsQueuedBeforeTail(t *testing.T) {
 	b, svc := newTestBuilderForQueue(t)
 	if err := svc.RecordUsage("user", "q1", "", 5); err != nil {
 		t.Fatal(err)
@@ -185,17 +185,21 @@ func TestBeforeModelCallbackInjectsQueuedAtTail(t *testing.T) {
 		t.Fatalf("callback error: %v", err)
 	}
 
-	// Expect [q1, a1, q2, steering]. The steering must be the LAST content
-	// (most recent user intent), after the current run's contents.
+	// Expect [q1, a1, steering, q2] per invariant P: steering joins the
+	// frozen insertion section, ahead of the un-persisted ADK tail (q2),
+	// so a mid-turn arrival never rewrites the prefix.
 	if len(req.Contents) != 4 {
-		t.Fatalf("contents len = %d, want 4 (history 2 + current + steering)", len(req.Contents))
+		t.Fatalf("contents len = %d, want 4 (history 2 + steering + tail)", len(req.Contents))
 	}
 	if req.Contents[0].Parts[0].Text != hctx.WrapUntrustedData("q1") {
 		t.Fatalf("history[0] = %q, want %q", req.Contents[0].Parts[0].Text, hctx.WrapUntrustedData("q1"))
 	}
-	last := req.Contents[len(req.Contents)-1]
-	if !strings.Contains(last.Parts[0].Text, "USER INTERJECTION") || !strings.Contains(last.Parts[0].Text, "steer me") {
-		t.Fatalf("steering content missing framing: %q", last.Parts[0].Text)
+	steering := req.Contents[2]
+	if !strings.Contains(steering.Parts[0].Text, "USER INTERJECTION") || !strings.Contains(steering.Parts[0].Text, "steer me") {
+		t.Fatalf("steering content missing framing: %q", steering.Parts[0].Text)
+	}
+	if req.Contents[3].Parts[0].Text != "q2" {
+		t.Fatalf("ADK tail must close the request, got %q", req.Contents[3].Parts[0].Text)
 	}
 }
 
@@ -211,7 +215,8 @@ func TestBeforeModelCallbackQueuePersistsAcrossCalls(t *testing.T) {
 
 	// Two model calls (tool loop): the queued message must be injected into
 	// BOTH because ADK rebuilds req.Contents fresh each call and the queue is
-	// only drained at agentDoneMsg.
+	// only drained at agentDoneMsg. Per invariant P the steering sits
+	// ahead of the ADK tail, not at the very end.
 	for call := 0; call < 2; call++ {
 		req := &model.LLMRequest{
 			Contents: []*genai.Content{genai.NewContentFromText("current", genai.RoleUser)},
@@ -220,9 +225,15 @@ func TestBeforeModelCallbackQueuePersistsAcrossCalls(t *testing.T) {
 		if _, err := b.BeforeModelCallback(cctx, req); err != nil {
 			t.Fatalf("callback %d: %v", call, err)
 		}
-		last := req.Contents[len(req.Contents)-1]
-		if !strings.Contains(last.Parts[0].Text, "keep steering") {
-			t.Fatalf("call %d: steering missing at tail: %q", call, last.Parts[0].Text)
+		if len(req.Contents) != 3 {
+			t.Fatalf("call %d: contents len = %d, want 3 (history + steering + tail)", call, len(req.Contents))
+		}
+		steering := req.Contents[1]
+		if !strings.Contains(steering.Parts[0].Text, "keep steering") {
+			t.Fatalf("call %d: steering missing ahead of tail: %q", call, steering.Parts[0].Text)
+		}
+		if req.Contents[2].Parts[0].Text != "current" {
+			t.Fatalf("call %d: ADK tail must close the request, got %q", call, req.Contents[2].Parts[0].Text)
 		}
 	}
 	if q.Len() != 1 {

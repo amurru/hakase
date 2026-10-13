@@ -42,7 +42,8 @@ type EventSink interface {
 	OnLog(sessionID, line string)
 	// OnUsage reports a token usage update with the turn cost so far and
 	// the budget fill percent (SSE v2 fields; transports may ignore them).
-	OnUsage(sessionID string, tokens, percent int, costUSD float64, budgetPct int)
+	// cached carries the prompt-cache read for the turn (PC-007).
+	OnUsage(sessionID string, tokens, cached, percent int, costUSD float64, budgetPct int)
 	// OnDone signals the turn has completed (success, error, or panic).
 	OnDone(sessionID string)
 	// OnGraphEvent reports one structured execution-canvas event (agent
@@ -231,10 +232,13 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 	// Project-bound sessions (project-registry DP-7): anchor the run to the
 	// registered project's checkout so git tools default there (resolveRepoDir
 	// consults project.RootFrom), pin the effective sandbox to the checkout
-	// when the host sandbox is active (per-run workspace roots), and inject a
-	// fresh per-session GIT WORKSPACE snapshot ahead of the user message.
-	// Delegated runs inherit the ctx root and sandbox override (delegate.go
-	// reuses the agent.Context as the sub-run ctx).
+	// when the host sandbox is active (per-run workspace roots), and render
+	// a fresh per-turn GIT WORKSPACE snapshot for the history builder's
+	// frozen turn block (prompt-cache PC-005). The snapshot rides the run
+	// context — the persisted user message stays the bare prompt, so the
+	// store render dedups exactly and the prompt appears once. Delegated
+	// runs inherit the ctx root and sandbox override (delegate.go reuses
+	// the agent.Context as the sub-run ctx).
 	if bind != nil {
 		// Register the active run against the bound project before the first
 		// agent step so the registry refuses to sync/delete under it.
@@ -245,10 +249,7 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 		runCtx = WithBoundSandbox(runCtx, checkout)
 		if snap, serr := projectWorkspaceSnapshot(runCtx, checkout); serr == nil && strings.TrimSpace(snap) != "" {
 			header := fmt.Sprintf("\n### GIT WORKSPACE — session bound to registered project %q\n(checkout: %s)\n%s", bind.Name, checkout, snap)
-			msg = &genai.Content{
-				Role:  content.Role,
-				Parts: append([]*genai.Part{{Text: header}}, content.Parts...),
-			}
+			runCtx = project.WithSnapshot(runCtx, header)
 		}
 	}
 
@@ -299,6 +300,11 @@ func (d *Driver) RunTurn(ctx context.Context, sessionID string, content *genai.C
 outer:
 	for attempt := 0; ; attempt++ {
 		var parseErr error
+		// Per-pass markers for the pseudo-XML repair below: only this pass's
+		// model text is scanned (the buffer accumulates across passes), and
+		// only when the pass dispatched no native function call.
+		passMark := contentBuf.Len()
+		sawFunctionCall := false
 		for ev, err := range d.Runner.Run(runCtx, hakaseagent.ResumeUserID, taskID, msg, adkagent.RunConfig{}) {
 			if err != nil {
 				// Malformed tool-call JSON: re-enter the runner with a
@@ -331,8 +337,7 @@ outer:
 				}
 				lastUsage = &rec
 				graph.observeUsage(rec)
-				cost, _ := finops.CostOf(rec)
-				sink.OnUsage(sessionID, int(rec.TotalTokens()), 0, cost, finops.BudgetPct())
+				emitUsage(sink, sessionID, rec)
 			}
 			if ev.Content != nil {
 				for _, part := range ev.Content.Parts {
@@ -346,6 +351,7 @@ outer:
 						}
 					}
 					if part.FunctionCall != nil {
+						sawFunctionCall = true
 						sink.OnLog(sessionID,
 							fmt.Sprintf("Call: %s(%v)", part.FunctionCall.Name, part.FunctionCall.Args),
 						)
@@ -365,10 +371,25 @@ outer:
 			msg = hakaseagent.ToolCallRepairMessage(parseErr, attempt)
 			continue
 		}
+		// Pseudo-XML tool call: the model wrote a <tool_call> block instead
+		// of dispatching a native function call, so nothing executed and the
+		// raw markup is the visible answer. Re-enter with a corrective
+		// message under the same attempt budget as the JSON repair.
+		if !sawFunctionCall && attempt < hakaseagent.MaxToolCallRepairAttempts &&
+			hakaseagent.ContainsPseudoToolCall(contentBuf.String()[passMark:]) {
+			log.Printf("agentrun: pseudo tool call repair for session %s (attempt %d)", sessionID, attempt+1)
+			msg = hakaseagent.PseudoToolCallRepairMessage(attempt)
+			continue
+		}
 		break
 	}
 	if lastUsage != nil {
-		if ok, msg := finops.CacheWarn(*lastUsage, cacheWarnRatio()); ok {
+		// Per-turn cache telemetry (PC-007): "cache read X/Y (Z%)" on the
+		// server log, then the once-per-session implicit-cache guard.
+		if line, ok := finops.CacheReadLine(*lastUsage); ok {
+			log.Printf("%s", line)
+		}
+		if ok, msg := finops.CacheWarn(sessionID, *lastUsage, cacheWarnRatio(), finops.EndpointKind()); ok {
 			sink.OnLog(sessionID, msg)
 		}
 	}
@@ -400,6 +421,13 @@ func cacheWarnRatio() float64 {
 		return s.Budgets.CacheWarnRatio
 	}
 	return 0
+}
+
+// emitUsage forwards one usage record to the transport sink: tokens and the
+// prompt-cache read (PC-007) alongside cost and budget fill.
+func emitUsage(sink EventSink, sessionID string, rec finops.UsageRecord) {
+	cost, _ := finops.CostOf(rec)
+	sink.OnUsage(sessionID, int(rec.TotalTokens()), int(rec.Cached), 0, cost, finops.BudgetPct())
 }
 
 // projectLabel renders the bound project's name for the tracing run span;

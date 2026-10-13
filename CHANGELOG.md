@@ -10,6 +10,41 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-13
+
+First stable release. Rolls up everything since `0.1.0-alpha.10`: prompt-cache
+stability (PC-001..PC-007), the WebUI UX transformation polish, `hakase init`
+and `hakase doctor`, the Linux arm64 asset plus `curl | sh` installer, the
+per-turn thinking-effort override, RTL message alignment, Discord management
+from the web Channels page, and a rewritten README quickstart - alongside the
+ADK state-templating, clarify, mermaid, and channel fixes below. From this tag
+on, GitHub `releases/latest` resolves to a stable release again, and the
+release workflow only flags `-alpha`/`-beta`/`-rc` tags as prereleases.
+
+### Added
+
+- **Linux arm64 release asset & `curl | sh` installer** - release workflows now cross-compile and publish static `hakase-<version>-linux-arm64` binaries alongside amd64, verified via QEMU user-static emulation in CI. Added a zero-dependency POSIX `curl | sh` installer at `packaging/install.sh` that detects OS/arch, resolves tags via GitHub API (`releases?per_page=1`), verifies downloads against release `SHA256SUMS.txt`, and installs idempotently, backed by a hermetic CI test harness (`packaging/install_test.sh`).
+- **`hakase doctor` preflight command** - one command that audits toolchain binaries on PATH (`go`, `node`, `pnpm`, `python3`, `ffmpeg`, `whisper-cli`, `piper`; only `python3` is a hard requirement since the bundled skill runtime needs it - `go`/`node`/`pnpm` warn as build-only), `config.json` schema and validity, active sandbox mode and startup warnings, provider reachability, MCP server status via `MCPServerManager.Diagnose` over the effective registry (failing loudly when the registry cannot be built), and web credentials (`credentials.json`) plus JWT secret presence. Supports `--format table|json` and `--skip-net` with actionable fix hints for every failed check.
+- **`hakase init` first-run setup wizard** - creates a minimal config (provider / model / api_key, plus base_url for openai-compatible endpoints) without hand-editing the 270-line `config.json.example`. Interactively it prompts for any value not supplied by a flag or `HAKASE_*` env var, writes `~/.hakase/config.json` (0600; `--local` writes `./config.json`, `--force` overwrites), and offers to set the web admin password; non-interactively every required value must come from a flag or env var, so Docker/CI provisioning is deterministic. A hand-editable `config.minimal.json` ships alongside the full example.
+- **Prompt-cache stability (PC-001..PC-007)** - every model request is now prefix-cache optimal: one canonical renderer (persist exactly what is sent, render from stored bytes), harness-injected context frozen per turn in ADK invocation state (impossible to mutate mid-turn by construction), history append-only between compactions with single-rewrite compaction (prior summaries merged into the new one, one rewrite log line with direction and token delta), persist-once SessionStart context, and an implicit-cache guard warning at most once per session when a prompt above the 1024-token floor reports zero cached tokens. Cache health is observable: `cache read X/Y (Z%)` per turn in logs, cached-token chip in the web header, and `cache_warn_ratio` config. See `docs/prompt-cache/spec.md`.
+- **WebUI UX transformation polish** - chat, shell, and list views reworked: design-token pass, transcript column with day dividers and avatar grouping, composer with stop button / counter / trimmed hints, message hover toolbar with timestamps, grouped collapsible sidebar plus mobile drawer, usage popover and breadcrumb header, session pin / filters / skeletons / load retry, shared empty and skeleton states across list views, labeled canvas toggle with onboarding, code wrap toggle, and reduced-motion gating with touch-visible actions. See #116.
+- **Per-turn thinking-effort override** - the composer reasoning-effort menu drives a canonical per-turn override (`dafb5f6`, wired through `a89a338`), so effort can be raised or lowered for a single turn without touching the session default.
+- **RTL message alignment** - chat messages in RTL languages align and lay out correctly.
+- **Discord management from the web Channels page** - the Channels view now manages the Discord transport alongside Telegram, and Discord pairing accepts the bare `CODE` without the slash prefix.
+
+### Changed
+
+- **Missing-config first-run failures are now actionable.** `config.LoadConfig` returns an error wrapping the new sentinel `config.ErrNoConfig` (detect with `config.IsNoConfig`) with setup guidance appended. The TUI (`cmd/hakase/main.go`) and web (`cmd/hakase/web.go`) print that guidance instead of a bare `open config.json: no such file or directory`, and `hakase web` without an admin login now points at both `hakase auth set-password` and `hakase init`. The web config API still treats a missing file as a fresh env-built config (`errors.Is(err, os.ErrNotExist)`).
+- **README quickstart rewritten for fast binary onboarding** - install, `hakase init`, `hakase doctor`, first run.
+
+### Fixed
+
+- **ADK state-templating brace failures.** The skills-index stub stays brace-free and orchestrator instructions are served via the provider, so a stray `{identifier}` in prompt text can no longer fail every run through ADK session-state templating.
+- **Clarify prompts accept provider-serialized string choices**, and gate prompts are mirrored onto the asking session's SSE topic so the originator sees them.
+- **Mermaid diagrams**: edge-label pipe syntax taught to the diagram instruction, and the error fallback deferred until streaming ends so partial diagrams no longer flash an error state.
+- **Agent loop repair for XML pseudo tool calls**, and the `web_search` visibility rule stated as a hard constraint.
+- **Durable ADK session events stay visible in-flight** (`00d8673`), and prompt-cache assembly never dedups tool-protocol content with honest rewrite logging (`2b03428`).
+
 ## [0.1.0-alpha.10] - 2026-10-10
 
 ### Added

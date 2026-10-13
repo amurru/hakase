@@ -893,12 +893,12 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 	subAgent, err := llmagent.New(llmagent.Config{
 		Name:                  fmt.Sprintf("cron_%s", job.ID),
 		Description:           "Scheduled cron job agent",
-		Instruction:           buildCronInstruction(job.Name),
+		InstructionProvider:   util.StaticInstruction(buildCronInstruction(job.Name)),
 		Model:                 currentModel,
 		Tools:                 subAgentTools,
 		Toolsets:              subAgentToolsets,
 		GenerateContentConfig: genCfg,
-		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{vision.VisionInjectionCallback, hakaseagent.ToolResultGuard},
+		BeforeModelCallbacks:  []llmagent.BeforeModelCallback{hakaseagent.ThinkingOverrideCallback, vision.VisionInjectionCallback, hakaseagent.ToolResultGuard},
 	})
 	if err != nil {
 		log(fmt.Sprintf("[cron] job %s failed to create sub-agent: %v", job.ID, err))
@@ -986,6 +986,11 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 
 	for {
 		repaired := false
+		// Per-pass markers for the pseudo-XML repair below: only this pass's
+		// model text is scanned (summary accumulates across passes), and only
+		// when the pass dispatched no native function call.
+		passMark := summary.Len()
+		sawFunctionCall := false
 		for ev, runErr := range subRunner.Run(guardCtx, "cron_scheduler", taskID, msg, agent.RunConfig{}) {
 			if runErr != nil {
 				if hakaseagent.IsToolCallJSONErr(runErr) && attempt < hakaseagent.MaxToolCallRepairAttempts {
@@ -1015,7 +1020,24 @@ func runCronJob(job CronJob, log hakaseagent.LogFunc) {
 							}
 						}
 					}
+					if part.FunctionCall != nil {
+						sawFunctionCall = true
+					}
 				}
+			}
+		}
+		if !repaired && finalErr == nil {
+			// Pseudo-XML tool call: the job wrote a <tool_call> block
+			// instead of dispatching a native function call, so nothing
+			// executed. Re-enter with a corrective message under the same
+			// attempt budget as the JSON repair. Skipped when the pass
+			// already failed outright (finalErr set) — that path aborts.
+			if !sawFunctionCall && attempt < hakaseagent.MaxToolCallRepairAttempts &&
+				hakaseagent.ContainsPseudoToolCall(summary.String()[passMark:]) {
+				util.DebugWarn("pseudo_tool_call_repair", "cron_job", job.ID, "attempt", attempt+1)
+				msg = hakaseagent.PseudoToolCallRepairMessage(attempt)
+				attempt++
+				repaired = true
 			}
 		}
 		if !repaired {

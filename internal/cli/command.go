@@ -128,6 +128,11 @@ func runTUIPlaceholder(args []string) int {
 // replaces at startup with the real implementations.
 func init() {
 	registerCommand(Command{
+		Name:        "init",
+		Description: "create a config and set up hakase for first use",
+		Handler:     RunInitCLI,
+	})
+	registerCommand(Command{
 		Name:        "skill",
 		Description: "manage markdown skills (create, list, validate, evolve)",
 		Handler:     RunSkillCLI,
@@ -146,6 +151,11 @@ func init() {
 		Name:        "session",
 		Description: "manage sessions (list, resume, ...)",
 		Handler:     RunSessionCLI,
+	})
+	registerCommand(Command{
+		Name:        "doctor",
+		Description: "preflight diagnostics for toolchain, config, provider, MCP, and credentials",
+		Handler:     RunDoctorCLI,
 	})
 	registerCommand(Command{
 		Name:        "stats",

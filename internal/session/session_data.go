@@ -1,11 +1,18 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -28,6 +35,11 @@ const (
 	// across turns (per spec NotesInContext).
 	MessageKindSidekick   = "sidekick"
 	MessageKindDurablePin = "durable_pin"
+	// MessageKindSessionStart marks a persisted SessionStart hook context
+	// block (prompt-cache PC-004): inserted once at the store head before
+	// the session's first render, then rendered from the store like any
+	// other history message.
+	MessageKindSessionStart = "sessionstart"
 )
 
 // Session represents a user chat session — a persistent conversation
@@ -80,6 +92,11 @@ type AttachmentRef struct {
 	Path  string `json:"path"`
 	MIME  string `json:"mime"`
 	Label string `json:"label,omitempty"` // chip text, e.g. "@file.go" or "[image 1]"
+	// Hash is the sha256 hex of the file bytes at persist time ("" when the
+	// file was unreadable). The renderer logs `cache: attachment drift` when
+	// the re-read hash differs, since changed bytes invalidate the prefix
+	// cache after the attachment. Additive: old session files omit it.
+	Hash string `json:"hash,omitempty"`
 }
 
 // TaskRef is an embedded snapshot of task metadata stored directly
@@ -132,9 +149,60 @@ func (s *Session) AddMessageWithMeta(role, content, thinking string, tokens int,
 	s.AddMessageWithMetaAndAttachments(role, content, thinking, tokens, kind, nil)
 }
 
+// NormalizeIngestedText canonicalizes persisted message text once at
+// ingestion (prompt-cache PC-001): CRLF/CR become LF, then Unicode NFC.
+// The renderer is a pure function of these stored bytes, so live sends and
+// replays emit identical output for identical prompts.
+func NormalizeIngestedText(s string) string {
+	if s == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return norm.NFC.String(s)
+}
+
+// maxAttachmentHashBytes caps drift-detection hashing. Creation paths
+// already size-cap attachments (web: 200KB text / 10MB image); the hash
+// re-read must never turn a session-supplied path into an unbounded read.
+const maxAttachmentHashBytes = 32 << 20
+
+// HashAttachmentFile returns the sha256 hex of the file at path, or "" when
+// it cannot be safely read. Empty paths, non-regular files (directories,
+// devices, fifos - a fifo would block the reader forever), files over
+// maxAttachmentHashBytes, and any I/O error all yield "". Callers treat ""
+// as "unknown, skip the drift check", so rejected paths fail safe. The path
+// is cleaned before use, the content is streamed (constant memory), and only
+// the hash is returned, never file bytes, so a tampered session path cannot
+// exfiltrate data through this function.
+func HashAttachmentFile(path string) string {
+	clean := filepath.Clean(path)
+	if clean == "." {
+		return ""
+	}
+	st, err := os.Stat(clean)
+	if err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	if st.Size() > maxAttachmentHashBytes {
+		return ""
+	}
+	f, err := os.Open(clean)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // AddMessageWithMetaAndAttachments is AddMessageWithMeta plus a persisted
 // attachment list.
 func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking string, tokens int, kind string, atts []AttachmentRef) {
+	content = NormalizeIngestedText(content)
 	// Persist-time tool-output cap (Spec CX-003)
 	if kind == MessageKindToolResult {
 		limit := 8192
@@ -143,6 +211,13 @@ func (s *Session) AddMessageWithMetaAndAttachments(role, content, thinking strin
 		}
 		if count := utf8.RuneCountInString(content); count > limit {
 			content = string([]rune(content)[:limit]) + fmt.Sprintf("\n...[truncated %d chars]", count-limit)
+		}
+	}
+	// Snapshot each attachment's content hash so the renderer can detect
+	// on-disk drift between the live send and later replays.
+	for i := range atts {
+		if atts[i].Hash == "" {
+			atts[i].Hash = HashAttachmentFile(atts[i].Path)
 		}
 	}
 	s.Messages = append(s.Messages, Message{

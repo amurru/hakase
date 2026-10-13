@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import EmptyState from '@/components/EmptyState.vue'
 import { Brain, RefreshCw, Trash2, Loader2 } from '@lucide/vue'
 
 const notes = ref<MemoryNote[]>([])
@@ -93,15 +94,19 @@ onMounted(load)
       </Button>
     </div>
 
-    <div v-if="error" class="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+    <div v-if="error" class="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
       {{ error }}
     </div>
 
-    <div v-if="!loading && !error && visibleNotes.length === 0" class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-      No memory notes{{ filter === 'all' ? ' yet' : ` in "${filter}"` }}. Ask the agent to
-      <span class="font-mono">remember</span> something and it will appear here
-      ({{ storePath || '~/.hakase/memory/notes.json' }}).
-    </div>
+    <EmptyState
+      v-if="!loading && !error && visibleNotes.length === 0"
+      :title="filter === 'all' ? 'No memory notes yet' : `No memory notes in &quot;${filter}&quot;`"
+      :description="`Ask the agent to remember something and it will appear here (${storePath || '~/.hakase/memory/notes.json'}).`"
+    >
+      <template #icon>
+        <Brain class="h-10 w-10" />
+      </template>
+    </EmptyState>
 
     <div v-for="category in MEMORY_CATEGORIES" :key="category" class="space-y-2">
       <template v-if="grouped[category].length > 0">

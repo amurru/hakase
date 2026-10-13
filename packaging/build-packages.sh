@@ -9,9 +9,10 @@
 #   2. $VERSION env var (set by the release workflow, e.g. v0.1.0-alpha.2)
 #   3. git describe output (tag builds yield e.g. v0.1.0-alpha.2)
 #
-# The version is normalized for dpkg/rpm: strip the leading 'v' and turn the
-# '-alpha' separator into '~alpha' (both dpkg and rpm sort '~' before the
-# final release, so 0.1.0~alpha.2 upgrades cleanly to 0.1.0).
+# The version is normalized for dpkg/rpm: strip the leading 'v' and turn a
+# '-alpha' / '-beta' / '-rc' separator into '~' (both dpkg and rpm sort '~'
+# before the final release, so 0.1.0~alpha.2 upgrades cleanly to 0.1.0).
+# Stable tags (e.g. v0.1.0) pass through unchanged.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -33,7 +34,7 @@ fi
 
 if [ -z "${NFPM_VERSION:-}" ]; then
 	raw="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-	NFPM_VERSION="$(printf '%s' "$raw" | sed -e 's/^v//' -e 's/-alpha/~alpha/')"
+	NFPM_VERSION="$(printf '%s' "$raw" | sed -e 's/^v//' -e 's/-alpha/~alpha/' -e 's/-beta/~beta/' -e 's/-rc/~rc/')"
 fi
 
 # The '~' is required inside the package version (dpkg/rpm prerelease

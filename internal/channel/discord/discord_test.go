@@ -346,6 +346,29 @@ func TestPairStaticCode(t *testing.T) {
 	}
 }
 
+// TestBarePairNoSlash guards the pairing dead-end: the deny reply tells an
+// unpaired user to DM `pair CODE` (no slash), so the bare form must route to
+// pairing instead of looping back on the private-bot reply.
+func TestBarePairNoSlash(t *testing.T) {
+	b, sender, _ := newTestBot(t, nil)
+	b.auth = channel.NewAuthenticator(b.store, ChannelName, nil, "123456")
+	b.onMessageCreate(nil, dmMessage("400", "pair 123456"))
+	if got := sender.lastSend(); !strings.Contains(got, "Paired") {
+		t.Fatalf("bare pair reply = %q, want Paired", got)
+	}
+	if !b.auth.IsAllowed(400) {
+		t.Error("user must be allowed after bare pairing")
+	}
+	// A wrong bare code must not pair.
+	b.onMessageCreate(nil, dmMessage("401", "pair 000000"))
+	if got := sender.lastSend(); !strings.Contains(got, "didn't work") {
+		t.Errorf("bad bare code reply = %q, want failure hint", got)
+	}
+	if b.auth.IsAllowed(401) {
+		t.Error("user must not pair with a wrong code")
+	}
+}
+
 func TestCommands(t *testing.T) {
 	b, sender, _ := newTestBot(t, []int64{100})
 	b.handleCommand(100, "tester", "/help")

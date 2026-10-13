@@ -3,9 +3,13 @@ import {
   fetchChannelsStatus,
   requestPairingCode,
   revokeTelegramUser,
+  revokeChannelUser,
   saveTelegramToken,
   clearTelegramToken,
   setTelegramEnabled,
+  saveDiscordToken,
+  clearDiscordToken,
+  setDiscordEnabled,
   formatCountdown,
   secondsUntil,
   shortId,
@@ -51,16 +55,30 @@ describe('channels api wrappers', () => {
     expect(JSON.parse(String(opts.body))).toEqual({ user_id: 42, channel: 'telegram' })
   })
 
+  it('revokeChannelUser posts the given channel', async () => {
+    const f = stubFetch({ status: 'revoked' })
+    await revokeChannelUser(99, 'discord')
+    const [path, opts] = f.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/channels/revoke')
+    expect(JSON.parse(String(opts.body))).toEqual({ user_id: 99, channel: 'discord' })
+  })
+
   it('token controls use the write-only config control keys', async () => {
     const f = stubFetch({ status: 'saved' })
     await saveTelegramToken('tok')
     await clearTelegramToken()
     await setTelegramEnabled(true)
+    await saveDiscordToken('dtok')
+    await clearDiscordToken()
+    await setDiscordEnabled(false)
 
     const bodies = f.mock.calls.map(([, opts]) => JSON.parse(String((opts as RequestInit).body)))
     expect(bodies[0]).toEqual({ telegram_bot_token: 'tok' })
     expect(bodies[1]).toEqual({ clear_telegram_bot_token: true })
     expect(bodies[2]).toEqual({ channels: { telegram: { enabled: true } } })
+    expect(bodies[3]).toEqual({ discord_bot_token: 'dtok' })
+    expect(bodies[4]).toEqual({ clear_discord_bot_token: true })
+    expect(bodies[5]).toEqual({ channels: { discord: { enabled: false } } })
   })
 
   it('surfaces API errors from failed requests', async () => {

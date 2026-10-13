@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"amurru/hakase/internal/config"
@@ -133,5 +134,18 @@ func TestBuildWebSearchFallbackPrompt(t *testing.T) {
 	off := false
 	if s := buildWebSearchFallback(&config.Config{WebSearch: config.WebSearchConfig{Enabled: &off}}); s != "" {
 		t.Errorf("disabled config should produce empty section, got %q", s)
+	}
+}
+
+// TestBuildWebSearchFallbackStatesVisibilityRule pins the fix for the
+// tool-not-found failures: the fallback hides dynamically while a research
+// MCP is connected, so the section must carry the verify-before-calling
+// rule instead of presenting web_search as always available.
+func TestBuildWebSearchFallbackStatesVisibilityRule(t *testing.T) {
+	s := buildWebSearchFallback(&config.Config{})
+	for _, want := range []string{"web_search", "tool list", "mcp_"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("prompt section should mention %q, got:\n%s", want, s)
+		}
 	}
 }
