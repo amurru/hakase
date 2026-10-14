@@ -371,6 +371,64 @@ func TestHelpViewRendersShortcuts(t *testing.T) {
 	}
 }
 
+// TestHelpOverlayScrolls verifies the help viewport pages through content
+// with keys and the wheel instead of clipping on short terminals.
+func TestHelpOverlayScrolls(t *testing.T) {
+	m := newTestModel(t)
+
+	model, _ := m.Update(keyMsg("ctrl+/"))
+	mm := model.(*AppModel)
+	if !mm.showHelp || !mm.helpLoaded {
+		t.Fatal("ctrl+/ should open the loaded help overlay")
+	}
+	if mm.helpViewport.Height() <= 0 {
+		t.Fatal("help viewport should have a positive height")
+	}
+
+	model, _ = mm.Update(keyMsg("end"))
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() <= 0 {
+		t.Fatal("end should scroll the help overlay to the bottom")
+	}
+	model, _ = mm.Update(keyMsg("home"))
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() != 0 {
+		t.Fatalf("home should return to the top, got offset %d", mm.helpViewport.YOffset())
+	}
+	model, _ = mm.Update(keyMsg("down"))
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() != 1 {
+		t.Fatalf("down should advance one line, got offset %d", mm.helpViewport.YOffset())
+	}
+
+	before := mm.helpViewport.YOffset()
+	model, _ = mm.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() <= before {
+		t.Fatal("mouse wheel down should scroll the open help overlay")
+	}
+
+	model, _ = mm.Update(keyMsg("esc"))
+	mm = model.(*AppModel)
+	if mm.showHelp {
+		t.Fatal("esc should close the help overlay")
+	}
+}
+
+// TestHelpOverlayFitsShortTerminal verifies the overlay (box + footer)
+// never exceeds the terminal height.
+func TestHelpOverlayFitsShortTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 24
+	m.openHelp()
+	view := m.View().Content
+	lines := strings.Split(view, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("help overlay renders %d lines for terminal height %d", len(lines), m.height)
+	}
+}
+
 // TestHelpViewFitsNarrowTerminal verifies P-06: the key column shrinks
 // under 100 columns so the overlay stays on-screen.
 func TestHelpViewFitsNarrowTerminal(t *testing.T) {

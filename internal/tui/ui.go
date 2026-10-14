@@ -380,6 +380,12 @@ type AppModel struct {
 	IsProcessing bool
 	showThinking bool
 	showHelp     bool
+	// helpViewport scrolls the help overlay content so it stays usable
+	// on short terminals instead of clipping past the screen.
+	helpViewport viewport.Model
+	// helpLoaded tracks whether helpViewport holds fresh content; View
+	// builds it lazily so direct showHelp flips (tests) also render.
+	helpLoaded bool
 	// hideLog, hideTask, and hideSidebar collapse right-column panes
 	// (P-07). Per-pane flags compose with the sidebar flag: a pane is
 	// visible only when its own flag and the sidebar flag are both off,
@@ -945,6 +951,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quitCmd()
 			case "esc", "ctrl+/", "ctrl+_", "ctrl+?", "?":
 				m.showHelp = false
+				m.helpLoaded = false
+			case "up", "k":
+				m.helpViewport.ScrollUp(1)
+			case "down", "j":
+				m.helpViewport.ScrollDown(1)
+			case "pgup", "b":
+				m.helpViewport.ScrollUp(m.helpViewport.Height())
+			case "pgdown", "f":
+				m.helpViewport.ScrollDown(m.helpViewport.Height())
+			case "u", "ctrl+u":
+				m.helpViewport.ScrollUp(m.helpViewport.Height() / 2)
+			case "d", "ctrl+d":
+				m.helpViewport.ScrollDown(m.helpViewport.Height() / 2)
+			case "home", "g":
+				m.helpViewport.GotoTop()
+			case "end", "G":
+				m.helpViewport.GotoBottom()
 			}
 			return m, nil
 		}
@@ -1010,10 +1033,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Ctrl+/ sends byte 0x1F, decoded as "ctrl+_" on standard terminals,
 		// "ctrl+/" via the kitty protocol, and "ctrl+?" on some emulators.
 		case "ctrl+/", "ctrl+_", "ctrl+?":
-			m.showHelp = true
+			m.openHelp()
 		case "?":
 			if m.focus != inputFocus {
-				m.showHelp = true
+				m.openHelp()
 			}
 		// Ctrl+Shift+C copies the focused pane's content to clipboard.
 		case "ctrl+shift+c":
@@ -1247,6 +1270,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseWheelMsg:
+		// The open help overlay owns the wheel so its content scrolls.
+		if m.showHelp {
+			if msg.Button == tea.MouseWheelUp {
+				m.helpViewport.ScrollUp(m.helpViewport.MouseWheelDelta)
+			} else if msg.Button == tea.MouseWheelDown {
+				m.helpViewport.ScrollDown(m.helpViewport.MouseWheelDelta)
+			}
+			break
+		}
 		// Wheel scrolls the focused pane (preserves prior behaviour).
 		switch m.focus {
 		case chatFocus:
@@ -1296,6 +1328,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 		}
 		m.sizePanes()
+
+		// A resize re-wraps the help text to the new viewport width,
+		// preserving the reader's scroll position when it still fits.
+		if m.showHelp {
+			yo := m.helpViewport.YOffset()
+			m.sizeHelpViewport()
+			m.helpViewport.SetContent(m.helpContent())
+			m.helpViewport.SetYOffset(yo)
+			m.helpLoaded = true
+		}
 
 		// Re-render chat viewport on resize
 		m.renderChatViewport()
@@ -2306,8 +2348,43 @@ func (m *AppModel) approvalModalView() tea.View {
 	return v
 }
 
-// helpView renders the full-screen keyboard shortcut overlay.
-func (m *AppModel) helpView() tea.View {
+// openHelp shows the shortcut overlay, sizing its scroll viewport to the
+// terminal and starting at the top.
+func (m *AppModel) openHelp() {
+	m.showHelp = true
+	m.sizeHelpViewport()
+	m.helpViewport.SetContent(m.helpContent())
+	m.helpViewport.GotoTop()
+	m.helpLoaded = true
+}
+
+// sizeHelpViewport fits the help scroll viewport inside the terminal. The
+// box keeps a small margin so the overlay reads as a modal; the viewport
+// fills the box interior (border + padding excluded).
+func (m *AppModel) sizeHelpViewport() {
+	if m.helpViewport.Width() == 0 && m.helpViewport.Height() == 0 {
+		m.helpViewport = viewport.New()
+		m.helpViewport.MouseWheelEnabled = false
+	}
+	boxW := m.width - 8
+	if boxW > 100 {
+		boxW = 100
+	}
+	if boxW < 40 {
+		boxW = 40
+	}
+	boxH := m.height - 5
+	if boxH < 9 {
+		boxH = 9
+	}
+	// helpBoxStyle pads 1 row / 2 cols inside a 1-cell border.
+	m.helpViewport.SetWidth(boxW - 6)
+	m.helpViewport.SetHeight(boxH - 4)
+}
+
+// helpContent builds the scrollable help text, wrapping descriptions to
+// the viewport width so no horizontal scrolling is ever needed.
+func (m *AppModel) helpContent() string {
 	var b strings.Builder
 	b.WriteString(helpTitleStyle.Render("⌨️  Keyboard Shortcuts"))
 	b.WriteString("\n\n")
@@ -2365,36 +2442,46 @@ func (m *AppModel) helpView() tea.View {
 		b.WriteString(helpSectionStyle.Render(sec.title))
 		b.WriteString("\n")
 		for _, e := range sec.entries {
-			b.WriteString("  ")
-			// Narrow terminals cannot afford the full 22-cell key
-			// column: shrink it and wrap descriptions so the box
-			// stays on-screen under 100 columns.
+			// The key column shrinks on narrow viewports so
+			// descriptions keep room to wrap.
 			keyW := 22
-			narrow := m.width > 0 && m.width < 100
-			if narrow {
+			if m.helpViewport.Width() < 70 {
 				keyW = 14
 			}
-			b.WriteString(helpKeyStyle.Width(keyW).Render(e.keys))
-			desc := e.desc
-			if narrow {
-				descW := m.width - keyW - 12
-				if descW < 20 {
-					descW = 20
-				}
-				desc = lipgloss.NewStyle().Width(descW).Render(e.desc)
-			} else {
-				desc = helpDescStyle.Render(e.desc)
+			descW := m.helpViewport.Width() - keyW - 3
+			if descW < 20 {
+				descW = 20
 			}
-			b.WriteString(desc)
+			wrapped := strings.Split(lipgloss.NewStyle().Width(descW).Render(e.desc), "\n")
+			b.WriteString("  ")
+			b.WriteString(helpKeyStyle.Width(keyW).Render(e.keys))
+			b.WriteString(wrapped[0])
 			b.WriteString("\n")
+			// Wrapped continuation lines align under the description.
+			for _, cont := range wrapped[1:] {
+				b.WriteString("  " + strings.Repeat(" ", keyW) + cont + "\n")
+			}
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString(helpFooterStyle.Render("Press ctrl+/ or esc to close"))
+	return b.String()
+}
 
-	box := helpBoxStyle.Render(b.String())
-	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box))
+// helpView renders the keyboard shortcut overlay: a bordered scroll
+// viewport plus a footer naming the scroll and close keys.
+func (m *AppModel) helpView() tea.View {
+	m.sizeHelpViewport()
+	if !m.helpLoaded {
+		m.helpViewport.SetContent(m.helpContent())
+		m.helpViewport.GotoTop()
+		m.helpLoaded = true
+	}
+
+	box := helpBoxStyle.Render(m.helpViewport.View())
+	footer := helpFooterStyle.Render("up/down · pgup/pgdn scroll · esc to close")
+	content := lipgloss.JoinVertical(lipgloss.Center, box, footer)
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content))
 	v.MouseMode = tea.MouseModeCellMotion
 	v.AltScreen = true
 	return v
