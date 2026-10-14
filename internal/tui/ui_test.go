@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func newTestModel(t *testing.T) *AppModel {
@@ -366,6 +367,23 @@ func TestHelpViewRendersShortcuts(t *testing.T) {
 	for _, want := range []string{"Keyboard Shortcuts", "ctrl+/", "shift+tab", "ctrl+t", "ctrl+c"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestHelpViewFitsNarrowTerminal verifies P-06: the key column shrinks
+// under 100 columns so the overlay stays on-screen.
+func TestHelpViewFitsNarrowTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.showHelp = true
+	view := m.View().Content
+	if !strings.Contains(view, "Keyboard Shortcuts") {
+		t.Fatalf("narrow help view missing title:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Fatalf("narrow help line exceeds terminal width (%d):\n%q", w, line)
 		}
 	}
 }

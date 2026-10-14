@@ -2115,8 +2115,9 @@ func riskBadge(risk string) string {
 }
 
 // approvalModalView renders the approval modal overlay on top of the normal
-// TUI. It shows the tool name, risk badge, command verbatim, reason, and
-// [y]es/[n]o/esc hint.
+// TUI. Tool/risk/reason use an aligned grid, the command wraps to the
+// modal width and caps at 6 rows (never truncated silently: a +N note
+// marks hidden lines), and the key hints stay plain text.
 func (m *AppModel) approvalModalView() tea.View {
 	if m.pendingApproval == nil {
 		return tea.NewView("")
@@ -2125,16 +2126,31 @@ func (m *AppModel) approvalModalView() tea.View {
 	var b strings.Builder
 
 	b.WriteString(approvalTitleStyle.Render("Command Approval Required"))
+	b.WriteString(" ")
+	b.WriteString(riskBadge(req.Risk))
 	b.WriteString("\n\n")
 
-	b.WriteString("Tool:   " + req.Tool + "\n")
-	b.WriteString("Risk:   " + riskBadge(req.Risk) + "\n")
-	b.WriteString("Reason: " + req.Reason + "\n\n")
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Width(8)
+	b.WriteString(label.Render("Tool") + req.Tool + "\n")
+	b.WriteString(label.Render("Risk") + riskBadge(req.Risk) + "\n")
+	b.WriteString(label.Render("Reason") + req.Reason + "\n\n")
 
 	b.WriteString("Command:\n")
-	// Show the command verbatim in monospace style.
-	cmdText := approvalCommandStyle.Render(req.Command)
-	b.WriteString(cmdText + "\n\n")
+	// Wrap the command verbatim to the modal width and cap its height so
+	// a long command cannot push the approve/deny hints off-screen.
+	cmdWidth := m.width - 12
+	if cmdWidth > 72 {
+		cmdWidth = 72
+	}
+	if cmdWidth < 20 {
+		cmdWidth = 20
+	}
+	cmdLines := strings.Split(lipgloss.NewStyle().Width(cmdWidth).Render(req.Command), "\n")
+	const maxCmdLines = 6
+	if len(cmdLines) > maxCmdLines {
+		cmdLines = append(cmdLines[:maxCmdLines], fmt.Sprintf("… (+%d more lines)", len(cmdLines)-maxCmdLines))
+	}
+	b.WriteString(approvalCommandStyle.Render(strings.Join(cmdLines, "\n")) + "\n\n")
 
 	b.WriteString(strings.Repeat("─", 40) + "\n")
 	b.WriteString(approvalHintStyle.Render("[y]es approve / [n]o deny / esc deny"))
@@ -2203,8 +2219,26 @@ func (m *AppModel) helpView() tea.View {
 		b.WriteString("\n")
 		for _, e := range sec.entries {
 			b.WriteString("  ")
-			b.WriteString(helpKeyStyle.Render(e.keys))
-			b.WriteString(helpDescStyle.Render(e.desc))
+			// Narrow terminals cannot afford the full 22-cell key
+			// column: shrink it and wrap descriptions so the box
+			// stays on-screen under 100 columns.
+			keyW := 22
+			narrow := m.width > 0 && m.width < 100
+			if narrow {
+				keyW = 14
+			}
+			b.WriteString(helpKeyStyle.Width(keyW).Render(e.keys))
+			desc := e.desc
+			if narrow {
+				descW := m.width - keyW - 12
+				if descW < 20 {
+					descW = 20
+				}
+				desc = lipgloss.NewStyle().Width(descW).Render(e.desc)
+			} else {
+				desc = helpDescStyle.Render(e.desc)
+			}
+			b.WriteString(desc)
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
