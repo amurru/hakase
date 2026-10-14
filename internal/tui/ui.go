@@ -169,13 +169,13 @@ var (
 			BorderForeground(lipgloss.Color("63")).
 			Padding(0, 1)
 
-	// sessionBoxStyle frames the session chooser modal.
-	sessionBoxStyle = lipgloss.NewStyle().
+	// chooserBoxStyle frames the chooser modals (sessions, MCP servers).
+	chooserBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("63")).
 			Padding(1, 2)
 
-	sessionTitleStyle = lipgloss.NewStyle().
+	chooserTitleStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("63"))
 
@@ -1962,44 +1962,14 @@ func (m *AppModel) View() tea.View {
 	logRender := logStyle.Render(m.logViewport.View())
 	taskRender := taskStyle.Render(m.taskViewport.View())
 
-	// rightColumn stacks the visible right panes for the inline modal
-	// branches below; hidden panes are omitted so the layout matches
-	// the compositor path.
-	rightColumn := func() string {
-		var panes []string
-		if m.logVisible() {
-			panes = append(panes, logRender)
-		}
-		if m.taskVisible() {
-			panes = append(panes, taskRender)
-		}
-		if len(panes) == 0 {
-			return ""
-		}
-		return lipgloss.JoinVertical(lipgloss.Left, panes...)
-	}
-
 	// Session chooser renders as a centered modal overlay.
 	if m.showSessionList {
 		return m.sessionModalView()
 	}
 
-	// /mcp modal renders the same way: an inline overlay below the content.
+	// /mcp server list renders as a centered modal overlay.
 	if m.showMCPList {
-		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
-		content := leftCol
-		if right := rightColumn(); right != "" {
-			content = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, right)
-		}
-		return tea.NewView(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				m.statusBar(),
-				content,
-				m.mcpListView(),
-				m.hintBar(),
-			),
-		)
+		return m.mcpModalView()
 	}
 
 	// Main layout: each pane is a named Layer positioned at its exact screen
@@ -3094,7 +3064,7 @@ func (m *AppModel) sessionModalView() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(sessionTitleStyle.Render(fmt.Sprintf("Sessions (%d)", len(filtered))))
+	b.WriteString(chooserTitleStyle.Render(fmt.Sprintf("Sessions (%d)", len(filtered))))
 	b.WriteString("\n")
 	b.WriteString("Filter: " + m.sessionListFilter + "_")
 	b.WriteString("\n")
@@ -3142,7 +3112,7 @@ func (m *AppModel) sessionModalView() tea.View {
 		}
 	}
 
-	box := sessionBoxStyle.Render(b.String())
+	box := chooserBoxStyle.Render(b.String())
 	footer := helpFooterStyle.Render("↑↓ move · pgup/pgdn jump · enter open · d delete · a archive · esc close")
 	content := lipgloss.JoinVertical(lipgloss.Center, box, footer)
 	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content))
