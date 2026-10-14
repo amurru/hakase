@@ -225,6 +225,8 @@ func (m *AppModel) mcpListView() string {
 		if pad := nameMax - lipgloss.Width(name); pad > 0 {
 			name += strings.Repeat(" ", pad)
 		}
+		// Cursor marker selects the row; no highlight wash so the
+		// status glyph colors stay readable on the selection.
 		marker := "  "
 		if i == m.mcpListIndex {
 			marker = "> "
@@ -232,9 +234,6 @@ func (m *AppModel) mcpListView() string {
 		row := marker + mcpStatusGlyph(s) + " " + name + "  " + detail
 		if pad := innerW - lipgloss.Width(row); pad > 0 {
 			row += strings.Repeat(" ", pad)
-		}
-		if i == m.mcpListIndex {
-			row = highlightStyle.Render(row)
 		}
 		b.WriteString(row + "\n")
 	}

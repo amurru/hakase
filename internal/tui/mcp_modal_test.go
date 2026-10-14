@@ -39,11 +39,16 @@ func TestMCPModalHighlightsSelection(t *testing.T) {
 	if !strings.Contains(rendered, "MCP Servers (3)") {
 		t.Fatalf("modal missing server count:\n%s", rendered)
 	}
+	if !strings.Contains(rendered, "alpha-first") {
+		t.Fatalf("modal should list servers:\n%s", rendered)
+	}
+	// Selection is the cursor marker alone, no highlight wash: exactly
+	// one row carries "> " and nothing emits reverse video.
 	if n := strings.Count(rendered, "> "); n != 1 {
 		t.Fatalf("expected exactly 1 cursor row, got %d:\n%s", n, rendered)
 	}
-	if !strings.Contains(rendered, "alpha-first") {
-		t.Fatalf("modal should list servers:\n%s", rendered)
+	if strings.Contains(m.View().Content, "\x1b[7") {
+		t.Fatal("selected row must not use reverse-video highlight")
 	}
 }
 
