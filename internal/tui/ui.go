@@ -45,7 +45,7 @@ var (
 			BorderForeground(lipgloss.Color("240"))
 
 	activeBorder = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("63"))
 
 	// Input pane uses extra vertical padding so the prompt is a larger, easier
@@ -53,10 +53,13 @@ var (
 	inputInactive = inactiveBorder.Padding(inputPadV, 0)
 	inputActive   = activeBorder.Padding(inputPadV, 0)
 
-	// highlightStyle is the background color applied to selected lines
-	// in output panes so the user can visually distinguish the selection.
+	// highlightStyle inverts selected lines in output panes so the
+	// selection survives both dark and light terminal themes. A plain
+	// gray wash (bg 238) is nearly invisible against the 240 borders
+	// and vanishes entirely on light backgrounds.
 	highlightStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("238"))
+			Reverse(true).
+			Bold(true)
 
 	thinkingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
@@ -64,6 +67,13 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("238")).
 			Padding(0, 1)
+
+	// thinkingHiddenStyle is the collapsed one-line placeholder shown
+	// when a message carries thinking but showThinking is off, so the
+	// reader knows reasoning exists and how to reveal it.
+	thinkingHiddenStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244")).
+				Italic(true)
 
 	agentLabelStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -1508,6 +1518,10 @@ func (m *AppModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	if m.showThinking && strings.TrimSpace(msg.Thinking) != "" {
 		block := thinkingStyle.Width(wrapWidth).Render("💭 " + strings.TrimSpace(msg.Thinking))
 		lines = append(lines, strings.Split(block, "\n")...)
+		lines = append(lines, "")
+	} else if !m.showThinking && strings.TrimSpace(msg.Thinking) != "" {
+		hidden := thinkingHiddenStyle.Width(wrapWidth).Render("◇ thinking hidden (ctrl+t to show)")
+		lines = append(lines, strings.Split(hidden, "\n")...)
 		lines = append(lines, "")
 	}
 
