@@ -2338,6 +2338,7 @@ func (m *AppModel) helpView() tea.View {
 		{"Slash Commands", []helpBinding{
 			{"/board", "Task board: summary, list, new, get, update, done, fail, cancel, delete, archive, claim"},
 			{"/mcp", "Manage MCP servers: open the panel, or list / enable / disable / reconnect"},
+			{"/model [name]", "Show or switch the chat model for subsequent turns"},
 			{"/compact [focus]", "Summarize the conversation to free context"},
 			{"/new", "Start a fresh session"},
 			{"/sessions", "Open the session chooser"},
