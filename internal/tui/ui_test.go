@@ -510,6 +510,107 @@ func TestStatusBarDropsLowPrioritySegmentsOnNarrowTerminal(t *testing.T) {
 	}
 }
 
+// TestPaneTogglesCollapseSidebar verifies P-07: log and task hide
+// independently, hiding both collapses the sidebar and widens chat, and
+// the status bar badges the collapsed state.
+func TestPaneTogglesCollapseSidebar(t *testing.T) {
+	m := newTestModel(t)
+	fullChatW := m.chatViewport.Width()
+
+	model, _ := m.Update(keyMsg("ctrl+l"))
+	mm := model.(*AppModel)
+	if mm.logVisible() {
+		t.Fatal("ctrl+l should hide the log pane")
+	}
+	if mm.sidebarHidden() {
+		t.Fatal("hiding log alone must not collapse the sidebar")
+	}
+	if got := mm.chatViewport.Width(); got != fullChatW {
+		t.Fatalf("chat width should not change while a right pane remains (was %d, got %d)", fullChatW, got)
+	}
+
+	model, _ = mm.Update(keyMsg("ctrl+k"))
+	mm = model.(*AppModel)
+	if !mm.sidebarHidden() {
+		t.Fatal("hiding log+tasks should collapse the sidebar")
+	}
+	if got := mm.chatViewport.Width(); got <= fullChatW {
+		t.Fatalf("chat should expand into the hidden sidebar (was %d, got %d)", fullChatW, got)
+	}
+	if bar := mm.statusBar(); !strings.Contains(bar, "log off") || !strings.Contains(bar, "tasks off") {
+		t.Fatalf("status bar should badge the hidden panes:\n%s", bar)
+	}
+
+	model, _ = mm.Update(keyMsg("ctrl+l"))
+	model, _ = model.Update(keyMsg("ctrl+k"))
+	mm = model.(*AppModel)
+	if mm.sidebarHidden() {
+		t.Fatal("reshowing both panes should restore the sidebar")
+	}
+	if bar := mm.statusBar(); strings.Contains(bar, "off") {
+		t.Fatalf("status bar badge should clear once restored:\n%s", bar)
+	}
+}
+
+// TestSidebarToggleHidesAll verifies the ctrl+b master switch composes
+// with per-pane flags: reshowing restores them.
+func TestSidebarToggleHidesAll(t *testing.T) {
+	m := newTestModel(t)
+
+	model, _ := m.Update(keyMsg("ctrl+k")) // hide tasks first
+	model, _ = model.Update(keyMsg("ctrl+b"))
+	mm := model.(*AppModel)
+	if mm.logVisible() || mm.taskVisible() {
+		t.Fatal("ctrl+b should hide every right pane")
+	}
+	if bar := mm.statusBar(); !strings.Contains(bar, "sidebar off") {
+		t.Fatalf("status bar should badge the hidden sidebar:\n%s", bar)
+	}
+
+	model, _ = mm.Update(keyMsg("ctrl+b"))
+	mm = model.(*AppModel)
+	if !mm.logVisible() {
+		t.Fatal("reshowing the sidebar should restore the log pane")
+	}
+	if mm.taskVisible() {
+		t.Fatal("reshowing the sidebar should keep the task pane hidden")
+	}
+}
+
+// TestCycleFocusSkipsHiddenPanes verifies focus never rests on a hidden pane.
+func TestCycleFocusSkipsHiddenPanes(t *testing.T) {
+	m := newTestModel(t)
+	m.hideLog = true
+	m.hideTask = true
+	m.focus = chatFocus
+	m.cycleFocus(1)
+	if m.focus != inputFocus {
+		t.Fatalf("focus should skip hidden log/task and land on input, got %d", m.focus)
+	}
+	for i := 0; i < 4; i++ {
+		m.cycleFocus(1)
+		if m.focus == logFocus || m.focus == taskFocus {
+			t.Fatalf("focus landed on hidden pane %d", m.focus)
+		}
+	}
+}
+
+// TestTaskMouseMappingWithoutLog verifies selection math when the log pane
+// above the task pane is hidden.
+func TestTaskMouseMappingWithoutLog(t *testing.T) {
+	m := newTestModel(t)
+	m.hideLog = true
+	m.sizePanes()
+	m.selectionPane = taskFocus
+	m.taskLines = []string{"a", "b"}
+	if got := m.mouseYToContentLine(2); got != 0 {
+		t.Fatalf("task content should start at row 2 without the log pane, got %d", got)
+	}
+	if got := m.mouseYToContentLine(0); got != -1 {
+		t.Fatalf("row 0 is the status bar, got %d", got)
+	}
+}
+
 // TestHintBarIsContextualPerFocus verifies P-03: each focus shows its own
 // keys while the shared tab/ctrl+/ suffix always survives.
 func TestHintBarIsContextualPerFocus(t *testing.T) {

@@ -380,6 +380,14 @@ type AppModel struct {
 	IsProcessing bool
 	showThinking bool
 	showHelp     bool
+	// hideLog, hideTask, and hideSidebar collapse right-column panes
+	// (P-07). Per-pane flags compose with the sidebar flag: a pane is
+	// visible only when its own flag and the sidebar flag are both off,
+	// so hiding log+tasks equals hiding the sidebar, and reshowing the
+	// sidebar restores the per-pane states.
+	hideLog     bool
+	hideTask    bool
+	hideSidebar bool
 	// showStartupLogo renders the startup logo banner in the chat pane while no
 	// conversation has started yet. True only at program boot; cleared on the
 	// first user message, /new, or a session switch.
@@ -585,13 +593,101 @@ func (m *AppModel) Init() tea.Cmd {
 // input -> chat -> log -> task.
 func (m *AppModel) cycleFocus(dir int) {
 	const paneCount = 4
-	m.focus = focusedPane((int(m.focus) + dir + paneCount) % paneCount)
+	for range paneCount {
+		m.focus = focusedPane((int(m.focus) + dir + paneCount) % paneCount)
+		if m.paneVisible(m.focus) {
+			break
+		}
+	}
 
 	if m.focus == inputFocus {
 		m.input.Focus()
 	} else {
 		m.input.Blur()
 	}
+}
+
+// paneVisible reports whether a focus target is currently on-screen.
+// Hidden right-column panes are skipped by focus cycling.
+func (m *AppModel) paneVisible(p focusedPane) bool {
+	switch p {
+	case logFocus:
+		return m.logVisible()
+	case taskFocus:
+		return m.taskVisible()
+	default:
+		return true
+	}
+}
+
+// logVisible and taskVisible combine the per-pane and sidebar flags.
+func (m *AppModel) logVisible() bool  { return !m.hideLog && !m.hideSidebar }
+func (m *AppModel) taskVisible() bool { return !m.hideTask && !m.hideSidebar }
+
+// sidebarHidden is true when no right-column pane is on-screen.
+func (m *AppModel) sidebarHidden() bool { return !m.logVisible() && !m.taskVisible() }
+
+// paneBadge summarizes hidden panes for the status bar, or "" when the
+// full layout is visible.
+func (m *AppModel) paneBadge() string {
+	if m.hideSidebar {
+		return "sidebar off"
+	}
+	var hidden []string
+	if m.hideLog {
+		hidden = append(hidden, "log off")
+	}
+	if m.hideTask {
+		hidden = append(hidden, "tasks off")
+	}
+	return strings.Join(hidden, " · ")
+}
+
+// ensureFocusVisible moves focus to input when the focused pane just hid.
+func (m *AppModel) ensureFocusVisible() {
+	if !m.paneVisible(m.focus) {
+		m.focus = inputFocus
+		m.input.Focus()
+	}
+}
+
+// sizePanes recomputes every viewport width/height from the terminal size
+// and the P-07 visibility flags. Hidden right-column panes yield their
+// width to chat/input; a lone visible right pane takes the full column.
+func (m *AppModel) sizePanes() {
+	rightWidth := m.width / 5
+	leftWidth := m.width - rightWidth - 4
+	if m.sidebarHidden() {
+		leftWidth = m.width - 2
+	}
+	avail := m.height - reservedRows
+
+	// Right column fills from status bar (Y=1) to just above hint bar
+	// (Y=m.height-2). Total viewport rows = m.height - 5 (accounting for
+	// lipgloss trailing newline). One visible pane absorbs the divider
+	// row the two-pane split would use.
+	rightAvail := m.height - 5
+	logH := rightAvail * 3 / 5
+	taskH := rightAvail - logH - 1 // remainder goes to task so they sum exactly
+	if m.logVisible() != m.taskVisible() {
+		if m.logVisible() {
+			logH = rightAvail + 1
+		} else {
+			taskH = rightAvail + 1
+		}
+	}
+
+	m.chatViewport.SetWidth(leftWidth)
+	m.chatViewport.SetHeight(avail)
+	m.logViewport.SetWidth(rightWidth)
+	m.logViewport.SetHeight(logH)
+	m.taskViewport.SetWidth(rightWidth)
+	m.taskViewport.SetHeight(taskH)
+
+	// Input pane extends to the right column boundary (X=rightColStart-2),
+	// or the full width when the sidebar is hidden.
+	m.input.SetWidth(leftWidth)
+	m.rebuildRenderedLines()
 }
 
 // SessionService exposes the active session service so package main slash
@@ -947,6 +1043,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showThinking = !m.showThinking
 			m.rebuildRenderedLines()
 			m.renderChatViewport()
+		// Ctrl+L / Ctrl+K toggle the log and task panes; Ctrl+B toggles
+		// the whole right sidebar (P-07). Hidden panes yield their width
+		// to chat/input. Focus never rests on a hidden pane.
+		case "ctrl+l":
+			m.hideLog = !m.hideLog
+			m.ensureFocusVisible()
+			m.sizePanes()
+			m.renderChatViewport()
+			m.RefreshTaskBoard()
+			m.AppendLog(fmt.Sprintf("log pane %s (ctrl+l to show)", map[bool]string{true: "hidden", false: "shown"}[m.hideLog]))
+		case "ctrl+k":
+			m.hideTask = !m.hideTask
+			m.ensureFocusVisible()
+			m.sizePanes()
+			m.renderChatViewport()
+			m.RefreshTaskBoard()
+			m.AppendLog(fmt.Sprintf("task pane %s (ctrl+k to show)", map[bool]string{true: "hidden", false: "shown"}[m.hideTask]))
+		case "ctrl+b":
+			m.hideSidebar = !m.hideSidebar
+			m.ensureFocusVisible()
+			m.sizePanes()
+			m.renderChatViewport()
+			m.RefreshTaskBoard()
+			m.AppendLog(fmt.Sprintf("sidebar %s (ctrl+b to show)", map[bool]string{true: "hidden", false: "shown"}[m.hideSidebar]))
 		case "tab":
 			m.cycleFocus(1)
 		case "shift+tab":
@@ -1154,29 +1274,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		rightWidth := m.width / 5
-		leftWidth := m.width - rightWidth - 4
-		avail := m.height - reservedRows
-
-		// Right column fills from status bar (Y=1) to just above hint bar
-		// (Y=m.height-2). The gap between log and task is 2 rows. Total
-		// viewport rows = m.height - 5 (accounting for lipgloss trailing newline).
-		rightAvail := m.height - 5
-		logH := rightAvail * 3 / 5
-		taskH := rightAvail - logH - 1 // remainder goes to task so they sum exactly
-
 		if !m.ready {
 			m.chatViewport = viewport.New(
-				viewport.WithWidth(leftWidth),
-				viewport.WithHeight(avail),
+				viewport.WithWidth(80),
+				viewport.WithHeight(20),
 			)
 			m.logViewport = viewport.New(
-				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(logH),
+				viewport.WithWidth(20),
+				viewport.WithHeight(10),
 			)
 			m.taskViewport = viewport.New(
-				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(taskH),
+				viewport.WithWidth(20),
+				viewport.WithHeight(10),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
@@ -1185,17 +1294,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.taskViewport.MouseWheelEnabled = false
 
 			m.ready = true
-		} else {
-			m.chatViewport.SetWidth(leftWidth)
-			m.chatViewport.SetHeight(avail)
-			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight(logH)
-			m.taskViewport.SetWidth(rightWidth)
-			m.taskViewport.SetHeight(taskH)
 		}
+		m.sizePanes()
 
-		// Input pane extends to the right column boundary (X=rightColStart-2).
-		m.input.SetWidth(leftWidth)
 		// Re-render chat viewport on resize
 		m.renderChatViewport()
 		m.RefreshTaskBoard()
@@ -1809,12 +1910,31 @@ func (m *AppModel) View() tea.View {
 	logRender := logStyle.Render(m.logViewport.View())
 	taskRender := taskStyle.Render(m.taskViewport.View())
 
+	// rightColumn stacks the visible right panes for the inline modal
+	// branches below; hidden panes are omitted so the layout matches
+	// the compositor path.
+	rightColumn := func() string {
+		var panes []string
+		if m.logVisible() {
+			panes = append(panes, logRender)
+		}
+		if m.taskVisible() {
+			panes = append(panes, taskRender)
+		}
+		if len(panes) == 0 {
+			return ""
+		}
+		return lipgloss.JoinVertical(lipgloss.Left, panes...)
+	}
+
 	// Session-list modal is keyboard-driven, so compositor click-focusing is
 	// intentionally inactive while it is open.
 	if m.showSessionList {
 		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
-		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
-		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+		content := leftCol
+		if right := rightColumn(); right != "" {
+			content = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, right)
+		}
 		return tea.NewView(
 			lipgloss.JoinVertical(
 				lipgloss.Left,
@@ -1829,8 +1949,10 @@ func (m *AppModel) View() tea.View {
 	// /mcp modal renders the same way: an inline overlay below the content.
 	if m.showMCPList {
 		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
-		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
-		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+		content := leftCol
+		if right := rightColumn(); right != "" {
+			content = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, right)
+		}
 		return tea.NewView(
 			lipgloss.JoinVertical(
 				lipgloss.Left,
@@ -1863,6 +1985,9 @@ func (m *AppModel) buildCompositor(
 ) *lipgloss.Compositor {
 	rightWidth := m.width / 5
 	leftWidth := m.width - rightWidth - 4
+	if m.sidebarHidden() {
+		leftWidth = m.width - 2
+	}
 	rightColStart := leftWidth + 2 // chat pane width including its border
 
 	chatH := m.chatViewport.Height()
@@ -1871,10 +1996,21 @@ func (m *AppModel) buildCompositor(
 	layers := []*lipgloss.Layer{
 		lipgloss.NewLayer(m.statusBar()).ID(paneStatus).X(0).Y(0),
 		lipgloss.NewLayer(chatRender).ID(paneChat).X(0).Y(1),
-		lipgloss.NewLayer(logRender).ID(paneLog).X(rightColStart).Y(1),
 		lipgloss.NewLayer(inputRender).ID(paneInput).X(0).Y(1 + chatH + 2),
-		lipgloss.NewLayer(taskRender).ID(paneTask).X(rightColStart).Y(1 + logH + 2),
 		lipgloss.NewLayer(m.hintBar()).ID(paneHint).X(0).Y(m.height - 1),
+	}
+	// Hidden right-column panes get no layer, so mouse hit-testing can
+	// never land on them. A lone visible pane starts at the top of the
+	// column; otherwise log sits above task as before.
+	if m.logVisible() {
+		layers = append(layers, lipgloss.NewLayer(logRender).ID(paneLog).X(rightColStart).Y(1))
+	}
+	if m.taskVisible() {
+		taskY := 1
+		if m.logVisible() {
+			taskY = 1 + logH + 2
+		}
+		layers = append(layers, lipgloss.NewLayer(taskRender).ID(paneTask).X(rightColStart).Y(taskY))
 	}
 
 	// Command / @-file menu overlay renders above the input pane (topmost so
@@ -1940,6 +2076,13 @@ func (m *AppModel) statusBar() string {
 	model := "🧠 " + m.modelName
 	thinking := "thinking " + m.thinkingStatus()
 
+	// Hidden-pane badge always survives truncation so collapsed layout
+	// state stays discoverable.
+	keep := []string{}
+	if badge := m.paneBadge(); badge != "" {
+		keep = append(keep, badge)
+	}
+
 	var ctxUsage string
 	limit := int64(0)
 	if m.modelInfo != nil {
@@ -1975,6 +2118,7 @@ func (m *AppModel) statusBar() string {
 	sep := "  │  "
 	join := func(optional []string) string {
 		parts := []string{model}
+		parts = append(parts, keep...)
 		for i := len(optional) - 1; i >= 0; i-- {
 			parts = append(parts, optional[i])
 		}
@@ -2211,6 +2355,8 @@ func (m *AppModel) helpView() tea.View {
 			{"end / G", "Jump to bottom"},
 			{"mouse wheel", "Scroll the focused pane"},
 			{"ctrl+shift+c", "Copy focused pane to clipboard"},
+			{"ctrl+l / ctrl+k", "Hide/show the log / task pane"},
+			{"ctrl+b", "Hide/show the whole right sidebar"},
 		}},
 	}
 
@@ -2918,6 +3064,9 @@ func (m *AppModel) mouseYToContentLine(y int) int {
 		}
 		return clampLine(row+m.chatScrollOffset, len(m.renderedLines))
 	case logFocus:
+		if !m.logVisible() {
+			return -1
+		}
 		row := y - 2
 		if row < 0 {
 			return -1
@@ -2932,7 +3081,15 @@ func (m *AppModel) mouseYToContentLine(y int) int {
 		}
 		return clampLine(row, len(m.logLines))
 	case taskFocus:
-		taskContentStart := m.logViewport.Height() + 4 // status + log pane + task top border
+		if !m.taskVisible() {
+			return -1
+		}
+		// The task pane starts below the log pane when both are visible,
+		// otherwise at the top of the right column.
+		taskContentStart := 2 // task top border + 1
+		if m.logVisible() {
+			taskContentStart = m.logViewport.Height() + 4 // status + log pane + task top border
+		}
 		row := y - taskContentStart
 		if row < 0 {
 			return -1
