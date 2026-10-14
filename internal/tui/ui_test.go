@@ -473,6 +473,48 @@ func TestStatusBarFitsWithinTerminalWidth(t *testing.T) {
 	}
 }
 
+// TestStatusBarDropsLowPrioritySegmentsOnNarrowTerminal verifies P-02:
+// budget and cost go first, model and thinking level always survive.
+func TestStatusBarDropsLowPrioritySegmentsOnNarrowTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 60
+	m.modelName = "test-model"
+	m.modelInfo = &hakaseagent.ModelInfo{Name: "test-model", ContextWindow: 200_000}
+	m.usage = &finops.UsageRecord{Prompt: 84_000, Candidates: 16_000, Total: 100_000}
+	view := m.statusBar()
+	if n := strings.Count(view, "\n"); n > 0 {
+		t.Fatalf("status bar must be a single line, got %d newlines:\n%s", n, view)
+	}
+	for _, want := range []string{"test-model", "thinking"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("status bar dropped must-keep segment %q on narrow terminal:\n%s", want, view)
+		}
+	}
+}
+
+// TestHintBarIsContextualPerFocus verifies P-03: each focus shows its own
+// keys while the shared tab/ctrl+/ suffix always survives.
+func TestHintBarIsContextualPerFocus(t *testing.T) {
+	m := newTestModel(t)
+	m.focus = inputFocus
+	if got := m.hintBar(); !strings.Contains(got, "@ attach") {
+		t.Fatalf("input hint bar missing attach hint:\n%s", got)
+	}
+	m.focus = chatFocus
+	if got := m.hintBar(); !strings.Contains(got, "scroll") {
+		t.Fatalf("chat hint bar missing scroll hint:\n%s", got)
+	}
+	for _, focus := range []focusedPane{inputFocus, chatFocus, logFocus, taskFocus} {
+		m.focus = focus
+		got := m.hintBar()
+		for _, want := range []string{"tab focus", "ctrl+/ help"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("focus %d hint bar missing shared %q:\n%s", focus, want, got)
+			}
+		}
+	}
+}
+
 func TestFormatTokens(t *testing.T) {
 	cases := []struct {
 		in   int64

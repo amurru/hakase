@@ -1913,7 +1913,18 @@ func (m *AppModel) hintBar() string {
 	if m.showThinking {
 		status += " 💭 thinking"
 	}
-	hints := "ctrl+/ help · / commands · @ attach · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
+	hints := ""
+	switch m.focus {
+	case inputFocus:
+		hints = "@ attach · / commands · enter send"
+	case chatFocus:
+		hints = "up/down scroll · ctrl+t thinking"
+	case logFocus:
+		hints = "up/down scroll · drag selects"
+	case taskFocus:
+		hints = "/board manage · tab to move"
+	}
+	hints += " · tab focus · ctrl+/ help"
 	if m.IsProcessing {
 		hints = "esc esc interrupt · " + hints
 	}
@@ -1921,15 +1932,21 @@ func (m *AppModel) hintBar() string {
 }
 
 // statusBar renders the header line: model name, context window, usage, thinking level.
+// Optional segments drop by priority on narrow terminals so the bar stays
+// on one line: budget, cost, then the ctx/usage group. Model and thinking
+// level always survive. Widths use lipgloss.Width (display cells); when the
+// terminal width is unknown (m.width <= 0) everything renders.
 func (m *AppModel) statusBar() string {
-	parts := []string{"🧠 " + m.modelName}
+	model := "🧠 " + m.modelName
+	thinking := "thinking " + m.thinkingStatus()
 
+	var ctxUsage string
 	limit := int64(0)
 	if m.modelInfo != nil {
 		limit = m.modelInfo.ContextWindow
 	}
 	if limit > 0 {
-		parts = append(parts, "ctx "+formatTokens(limit))
+		parts := []string{"ctx " + formatTokens(limit)}
 		pct, used := m.usagePercent()
 		if used > 0 {
 			// Context-fill warning glyph at ~80% of the effective budget.
@@ -1939,11 +1956,43 @@ func (m *AppModel) statusBar() string {
 			}
 			parts = append(parts, fmt.Sprintf("%d%% %s", pct, usageBar(pct)))
 		}
+		ctxUsage = strings.Join(parts, " ")
 	}
-	parts = append(parts, m.costParts()...)
-	parts = append(parts, "thinking "+m.thinkingStatus())
+	costs := m.costParts()
 
-	return statusBarStyle.Render(strings.Join(parts, "  │  "))
+	// candidates lists optional segments lowest-priority first; the join
+	// below drops from the front until the bar fits.
+	candidates := []string{}
+	if n := len(costs); n > 0 && strings.HasPrefix(costs[n-1], "budget ") {
+		candidates = append(candidates, costs[n-1])
+		costs = costs[:n-1]
+	}
+	candidates = append(candidates, costs...)
+	if ctxUsage != "" {
+		candidates = append(candidates, ctxUsage)
+	}
+
+	sep := "  │  "
+	join := func(optional []string) string {
+		parts := []string{model}
+		for i := len(optional) - 1; i >= 0; i-- {
+			parts = append(parts, optional[i])
+		}
+		return strings.Join(append(parts, thinking), sep)
+	}
+
+	budget := m.width - 3 // statusBarStyle pads 1 cell on each side + safety
+	full := join(candidates)
+	if budget <= 0 || lipgloss.Width(full) <= budget {
+		return statusBarStyle.Render(full)
+	}
+	for len(candidates) > 0 {
+		candidates = candidates[1:]
+		if bar := join(candidates); lipgloss.Width(bar) <= budget {
+			return statusBarStyle.Render(bar)
+		}
+	}
+	return statusBarStyle.Render(join(nil))
 }
 
 // costParts renders the FinOps meter for the status bar (FO-004): last-turn
