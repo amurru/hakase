@@ -169,6 +169,16 @@ var (
 			BorderForeground(lipgloss.Color("63")).
 			Padding(0, 1)
 
+	// sessionBoxStyle frames the session chooser modal.
+	sessionBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Padding(1, 2)
+
+	sessionTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("63"))
+
 	// chipStyle renders attachment chips in the input pane.
 	chipStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")).
@@ -1969,23 +1979,9 @@ func (m *AppModel) View() tea.View {
 		return lipgloss.JoinVertical(lipgloss.Left, panes...)
 	}
 
-	// Session-list modal is keyboard-driven, so compositor click-focusing is
-	// intentionally inactive while it is open.
+	// Session chooser renders as a centered modal overlay.
 	if m.showSessionList {
-		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
-		content := leftCol
-		if right := rightColumn(); right != "" {
-			content = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, right)
-		}
-		return tea.NewView(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				m.statusBar(),
-				content,
-				m.sessionListView(),
-				m.hintBar(),
-			),
-		)
+		return m.sessionModalView()
 	}
 
 	// /mcp modal renders the same way: an inline overlay below the content.
@@ -2890,6 +2886,30 @@ func (m *AppModel) handleSessionListKey(key string) tea.Cmd {
 			m.sessionListIndex++
 		}
 		return nil
+	case "pgup":
+		m.sessionListIndex -= m.sessionVisibleRows()
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
+		}
+		return nil
+	case "pgdown":
+		m.sessionListIndex += m.sessionVisibleRows()
+		if m.sessionListIndex > len(m.sessionListFiltered)-1 {
+			m.sessionListIndex = len(m.sessionListFiltered) - 1
+		}
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
+		}
+		return nil
+	case "home":
+		m.sessionListIndex = 0
+		return nil
+	case "end":
+		m.sessionListIndex = len(m.sessionListFiltered) - 1
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
+		}
+		return nil
 	case "d":
 		if len(m.sessionListFiltered) > 0 && m.sessionListIndex < len(m.sessionListFiltered) {
 			id := m.sessionListFiltered[m.sessionListIndex].ID
@@ -3040,51 +3060,95 @@ func (m *AppModel) refreshSessionList() {
 	}
 }
 
-// sessionListView renders the session list modal as an overlay.
-func (m *AppModel) sessionListView() string {
-	if len(m.sessionListFiltered) == 0 {
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("63")).
-			Padding(1, 2).
-			Render("  (no sessions)  ")
+// sessionVisibleRows is the number of session rows the chooser modal
+// shows at once. The list windows over the filtered sessions and always
+// contains the selected index, so long lists scroll instead of clipping.
+func (m *AppModel) sessionVisibleRows() int {
+	rows := m.height - 14 // modal margins + title/filter/divider + footer
+	if rows < 3 {
+		rows = 3
+	}
+	if rows > 12 {
+		rows = 12
+	}
+	return rows
+}
+
+// sessionModalView renders the session chooser as a centered modal: a
+// bordered box with the selected row highlighted, windowed scrolling
+// that follows the cursor, and titles truncated to the box width.
+func (m *AppModel) sessionModalView() tea.View {
+	boxW := m.width - 4
+	if boxW > 72 {
+		boxW = 72
+	}
+	if boxW < 30 {
+		boxW = 30
+	}
+	innerW := boxW - 6 // border + padding on both sides
+
+	filtered := m.sessionListFiltered
+	var activeID string
+	if m.sessionService != nil {
+		activeID = m.sessionService.ActiveSessionID()
 	}
 
 	var b strings.Builder
-	b.WriteString("┌─ Sessions ──────────────────────────────────────────┐\n")
-	b.WriteString("│ Esc/q: close  │ Enter: open  │ d: delete  │ a: archive │\n")
-	b.WriteString("│ Type to filter by title                              │\n")
-	b.WriteString("├──────────────────────────────────────────────────────┤\n")
+	b.WriteString(sessionTitleStyle.Render(fmt.Sprintf("Sessions (%d)", len(filtered))))
+	b.WriteString("\n")
+	b.WriteString("Filter: " + m.sessionListFilter + "_")
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", innerW))
+	b.WriteString("\n")
 
-	maxLines := m.chatViewport.Height() - 6
-	if maxLines < 1 {
-		maxLines = 1
+	if len(filtered) == 0 {
+		b.WriteString("  (no sessions)\n")
+	} else {
+		rows := m.sessionVisibleRows()
+		start := m.sessionListIndex - rows + 1
+		if start < 0 {
+			start = 0
+		}
+		if maxStart := len(filtered) - rows; maxStart > 0 && start > maxStart {
+			start = maxStart
+		}
+		if start > m.sessionListIndex {
+			start = m.sessionListIndex
+		}
+		for i := start; i < len(filtered) && i < start+rows; i++ {
+			s := filtered[i]
+			suffix := ""
+			if s.ID == activeID && activeID != "" {
+				suffix += " ●"
+			}
+			if s.Archived {
+				suffix += " [archived]"
+			}
+			title := truncateRunes(s.Title, innerW-2-lipgloss.Width(suffix))
+			row := "> " + title + suffix
+			if i != m.sessionListIndex {
+				row = "  " + title + suffix
+			}
+			if pad := innerW - lipgloss.Width(row); pad > 0 {
+				row += strings.Repeat(" ", pad)
+			}
+			if i == m.sessionListIndex {
+				row = highlightStyle.Render(row)
+			}
+			b.WriteString(row + "\n")
+		}
+		if len(filtered) > rows {
+			b.WriteString(fmt.Sprintf("… %d of %d (scroll for more)\n", rows, len(filtered)))
+		}
 	}
 
-	for i, s := range m.sessionListFiltered {
-		if i >= maxLines {
-			b.WriteString("│  ... (more)                                          │\n")
-			break
-		}
-		indicator := " "
-		if s.ID == m.sessionService.ActiveSessionID() {
-			indicator = ">"
-		}
-		archivedMark := ""
-		if s.Archived {
-			archivedMark = " [archived]"
-		}
-		line := fmt.Sprintf("│ %s %s%s", indicator, s.Title, archivedMark)
-		// Pad to fill the box width
-		for len(line) < 58 {
-			line += " "
-		}
-		line += "│"
-		b.WriteString(line + "\n")
-	}
-
-	b.WriteString("└──────────────────────────────────────────────────────┘")
-	return b.String()
+	box := sessionBoxStyle.Render(b.String())
+	footer := helpFooterStyle.Render("↑↓ move · pgup/pgdn jump · enter open · d delete · a archive · esc close")
+	content := lipgloss.JoinVertical(lipgloss.Center, box, footer)
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content))
+	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = true
+	return v
 }
 
 // renderSelectionPane re-renders the currently selected pane so the selection
