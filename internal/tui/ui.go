@@ -45,7 +45,7 @@ var (
 			BorderForeground(lipgloss.Color("240"))
 
 	activeBorder = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("63"))
 
 	// Input pane uses extra vertical padding so the prompt is a larger, easier
@@ -53,10 +53,13 @@ var (
 	inputInactive = inactiveBorder.Padding(inputPadV, 0)
 	inputActive   = activeBorder.Padding(inputPadV, 0)
 
-	// highlightStyle is the background color applied to selected lines
-	// in output panes so the user can visually distinguish the selection.
+	// highlightStyle inverts selected lines in output panes so the
+	// selection survives both dark and light terminal themes. A plain
+	// gray wash (bg 238) is nearly invisible against the 240 borders
+	// and vanishes entirely on light backgrounds.
 	highlightStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("238"))
+			Reverse(true).
+			Bold(true)
 
 	thinkingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
@@ -64,6 +67,13 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("238")).
 			Padding(0, 1)
+
+	// thinkingHiddenStyle is the collapsed one-line placeholder shown
+	// when a message carries thinking but showThinking is off, so the
+	// reader knows reasoning exists and how to reveal it.
+	thinkingHiddenStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244")).
+				Italic(true)
 
 	agentLabelStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -158,6 +168,16 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("63")).
 			Padding(0, 1)
+
+	// chooserBoxStyle frames the chooser modals (sessions, MCP servers).
+	chooserBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Padding(1, 2)
+
+	chooserTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("63"))
 
 	// chipStyle renders attachment chips in the input pane.
 	chipStyle = lipgloss.NewStyle().
@@ -370,6 +390,20 @@ type AppModel struct {
 	IsProcessing bool
 	showThinking bool
 	showHelp     bool
+	// helpViewport scrolls the help overlay content so it stays usable
+	// on short terminals instead of clipping past the screen.
+	helpViewport viewport.Model
+	// helpLoaded tracks whether helpViewport holds fresh content; View
+	// builds it lazily so direct showHelp flips (tests) also render.
+	helpLoaded bool
+	// hideLog, hideTask, and hideSidebar collapse right-column panes
+	// (P-07). Per-pane flags compose with the sidebar flag: a pane is
+	// visible only when its own flag and the sidebar flag are both off,
+	// so hiding log+tasks equals hiding the sidebar, and reshowing the
+	// sidebar restores the per-pane states.
+	hideLog     bool
+	hideTask    bool
+	hideSidebar bool
 	// showStartupLogo renders the startup logo banner in the chat pane while no
 	// conversation has started yet. True only at program boot; cleared on the
 	// first user message, /new, or a session switch.
@@ -406,6 +440,9 @@ type AppModel struct {
 	mentionFiles     []string
 	mentionFiltered  []string
 	mentionMenuIndex int
+	// mentionWasOpen tracks the menu across filter recomputes so the
+	// workspace walk refreshes on open, not on every keystroke.
+	mentionWasOpen bool
 
 	// Attachments (files via @, images via paste) for the message being
 	// composed. Cleared on submit and on session switch.
@@ -575,13 +612,101 @@ func (m *AppModel) Init() tea.Cmd {
 // input -> chat -> log -> task.
 func (m *AppModel) cycleFocus(dir int) {
 	const paneCount = 4
-	m.focus = focusedPane((int(m.focus) + dir + paneCount) % paneCount)
+	for range paneCount {
+		m.focus = focusedPane((int(m.focus) + dir + paneCount) % paneCount)
+		if m.paneVisible(m.focus) {
+			break
+		}
+	}
 
 	if m.focus == inputFocus {
 		m.input.Focus()
 	} else {
 		m.input.Blur()
 	}
+}
+
+// paneVisible reports whether a focus target is currently on-screen.
+// Hidden right-column panes are skipped by focus cycling.
+func (m *AppModel) paneVisible(p focusedPane) bool {
+	switch p {
+	case logFocus:
+		return m.logVisible()
+	case taskFocus:
+		return m.taskVisible()
+	default:
+		return true
+	}
+}
+
+// logVisible and taskVisible combine the per-pane and sidebar flags.
+func (m *AppModel) logVisible() bool  { return !m.hideLog && !m.hideSidebar }
+func (m *AppModel) taskVisible() bool { return !m.hideTask && !m.hideSidebar }
+
+// sidebarHidden is true when no right-column pane is on-screen.
+func (m *AppModel) sidebarHidden() bool { return !m.logVisible() && !m.taskVisible() }
+
+// paneBadge summarizes hidden panes for the status bar, or "" when the
+// full layout is visible.
+func (m *AppModel) paneBadge() string {
+	if m.hideSidebar {
+		return "sidebar off"
+	}
+	var hidden []string
+	if m.hideLog {
+		hidden = append(hidden, "log off")
+	}
+	if m.hideTask {
+		hidden = append(hidden, "tasks off")
+	}
+	return strings.Join(hidden, " · ")
+}
+
+// ensureFocusVisible moves focus to input when the focused pane just hid.
+func (m *AppModel) ensureFocusVisible() {
+	if !m.paneVisible(m.focus) {
+		m.focus = inputFocus
+		m.input.Focus()
+	}
+}
+
+// sizePanes recomputes every viewport width/height from the terminal size
+// and the P-07 visibility flags. Hidden right-column panes yield their
+// width to chat/input; a lone visible right pane takes the full column.
+func (m *AppModel) sizePanes() {
+	rightWidth := m.width / 5
+	leftWidth := m.width - rightWidth - 4
+	if m.sidebarHidden() {
+		leftWidth = m.width - 2
+	}
+	avail := m.height - reservedRows
+
+	// Right column fills from status bar (Y=1) to just above hint bar
+	// (Y=m.height-2). Total viewport rows = m.height - 5 (accounting for
+	// lipgloss trailing newline). One visible pane absorbs the divider
+	// row the two-pane split would use.
+	rightAvail := m.height - 5
+	logH := rightAvail * 3 / 5
+	taskH := rightAvail - logH - 1 // remainder goes to task so they sum exactly
+	if m.logVisible() != m.taskVisible() {
+		if m.logVisible() {
+			logH = rightAvail + 1
+		} else {
+			taskH = rightAvail + 1
+		}
+	}
+
+	m.chatViewport.SetWidth(leftWidth)
+	m.chatViewport.SetHeight(avail)
+	m.logViewport.SetWidth(rightWidth)
+	m.logViewport.SetHeight(logH)
+	m.taskViewport.SetWidth(rightWidth)
+	m.taskViewport.SetHeight(taskH)
+
+	// Input pane extends to the right column boundary (X=rightColStart-2),
+	// or the full width when the sidebar is hidden.
+	m.input.SetWidth(leftWidth)
+	m.rebuildRenderedLines()
 }
 
 // SessionService exposes the active session service so package main slash
@@ -728,6 +853,16 @@ func (m *AppModel) appendCronChatNotice(msg CronJobMsg) {
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// The mention menu's workspace walk refreshes on closed-to-open
+	// transitions tracked by mentionWasOpen. Update only recomputes
+	// candidates while the menu is open, so reset the flag here whenever
+	// the menu is closed (esc/backspace remove the @ token without a
+	// recompute); otherwise reopening @ would reuse a stale listing and
+	// miss files created mid-session.
+	if !m.mentionMenuOpen() {
+		m.mentionWasOpen = false
+	}
+
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
 		// Bubbletea delivered the terminal background color it requested
@@ -839,6 +974,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quitCmd()
 			case "esc", "ctrl+/", "ctrl+_", "ctrl+?", "?":
 				m.showHelp = false
+				m.helpLoaded = false
+			case "up", "k":
+				m.helpViewport.ScrollUp(1)
+			case "down", "j":
+				m.helpViewport.ScrollDown(1)
+			case "pgup", "b":
+				m.helpViewport.ScrollUp(m.helpViewport.Height())
+			case "pgdown", "f":
+				m.helpViewport.ScrollDown(m.helpViewport.Height())
+			case "u", "ctrl+u":
+				m.helpViewport.ScrollUp(m.helpViewport.Height() / 2)
+			case "d", "ctrl+d":
+				m.helpViewport.ScrollDown(m.helpViewport.Height() / 2)
+			case "home", "g":
+				m.helpViewport.GotoTop()
+			case "end", "G":
+				m.helpViewport.GotoBottom()
 			}
 			return m, nil
 		}
@@ -904,10 +1056,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Ctrl+/ sends byte 0x1F, decoded as "ctrl+_" on standard terminals,
 		// "ctrl+/" via the kitty protocol, and "ctrl+?" on some emulators.
 		case "ctrl+/", "ctrl+_", "ctrl+?":
-			m.showHelp = true
+			m.openHelp()
 		case "?":
 			if m.focus != inputFocus {
-				m.showHelp = true
+				m.openHelp()
 			}
 		// Ctrl+Shift+C copies the focused pane's content to clipboard.
 		case "ctrl+shift+c":
@@ -937,6 +1089,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showThinking = !m.showThinking
 			m.rebuildRenderedLines()
 			m.renderChatViewport()
+		// Ctrl+L / Ctrl+K toggle the log and task panes; Ctrl+B toggles
+		// the whole right sidebar (P-07). Hidden panes yield their width
+		// to chat/input. Focus never rests on a hidden pane.
+		case "ctrl+l":
+			m.hideLog = !m.hideLog
+			m.ensureFocusVisible()
+			m.sizePanes()
+			m.renderChatViewport()
+			m.RefreshTaskBoard()
+			m.AppendLog(fmt.Sprintf("log pane %s (ctrl+l to show)", map[bool]string{true: "hidden", false: "shown"}[m.hideLog]))
+		case "ctrl+k":
+			m.hideTask = !m.hideTask
+			m.ensureFocusVisible()
+			m.sizePanes()
+			m.renderChatViewport()
+			m.RefreshTaskBoard()
+			m.AppendLog(fmt.Sprintf("task pane %s (ctrl+k to show)", map[bool]string{true: "hidden", false: "shown"}[m.hideTask]))
+		case "ctrl+b":
+			m.hideSidebar = !m.hideSidebar
+			m.ensureFocusVisible()
+			m.sizePanes()
+			m.renderChatViewport()
+			m.RefreshTaskBoard()
+			m.AppendLog(fmt.Sprintf("sidebar %s (ctrl+b to show)", map[bool]string{true: "hidden", false: "shown"}[m.hideSidebar]))
 		case "tab":
 			m.cycleFocus(1)
 		case "shift+tab":
@@ -1117,6 +1293,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseWheelMsg:
+		// The open help overlay owns the wheel so its content scrolls.
+		if m.showHelp {
+			if msg.Button == tea.MouseWheelUp {
+				m.helpViewport.ScrollUp(m.helpViewport.MouseWheelDelta)
+			} else if msg.Button == tea.MouseWheelDown {
+				m.helpViewport.ScrollDown(m.helpViewport.MouseWheelDelta)
+			}
+			break
+		}
 		// Wheel scrolls the focused pane (preserves prior behaviour).
 		switch m.focus {
 		case chatFocus:
@@ -1144,29 +1329,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		rightWidth := m.width / 5
-		leftWidth := m.width - rightWidth - 4
-		avail := m.height - reservedRows
-
-		// Right column fills from status bar (Y=1) to just above hint bar
-		// (Y=m.height-2). The gap between log and task is 2 rows. Total
-		// viewport rows = m.height - 5 (accounting for lipgloss trailing newline).
-		rightAvail := m.height - 5
-		logH := rightAvail * 3 / 5
-		taskH := rightAvail - logH - 1 // remainder goes to task so they sum exactly
-
 		if !m.ready {
 			m.chatViewport = viewport.New(
-				viewport.WithWidth(leftWidth),
-				viewport.WithHeight(avail),
+				viewport.WithWidth(80),
+				viewport.WithHeight(20),
 			)
 			m.logViewport = viewport.New(
-				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(logH),
+				viewport.WithWidth(20),
+				viewport.WithHeight(10),
 			)
 			m.taskViewport = viewport.New(
-				viewport.WithWidth(rightWidth),
-				viewport.WithHeight(taskH),
+				viewport.WithWidth(20),
+				viewport.WithHeight(10),
 			)
 
 			// Disable viewport's built-in mouse wheel - we handle it manually
@@ -1175,17 +1349,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.taskViewport.MouseWheelEnabled = false
 
 			m.ready = true
-		} else {
-			m.chatViewport.SetWidth(leftWidth)
-			m.chatViewport.SetHeight(avail)
-			m.logViewport.SetWidth(rightWidth)
-			m.logViewport.SetHeight(logH)
-			m.taskViewport.SetWidth(rightWidth)
-			m.taskViewport.SetHeight(taskH)
+		}
+		m.sizePanes()
+
+		// A resize re-wraps the help text to the new viewport width,
+		// preserving the reader's scroll position when it still fits.
+		if m.showHelp {
+			yo := m.helpViewport.YOffset()
+			m.sizeHelpViewport()
+			m.helpViewport.SetContent(m.helpContent())
+			m.helpViewport.SetYOffset(yo)
+			m.helpLoaded = true
 		}
 
-		// Input pane extends to the right column boundary (X=rightColStart-2).
-		m.input.SetWidth(leftWidth)
 		// Re-render chat viewport on resize
 		m.renderChatViewport()
 		m.RefreshTaskBoard()
@@ -1260,6 +1436,34 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.escArmedAt.IsZero() && m.escArmedAt.Equal(msg.at) {
 			m.escArmedAt = time.Time{}
 		}
+		return m, nil
+
+	case chooserTickMsg:
+		// Periodic re-snapshot while a chooser is open; a closed modal
+		// stops the chain by returning no follow-up tick.
+		switch {
+		case m.showMCPList:
+			m.RefreshMCPList()
+			return m, tickChooser()
+		case m.showSessionList:
+			m.refreshSessionList()
+			return m, tickChooser()
+		}
+		return m, nil
+
+	case mcpProbeDoneMsg:
+		m.RefreshMCPList()
+		if msg.err != nil {
+			m.AppendLog(fmt.Sprintf("⚠ MCP server %q failed: %v", msg.name, msg.err))
+			return m, nil
+		}
+		count := 0
+		if mcp.MCPManager != nil {
+			if st, ok := mcp.MCPManager.ServerStatus(msg.name); ok {
+				count = st.ToolCount
+			}
+		}
+		m.AppendLog(fmt.Sprintf("MCP server %q connected (%d tools)", msg.name, count))
 		return m, nil
 
 	case StatusLogMsg:
@@ -1505,16 +1709,24 @@ func (m *AppModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 
 	var lines []string
 
-	if m.showThinking && strings.TrimSpace(msg.Thinking) != "" {
-		block := thinkingStyle.Width(wrapWidth).Render("💭 " + strings.TrimSpace(msg.Thinking))
+	// Guard-tag leakage is render-filtered: the model sometimes echoes
+	// <UNTRUSTED_DATA> framing into visible replies.
+	thinking := stripUntrustedMarkers(msg.Thinking)
+	if m.showThinking && strings.TrimSpace(thinking) != "" {
+		block := thinkingStyle.Width(wrapWidth).Render("💭 " + strings.TrimSpace(thinking))
 		lines = append(lines, strings.Split(block, "\n")...)
+		lines = append(lines, "")
+	} else if !m.showThinking && strings.TrimSpace(thinking) != "" {
+		hidden := thinkingHiddenStyle.Width(wrapWidth).Render("◇ thinking hidden (ctrl+t to show)")
+		lines = append(lines, strings.Split(hidden, "\n")...)
 		lines = append(lines, "")
 	}
 
 	if strings.TrimSpace(msg.Content) != "" {
 		if msg.Role == "agent" || msg.Role == "sidekick" {
 			lines = append(lines, labelStyle.Render(prefix))
-			mdLines := strings.Split(m.math.RenderMarkdown(msg.Content, wrapWidth, m.mathImages), "\n")
+			content := stripUntrustedMarkers(msg.Content)
+			mdLines := strings.Split(m.math.RenderMarkdown(content, wrapWidth, m.mathImages), "\n")
 			lines = append(lines, mdLines...)
 		} else {
 			contentLines := strings.Split(msg.Content, "\n")
@@ -1795,37 +2007,14 @@ func (m *AppModel) View() tea.View {
 	logRender := logStyle.Render(m.logViewport.View())
 	taskRender := taskStyle.Render(m.taskViewport.View())
 
-	// Session-list modal is keyboard-driven, so compositor click-focusing is
-	// intentionally inactive while it is open.
+	// Session chooser renders as a centered modal overlay.
 	if m.showSessionList {
-		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
-		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
-		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
-		return tea.NewView(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				m.statusBar(),
-				content,
-				m.sessionListView(),
-				m.hintBar(),
-			),
-		)
+		return m.sessionModalView()
 	}
 
-	// /mcp modal renders the same way: an inline overlay below the content.
+	// /mcp server list renders as a centered modal overlay.
 	if m.showMCPList {
-		leftCol := lipgloss.JoinVertical(lipgloss.Left, chatRender, inputRender)
-		rightCol := lipgloss.JoinVertical(lipgloss.Left, logRender, taskRender)
-		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
-		return tea.NewView(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				m.statusBar(),
-				content,
-				m.mcpListView(),
-				m.hintBar(),
-			),
-		)
+		return m.mcpModalView()
 	}
 
 	// Main layout: each pane is a named Layer positioned at its exact screen
@@ -1849,6 +2038,9 @@ func (m *AppModel) buildCompositor(
 ) *lipgloss.Compositor {
 	rightWidth := m.width / 5
 	leftWidth := m.width - rightWidth - 4
+	if m.sidebarHidden() {
+		leftWidth = m.width - 2
+	}
 	rightColStart := leftWidth + 2 // chat pane width including its border
 
 	chatH := m.chatViewport.Height()
@@ -1857,10 +2049,21 @@ func (m *AppModel) buildCompositor(
 	layers := []*lipgloss.Layer{
 		lipgloss.NewLayer(m.statusBar()).ID(paneStatus).X(0).Y(0),
 		lipgloss.NewLayer(chatRender).ID(paneChat).X(0).Y(1),
-		lipgloss.NewLayer(logRender).ID(paneLog).X(rightColStart).Y(1),
 		lipgloss.NewLayer(inputRender).ID(paneInput).X(0).Y(1 + chatH + 2),
-		lipgloss.NewLayer(taskRender).ID(paneTask).X(rightColStart).Y(1 + logH + 2),
 		lipgloss.NewLayer(m.hintBar()).ID(paneHint).X(0).Y(m.height - 1),
+	}
+	// Hidden right-column panes get no layer, so mouse hit-testing can
+	// never land on them. A lone visible pane starts at the top of the
+	// column; otherwise log sits above task as before.
+	if m.logVisible() {
+		layers = append(layers, lipgloss.NewLayer(logRender).ID(paneLog).X(rightColStart).Y(1))
+	}
+	if m.taskVisible() {
+		taskY := 1
+		if m.logVisible() {
+			taskY = 1 + logH + 2
+		}
+		layers = append(layers, lipgloss.NewLayer(taskRender).ID(paneTask).X(rightColStart).Y(taskY))
 	}
 
 	// Command / @-file menu overlay renders above the input pane (topmost so
@@ -1899,7 +2102,18 @@ func (m *AppModel) hintBar() string {
 	if m.showThinking {
 		status += " 💭 thinking"
 	}
-	hints := "ctrl+/ help · / commands · @ attach · tab focus · ctrl+t thinking · enter send · ctrl+c quit"
+	hints := ""
+	switch m.focus {
+	case inputFocus:
+		hints = "@ attach · / commands · enter send"
+	case chatFocus:
+		hints = "up/down scroll · ctrl+t thinking"
+	case logFocus:
+		hints = "up/down scroll · drag selects"
+	case taskFocus:
+		hints = "/board manage · tab to move"
+	}
+	hints += " · tab focus · ctrl+/ help"
 	if m.IsProcessing {
 		hints = "esc esc interrupt · " + hints
 	}
@@ -1907,15 +2121,28 @@ func (m *AppModel) hintBar() string {
 }
 
 // statusBar renders the header line: model name, context window, usage, thinking level.
+// Optional segments drop by priority on narrow terminals so the bar stays
+// on one line: budget, cost, then the ctx/usage group. Model and thinking
+// level always survive. Widths use lipgloss.Width (display cells); when the
+// terminal width is unknown (m.width <= 0) everything renders.
 func (m *AppModel) statusBar() string {
-	parts := []string{"🧠 " + m.modelName}
+	model := "🧠 " + m.modelName
+	thinking := "thinking " + m.thinkingStatus()
 
+	// Hidden-pane badge always survives truncation so collapsed layout
+	// state stays discoverable.
+	keep := []string{}
+	if badge := m.paneBadge(); badge != "" {
+		keep = append(keep, badge)
+	}
+
+	var ctxUsage string
 	limit := int64(0)
 	if m.modelInfo != nil {
 		limit = m.modelInfo.ContextWindow
 	}
 	if limit > 0 {
-		parts = append(parts, "ctx "+formatTokens(limit))
+		parts := []string{"ctx " + formatTokens(limit)}
 		pct, used := m.usagePercent()
 		if used > 0 {
 			// Context-fill warning glyph at ~80% of the effective budget.
@@ -1925,11 +2152,44 @@ func (m *AppModel) statusBar() string {
 			}
 			parts = append(parts, fmt.Sprintf("%d%% %s", pct, usageBar(pct)))
 		}
+		ctxUsage = strings.Join(parts, " ")
 	}
-	parts = append(parts, m.costParts()...)
-	parts = append(parts, "thinking "+m.thinkingStatus())
+	costs := m.costParts()
 
-	return statusBarStyle.Render(strings.Join(parts, "  │  "))
+	// candidates lists optional segments lowest-priority first; the join
+	// below drops from the front until the bar fits.
+	candidates := []string{}
+	if n := len(costs); n > 0 && strings.HasPrefix(costs[n-1], "budget ") {
+		candidates = append(candidates, costs[n-1])
+		costs = costs[:n-1]
+	}
+	candidates = append(candidates, costs...)
+	if ctxUsage != "" {
+		candidates = append(candidates, ctxUsage)
+	}
+
+	sep := "  │  "
+	join := func(optional []string) string {
+		parts := []string{model}
+		parts = append(parts, keep...)
+		for i := len(optional) - 1; i >= 0; i-- {
+			parts = append(parts, optional[i])
+		}
+		return strings.Join(append(parts, thinking), sep)
+	}
+
+	budget := m.width - 3 // statusBarStyle pads 1 cell on each side + safety
+	full := join(candidates)
+	if budget <= 0 || lipgloss.Width(full) <= budget {
+		return statusBarStyle.Render(full)
+	}
+	for len(candidates) > 0 {
+		candidates = candidates[1:]
+		if bar := join(candidates); lipgloss.Width(bar) <= budget {
+			return statusBarStyle.Render(bar)
+		}
+	}
+	return statusBarStyle.Render(join(nil))
 }
 
 // costParts renders the FinOps meter for the status bar (FO-004): last-turn
@@ -2052,8 +2312,9 @@ func riskBadge(risk string) string {
 }
 
 // approvalModalView renders the approval modal overlay on top of the normal
-// TUI. It shows the tool name, risk badge, command verbatim, reason, and
-// [y]es/[n]o/esc hint.
+// TUI. Tool/risk/reason use an aligned grid, the command wraps to the
+// modal width and caps at 6 rows (never truncated silently: a +N note
+// marks hidden lines), and the key hints stay plain text.
 func (m *AppModel) approvalModalView() tea.View {
 	if m.pendingApproval == nil {
 		return tea.NewView("")
@@ -2062,16 +2323,31 @@ func (m *AppModel) approvalModalView() tea.View {
 	var b strings.Builder
 
 	b.WriteString(approvalTitleStyle.Render("Command Approval Required"))
+	b.WriteString(" ")
+	b.WriteString(riskBadge(req.Risk))
 	b.WriteString("\n\n")
 
-	b.WriteString("Tool:   " + req.Tool + "\n")
-	b.WriteString("Risk:   " + riskBadge(req.Risk) + "\n")
-	b.WriteString("Reason: " + req.Reason + "\n\n")
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Width(8)
+	b.WriteString(label.Render("Tool") + req.Tool + "\n")
+	b.WriteString(label.Render("Risk") + riskBadge(req.Risk) + "\n")
+	b.WriteString(label.Render("Reason") + req.Reason + "\n\n")
 
 	b.WriteString("Command:\n")
-	// Show the command verbatim in monospace style.
-	cmdText := approvalCommandStyle.Render(req.Command)
-	b.WriteString(cmdText + "\n\n")
+	// Wrap the command verbatim to the modal width and cap its height so
+	// a long command cannot push the approve/deny hints off-screen.
+	cmdWidth := m.width - 12
+	if cmdWidth > 72 {
+		cmdWidth = 72
+	}
+	if cmdWidth < 20 {
+		cmdWidth = 20
+	}
+	cmdLines := strings.Split(lipgloss.NewStyle().Width(cmdWidth).Render(req.Command), "\n")
+	const maxCmdLines = 6
+	if len(cmdLines) > maxCmdLines {
+		cmdLines = append(cmdLines[:maxCmdLines], fmt.Sprintf("… (+%d more lines)", len(cmdLines)-maxCmdLines))
+	}
+	b.WriteString(approvalCommandStyle.Render(strings.Join(cmdLines, "\n")) + "\n\n")
 
 	b.WriteString(strings.Repeat("─", 40) + "\n")
 	b.WriteString(approvalHintStyle.Render("[y]es approve / [n]o deny / esc deny"))
@@ -2083,8 +2359,43 @@ func (m *AppModel) approvalModalView() tea.View {
 	return v
 }
 
-// helpView renders the full-screen keyboard shortcut overlay.
-func (m *AppModel) helpView() tea.View {
+// openHelp shows the shortcut overlay, sizing its scroll viewport to the
+// terminal and starting at the top.
+func (m *AppModel) openHelp() {
+	m.showHelp = true
+	m.sizeHelpViewport()
+	m.helpViewport.SetContent(m.helpContent())
+	m.helpViewport.GotoTop()
+	m.helpLoaded = true
+}
+
+// sizeHelpViewport fits the help scroll viewport inside the terminal. The
+// box keeps a small margin so the overlay reads as a modal; the viewport
+// fills the box interior (border + padding excluded).
+func (m *AppModel) sizeHelpViewport() {
+	if m.helpViewport.Width() == 0 && m.helpViewport.Height() == 0 {
+		m.helpViewport = viewport.New()
+		m.helpViewport.MouseWheelEnabled = false
+	}
+	boxW := m.width - 8
+	if boxW > 100 {
+		boxW = 100
+	}
+	if boxW < 40 {
+		boxW = 40
+	}
+	boxH := m.height - 5
+	if boxH < 9 {
+		boxH = 9
+	}
+	// helpBoxStyle pads 1 row / 2 cols inside a 1-cell border.
+	m.helpViewport.SetWidth(boxW - 6)
+	m.helpViewport.SetHeight(boxH - 4)
+}
+
+// helpContent builds the scrollable help text, wrapping descriptions to
+// the viewport width so no horizontal scrolling is ever needed.
+func (m *AppModel) helpContent() string {
 	var b strings.Builder
 	b.WriteString(helpTitleStyle.Render("⌨️  Keyboard Shortcuts"))
 	b.WriteString("\n\n")
@@ -2115,6 +2426,7 @@ func (m *AppModel) helpView() tea.View {
 		{"Slash Commands", []helpBinding{
 			{"/board", "Task board: summary, list, new, get, update, done, fail, cancel, delete, archive, claim"},
 			{"/mcp", "Manage MCP servers: open the panel, or list / enable / disable / reconnect"},
+			{"/model [name]", "Show or switch the chat model for subsequent turns"},
 			{"/compact [focus]", "Summarize the conversation to free context"},
 			{"/new", "Start a fresh session"},
 			{"/sessions", "Open the session chooser"},
@@ -2132,6 +2444,8 @@ func (m *AppModel) helpView() tea.View {
 			{"end / G", "Jump to bottom"},
 			{"mouse wheel", "Scroll the focused pane"},
 			{"ctrl+shift+c", "Copy focused pane to clipboard"},
+			{"ctrl+l / ctrl+k", "Hide/show the log / task pane"},
+			{"ctrl+b", "Hide/show the whole right sidebar"},
 		}},
 	}
 
@@ -2139,18 +2453,46 @@ func (m *AppModel) helpView() tea.View {
 		b.WriteString(helpSectionStyle.Render(sec.title))
 		b.WriteString("\n")
 		for _, e := range sec.entries {
+			// The key column shrinks on narrow viewports so
+			// descriptions keep room to wrap.
+			keyW := 22
+			if m.helpViewport.Width() < 70 {
+				keyW = 14
+			}
+			descW := m.helpViewport.Width() - keyW - 3
+			if descW < 20 {
+				descW = 20
+			}
+			wrapped := strings.Split(lipgloss.NewStyle().Width(descW).Render(e.desc), "\n")
 			b.WriteString("  ")
-			b.WriteString(helpKeyStyle.Render(e.keys))
-			b.WriteString(helpDescStyle.Render(e.desc))
+			b.WriteString(helpKeyStyle.Width(keyW).Render(e.keys))
+			b.WriteString(wrapped[0])
 			b.WriteString("\n")
+			// Wrapped continuation lines align under the description.
+			for _, cont := range wrapped[1:] {
+				b.WriteString("  " + strings.Repeat(" ", keyW) + cont + "\n")
+			}
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString(helpFooterStyle.Render("Press ctrl+/ or esc to close"))
+	return b.String()
+}
 
-	box := helpBoxStyle.Render(b.String())
-	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box))
+// helpView renders the keyboard shortcut overlay: a bordered scroll
+// viewport plus a footer naming the scroll and close keys.
+func (m *AppModel) helpView() tea.View {
+	m.sizeHelpViewport()
+	if !m.helpLoaded {
+		m.helpViewport.SetContent(m.helpContent())
+		m.helpViewport.GotoTop()
+		m.helpLoaded = true
+	}
+
+	box := helpBoxStyle.Render(m.helpViewport.View())
+	footer := helpFooterStyle.Render("up/down · pgup/pgdn scroll · esc to close")
+	content := lipgloss.JoinVertical(lipgloss.Center, box, footer)
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content))
 	v.MouseMode = tea.MouseModeCellMotion
 	v.AltScreen = true
 	return v
@@ -2513,7 +2855,7 @@ func (m *AppModel) toggleSessionList() tea.Cmd {
 		}
 	}
 	m.filterSessionList()
-	return nil
+	return tickChooser()
 }
 
 // filterSessionList filters the session list by the current filter text.
@@ -2557,6 +2899,30 @@ func (m *AppModel) handleSessionListKey(key string) tea.Cmd {
 	case "down", "j":
 		if m.sessionListIndex < len(m.sessionListFiltered)-1 {
 			m.sessionListIndex++
+		}
+		return nil
+	case "pgup":
+		m.sessionListIndex -= m.sessionVisibleRows()
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
+		}
+		return nil
+	case "pgdown":
+		m.sessionListIndex += m.sessionVisibleRows()
+		if m.sessionListIndex > len(m.sessionListFiltered)-1 {
+			m.sessionListIndex = len(m.sessionListFiltered) - 1
+		}
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
+		}
+		return nil
+	case "home":
+		m.sessionListIndex = 0
+		return nil
+	case "end":
+		m.sessionListIndex = len(m.sessionListFiltered) - 1
+		if m.sessionListIndex < 0 {
+			m.sessionListIndex = 0
 		}
 		return nil
 	case "d":
@@ -2709,51 +3075,95 @@ func (m *AppModel) refreshSessionList() {
 	}
 }
 
-// sessionListView renders the session list modal as an overlay.
-func (m *AppModel) sessionListView() string {
-	if len(m.sessionListFiltered) == 0 {
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("63")).
-			Padding(1, 2).
-			Render("  (no sessions)  ")
+// sessionVisibleRows is the number of session rows the chooser modal
+// shows at once. The list windows over the filtered sessions and always
+// contains the selected index, so long lists scroll instead of clipping.
+func (m *AppModel) sessionVisibleRows() int {
+	rows := m.height - 14 // modal margins + title/filter/divider + footer
+	if rows < 3 {
+		rows = 3
+	}
+	if rows > 12 {
+		rows = 12
+	}
+	return rows
+}
+
+// sessionModalView renders the session chooser as a centered modal: a
+// bordered box with the selected row highlighted, windowed scrolling
+// that follows the cursor, and titles truncated to the box width.
+func (m *AppModel) sessionModalView() tea.View {
+	boxW := m.width - 4
+	if boxW > 72 {
+		boxW = 72
+	}
+	if boxW < 30 {
+		boxW = 30
+	}
+	innerW := boxW - 6 // border + padding on both sides
+
+	filtered := m.sessionListFiltered
+	var activeID string
+	if m.sessionService != nil {
+		activeID = m.sessionService.ActiveSessionID()
 	}
 
 	var b strings.Builder
-	b.WriteString("┌─ Sessions ──────────────────────────────────────────┐\n")
-	b.WriteString("│ Esc/q: close  │ Enter: open  │ d: delete  │ a: archive │\n")
-	b.WriteString("│ Type to filter by title                              │\n")
-	b.WriteString("├──────────────────────────────────────────────────────┤\n")
+	b.WriteString(chooserTitleStyle.Render(fmt.Sprintf("Sessions (%d)", len(filtered))))
+	b.WriteString("\n")
+	b.WriteString("Filter: " + m.sessionListFilter + "_")
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", innerW))
+	b.WriteString("\n")
 
-	maxLines := m.chatViewport.Height() - 6
-	if maxLines < 1 {
-		maxLines = 1
+	if len(filtered) == 0 {
+		b.WriteString("  (no sessions)\n")
+	} else {
+		rows := m.sessionVisibleRows()
+		start := m.sessionListIndex - rows + 1
+		if start < 0 {
+			start = 0
+		}
+		if maxStart := len(filtered) - rows; maxStart > 0 && start > maxStart {
+			start = maxStart
+		}
+		if start > m.sessionListIndex {
+			start = m.sessionListIndex
+		}
+		for i := start; i < len(filtered) && i < start+rows; i++ {
+			s := filtered[i]
+			suffix := ""
+			if s.ID == activeID && activeID != "" {
+				suffix += " ●"
+			}
+			if s.Archived {
+				suffix += " [archived]"
+			}
+			title := truncateRunes(s.Title, innerW-2-lipgloss.Width(suffix))
+			row := "> " + title + suffix
+			if i != m.sessionListIndex {
+				row = "  " + title + suffix
+			}
+			if pad := innerW - lipgloss.Width(row); pad > 0 {
+				row += strings.Repeat(" ", pad)
+			}
+			if i == m.sessionListIndex {
+				row = highlightStyle.Render(row)
+			}
+			b.WriteString(row + "\n")
+		}
+		if len(filtered) > rows {
+			b.WriteString(fmt.Sprintf("… %d of %d (scroll for more)\n", rows, len(filtered)))
+		}
 	}
 
-	for i, s := range m.sessionListFiltered {
-		if i >= maxLines {
-			b.WriteString("│  ... (more)                                          │\n")
-			break
-		}
-		indicator := " "
-		if s.ID == m.sessionService.ActiveSessionID() {
-			indicator = ">"
-		}
-		archivedMark := ""
-		if s.Archived {
-			archivedMark = " [archived]"
-		}
-		line := fmt.Sprintf("│ %s %s%s", indicator, s.Title, archivedMark)
-		// Pad to fill the box width
-		for len(line) < 58 {
-			line += " "
-		}
-		line += "│"
-		b.WriteString(line + "\n")
-	}
-
-	b.WriteString("└──────────────────────────────────────────────────────┘")
-	return b.String()
+	box := chooserBoxStyle.Render(b.String())
+	footer := helpFooterStyle.Render("↑↓ move · pgup/pgdn jump · enter open · d delete · a archive · esc close")
+	content := lipgloss.JoinVertical(lipgloss.Center, box, footer)
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content))
+	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = true
+	return v
 }
 
 // renderSelectionPane re-renders the currently selected pane so the selection
@@ -2821,6 +3231,9 @@ func (m *AppModel) mouseYToContentLine(y int) int {
 		}
 		return clampLine(row+m.chatScrollOffset, len(m.renderedLines))
 	case logFocus:
+		if !m.logVisible() {
+			return -1
+		}
 		row := y - 2
 		if row < 0 {
 			return -1
@@ -2835,7 +3248,15 @@ func (m *AppModel) mouseYToContentLine(y int) int {
 		}
 		return clampLine(row, len(m.logLines))
 	case taskFocus:
-		taskContentStart := m.logViewport.Height() + 4 // status + log pane + task top border
+		if !m.taskVisible() {
+			return -1
+		}
+		// The task pane starts below the log pane when both are visible,
+		// otherwise at the top of the right column.
+		taskContentStart := 2 // task top border + 1
+		if m.logVisible() {
+			taskContentStart = m.logViewport.Height() + 4 // status + log pane + task top border
+		}
 		row := y - taskContentStart
 		if row < 0 {
 			return -1

@@ -4,6 +4,7 @@ import (
 	"amurru/hakase/internal/config"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -713,3 +716,64 @@ func TestHeaderTransportMerges(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// stubProbeToolset answers tool lists without dialing anything, so
+// ProbeServer status recording is testable hermetically.
+type stubProbeToolset struct {
+	tools []tool.Tool
+	err   error
+}
+
+func (s stubProbeToolset) Name() string { return "stub" }
+func (s stubProbeToolset) Tools(agent.ReadonlyContext) ([]tool.Tool, error) {
+	return s.tools, s.err
+}
+
+func probeTestManager(toolset tool.Toolset, disabled bool) *MCPServerManager {
+	return &MCPServerManager{servers: map[string]*managedServer{
+		"probe": {name: "probe", cfg: &config.MCPServerConfig{Disabled: disabled}, toolset: toolset},
+	}}
+}
+
+func TestProbeServerRecordsConnected(t *testing.T) {
+	m := probeTestManager(stubProbeToolset{}, false)
+	if err := m.ProbeServer(context.Background(), "probe"); err != nil {
+		t.Fatalf("ProbeServer: %v", err)
+	}
+	st, ok := m.ServerStatus("probe")
+	if !ok {
+		t.Fatal("probed server missing from status")
+	}
+	if st.Status != "connected" || st.ToolCount != 0 {
+		t.Fatalf("expected connected/0, got %+v", st)
+	}
+}
+
+func TestProbeServerRecordsFailure(t *testing.T) {
+	m := probeTestManager(stubProbeToolset{err: errors.New("boom")}, false)
+	if err := m.ProbeServer(context.Background(), "probe"); err == nil {
+		t.Fatal("ProbeServer should return the dial error")
+	}
+	st, _ := m.ServerStatus("probe")
+	if st.Status != "failed" || st.ToolCount != 0 {
+		t.Fatalf("expected failed/0, got %+v", st)
+	}
+	if st.Error == "" {
+		t.Fatal("failed probe should record the error text")
+	}
+}
+
+func TestProbeServerRejectsUnknownAndDisabled(t *testing.T) {
+	m := probeTestManager(stubProbeToolset{}, false)
+	if err := m.ProbeServer(context.Background(), "nope"); err == nil {
+		t.Fatal("unknown server should error, not panic")
+	}
+	md := probeTestManager(stubProbeToolset{}, true)
+	if err := md.ProbeServer(context.Background(), "probe"); err == nil {
+		t.Fatal("disabled server should refuse to dial")
+	}
+	mn := probeTestManager(nil, false)
+	if err := mn.ProbeServer(context.Background(), "probe"); err == nil {
+		t.Fatal("server without a toolset should error, not panic")
+	}
+}

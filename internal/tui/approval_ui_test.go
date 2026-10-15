@@ -232,6 +232,35 @@ func TestApprovalUIViewRendersCommandAndRisk(t *testing.T) {
 	}
 }
 
+// TestApprovalUIViewCapsLongCommand verifies P-05: a multi-line command is
+// wrapped and capped with a +N note instead of pushing the key hints away.
+func TestApprovalUIViewCapsLongCommand(t *testing.T) {
+	m := makeModel()
+
+	long := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8"
+	m.pendingApproval = &approvalPromptMsg{
+		Req: agent.ApprovalRequest{
+			Tool:    "system_exec",
+			Command: long,
+			Risk:    "HIGH",
+			Reason:  "long command",
+		},
+		Resp: make(chan bool, 1),
+	}
+
+	v := m.View()
+	rendered := v.Content
+
+	if !strings.Contains(rendered, "+2 more lines") {
+		t.Errorf("modal should cap long commands with a +N note:\n%s", safeHead(rendered, 800))
+	}
+	for _, frag := range []string{"[y]es approve", "[n]o deny", "esc deny"} {
+		if !strings.Contains(rendered, frag) {
+			t.Errorf("modal lost key hint %q after capping:\n%s", frag, safeHead(rendered, 800))
+		}
+	}
+}
+
 // TestApprovalUIViewDoesNotScrambleChat verifies the modal is a distinct
 // overlay and does not contain chat content.
 func TestApprovalUIViewNoChatLeak(t *testing.T) {

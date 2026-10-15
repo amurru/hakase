@@ -349,3 +349,56 @@ func (r *recordingMCPRouter) Delete(pattern string, h http.HandlerFunc) {
 // ensure imports stay used when running only these tests
 var _ = os.Getenv
 var _ = filepath.Join
+
+func TestMCPServerReconnectUnknown(t *testing.T) {
+	setupMCPHandlerTest(t, map[string]*config.MCPServerConfig{
+		"web": {Type: "http", URL: "http://localhost:9000/mcp"},
+	})
+
+	handler := (&MCPAPI{}).ReconnectServer
+	req := httptest.NewRequest("POST", "/mcp/servers/nope/reconnect", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "no mcp server") {
+		t.Fatalf("error should name the problem, got %s", w.Body.String())
+	}
+}
+
+func TestMCPServerReconnectDisabled(t *testing.T) {
+	setupMCPHandlerTest(t, map[string]*config.MCPServerConfig{
+		"web": {Type: "http", URL: "http://localhost:9000/mcp", Disabled: true},
+	})
+
+	handler := (&MCPAPI{}).ReconnectServer
+	req := httptest.NewRequest("POST", "/mcp/servers/web/reconnect", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "disabled") {
+		t.Fatalf("error should mention disabled, got %s", w.Body.String())
+	}
+}
+
+func TestMCPServerEnableUnknownProbes(t *testing.T) {
+	setupMCPHandlerTest(t, map[string]*config.MCPServerConfig{
+		"web": {Type: "http", URL: "http://localhost:9000/mcp"},
+	})
+
+	// Enabling a name with no server must fail honestly instead of
+	// reporting success for a server that can never dial.
+	handler := (&MCPAPI{}).EnableServer
+	req := httptest.NewRequest("POST", "/mcp/servers/nope/enable", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}

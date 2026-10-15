@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func newTestModel(t *testing.T) *AppModel {
@@ -370,6 +371,81 @@ func TestHelpViewRendersShortcuts(t *testing.T) {
 	}
 }
 
+// TestHelpOverlayScrolls verifies the help viewport pages through content
+// with keys and the wheel instead of clipping on short terminals.
+func TestHelpOverlayScrolls(t *testing.T) {
+	m := newTestModel(t)
+
+	model, _ := m.Update(keyMsg("ctrl+/"))
+	mm := model.(*AppModel)
+	if !mm.showHelp || !mm.helpLoaded {
+		t.Fatal("ctrl+/ should open the loaded help overlay")
+	}
+	if mm.helpViewport.Height() <= 0 {
+		t.Fatal("help viewport should have a positive height")
+	}
+
+	model, _ = mm.Update(keyMsg("end"))
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() <= 0 {
+		t.Fatal("end should scroll the help overlay to the bottom")
+	}
+	model, _ = mm.Update(keyMsg("home"))
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() != 0 {
+		t.Fatalf("home should return to the top, got offset %d", mm.helpViewport.YOffset())
+	}
+	model, _ = mm.Update(keyMsg("down"))
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() != 1 {
+		t.Fatalf("down should advance one line, got offset %d", mm.helpViewport.YOffset())
+	}
+
+	before := mm.helpViewport.YOffset()
+	model, _ = mm.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	mm = model.(*AppModel)
+	if mm.helpViewport.YOffset() <= before {
+		t.Fatal("mouse wheel down should scroll the open help overlay")
+	}
+
+	model, _ = mm.Update(keyMsg("esc"))
+	mm = model.(*AppModel)
+	if mm.showHelp {
+		t.Fatal("esc should close the help overlay")
+	}
+}
+
+// TestHelpOverlayFitsShortTerminal verifies the overlay (box + footer)
+// never exceeds the terminal height.
+func TestHelpOverlayFitsShortTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 24
+	m.openHelp()
+	view := m.View().Content
+	lines := strings.Split(view, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("help overlay renders %d lines for terminal height %d", len(lines), m.height)
+	}
+}
+
+// TestHelpViewFitsNarrowTerminal verifies P-06: the key column shrinks
+// under 100 columns so the overlay stays on-screen.
+func TestHelpViewFitsNarrowTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.showHelp = true
+	view := m.View().Content
+	if !strings.Contains(view, "Keyboard Shortcuts") {
+		t.Fatalf("narrow help view missing title:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Fatalf("narrow help line exceeds terminal width (%d):\n%q", w, line)
+		}
+	}
+}
+
 func TestHintBarShowsShortcuts(t *testing.T) {
 	m := newTestModel(t)
 	view := m.View().Content
@@ -470,6 +546,149 @@ func TestStatusBarFitsWithinTerminalWidth(t *testing.T) {
 	view := m.statusBar()
 	if n := strings.Count(view, "\n"); n > 0 {
 		t.Fatalf("status bar must be a single line, got %d newlines:\n%s", n, view)
+	}
+}
+
+// TestStatusBarDropsLowPrioritySegmentsOnNarrowTerminal verifies P-02:
+// budget and cost go first, model and thinking level always survive.
+func TestStatusBarDropsLowPrioritySegmentsOnNarrowTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 60
+	m.modelName = "test-model"
+	m.modelInfo = &hakaseagent.ModelInfo{Name: "test-model", ContextWindow: 200_000}
+	m.usage = &finops.UsageRecord{Prompt: 84_000, Candidates: 16_000, Total: 100_000}
+	view := m.statusBar()
+	if n := strings.Count(view, "\n"); n > 0 {
+		t.Fatalf("status bar must be a single line, got %d newlines:\n%s", n, view)
+	}
+	for _, want := range []string{"test-model", "thinking"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("status bar dropped must-keep segment %q on narrow terminal:\n%s", want, view)
+		}
+	}
+}
+
+// TestPaneTogglesCollapseSidebar verifies P-07: log and task hide
+// independently, hiding both collapses the sidebar and widens chat, and
+// the status bar badges the collapsed state.
+func TestPaneTogglesCollapseSidebar(t *testing.T) {
+	m := newTestModel(t)
+	fullChatW := m.chatViewport.Width()
+
+	model, _ := m.Update(keyMsg("ctrl+l"))
+	mm := model.(*AppModel)
+	if mm.logVisible() {
+		t.Fatal("ctrl+l should hide the log pane")
+	}
+	if mm.sidebarHidden() {
+		t.Fatal("hiding log alone must not collapse the sidebar")
+	}
+	if got := mm.chatViewport.Width(); got != fullChatW {
+		t.Fatalf("chat width should not change while a right pane remains (was %d, got %d)", fullChatW, got)
+	}
+
+	model, _ = mm.Update(keyMsg("ctrl+k"))
+	mm = model.(*AppModel)
+	if !mm.sidebarHidden() {
+		t.Fatal("hiding log+tasks should collapse the sidebar")
+	}
+	if got := mm.chatViewport.Width(); got <= fullChatW {
+		t.Fatalf("chat should expand into the hidden sidebar (was %d, got %d)", fullChatW, got)
+	}
+	if bar := mm.statusBar(); !strings.Contains(bar, "log off") || !strings.Contains(bar, "tasks off") {
+		t.Fatalf("status bar should badge the hidden panes:\n%s", bar)
+	}
+
+	model, _ = mm.Update(keyMsg("ctrl+l"))
+	model, _ = model.Update(keyMsg("ctrl+k"))
+	mm = model.(*AppModel)
+	if mm.sidebarHidden() {
+		t.Fatal("reshowing both panes should restore the sidebar")
+	}
+	if bar := mm.statusBar(); strings.Contains(bar, "off") {
+		t.Fatalf("status bar badge should clear once restored:\n%s", bar)
+	}
+}
+
+// TestSidebarToggleHidesAll verifies the ctrl+b master switch composes
+// with per-pane flags: reshowing restores them.
+func TestSidebarToggleHidesAll(t *testing.T) {
+	m := newTestModel(t)
+
+	model, _ := m.Update(keyMsg("ctrl+k")) // hide tasks first
+	model, _ = model.Update(keyMsg("ctrl+b"))
+	mm := model.(*AppModel)
+	if mm.logVisible() || mm.taskVisible() {
+		t.Fatal("ctrl+b should hide every right pane")
+	}
+	if bar := mm.statusBar(); !strings.Contains(bar, "sidebar off") {
+		t.Fatalf("status bar should badge the hidden sidebar:\n%s", bar)
+	}
+
+	model, _ = mm.Update(keyMsg("ctrl+b"))
+	mm = model.(*AppModel)
+	if !mm.logVisible() {
+		t.Fatal("reshowing the sidebar should restore the log pane")
+	}
+	if mm.taskVisible() {
+		t.Fatal("reshowing the sidebar should keep the task pane hidden")
+	}
+}
+
+// TestCycleFocusSkipsHiddenPanes verifies focus never rests on a hidden pane.
+func TestCycleFocusSkipsHiddenPanes(t *testing.T) {
+	m := newTestModel(t)
+	m.hideLog = true
+	m.hideTask = true
+	m.focus = chatFocus
+	m.cycleFocus(1)
+	if m.focus != inputFocus {
+		t.Fatalf("focus should skip hidden log/task and land on input, got %d", m.focus)
+	}
+	for i := 0; i < 4; i++ {
+		m.cycleFocus(1)
+		if m.focus == logFocus || m.focus == taskFocus {
+			t.Fatalf("focus landed on hidden pane %d", m.focus)
+		}
+	}
+}
+
+// TestTaskMouseMappingWithoutLog verifies selection math when the log pane
+// above the task pane is hidden.
+func TestTaskMouseMappingWithoutLog(t *testing.T) {
+	m := newTestModel(t)
+	m.hideLog = true
+	m.sizePanes()
+	m.selectionPane = taskFocus
+	m.taskLines = []string{"a", "b"}
+	if got := m.mouseYToContentLine(2); got != 0 {
+		t.Fatalf("task content should start at row 2 without the log pane, got %d", got)
+	}
+	if got := m.mouseYToContentLine(0); got != -1 {
+		t.Fatalf("row 0 is the status bar, got %d", got)
+	}
+}
+
+// TestHintBarIsContextualPerFocus verifies P-03: each focus shows its own
+// keys while the shared tab/ctrl+/ suffix always survives.
+func TestHintBarIsContextualPerFocus(t *testing.T) {
+	m := newTestModel(t)
+	m.focus = inputFocus
+	if got := m.hintBar(); !strings.Contains(got, "@ attach") {
+		t.Fatalf("input hint bar missing attach hint:\n%s", got)
+	}
+	m.focus = chatFocus
+	if got := m.hintBar(); !strings.Contains(got, "scroll") {
+		t.Fatalf("chat hint bar missing scroll hint:\n%s", got)
+	}
+	for _, focus := range []focusedPane{inputFocus, chatFocus, logFocus, taskFocus} {
+		m.focus = focus
+		got := m.hintBar()
+		for _, want := range []string{"tab focus", "ctrl+/ help"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("focus %d hint bar missing shared %q:\n%s", focus, want, got)
+			}
+		}
 	}
 }
 

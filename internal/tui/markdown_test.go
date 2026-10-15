@@ -126,3 +126,46 @@ func TestUserMessageStaysLiteral(t *testing.T) {
 		t.Fatalf("user message should render literal markdown markers:\n%s", plain)
 	}
 }
+
+func TestStripUntrustedMarkers(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"<UNTRUSTED_DATA>\nhello\n</UNTRUSTED_DATA>", "hello"},
+		{"<UNTRUSTED_DATA> Let me search for info.", "Let me search for info."},
+		{"a</untrusted_data>b", "ab"},
+		{`<UNTRUSTED_DATA type="x">hi</UNTRUSTED_DATA>`, "hi"},
+		{"no markers here", "no markers here"},
+		// Longer tag names are not guard markers and must stay visible.
+		{"<UNTRUSTED_DATABASE>schema</UNTRUSTED_DATABASE>", "<UNTRUSTED_DATABASE>schema</UNTRUSTED_DATABASE>"},
+		{"see <UNTRUSTED_DATASET> for rows", "see <UNTRUSTED_DATASET> for rows"},
+		// Marker-free content is returned byte-identical: no trimming or
+		// blank-line collapsing (indented code blocks keep leading space).
+		{"    indented code", "    indented code"},
+		{"a\n\n\nb", "a\n\n\nb"},
+		{"  padded  ", "  padded  "},
+	}
+	for _, c := range cases {
+		if got := stripUntrustedMarkers(c.in); got != c.want {
+			t.Errorf("stripUntrustedMarkers(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAgentMessageHidesUntrustedMarkers(t *testing.T) {
+	m := newTestModel(t)
+	m.chatHistory = []ChatMessage{
+		{Role: "agent", Content: "<UNTRUSTED_DATA> Let me search for current information on this topic."},
+	}
+	m.rebuildRenderedLines()
+	m.renderChatViewport()
+
+	plain := stripANSI(m.chatViewport.View())
+	if strings.Contains(plain, "UNTRUSTED_DATA") {
+		t.Fatalf("guard tags must not leak into visible agent messages:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Let me search for current information") {
+		t.Fatalf("message text must survive filtering:\n%s", plain)
+	}
+}
