@@ -440,6 +440,9 @@ type AppModel struct {
 	mentionFiles     []string
 	mentionFiltered  []string
 	mentionMenuIndex int
+	// mentionWasOpen tracks the menu across filter recomputes so the
+	// workspace walk refreshes on open, not on every keystroke.
+	mentionWasOpen bool
 
 	// Attachments (files via @, images via paste) for the message being
 	// composed. Cleared on submit and on session switch.

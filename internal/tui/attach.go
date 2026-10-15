@@ -150,8 +150,9 @@ func (m *AppModel) mentionMenuOpen() bool {
 	return strings.HasPrefix(word, "@")
 }
 
-// mentionCandidates returns the cached bounded workspace file listing used by
-// the @ menu (lazily walked on first use).
+// mentionCandidates returns the bounded workspace file listing used by
+// the @ menu. filterMentionCandidates refreshes it on every menu open;
+// this stays as the lazy fallback for direct callers.
 func (m *AppModel) mentionCandidates() []string {
 	if m.mentionFiles == nil {
 		m.mentionFiles = walkWorkspaceFiles(".", maxMentionFiles)
@@ -193,11 +194,18 @@ func walkWorkspaceFiles(root string, max int) []string {
 }
 
 // filterMentionCandidates recomputes the filtered @ file list from the
-// current filter text (the word after "@").
+// current filter text (the word after "@"). The workspace walk refreshes
+// on every closed-to-open transition so files created mid-session appear;
+// while the menu stays open the listing is stable.
 func (m *AppModel) filterMentionCandidates() {
 	word, _ := currentWord(m.input.Value())
+	isOpen := strings.HasPrefix(word, "@")
+	if isOpen && !m.mentionWasOpen {
+		m.mentionFiles = walkWorkspaceFiles(".", maxMentionFiles)
+	}
+	m.mentionWasOpen = isOpen
 	filter := ""
-	if strings.HasPrefix(word, "@") {
+	if isOpen {
 		filter = strings.ToLower(word[1:])
 	}
 	m.mentionFiltered = m.mentionFiltered[:0]

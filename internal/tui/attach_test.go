@@ -76,6 +76,43 @@ func TestMimeTypeFor(t *testing.T) {
 	}
 }
 
+func TestMentionMenuRescansOnReopen(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	m := newTestModel(t)
+	openMenu := func(value string) {
+		m.input.SetValue(value)
+		m.input.CursorEnd()
+		m.filterMentionCandidates()
+	}
+	contains := func(name string) bool {
+		for _, f := range m.mentionFiltered {
+			if f == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	openMenu("@")
+	if contains("late.txt") {
+		t.Fatalf("late.txt must not be listed before creation, got %v", m.mentionFiltered)
+	}
+	// Created while open: stays hidden until the menu reopens.
+	writeFileOrFail(t, filepath.Join(dir, "late.txt"), "x")
+	openMenu("@l")
+	if contains("late.txt") {
+		t.Fatal("menu must stay stable while continuously open")
+	}
+	// Close and reopen: the new file appears.
+	openMenu("no at here")
+	openMenu("@")
+	if !contains("late.txt") {
+		t.Fatalf("reopened menu should list late.txt, got %v", m.mentionFiltered)
+	}
+}
+
 func TestWalkWorkspaceFilesSkipsHiddenAndHeavy(t *testing.T) {
 	dir := t.TempDir()
 	mkdirOrFail(t, filepath.Join(dir, ".git"))
