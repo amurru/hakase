@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -67,6 +67,7 @@ const loading = ref(false)
 const error = ref('')
 const actionPending = ref<string | null>(null)
 const savingServer = ref(false)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // Add/Edit dialog state
 const dialogOpen = ref(false)
@@ -277,7 +278,26 @@ function typeIcon(type: string) {
   return type === 'http' ? Plug : Server
 }
 
-onMounted(loadServers)
+onMounted(() => {
+  loadServers()
+  // Background refresh so statuses and tool counts follow turns and
+  // probes running elsewhere. Quiet: never touches loading/error, so a
+  // transient failure keeps the last good list instead of flashing.
+  pollTimer = setInterval(async () => {
+    try {
+      servers.value = await apiFetch<MCPServer[]>('/mcp/servers')
+    } catch {
+      /* next tick retries */
+    }
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 </script>
 
 <template>
