@@ -392,29 +392,42 @@ func (m *AppModel) chipRow() string {
 }
 
 // mentionMenuView renders the @ file menu overlay: the filtered workspace
-// files with the highlighted selection marked.
+// files with the highlighted selection marked. The list windows over the
+// matches and always contains the selection so long lists scroll.
 func (m *AppModel) mentionMenuView() string {
 	m.filterMentionCandidates()
 	if len(m.mentionFiltered) == 0 {
 		return menuBoxStyle.Render("  (no matching files)  ")
 	}
 
-	maxLines := 8
+	const maxLines = 8
+	start := m.mentionMenuIndex - maxLines + 1
+	if start < 0 {
+		start = 0
+	}
+	if maxStart := len(m.mentionFiltered) - maxLines; maxStart > 0 && start > maxStart {
+		start = maxStart
+	}
+	if start > m.mentionMenuIndex {
+		start = m.mentionMenuIndex
+	}
 	var lines []string
-	for i, f := range m.mentionFiltered {
-		if i >= maxLines {
-			lines = append(lines, "  …")
-			break
-		}
+	for i := start; i < len(m.mentionFiltered) && i < start+maxLines; i++ {
+		f := m.mentionFiltered[i]
 		marker := "  "
 		if i == m.mentionMenuIndex {
 			marker = "❯ "
 		}
+		// Suffix-biased, rune-aware truncation: the tail of a path
+		// carries the filename, and byte cuts split multibyte runes.
 		name := f
-		if len(name) > 40 {
-			name = "…" + name[len(name)-39:]
+		if runes := []rune(name); len(runes) > 40 {
+			name = "…" + string(runes[len(runes)-39:])
 		}
 		lines = append(lines, marker+"@"+name)
+	}
+	if len(m.mentionFiltered) > maxLines {
+		lines = append(lines, fmt.Sprintf("  … %d of %d", maxLines, len(m.mentionFiltered)))
 	}
 	return menuBoxStyle.Render(strings.Join(lines, "\n"))
 }

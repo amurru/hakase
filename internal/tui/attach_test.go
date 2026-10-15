@@ -404,3 +404,51 @@ func mkdirOrFail(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+func TestMentionMenuWindowsLongList(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for i := 0; i < 20; i++ {
+		name := "file" + string(rune('0'+i/10)) + string(rune('0'+i%10)) + ".txt"
+		writeFileOrFail(t, filepath.Join(dir, name), "x")
+	}
+	writeFileOrFail(t, filepath.Join(dir, "zzz-last.txt"), "x")
+
+	m := newTestModel(t)
+	m.input.SetValue("@")
+	m.input.CursorEnd()
+	m.filterMentionCandidates()
+	if len(m.mentionFiltered) < 20 {
+		t.Fatalf("expected 20+ matches, got %v", m.mentionFiltered)
+	}
+
+	m.mentionMenuIndex = len(m.mentionFiltered) - 1
+	rendered := ansiStrip.ReplaceAllString(m.mentionMenuView(), "")
+	if !strings.Contains(rendered, "zzz-last.txt") {
+		t.Fatalf("window should follow the cursor to the last match:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "file00.txt") {
+		t.Fatalf("matches outside the window must scroll away:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "of") {
+		t.Fatalf("menu should note the truncated list:\n%s", rendered)
+	}
+}
+
+func TestMentionMenuTruncatesUnicodeSafely(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	long := strings.Repeat("é", 45) + ".txt"
+	writeFileOrFail(t, filepath.Join(dir, long), "x")
+
+	m := newTestModel(t)
+	m.input.SetValue("@")
+	m.input.CursorEnd()
+	rendered := ansiStrip.ReplaceAllString(m.mentionMenuView(), "")
+	if strings.Contains(rendered, "\ufffd") {
+		t.Fatalf("truncation must not split multibyte runes:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "…") || !strings.Contains(rendered, ".txt") {
+		t.Fatalf("truncated name should keep an ellipsis and the extension:\n%s", rendered)
+	}
+}
