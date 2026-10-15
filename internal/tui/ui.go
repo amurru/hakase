@@ -1699,11 +1699,14 @@ func (m *AppModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 
 	var lines []string
 
-	if m.showThinking && strings.TrimSpace(msg.Thinking) != "" {
-		block := thinkingStyle.Width(wrapWidth).Render("💭 " + strings.TrimSpace(msg.Thinking))
+	// Guard-tag leakage is render-filtered: the model sometimes echoes
+	// <UNTRUSTED_DATA> framing into visible replies.
+	thinking := stripUntrustedMarkers(msg.Thinking)
+	if m.showThinking && strings.TrimSpace(thinking) != "" {
+		block := thinkingStyle.Width(wrapWidth).Render("💭 " + strings.TrimSpace(thinking))
 		lines = append(lines, strings.Split(block, "\n")...)
 		lines = append(lines, "")
-	} else if !m.showThinking && strings.TrimSpace(msg.Thinking) != "" {
+	} else if !m.showThinking && strings.TrimSpace(thinking) != "" {
 		hidden := thinkingHiddenStyle.Width(wrapWidth).Render("◇ thinking hidden (ctrl+t to show)")
 		lines = append(lines, strings.Split(hidden, "\n")...)
 		lines = append(lines, "")
@@ -1712,7 +1715,8 @@ func (m *AppModel) renderMsgLines(msg ChatMessage, wrapWidth int) []string {
 	if strings.TrimSpace(msg.Content) != "" {
 		if msg.Role == "agent" || msg.Role == "sidekick" {
 			lines = append(lines, labelStyle.Render(prefix))
-			mdLines := strings.Split(m.math.RenderMarkdown(msg.Content, wrapWidth, m.mathImages), "\n")
+			content := stripUntrustedMarkers(msg.Content)
+			mdLines := strings.Split(m.math.RenderMarkdown(content, wrapWidth, m.mathImages), "\n")
 			lines = append(lines, mdLines...)
 		} else {
 			contentLines := strings.Split(msg.Content, "\n")

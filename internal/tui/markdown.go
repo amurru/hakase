@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 
 	"charm.land/glamour/v2"
@@ -14,7 +15,25 @@ func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func uintPtr(u uint) *uint    { return &u }
 
+// untrustedTag matches <UNTRUSTED_DATA> framing markers (any case,
+// optional attributes) that the model sometimes echoes into visible
+// replies. They are control tokens for prompt context, not content.
+var untrustedTag = regexp.MustCompile(`(?i)</?UNTRUSTED_DATA[^>]*>`)
+
+// collapseBlanks squashes blank runs left behind by marker filtering.
+var collapseBlanks = regexp.MustCompile(`\n{3,}`)
+
+// stripUntrustedMarkers removes guard-tag leakage from model output before
+// display. Stored history and session content are untouched; this is
+// render-time only, mirroring the CLI's humanErr/stripUntrusted precedent.
+func stripUntrustedMarkers(s string) string {
+	s = untrustedTag.ReplaceAllString(s, "")
+	s = collapseBlanks.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
+}
+
 // markdownStyle builds the style config used for rendering agent responses.
+
 // It starts from glamour's built-in dark style (complete coverage for lists,
 // tables, code blocks, links, etc.) and overrides the heading levels so each
 // level has its own color, plus a few readability tweaks for a dark TUI.
