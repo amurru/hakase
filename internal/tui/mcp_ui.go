@@ -18,13 +18,13 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// mcpModalRefreshInterval re-snapshots the server list while the modal is
-// open so counts follow turns running behind it. ListServers never blocks
-// on network I/O, so the tick is cheap.
-const mcpModalRefreshInterval = 2 * time.Second
+// chooserRefreshInterval re-snapshots the open chooser (MCP servers,
+// sessions) so rows follow background changes. Both list calls are cheap
+// local reads that never block on network I/O.
+const chooserRefreshInterval = 2 * time.Second
 
-// mcpTickMsg re-snapshots the open modal's server list.
-type mcpTickMsg struct{}
+// chooserTickMsg re-snapshots whichever chooser modal is open.
+type chooserTickMsg struct{}
 
 // mcpProbeDoneMsg carries the result of a background reconnect probe.
 type mcpProbeDoneMsg struct {
@@ -32,9 +32,9 @@ type mcpProbeDoneMsg struct {
 	err  error
 }
 
-func tickMCPModal() tea.Cmd {
-	return tea.Tick(mcpModalRefreshInterval, func(time.Time) tea.Msg {
-		return mcpTickMsg{}
+func tickChooser() tea.Cmd {
+	return tea.Tick(chooserRefreshInterval, func(time.Time) tea.Msg {
+		return chooserTickMsg{}
 	})
 }
 
@@ -70,7 +70,7 @@ func (m *AppModel) ToggleMCPList() tea.Cmd {
 	m.showSessionList = false // modals are mutually exclusive
 	m.mcpListIndex = 0
 	m.RefreshMCPList()
-	return tickMCPModal()
+	return tickChooser()
 }
 
 // refreshMCPList reloads server statuses from the live manager. Safe to call

@@ -133,7 +133,7 @@ func TestMCPModalTickRefreshesWhileOpen(t *testing.T) {
 		t.Fatal("opening the modal should start the refresh tick")
 	}
 	m.showMCPList = true
-	model, cmd := m.Update(mcpTickMsg{})
+	model, cmd := m.Update(chooserTickMsg{})
 	mm := model.(*AppModel)
 	if !mm.showMCPList {
 		t.Fatal("tick must not close the modal")
@@ -143,7 +143,7 @@ func TestMCPModalTickRefreshesWhileOpen(t *testing.T) {
 	}
 
 	mm.showMCPList = false
-	_, cmd = mm.Update(mcpTickMsg{})
+	_, cmd = mm.Update(chooserTickMsg{})
 	if cmd != nil {
 		t.Fatal("closed-modal tick must stop the chain")
 	}

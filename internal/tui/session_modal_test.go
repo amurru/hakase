@@ -136,3 +136,28 @@ func TestSessionModalPageKeysMove(t *testing.T) {
 		t.Fatalf("home should return to the top, got %d", mm.sessionListIndex)
 	}
 }
+
+func TestSessionModalTickPicksUpNewSessions(t *testing.T) {
+	m, _ := openChooserWithSessions(t, "first")
+	if len(m.sessionListFiltered) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(m.sessionListFiltered))
+	}
+
+	// Created behind the open modal (another process, a cron run).
+	if _, err := m.sessionService.CreateSession("second"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	model, cmd := m.Update(chooserTickMsg{})
+	mm := model.(*AppModel)
+	if cmd == nil {
+		t.Fatal("open-chooser tick should chain the next refresh")
+	}
+	if len(mm.sessionListFiltered) != 2 {
+		t.Fatalf("tick should pick up the new session, got %d", len(mm.sessionListFiltered))
+	}
+
+	mm.showSessionList = false
+	if _, cmd := mm.Update(chooserTickMsg{}); cmd != nil {
+		t.Fatal("closed-chooser tick must stop the chain")
+	}
+}

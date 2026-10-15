@@ -1428,12 +1428,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case mcpTickMsg:
-		// Periodic re-snapshot while the modal is open; a closed modal
+	case chooserTickMsg:
+		// Periodic re-snapshot while a chooser is open; a closed modal
 		// stops the chain by returning no follow-up tick.
-		if m.showMCPList {
+		switch {
+		case m.showMCPList:
 			m.RefreshMCPList()
-			return m, tickMCPModal()
+			return m, tickChooser()
+		case m.showSessionList:
+			m.refreshSessionList()
+			return m, tickChooser()
 		}
 		return m, nil
 
@@ -2837,7 +2841,7 @@ func (m *AppModel) toggleSessionList() tea.Cmd {
 		}
 	}
 	m.filterSessionList()
-	return nil
+	return tickChooser()
 }
 
 // filterSessionList filters the session list by the current filter text.
