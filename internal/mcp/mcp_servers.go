@@ -16,6 +16,7 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -495,6 +496,14 @@ func (probeContext) AppName() string                      { return "" }
 func (probeContext) SessionID() string                    { return "" }
 func (probeContext) Branch() string                       { return "" }
 
+// Sentinel errors for ProbeServer lookups so callers (web handlers, TUI)
+// can map unknown/disabled servers to client status codes with errors.Is
+// instead of treating every failure as a dial error.
+var (
+	ErrMCPServerNotFound = errors.New("mcp server not found")
+	ErrMCPServerDisabled = errors.New("mcp server is disabled")
+)
+
 // ProbeServer dials one server immediately for the /mcp modal's reconnect:
 // clears cooldown and tool cache, lists tools within the server's listing
 // budget, and records status/count exactly like a turn fetch. It blocks up
@@ -504,10 +513,10 @@ func (m *MCPServerManager) ProbeServer(ctx context.Context, name string) error {
 	ms, ok := m.servers[name]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("no mcp server named %q", name)
+		return fmt.Errorf("no mcp server named %q: %w", name, ErrMCPServerNotFound)
 	}
 	if ms.cfg.Disabled {
-		return fmt.Errorf("mcp server %q is disabled; enable it first", name)
+		return fmt.Errorf("mcp server %q is disabled; enable it first: %w", name, ErrMCPServerDisabled)
 	}
 	if ms.toolset == nil {
 		return fmt.Errorf("mcp server %q has no toolset (check the command or URL in config)", name)
@@ -536,10 +545,10 @@ func (m *MCPServerManager) Reconnect(name string) error {
 	ms, ok := m.servers[name]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("no mcp server named %q", name)
+		return fmt.Errorf("no mcp server named %q: %w", name, ErrMCPServerNotFound)
 	}
 	if ms.cfg.Disabled {
-		return fmt.Errorf("mcp server %q is disabled; enable it first", name)
+		return fmt.Errorf("mcp server %q is disabled; enable it first: %w", name, ErrMCPServerDisabled)
 	}
 	// Manual reconnect is explicit user intent: dial on the next Tools()
 	// call regardless of any armed failure cooldown.

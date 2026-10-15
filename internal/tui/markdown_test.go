@@ -137,6 +137,14 @@ func TestStripUntrustedMarkers(t *testing.T) {
 		{"a</untrusted_data>b", "ab"},
 		{`<UNTRUSTED_DATA type="x">hi</UNTRUSTED_DATA>`, "hi"},
 		{"no markers here", "no markers here"},
+		// Longer tag names are not guard markers and must stay visible.
+		{"<UNTRUSTED_DATABASE>schema</UNTRUSTED_DATABASE>", "<UNTRUSTED_DATABASE>schema</UNTRUSTED_DATABASE>"},
+		{"see <UNTRUSTED_DATASET> for rows", "see <UNTRUSTED_DATASET> for rows"},
+		// Marker-free content is returned byte-identical: no trimming or
+		// blank-line collapsing (indented code blocks keep leading space).
+		{"    indented code", "    indented code"},
+		{"a\n\n\nb", "a\n\n\nb"},
+		{"  padded  ", "  padded  "},
 	}
 	for _, c := range cases {
 		if got := stripUntrustedMarkers(c.in); got != c.want {

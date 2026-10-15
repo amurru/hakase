@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -230,6 +231,20 @@ func serverRequestToConfig(req *MCPServerRequest) *config.MCPServerConfig {
 	}
 }
 
+// probeStatus maps ProbeServer failures to client status codes: unknown
+// servers are 404, disabled servers are 409 (state conflict: enable first),
+// and dial failures stay 500.
+func probeStatus(err error) int {
+	switch {
+	case errors.Is(err, mcp.ErrMCPServerNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, mcp.ErrMCPServerDisabled):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // EnableServer handles POST /mcp/servers/{name}/enable - enables a server
 // and dials it immediately so the response carries the live result instead
 // of leaving the server idle until the next turn.
@@ -251,7 +266,7 @@ func (api *MCPAPI) EnableServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := mg.ProbeServer(r.Context(), name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, probeStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -299,7 +314,7 @@ func (api *MCPAPI) ReconnectServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := mg.ProbeServer(r.Context(), name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, probeStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
 

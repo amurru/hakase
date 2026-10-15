@@ -853,6 +853,16 @@ func (m *AppModel) appendCronChatNotice(msg CronJobMsg) {
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// The mention menu's workspace walk refreshes on closed-to-open
+	// transitions tracked by mentionWasOpen. Update only recomputes
+	// candidates while the menu is open, so reset the flag here whenever
+	// the menu is closed (esc/backspace remove the @ token without a
+	// recompute); otherwise reopening @ would reuse a stale listing and
+	// miss files created mid-session.
+	if !m.mentionMenuOpen() {
+		m.mentionWasOpen = false
+	}
+
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
 		// Bubbletea delivered the terminal background color it requested

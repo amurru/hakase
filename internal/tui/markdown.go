@@ -18,7 +18,9 @@ func uintPtr(u uint) *uint    { return &u }
 // untrustedTag matches <UNTRUSTED_DATA> framing markers (any case,
 // optional attributes) that the model sometimes echoes into visible
 // replies. They are control tokens for prompt context, not content.
-var untrustedTag = regexp.MustCompile(`(?i)</?UNTRUSTED_DATA[^>]*>`)
+// Attributes must start with whitespace (RE2 has no lookahead), so longer
+// names such as <UNTRUSTED_DATABASE> are left visible.
+var untrustedTag = regexp.MustCompile(`(?i)</?UNTRUSTED_DATA(\s[^>]*)?/?>`)
 
 // collapseBlanks squashes blank runs left behind by marker filtering.
 var collapseBlanks = regexp.MustCompile(`\n{3,}`)
@@ -26,7 +28,12 @@ var collapseBlanks = regexp.MustCompile(`\n{3,}`)
 // stripUntrustedMarkers removes guard-tag leakage from model output before
 // display. Stored history and session content are untouched; this is
 // render-time only, mirroring the CLI's humanErr/stripUntrusted precedent.
+// Content without markers is returned unchanged so ordinary Markdown
+// (indented code, blank lines) is never reformatted by the cleanup below.
 func stripUntrustedMarkers(s string) string {
+	if !untrustedTag.MatchString(s) {
+		return s
+	}
 	s = untrustedTag.ReplaceAllString(s, "")
 	s = collapseBlanks.ReplaceAllString(s, "\n\n")
 	return strings.TrimSpace(s)

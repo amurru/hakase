@@ -360,8 +360,8 @@ func TestMCPServerReconnectUnknown(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "no mcp server") {
 		t.Fatalf("error should name the problem, got %s", w.Body.String())
@@ -378,8 +378,8 @@ func TestMCPServerReconnectDisabled(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "disabled") {
 		t.Fatalf("error should mention disabled, got %s", w.Body.String())
@@ -398,7 +398,7 @@ func TestMCPServerEnableUnknownProbes(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }

@@ -172,13 +172,20 @@ func (m *AppModel) mcpReconnectSelected() tea.Cmd {
 // refreshes the modal, so the row flips from idle to connected/failed
 // with the real count instead of waiting for the next turn.
 func (m *AppModel) probeServerCmd(name string) tea.Cmd {
+	// Capture the manager on the UI loop: the closure runs on another
+	// goroutine where the global may have been cleared (tests and
+	// shutdown set MCPManager to nil), which would nil-panic or race.
+	mgr := mcp.MCPManager
+	if mgr == nil {
+		return nil
+	}
 	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q…", name))
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
-		err := mcp.MCPManager.ProbeServer(ctx, name)
+		err := mgr.ProbeServer(ctx, name)
 		return mcpProbeDoneMsg{name: name, err: err}
 	}
 }

@@ -68,6 +68,9 @@ const error = ref('')
 const actionPending = ref<string | null>(null)
 const savingServer = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
+// Shared sequence for every server-list request: a stale poll resolving
+// after an action's loadServers must not overwrite the newer result.
+let serverRequestSequence = 0
 
 // Add/Edit dialog state
 const dialogOpen = ref(false)
@@ -86,10 +89,12 @@ const formError = ref('')
 const dialogTitle = computed(() => (editingName.value ? `Edit server ${editingName.value}` : 'Add MCP server'))
 
 async function loadServers() {
+  const requestSequence = ++serverRequestSequence
   loading.value = true
   error.value = ''
   try {
-    servers.value = await apiFetch<MCPServer[]>('/mcp/servers')
+    const list = await apiFetch<MCPServer[]>('/mcp/servers')
+    if (requestSequence === serverRequestSequence) servers.value = list
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to load servers'
   } finally {
@@ -284,8 +289,13 @@ onMounted(() => {
   // probes running elsewhere. Quiet: never touches loading/error, so a
   // transient failure keeps the last good list instead of flashing.
   pollTimer = setInterval(async () => {
+    if (actionPending.value || loading.value) return
+    const requestSequence = ++serverRequestSequence
     try {
-      servers.value = await apiFetch<MCPServer[]>('/mcp/servers')
+      const list = await apiFetch<MCPServer[]>('/mcp/servers')
+      if (requestSequence === serverRequestSequence && !actionPending.value && !loading.value) {
+        servers.value = list
+      }
     } catch {
       /* next tick retries */
     }

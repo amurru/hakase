@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestCurrentWord(t *testing.T) {
@@ -110,6 +112,32 @@ func TestMentionMenuRescansOnReopen(t *testing.T) {
 	openMenu("@")
 	if !contains("late.txt") {
 		t.Fatalf("reopened menu should list late.txt, got %v", m.mentionFiltered)
+	}
+}
+
+// TestUpdateResetsMentionWasOpenWhenMenuClosed covers the Update-driven
+// path: esc/backspace remove the @ token without a filter recompute (Update
+// only recomputes while the menu is open), so Update must reset the flag
+// whenever the menu is closed. Otherwise the next @ reuses a stale listing.
+func TestUpdateResetsMentionWasOpenWhenMenuClosed(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("@")
+	m.input.CursorEnd()
+	m.filterMentionCandidates()
+	if !m.mentionWasOpen {
+		t.Fatalf("menu should be open after typing @")
+	}
+	// Simulate esc closing the menu the way handleMentionMenuKey does: the
+	// @ token is removed without a filter recompute.
+	m.input.SetValue("")
+	m.input.CursorEnd()
+	if m.mentionMenuOpen() {
+		t.Fatalf("menu should be closed after @ removal")
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "x", Code: 'x'})
+	m = updated.(*AppModel)
+	if m.mentionWasOpen {
+		t.Fatalf("Update must reset mentionWasOpen while the menu is closed")
 	}
 }
 
