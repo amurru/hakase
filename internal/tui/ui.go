@@ -1425,6 +1425,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case mcpTickMsg:
+		// Periodic re-snapshot while the modal is open; a closed modal
+		// stops the chain by returning no follow-up tick.
+		if m.showMCPList {
+			m.RefreshMCPList()
+			return m, tickMCPModal()
+		}
+		return m, nil
+
+	case mcpProbeDoneMsg:
+		m.RefreshMCPList()
+		if msg.err != nil {
+			m.AppendLog(fmt.Sprintf("⚠ MCP server %q failed: %v", msg.name, msg.err))
+			return m, nil
+		}
+		count := 0
+		if mcp.MCPManager != nil {
+			if st, ok := mcp.MCPManager.ServerStatus(msg.name); ok {
+				count = st.ToolCount
+			}
+		}
+		m.AppendLog(fmt.Sprintf("MCP server %q connected (%d tools)", msg.name, count))
+		return m, nil
+
 	case StatusLogMsg:
 		m.AppendLog(msg.Text)
 	case DelegationProgressMsg:

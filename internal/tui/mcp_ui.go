@@ -8,13 +8,35 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	mcp "amurru/hakase/internal/mcp"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+// mcpModalRefreshInterval re-snapshots the server list while the modal is
+// open so counts follow turns running behind it. ListServers never blocks
+// on network I/O, so the tick is cheap.
+const mcpModalRefreshInterval = 2 * time.Second
+
+// mcpTickMsg re-snapshots the open modal's server list.
+type mcpTickMsg struct{}
+
+// mcpProbeDoneMsg carries the result of a background reconnect probe.
+type mcpProbeDoneMsg struct {
+	name string
+	err  error
+}
+
+func tickMCPModal() tea.Cmd {
+	return tea.Tick(mcpModalRefreshInterval, func(time.Time) tea.Msg {
+		return mcpTickMsg{}
+	})
+}
 
 // toggleVerb returns the verb for enable/disable log messages.
 func toggleVerb(disable bool) string {
@@ -48,7 +70,7 @@ func (m *AppModel) ToggleMCPList() tea.Cmd {
 	m.showSessionList = false // modals are mutually exclusive
 	m.mcpListIndex = 0
 	m.RefreshMCPList()
-	return nil
+	return tickMCPModal()
 }
 
 // refreshMCPList reloads server statuses from the live manager. Safe to call
@@ -129,22 +151,36 @@ func (m *AppModel) mcpToggleSelected(disable bool) tea.Cmd {
 	}
 	m.AppendLog(fmt.Sprintf("MCP server %q %s", srv.Name, toggleVerb(disable)+"d"))
 	m.RefreshMCPList()
+	if !disable {
+		// A newly enabled server is idle until something dials it:
+		// probe now so the modal shows the live result.
+		return m.probeServerCmd(srv.Name)
+	}
 	return nil
 }
 
-// mcpReconnectSelected forces a reconnect of the highlighted server.
+// mcpReconnectSelected dials the highlighted server in the background and
+// reports the live result; the modal stays open throughout.
 func (m *AppModel) mcpReconnectSelected() tea.Cmd {
 	if mcp.MCPManager == nil || len(m.mcpListFiltered) == 0 || m.mcpListIndex >= len(m.mcpListFiltered) {
 		return nil
 	}
-	srv := m.mcpListFiltered[m.mcpListIndex]
-	if err := mcp.MCPManager.Reconnect(srv.Name); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to reconnect %q: %v", srv.Name, err))
-		return nil
+	return m.probeServerCmd(m.mcpListFiltered[m.mcpListIndex].Name)
+}
+
+// probeServerCmd runs a live dial off the UI loop; the done message
+// refreshes the modal, so the row flips from idle to connected/failed
+// with the real count instead of waiting for the next turn.
+func (m *AppModel) probeServerCmd(name string) tea.Cmd {
+	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q…", name))
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q on next tool fetch", srv.Name))
-	m.RefreshMCPList()
-	return nil
+	return func() tea.Msg {
+		err := mcp.MCPManager.ProbeServer(ctx, name)
+		return mcpProbeDoneMsg{name: name, err: err}
+	}
 }
 
 // mcpVisibleRows mirrors the session chooser: the visible window follows
@@ -209,9 +245,20 @@ func (m *AppModel) mcpListView() string {
 	}
 	for i := start; i < len(m.mcpListFiltered) && i < start+rows; i++ {
 		s := m.mcpListFiltered[i]
-		tools := "0 tools"
-		if s.Status == "connected" {
+		// Only connected servers have a meaningful count; anything else
+		// names its state instead of printing a misleading zero.
+		tools := "idle"
+		switch s.Status {
+		case "connected":
 			tools = fmt.Sprintf("%d tools", s.ToolCount)
+		case "disabled":
+			tools = "off"
+		case "failed":
+			tools = "failed"
+		default:
+			if s.Status != "" && s.Status != "idle" {
+				tools = s.Status
+			}
 		}
 		detail := s.Transport + "  " + tools
 		if s.Status == "failed" && s.Error != "" {

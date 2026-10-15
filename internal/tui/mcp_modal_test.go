@@ -107,3 +107,78 @@ func TestMCPModalFailedShowsError(t *testing.T) {
 		t.Fatalf("failed servers should show the error:\n%s", rendered)
 	}
 }
+
+func TestMCPModalLabelsNonConnectedHonestly(t *testing.T) {
+	m := openMCPModalWithServers(t, []mcp.MCPServerStatus{
+		{Name: "idle-srv", Transport: "stdio", Status: "idle"},
+		{Name: "off-srv", Transport: "stdio", Status: "disabled"},
+		{Name: "bad-srv", Transport: "http", Status: "failed", Error: "nope"},
+		{Name: "live-srv", Transport: "stdio", Status: "connected", ToolCount: 3},
+	})
+
+	rendered := ansiStrip.ReplaceAllString(m.View().Content, "")
+	for _, want := range []string{"idle", "off", "failed", "3 tools"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("modal missing state label %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "0 tools") {
+		t.Fatalf("no row should print a misleading zero count:\n%s", rendered)
+	}
+}
+
+func TestMCPModalTickRefreshesWhileOpen(t *testing.T) {
+	m := newTestModel(t)
+	if cmd := m.ToggleMCPList(); cmd == nil {
+		t.Fatal("opening the modal should start the refresh tick")
+	}
+	m.showMCPList = true
+	model, cmd := m.Update(mcpTickMsg{})
+	mm := model.(*AppModel)
+	if !mm.showMCPList {
+		t.Fatal("tick must not close the modal")
+	}
+	if cmd == nil {
+		t.Fatal("open-modal tick should chain the next refresh")
+	}
+
+	mm.showMCPList = false
+	_, cmd = mm.Update(mcpTickMsg{})
+	if cmd != nil {
+		t.Fatal("closed-modal tick must stop the chain")
+	}
+}
+
+func TestMCPModalProbeDoneLogsResult(t *testing.T) {
+	m := newTestModel(t)
+	m.showMCPList = true
+
+	model, _ := m.Update(mcpProbeDoneMsg{name: "github", err: nil})
+	mm := model.(*AppModel)
+	if !mm.showMCPList {
+		t.Fatal("probe result must not close the modal")
+	}
+	found := false
+	for _, l := range mm.logLines {
+		if strings.Contains(l, "github") && strings.Contains(l, "connected") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("successful probe should log the result, got %v", mm.logLines)
+	}
+}
+
+func TestMCPModalReconnectDialsInBackground(t *testing.T) {
+	mcpTestIsolate(t)
+	setupTestMCPManager(t)
+
+	m := newModelWithSvc(t)
+	m.ToggleMCPList()
+	if cmd := m.mcpReconnectSelected(); cmd == nil {
+		t.Fatal("reconnect should return a background probe command")
+	}
+	if !m.showMCPList {
+		t.Fatal("reconnect must keep the modal open")
+	}
+}
