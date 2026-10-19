@@ -11,16 +11,17 @@ Security audit (2026-10-19, C1-C2/H1-H5/M1-M5/L1-L3) is applied below. Previous 
 ## Decisions
 
 - **Own schema, not TOML.** Extend `internal/permissions/permissions.go:58-90` (`Rule`, `Policy`) with optional `delta` / `requires` (+ `sanitizable`). `Version` 0/1 unchanged behavior, `version 2` enables flow fields. Unknown keys stay strict errors (`policy_source.go` loader). No `appa.toml`, no new config file.
-- **Two-level trust, three-level audience only, ceiling semantics.** `trust: trusted < suspicious` (min-combine, monotone descent). `audience` is an ordered ceiling (`self=0 < internal=1 < public=2`), combine by `min` (narrow-only). `requires.audience_contains: ["public"]` means `label.Audience >= Public`. No set-intersection type; ceiling covers the Hakase exfil shape without general lattice machinery.
+- **Two-level trust, three-level audience only, ceiling semantics.** `trust: trusted(0) < suspicious(1)`, combine by `max` (narrow-only, monotone descent). `audience` is an ordered ceiling (`self=0 < internal=1 < public=2`), combine by `min` (narrow-only). `requires.audience_contains: ["public"]` means `label.Audience >= Public`. One order and one combine op per dimension, matching `Meet` and the `webfetch` taint behavior. No set-intersection type; ceiling covers the Hakase exfil shape without general lattice machinery.
 - **Label lives with the session, not the policy.** In-memory per-run registry with `sync.RWMutex` + CAS on `Version` (same discipline as `internal/session/pauses.go:63` `PauseRegistry`, needed because TUI+web share state and ADK can run read+send concurrently) + persisted `Session.Flow`/`FlowApplied` fields on `Session` (`internal/session/session_data.go:48-69`) so resume/durable-replay keeps restrictions. History already replays from store, label replays the same way. No Postgres, no separate event log. Label travels in `agent.Context` for delegates (H4), not only by session-ID map.
-- **v2 stays experimental until all sinks land (senior review).** Partial taint is worse than no taint. `version: 2` policy loads but enforcement is gated by `flowExperimental` until T2.1+T2.2 complete; docs mark v2 experimental. Prevents false confidence between T1.4 (shell/file) and T2.1 (other 8 sinks).
+- **v2 stays experimental until all sinks land (senior review).** Partial taint is worse than no taint. When the `flowExperimental` gate is disabled, `version: 2` policies are rejected at load (fail-closed, loud error naming the gate) so no v2 rule can authorize dispatch without its flow checks. Operator visibility: startup log line + `hakase doctor` / `/api/ready` reports `flow: disabled (experimental gate)`. Until T2.1+T2.2 complete, docs mark v2 experimental.
 - **Flow can only escalate, never widen.** Evaluated after hard-deny/deny-patterns/allowlist in `EvaluateCommand` (`internal/agent/gate.go:1034-1120`), same position as current step 4b. A `requires` failure returns Ask (route to existing `ApproveExec`) or Deny per rule `effect`. A plain `allow` without flow fields behaves exactly as today. `RiskUnknown` still always asks (`gate.go:1122-1126`); flow Ask is never auto-approved by `approval.mode=allow` (H5, same fail-closed precedent).
-- **Pre-dispatch + post-admission, minimal.** Pre = `LookupWithLabel` before tool runs (hooks `BeforeToolCallback` in `internal/agent/agent.go:131-156` + gate + `mcp/runserver/gates.go` dispatch path, not only the ask branch). Post = `AfterToolCallback` (`agent.go:163-170`) may withhold or redact a result before it enters context. Post never returns an override when `runErr != nil` (ADK drops the error when AfterTool returns non-nil, see `docs/hooks/spec.md:128-133`): on error it still redacts + folds, then passes through with `nil,nil` (C1). Reference shape:
+- **Pre-dispatch + post-admission, minimal.** Pre = `LookupWithLabel` before tool runs (hooks `BeforeToolCallback` in `internal/agent/agent.go:131-156` + gate + `mcp/runserver/gates.go` dispatch path, not only the ask branch). Post = `AfterToolCallback` (`agent.go:163-170`) may withhold or redact a result before it enters context. Post never returns a non-nil result override when `runErr != nil` (ADK drops the tool error when AfterTool returns non-nil result, see `docs/hooks/spec.md:128-133`): on error it still redacts + folds, then returns `(nil, redactedErr)` so the failure is preserved with a redacted carrier (C1). Verified against ADK v2.5.0 `base_flow.go:callTool`: `(nil, nil)` falls through to the original `err` and emits raw `{"error": err.Error()}` to the model; `(nil, err)` keeps `{"error": redacted}`. Reference shape:
 ```go
 if runErr != nil {
-    redactInPlace(result); redactErr(runErr)
+    redactInPlace(result)
+    redactedErr := errors.New(RedactSecrets(runErr.Error()))
     FoldLabel(ctx, deltaFor(t.Name()))
-    return nil, nil // never override on error
+    return nil, redactedErr // preserve the failure with a redacted carrier
 }
 return CheckPostFlow(ctx, t, args, result)
 ```
@@ -31,7 +32,7 @@ return CheckPostFlow(ctx, t, args, result)
 
 ### Spec FG-001: label type + fold (`internal/permissions/flow.go`, new)
 
-- `Trust int` (`TrustTrusted=0`, `TrustSuspicious=1`), `Audience int` ordered ceiling (`Self=0`, `Internal=1`, `Public=2`). `StartLabel() = {trusted, public, 0}` explicit. Zero-value trap: Go zero `{0,0,0}` equals `{trusted,self,0}`, not start. Implementation must use `*SessionLabel` nil-check plus initialized flag everywhere, never `== SessionLabel{}`. Nil = uninitialized, fail-closed (L1). One missed comparison hard-denies all old sessions.
+- `type Trust int` (`TrustTrusted Trust = iota`, `TrustSuspicious`), `type Audience int` (`AudienceSelf`, `AudienceInternal`, `AudiencePublic`), `type SessionLabel struct { Trust Trust; Audience Audience; Version uint64 }`. `StartLabel() = {trusted, public, 0}` explicit. Zero-value trap: Go zero `{0,0,0}` equals `{trusted,self,0}`, not start. Implementation must use `*SessionLabel` nil-check plus initialized flag everywhere, never `== SessionLabel{}`. Nil = uninitialized, fail-closed (L1). One missed comparison hard-denies all old sessions.
 ```go
 func Meet(a, b SessionLabel) SessionLabel {
     t := max(a.Trust, b.Trust)
@@ -43,8 +44,8 @@ func Meet(a, b SessionLabel) SessionLabel {
     return SessionLabel{t, au, v}
 }
 ```
-- `SessionLabel{Trust, Audience, Version uint64}` + `Fold(label, delta, idemKey)` (H2/H3). Version increments only on narrowing change, CAS under registry mutex (senior review: version check without CAS is a race when ADK runs read+send concurrently).
-- `Fold` applies rule `delta` on tool success AND on tool error (conservative fold, C1), never on deny/skip. Unknown tools deny-by-default on narrowed label (C2): if label != start and no rule maps the action, treat as `requires {trust:trusted, audience_contains:[self]}` (Ask). Start-label unknown tools behave as today to preserve v1 parity.
+- `SessionLabel` (`Trust Trust`, `Audience Audience`, `Version uint64`) + `Fold(label, delta, idemKey)` (H2/H3). Version increments only on narrowing change, CAS under registry mutex (senior review: version check without CAS is a race when ADK runs read+send concurrently).
+- `Fold` applies rule `delta` on tool success AND on tool error (conservative fold, C1), never on deny/skip. Unknown tools deny-by-default on narrowed label (C2): if label != start and no rule maps the action, deny explicitly with `flow: unknown action on narrowed label` (Ask/Deny per rule effect, never a `requires` condition, since `audience_contains: ["self"]` passes for every ceiling level). Start-label unknown tools behave as today to preserve v1 parity.
 - Idempotency (H3): fold keyed by `(message Sequence, tool_call_id)` applied-set persisted alongside `Flow`. Re-admit of same key is no-op. Version increments only on admitted fold (CAS).
 - Child runs (delegate `internal/agent/delegate.go:355-409`): child inherits copy via `agent.Context`, child `BeforeToolCallbacks` resolve label from ctx, never from fresh in-memory session. Child egress denied by parent label. Child returns its terminal `SessionLabel` explicitly via ctx; parent does `Meet(parentLabel, childFinalLabel)`. Transcript hash + `filesModified` are for audit only, never folded directly (senior review: a hash does not give you a label). Rulings never cross the boundary. Forbid `delegate_task` when label is narrowed unless child toolset excludes network egress, else require Ask (H4).
 
@@ -91,7 +92,7 @@ func Meet(a, b SessionLabel) SessionLabel {
 ### Spec FG-004: post-admission withhold/redact
 
 - Extend `makeHookAfterToolCallback` (`agent.go:163-170`) with `CheckPostFlow`: on tool success, compute `Fold(label, delta)`; if result contains secret-shaped bytes per `util.RedactSecrets`, replace with redacted copy and audit `flow_sanitized`; any `delta`-tainted content addressed to `public` without approval is non-admissible (H1, not only secret-shaped): return override `{withheld: true, reason}` so it never enters context. Vision descriptions and `ask_sidekick` answers pass the same path (H4).
-- On `runErr != nil` (C1): still run `RedactSecrets` on result + error string, still `Fold` conservative delta, audit `flow_error_redacted` (debug minimum, M5), then return `nil,nil` (no override, preserves ADK error semantics). Never silently pass raw errors.
+- On `runErr != nil` (C1): still run `RedactSecrets` on result + error string, still `Fold` conservative delta, audit `flow_error_redacted` (debug minimum, M5), then return `(nil, redactedErr)` (never a result override, preserves ADK failure semantics). Never silently pass raw errors.
 - Label update happens exactly once per admitted `(Sequence, tool_call_id)` (`session_data.go:29-43` kinds), idempotent applied-set, so replay/resume cannot double-fold (H3).
 
 ### Spec FG-005: remedies + approval reuse
@@ -102,9 +103,9 @@ func Meet(a, b SessionLabel) SessionLabel {
 
 ### Spec FG-006: persistence, audit, replay fixtures
 
-- `Session` gains `Flow FlowLabel `json:"flow,omitempty"`` + `FlowApplied map[string]bool `json:"flow_applied,omitempty"`` (`session_data.go:48-69`). Idempotency key is `(Sequence, tool_call_id)`; `Sequence` comes from `AddMessageWithMetaAndAttachments` (`Sequence=len(Messages)`), persisted in `FlowApplied`. Test resume + compaction explicitly: fold, compact, resume, assert `Version` unchanged. `SessionStore` save/load carries both; old files without `flow` recompute by folding stored `tool_result` history, or default `suspicious/internal` + audit `flow_recomputed` + one-time denial notice when history is unavailable (M1). Never default old sessions to widest.
+- `Session` gains `Flow` (`*SessionLabel`, nil = uninitialized, omitted when nil) plus `FlowApplied` (`map[string]bool`, omitted when empty) (`session_data.go:48-69`). Value structs cannot be nil and `omitempty` does not omit zero structs, so the field must be a pointer (or carry an explicit initialized flag). Idempotency key encoding is canonical and lossless: length-prefixed `seq:<dec>:<byte-len-of-tool-id>:<tool-id>` (tool-id is caller-supplied and may contain any bytes including `:`); `Sequence` comes from `AddMessageWithMetaAndAttachments` (`Sequence=len(Messages)`), persisted in `FlowApplied`, with round-trip encode/decode tests incl. empty tool-id and max-uint64 boundary. Test resume + compaction explicitly: fold, compact, resume, assert `Version` unchanged. `SessionStore` save/load carries both; old files without `flow` recompute by folding stored `tool_result` history, or default `suspicious/internal` + audit `flow_recomputed` + one-time denial notice when history is unavailable (M1). Never default old sessions to widest.
 - `AppendSummary`/compaction inherits current label into the summary message and redacts summary text (H3). Resume from summary keeps restrictions.
-- Audit: `flow_blocked` + `flow_sanitized` + `flow_error_redacted` + `flow_recomputed` decisions in `audit.go:28` enum + `AuditFlowBlock` helper mirroring `AuditHookBlock`/`AuditBudgetBlock`. CSV row (`audit_chain.go:226`) appends label columns at end only with version header (M2). Add test opening new CSV with old strict parser (`FieldsPerRecord=N`). Metadata only. Local repro uses `HAKASE_FLOW_DEBUG=1` logging full args to stderr only, never to file or prod logs.
+- Audit: `flow_blocked` + `flow_sanitized` + `flow_error_redacted` + `flow_recomputed` decisions in `audit.go:28` enum + `AuditFlowBlock` helper mirroring `AuditHookBlock`/`AuditBudgetBlock`. CSV row (`audit_chain.go:226`) appends label columns at end only with version header (M2). Compatibility test: old strict parser (`FieldsPerRecord=N`) opens old-format rows (backward compat); new version-aware parser accepts both schemas (forward path). Metadata only. Local repro uses `HAKASE_FLOW_DEBUG=1` logging `argsHash` (never full args) to stderr only, never to file or prod logs.
 - Replay fixtures: `docs/flow-guard/fixtures/*.json` scripted `{tool, args, label_before, expect}` + Go test driving `LookupWithLabel` + `Fold` without running tools (mirrors `appa replay` idea, no binary). Fixtures land before engine code (senior review): 3 seed fixtures first (read-private-then-send-public deny, webfetch-then-send ask, v1-parity unchanged). At least one end-to-end `read` then `send` test asserting denial + withhold text (L3).
 
 ## Non-goals
@@ -124,7 +125,7 @@ func Meet(a, b SessionLabel) SessionLabel {
 - [ ] Layering test: project cannot remove enterprise `requires`, `mode=allow` does not auto-approve flow Ask (H5).
 - [ ] No v2 fields = byte-identical behavior; full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).
 - [ ] Blocked exfil result never reaches model context (post-admission test asserts override path).
-- [ ] Audit shows `flow_blocked` with rule citation + label + argsHash; new CSV opens clean under old strict parser; `HAKASE_FLOW_DEBUG=1` never writes to file logs.
+- [ ] Audit shows `flow_blocked` with rule citation + label + argsHash; old-format rows open under old strict parser, both schemas under version-aware parser; `HAKASE_FLOW_DEBUG=1` never writes to file logs.
 
 ## Validation against codebase (2026-10-19)
 

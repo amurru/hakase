@@ -13,7 +13,7 @@ Spec: [spec.md](spec.md). Inspiration only, own Go code, no sidecar. Fixtures fi
 1. New `internal/permissions/flow.go`: `Trust`, `Audience` ceiling, `SessionLabel{Version}`, `StartLabel`, senior `Meet`, `Fold(idemKey)`, `*SessionLabel` nil fail-closed + zero-value trap test (`== SessionLabel{}` forbidden). `sync.RWMutex` + CAS on registry. Unit-tested pure functions. No imports beyond stdlib.
 2. Extend `Rule` with `Delta` / `Requires` / `sanitizable` + `Compile` validation for `version 2` + canonical resource table (M4: shell raw, paths via `ResolveScopedPath`, URLs via `net/url` + `x/net/idna`, python `code_hash` + arg-parse best-effort, no substring deny); `PolicyRule` citation with `argsHash`. Keep `Evaluate`/`Lookup` signatures, add `LookupWithLabel`. v1 policies byte-identical. Monotonic cross-layer merge + `allowManagedOnly` strips widening (H5). `flowExperimental` gate: v2 loads but enforcement off until T2.1+T2.2 land.
 3. In-memory label registry + ctx propagation (`internal/session/flow.go` or `pauses.go` pattern) + `Session.Flow` + `FlowApplied[(Sequence, tool_call_id)]` persist + absent-flow recompute (M1/H3) + one-time resume notice. Old files never default to widest.
-4. Wire pre-dispatch into `EvaluateCommand` step 4b (`internal/agent/gate.go:1103-1120`) + `fileops taskResolve` + `AuditSystemCommandPaths` + `@-file` body rule (best-effort). Ship sink starter set in `config.json.example` (commented, ask-not-deny) + fixtures v1. Binding `(labelVersion, argsHash)` recorded at pre-check under mutex (H2).
+4. Wire pre-dispatch into `EvaluateCommand` step 4b (`internal/agent/gate.go:1103-1120`) + `fileops taskResolve` + `AuditSystemCommandPaths` + `@-file` body rule (best-effort). Ship sink starter set as `docs/flow-guard/permissions.example.json` (commented canonical permissions-policy example, ask-not-deny) + fixtures v1. Binding `(labelVersion, argsHash)` recorded at pre-check under mutex (H2).
 
 ### Phase 2 — MCP/channel/python/download/sidekick/skill/vision + post-admission (FG-003 rest, FG-004)
 
@@ -24,8 +24,8 @@ Spec: [spec.md](spec.md). Inspiration only, own Go code, no sidecar. Fixtures fi
 ### Phase 3 — remedies + audit + replay CI (FG-005/006)
 
 8. Denial text format + `ask-human` via existing `ApproveExec` patched at `internal/agent/approval.go:50-86` to bypass `mode==allow` shortcut on flow Ask, honoring `disable_bypass` (H5 senior site); single-use `(tool, argsHash, labelVersion)`, no label reset. `sanitize` via `util.RedactSecrets` + re-check, auto-proceed only with `sanitizable:true` on narrow resources, never on `send_message *` (H1).
-9. Audit `flow_blocked`/`flow_sanitized`/`flow_error_redacted`/`flow_recomputed` (`audit.go`, `audit_chain.go` CSV appended columns with version header) + actor attribution reuse (`AuditApprovalAnswer` sites). Redact reasons, hash args (M2). `HAKASE_FLOW_DEBUG=1` logs full args to stderr only. Strict-parser CSV test (L1 senior).
-10. Replay fixtures + Go test driver including e2e read-then-send; compaction inherits label + redacts summary, resume keeps `Version` (H3 test: fold, compact, resume, assert unchanged); `tasks.md` ticked; CHANGELOG; `docs/permissions/guide.md` v2 experimental section; `config.json.example` starter rules. House: open governing issue with file:col evidence, branch off `develop`, one PR per phase.
+9. Audit `flow_blocked`/`flow_sanitized`/`flow_error_redacted`/`flow_recomputed` (`audit.go`, `audit_chain.go` CSV appended columns with version header) + actor attribution reuse (`AuditApprovalAnswer` sites). Redact reasons, hash args (M2). `HAKASE_FLOW_DEBUG=1` logs `argsHash` (never full args) to stderr only. CSV parser tests: old strict parser on old-format rows + version-aware parser on both (CodeRabbit).
+10. Replay fixtures + Go test driver including e2e read-then-send; compaction inherits label + redacts summary, resume keeps `Version` (H3 test: fold, compact, resume, assert unchanged); `tasks.md` ticked; CHANGELOG; `docs/permissions/guide.md` v2 experimental section; `docs/flow-guard/permissions.example.json` starter rules. House: open governing issue with file:col evidence, branch off `develop`, one PR per phase.
 
 ## Critical path
 
@@ -45,7 +45,7 @@ Spec: [spec.md](spec.md). Inspiration only, own Go code, no sidecar. Fixtures fi
 - Delegate/sidekick/vision tests: child egress denied, answer folded suspicious, explicit terminal label merge (H4).
 - Layering/mode tests: project cannot remove enterprise `requires`, `mode=allow` keeps flow Ask via patched `ApproveExec` (H5).
 - Post-admission test: secret-shaped result redacted before context, failure path passes through redacted (ADK error semantics preserved).
-- CSV strict test: new file opens under old `FieldsPerRecord=N` parser (senior review).
+- CSV parser tests: old strict parser (`FieldsPerRecord=N`) opens old-format rows; version-aware parser accepts both schemas (CodeRabbit).
 - Full suite: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.
 
 ## Risk register
@@ -56,5 +56,5 @@ Spec: [spec.md](spec.md). Inspiration only, own Go code, no sidecar. Fixtures fi
 - **PostTool override converting failure to success:** ADK drops tool error on non-nil AfterTool return. Hard rule: never override when `runErr != nil`, redact + fold then `nil,nil` (C1).
 - **Sanitizer false confidence:** `RedactSecrets` is secret-shaped only. Never auto-allow on narrowed label from scan result; `sanitizable:true` only on narrow resources (H1).
 - **Python/URL best-effort:** `@-file` substring and stdlib URL parse are fragile. Gate on arg-parse + `code_hash`, `x/net/idna` or deferred punycode; document limits.
-- **Audit size/injection:** label snapshot is enums + hashes, no payload. Redact reasons and denial text, append CSV columns with version header, strict-parser test (M2).
+- **Audit size/injection:** label snapshot is enums + hashes, no payload. Redact reasons and denial text, append CSV columns with version header, dual parser tests (M2).
 - **Scope creep toward full APPA:** effects DAG, `forwards`, attest-schema, batteries explicitly deferred in spec. Any addition needs new FG spec + issue.
