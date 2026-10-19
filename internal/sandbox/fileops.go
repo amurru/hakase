@@ -398,6 +398,16 @@ func taskResolve(ctx context.Context, path string, write bool, sandboxRoot strin
 		}
 		return "", fmt.Errorf("path %q denied by permissions policy%s", resolved, suffix)
 	}
+	// Flow Guard pre-dispatch (FG-003): deny enforcement under the call
+	// label. Reads/edits are usually sources (delta, enforced
+	// post-admission in Phase 2), so only Deny escalates here; Ask stays
+	// on the tool-risk approval path. Skipped when the label resolves to
+	// start on a v1-equivalent policy (LookupWithLabel mirrors Lookup).
+	if label := flowLabelFromCtx(ctx); label != nil {
+		if eff, _, detail, ok := permissions.LookupWithLabel(label, action, resolved); ok && detail != "" && eff == permissions.EffectDeny {
+			return "", fmt.Errorf("path %q denied by flow guard: %s", resolved, detail)
+		}
+	}
 	return resolved, nil
 }
 

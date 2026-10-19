@@ -63,6 +63,30 @@ func LookupForAgent(agentName, action string, resources ...string) (eff Effect, 
 	return eff, rule, true
 }
 
+// LookupWithLabel evaluates an action against resources under a flow
+// label (FG-003). Without an installed v2 policy it mirrors Lookup
+// exactly (v1 parity); with v2, flow can only escalate. ok is false when
+// no policy is installed. detail is the flow reason ("" when no flow
+// check applied). A nil label is fail-closed (evaluated as narrowest).
+func LookupWithLabel(label *SessionLabel, action string, resources ...string) (eff Effect, rule *Rule, detail string, ok bool) {
+	return LookupForAgentWithLabel("", label, action, resources...)
+}
+
+// LookupForAgentWithLabel merges the named agent overlay under the label.
+func LookupForAgentWithLabel(agentName string, label *SessionLabel, action string, resources ...string) (eff Effect, rule *Rule, detail string, ok bool) {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	if installedPolicy == nil {
+		return "", nil, "", false
+	}
+	if agentName == "" {
+		eff, rule, detail = installedPolicy.EvaluateWithLabel(label, action, resources...)
+	} else {
+		eff, rule, detail = installedPolicy.EvaluateForAgentWithLabel(agentName, label, action, resources...)
+	}
+	return eff, rule, detail, true
+}
+
 // Installed returns the active layered policy, or nil when none is
 // installed.
 func Installed() *LayeredPolicy {

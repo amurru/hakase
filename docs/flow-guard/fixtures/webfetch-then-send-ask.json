@@ -1,0 +1,16 @@
+{
+  "name": "webfetch-then-send ask",
+  "description": "T0.1 seed: untrusted web content taints trust, a later send must ask.",
+  "policy": {
+    "version": 2,
+    "default": "ask",
+    "rules": [
+      {"action": "webfetch", "resource": "*", "effect": "allow", "delta": {"trust": "suspicious"}},
+      {"action": "send_message", "resource": "*", "effect": "allow", "requires": {"trust": "trusted", "audience_contains": ["public"]}}
+    ]
+  },
+  "steps": [
+    {"tool": "webfetch", "args": ["https://example.com/article"], "label_before": {"trust": "trusted", "audience": "public"}, "apply_delta_on": "success"},
+    {"tool": "send_message", "args": ["#general", "summary"], "label_before": {"trust": "suspicious", "audience": "public"}, "expect": "ask"}
+  ]
+}

@@ -300,8 +300,14 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 	// Runs BEFORE AuditSystemCommandPaths so denied commands never reach
 	// path auditing. The audit entries record the decision at the gate
 	// level (DurationMs=0, ExitCode=0) - the post-execution audit is in
-	// the sync/start handlers.
-	decision := EvaluateCommandFunc(sb, command, args)
+	// the sync/start handlers. When the flow-aware evaluator is wired,
+	// the label resolves from ctx (FG-003); otherwise the legacy path.
+	var decision GateDecision
+	if EvaluateCommandWithLabelFunc != nil {
+		decision = EvaluateCommandWithLabelFunc(sb, command, args, flowLabelFromCtx(ctx))
+	} else {
+		decision = EvaluateCommandFunc(sb, command, args)
+	}
 	var sandboxMode string
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
@@ -407,7 +413,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 	// sandbox's trusted folders (read roots + system dirs). Applies to both
 	// the sync and background tools since both go through here. workingDir
 	// threads through so relative operands resolve the way the process will.
-	if err := AuditSystemCommandPaths(sb, command, args, workingDir); err != nil {
+	if err := AuditSystemCommandPathsWithLabel(sb, command, args, workingDir, flowLabelFromCtx(ctx)); err != nil {
 		return nil, err
 	}
 
@@ -611,6 +617,15 @@ func effectiveChildDir(sb *SandboxConfig, workingDir string) string {
 // defense-in-depth and gives an immediate, actionable error in the common
 // case.
 func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, workingDir string) error {
+	l := permissions.StartLabel()
+	return AuditSystemCommandPathsWithLabel(sb, command, args, workingDir, &l)
+}
+
+// AuditSystemCommandPathsWithLabel is AuditSystemCommandPaths under a flow
+// label (FG-003). A nil label is fail-closed. Callers with a request
+// context (buildExecCommand) pass flowLabelFromCtx(ctx); direct callers
+// keep the StartLabel wrapper above.
+func AuditSystemCommandPathsWithLabel(sb *SandboxConfig, command string, args []string, workingDir string, label *permissions.SessionLabel) error {
 	if sb == nil || sb.Mode == SandboxModeOff {
 		return nil
 	}
@@ -623,6 +638,14 @@ func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, w
 			suffix = fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
 		}
 		return fmt.Errorf("command denied by permissions policy%s", suffix)
+	}
+	// Flow Guard pre-dispatch (FG-003): deny enforcement under the call
+	// label. Ask stays on the gate's approval path; the gate (which runs
+	// before this audit) already prompts on flow Ask.
+	if label != nil {
+		if eff, _, detail, ok := permissions.LookupWithLabel(label, "shell", command); ok && detail != "" && eff == permissions.EffectDeny {
+			return fmt.Errorf("command denied by flow guard: %s", detail)
+		}
 	}
 	// Relative operands resolve against the same working directory the
 	// executed process gets: an approved override when supplied, otherwise

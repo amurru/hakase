@@ -1,0 +1,36 @@
+{
+  // Flow Guard starter v2 rules (FG-002/T1.6) - EXPERIMENTAL until
+  // Phase 2 sinks land (T2.1+T2.2). Load with HAKASE_FLOW_EXPERIMENTAL=1.
+  //
+  // This file is JSONC documentation: strip // comments before loading
+  // (the strict loader rejects unknown keys AND comments). Copy the
+  // rules you need into ~/.hakase/permissions.json or
+  // <root>/.hakase/permissions.json (project layer is trust-gated).
+  //
+  // Conventions used here:
+  // - Reads/webfetch are DELTAS (taint the future); sends are REQUIRES.
+  //   Never put a delta on send_message (tainting after exfil is a smell,
+  //   rejected in review).
+  // - Flow effects are ask, not deny: deny-by-default on over-narrowed
+  //   rules trains operators to disable v2 entirely.
+  // - Never set sanitizable:true on send_message * (only on narrow
+  //   resources where secret-shaped is the only risk).
+  "version": 2,
+  "default": "ask",
+  "rules": [
+    // Private docs taint the audience ceiling to internal: a later
+    // public send then asks instead of exfiltrating silently.
+    {"action": "read", "resource": "docs/internal/*", "effect": "allow",
+     "delta": {"audience": ["internal"]}},
+    // Untrusted web content taints trust to suspicious.
+    {"action": "webfetch", "resource": "*", "effect": "allow",
+     "delta": {"trust": "suspicious"}},
+    // Sends require a clean label: trusted and still public-addressable.
+    {"action": "send_message", "resource": "*", "effect": "allow",
+     "requires": {"trust": "trusted", "audience_contains": ["public"]}},
+    // Shell stays permissive at the policy layer (risk gate still
+    // applies); per-domain shell allows go here as needed.
+    {"action": "shell", "resource": "git status", "effect": "allow"},
+    {"action": "shell", "resource": "git diff *", "effect": "allow"}
+  ]
+}

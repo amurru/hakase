@@ -1,0 +1,17 @@
+{
+  "name": "v1-parity unchanged",
+  "description": "T0.1 seed: a v1 policy with no flow fields behaves exactly as before on the start label.",
+  "policy": {
+    "version": 1,
+    "default": "ask",
+    "rules": [
+      {"action": "shell", "resource": "git *", "effect": "allow"},
+      {"action": "read", "resource": "*", "effect": "allow"}
+    ]
+  },
+  "steps": [
+    {"tool": "shell", "args": ["git status"], "label_before": {"trust": "trusted", "audience": "public"}, "expect": "allow"},
+    {"tool": "read", "args": ["main.go"], "label_before": {"trust": "trusted", "audience": "public"}, "expect": "allow"},
+    {"tool": "shell", "args": ["rm -rf /tmp/x"], "label_before": {"trust": "trusted", "audience": "public"}, "expect": "ask"}
+  ]
+}
