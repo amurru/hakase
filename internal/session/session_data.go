@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
+
+	"amurru/hakase/internal/permissions"
 )
 
 const (
@@ -66,6 +68,15 @@ type Session struct {
 	HintedContextFiles []string `json:"hinted_context_files,omitempty"`
 	// ToolOutputMaxChars overrides default persist-time tool-output cap (Spec CX-003).
 	ToolOutputMaxChars int `json:"tool_output_max_chars,omitempty"`
+	// Flow is the Flow Guard session data-flow label (FG-001/006). A
+	// pointer so omitempty omits it when uninitialized (value structs
+	// cannot be nil and a zero struct is not the start label). Nil =
+	// uninitialized, fail-closed at call sites.
+	Flow *permissions.SessionLabel `json:"flow,omitempty"`
+	// FlowApplied is the idempotency set of admitted fold keys
+	// (length-prefixed "seq:<dec>:<len>:<tool-id>"), persisted alongside
+	// Flow so replay/resume cannot double-fold. Omitted when empty.
+	FlowApplied map[string]bool `json:"flow_applied,omitempty"`
 }
 
 // Message represents a single turn in a chat session.

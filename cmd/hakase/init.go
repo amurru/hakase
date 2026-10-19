@@ -9,6 +9,7 @@ import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
@@ -37,6 +38,31 @@ func init() {
 			Reason:     d.Reason,
 			PolicyRule: d.PolicyRule,
 		}
+	}
+
+	// Sandbox hook: flow-aware command evaluation gate (FG-003). Preferred
+	// over EvaluateCommandFunc when set; resolves the session label from
+	// ctx and enforces requires gates plus unknown-sink fail-closed.
+	sandbox.EvaluateCommandWithLabelFunc = func(sb *sandbox.SandboxConfig, command string, args []string, label *permissions.SessionLabel) sandbox.GateDecision {
+		d := hakaseagent.EvaluateCommandWithLabel(sb, command, args, label)
+		return sandbox.GateDecision{
+			Action:     sandbox.GateAction(d.Action),
+			Risk:       sandbox.CommandRisk(d.Risk),
+			Reason:     d.Reason,
+			PolicyRule: d.PolicyRule,
+		}
+	}
+
+	// Sandbox hook: Flow Guard label resolution. Narrowed session labels
+	// resolve from the registry; unknown sessions stay at start (v1 parity).
+	sandbox.FlowLabelFunc = func(ctx context.Context) *permissions.SessionLabel {
+		if id := interfaces.SessionIDFromCtx(ctx); id != "" {
+			if l := session.DefaultRegistry.Get(id); l != nil {
+				return l
+			}
+		}
+		l := permissions.StartLabel()
+		return &l
 	}
 
 	// Sandbox hook: approval. Wires through to the agent's approval gate.

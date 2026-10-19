@@ -60,6 +60,12 @@ type Rule struct {
 	Resource string `json:"resource"`
 	Effect   Effect `json:"effect"`
 	Source   string `json:"-"`
+	// Flow Guard v2 (FG-002): optional taint-the-future (delta) and
+	// dispatch gate (requires). Only valid in version:2 policies;
+	// version 0/1 with these keys is a compile error.
+	Delta       *FlowDelta    `json:"delta,omitempty"`
+	Requires    *FlowRequires `json:"requires,omitempty"`
+	Sanitizable bool          `json:"sanitizable,omitempty"`
 }
 
 // PolicyRule is the audit citation of a deciding rule.
@@ -68,6 +74,9 @@ type PolicyRule struct {
 	Action   string `json:"action,omitempty"`
 	Resource string `json:"resource,omitempty"`
 	Effect   string `json:"effect,omitempty"`
+	// Flow carries the flow citation (requires, label snapshot,
+	// argsHash) for audit.go. Empty when no flow check applied.
+	Flow string `json:"flow,omitempty"`
 }
 
 // Citation renders a Rule as an audit citation (nil-safe).
@@ -107,22 +116,49 @@ type EnterprisePolicy struct {
 
 // compiledRule pairs a Rule with its translated matcher.
 type compiledRule struct {
-	rule Rule
-	re   *regexp.Regexp
+	rule        Rule
+	re          *regexp.Regexp
+	hasDelta    bool
+	delta       compiledDelta
+	hasRequires bool
+	requires    compiledRequires
 }
 
 // CompiledPolicy is a validated, match-ready Policy.
 type CompiledPolicy struct {
-	def    Effect
-	rules  []compiledRule
-	agents map[string][]compiledRule
+	def     Effect
+	rules   []compiledRule
+	agents  map[string][]compiledRule
+	version int
+	// flow is true when the policy is version 2 (flow fields enabled).
+	flow bool
+}
+
+// Version reports the policy version the compiled form was built from.
+func (cp *CompiledPolicy) Version() int {
+	if cp == nil {
+		return 0
+	}
+	return cp.version
+}
+
+// FlowEnabled reports whether flow (v2) checks apply.
+func (cp *CompiledPolicy) FlowEnabled() bool {
+	return cp != nil && cp.flow
 }
 
 // Compile validates a Policy and returns its match-ready form.
-// An empty Default becomes EffectAsk; Version must be 0 or 1.
+// An empty Default becomes EffectAsk; Version must be 0, 1, or 2.
+// Version 2 enables flow keys (delta/requires/sanitizable) but only when
+// the flowExperimental gate is on (HAKASE_FLOW_EXPERIMENTAL=1); otherwise
+// v2 is rejected fail-closed with an error naming the gate. Versions 0/1
+// reject any flow keys.
 func Compile(p Policy) (*CompiledPolicy, error) {
-	if p.Version != 0 && p.Version != 1 {
+	if p.Version != 0 && p.Version != 1 && p.Version != 2 {
 		return nil, fmt.Errorf("permissions: unsupported version %d (want 1)", p.Version)
+	}
+	if p.Version == 2 && !FlowExperimentalEnabled() {
+		return nil, fmt.Errorf("permissions: version 2 requires the flowExperimental gate (set HAKASE_FLOW_EXPERIMENTAL=1); refusing to load v2 policy without flow enforcement")
 	}
 	def := p.Default
 	if def == "" {
@@ -130,15 +166,15 @@ func Compile(p Policy) (*CompiledPolicy, error) {
 	} else if _, err := ParseEffect(string(def)); err != nil {
 		return nil, err
 	}
-	cp := &CompiledPolicy{def: def}
+	cp := &CompiledPolicy{def: def, version: p.Version, flow: p.Version == 2}
 	var err error
-	if cp.rules, err = compileRules(p.Rules); err != nil {
+	if cp.rules, err = compileRules(p.Rules, p.Version); err != nil {
 		return nil, err
 	}
 	if len(p.Agents) > 0 {
 		cp.agents = make(map[string][]compiledRule, len(p.Agents))
 		for name, ap := range p.Agents {
-			cr, err := compileRules(ap.Rules)
+			cr, err := compileRules(ap.Rules, p.Version)
 			if err != nil {
 				return nil, fmt.Errorf("permissions: agent %q: %w", name, err)
 			}
@@ -149,7 +185,7 @@ func Compile(p Policy) (*CompiledPolicy, error) {
 }
 
 // compileRules validates and compiles one rule list.
-func compileRules(rules []Rule) ([]compiledRule, error) {
+func compileRules(rules []Rule, version int) ([]compiledRule, error) {
 	var out []compiledRule
 	for i, r := range rules {
 		action := strings.ToLower(strings.TrimSpace(r.Action))
@@ -163,14 +199,33 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if err != nil {
 			return nil, fmt.Errorf("permissions: rule %d: %w", i, err)
 		}
+		hasFlowKeys := r.Delta != nil || r.Requires != nil || r.Sanitizable
+		if version != 2 && hasFlowKeys {
+			return nil, fmt.Errorf("permissions: rule %d: flow keys (delta/requires/sanitizable) require version 2", i)
+		}
 		re, err := compilePattern(normalizeSeparators(expandPattern(r.Resource)))
 		if err != nil {
 			return nil, fmt.Errorf("permissions: rule %d: %w", i, err)
 		}
-		out = append(out, compiledRule{
-			rule: Rule{Action: action, Resource: r.Resource, Effect: eff, Source: r.Source},
+		cr := compiledRule{
+			rule: Rule{Action: action, Resource: r.Resource, Effect: eff, Source: r.Source, Delta: r.Delta, Requires: r.Requires, Sanitizable: r.Sanitizable},
 			re:   re,
-		})
+		}
+		if r.Delta != nil {
+			cd, err := compileDelta(r.Delta, fmt.Sprintf("rule %d delta", i))
+			if err != nil {
+				return nil, err
+			}
+			cr.hasDelta, cr.delta = true, cd
+		}
+		if r.Requires != nil {
+			cq, err := compileRequires(r.Requires, fmt.Sprintf("rule %d requires", i))
+			if err != nil {
+				return nil, err
+			}
+			cr.hasRequires, cr.requires = true, cq
+		}
+		out = append(out, cr)
 	}
 	return out, nil
 }
@@ -238,6 +293,125 @@ func precedence(e Effect) int {
 	default:
 		return 0
 	}
+}
+
+// EvaluateWithLabel resolves one action against resources under a flow
+// label (FG-003). Without a v2 policy (flow disabled) it is byte-identical
+// to Evaluate. With v2, flow can only escalate: a requires failure moves
+// allow->ask (or ->deny when the requiring rule is deny), and a narrowed
+// label with no mapped rule fails closed (ask, or deny when the default
+// is deny). detail is the flow reason ("" when no flow check applied).
+func (cp *CompiledPolicy) EvaluateWithLabel(label *SessionLabel, action string, resources ...string) (Effect, *Rule, string) {
+	return cp.evaluateAgentWithLabel("", label, action, resources...)
+}
+
+// EvaluateForAgentWithLabel merges the named agent overlay under the label.
+func (cp *CompiledPolicy) EvaluateForAgentWithLabel(agentName string, label *SessionLabel, action string, resources ...string) (Effect, *Rule, string) {
+	return cp.evaluateAgentWithLabel(agentName, label, action, resources...)
+}
+
+func (cp *CompiledPolicy) evaluateAgentWithLabel(agentName string, label *SessionLabel, action string, resources ...string) (Effect, *Rule, string) {
+	if cp == nil {
+		return EffectAsk, nil, ""
+	}
+	var extra []compiledRule
+	extra = cp.agents[strings.ToLower(agentName)]
+	baseEff, baseRule := cp.evaluateIn(cp.rules, extra, action, resources...)
+	if !cp.flow {
+		return baseEff, baseRule, ""
+	}
+	effLabel := StartLabel()
+	narrowed := false
+	if label == nil {
+		// Nil = uninitialized, fail-closed (L1): evaluate as narrowest.
+		effLabel = SessionLabel{Trust: TrustSuspicious, Audience: AudienceSelf}
+		narrowed = true
+	} else if !IsStart(*label) {
+		effLabel = *label
+		narrowed = true
+	}
+	matched := cp.matchingRules(extra, action, resources...)
+	if len(matched) == 0 {
+		if !narrowed {
+			return baseEff, baseRule, ""
+		}
+		// Unknown-sink fail-closed (C2) on a narrowed label. Start-label
+		// unknown tools keep v1 behavior (handled above).
+		detail := fmt.Sprintf("flow: unknown action %q on narrowed label (%s, v%d)", action, labelString(effLabel), effLabel.Version)
+		if cp.def == EffectDeny {
+			return EffectDeny, nil, detail
+		}
+		return EffectAsk, nil, detail
+	}
+	var deltas []compiledDelta
+	var gates []compiledRequires
+	denyGate := false
+	for _, m := range matched {
+		if m.hasDelta {
+			deltas = append(deltas, m.delta)
+		}
+		if m.hasRequires {
+			gates = append(gates, m.requires)
+			if m.rule.Effect == EffectDeny {
+				denyGate = true
+			}
+		}
+	}
+	effective := applyDelta(effLabel, unionDelta(deltas))
+	if len(gates) > 0 && !checkRequires(effective, gates) {
+		hash := ShortHash(append([]string{action}, resources...)...)
+		detail := fmt.Sprintf("flow: %s blocked (%s, v%d) by permissions policy (argsHash %s)", action, labelString(effective), effective.Version, hash)
+		RecordFlowBinding("", "pre:"+hash, effective.Version, hash)
+		if baseEff == EffectDeny || denyGate {
+			return EffectDeny, baseRule, detail
+		}
+		return EffectAsk, baseRule, detail
+	}
+	return baseEff, baseRule, ""
+}
+
+// matchingRules returns every compiled rule (base + overlay) matching the
+// action and any of the resources.
+func (cp *CompiledPolicy) matchingRules(extra []compiledRule, action string, resources ...string) []compiledRule {
+	action = strings.ToLower(strings.TrimSpace(action))
+	var out []compiledRule
+	consider := func(rules []compiledRule) {
+		for i := range rules {
+			cr := &rules[i]
+			if cr.rule.Action != "*" && cr.rule.Action != action {
+				continue
+			}
+			for _, res := range resources {
+				v := normalizeSeparators(res)
+				if filepath.IsAbs(v) {
+					v = filepath.Clean(v)
+					v = normalizeSeparators(v)
+				}
+				if cr.re.MatchString(v) {
+					out = append(out, *cr)
+					break
+				}
+			}
+		}
+	}
+	consider(cp.rules)
+	consider(extra)
+	return out
+}
+
+func labelString(l SessionLabel) string {
+	trust := "trusted"
+	if l.Trust == TrustSuspicious {
+		trust = "suspicious"
+	}
+	aud := "public"
+	switch l.Audience {
+	case AudienceSelf:
+		aud = "self"
+	case AudienceInternal:
+		aud = "internal"
+	}
+	return trust + "/" + aud
 }
 
 // normalizeSeparators canonicalizes values and patterns to forward

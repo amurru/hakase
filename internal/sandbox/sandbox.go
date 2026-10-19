@@ -653,6 +653,12 @@ func (r CommandRisk) String() string {
 // When nil, gate evaluation is skipped (fail-open; tests with nil sandbox).
 var EvaluateCommandFunc func(sb *SandboxConfig, command string, args []string) GateDecision
 
+// EvaluateCommandWithLabelFunc is set by main to gate-evaluate a system
+// command under a Flow Guard label (FG-003). When non-nil, buildExecCommand
+// prefers it over EvaluateCommandFunc, resolving the label from the call
+// context. A nil label is fail-closed. Nil = flow gate off (legacy path).
+var EvaluateCommandWithLabelFunc func(sb *SandboxConfig, command string, args []string, label *permissions.SessionLabel) GateDecision
+
 // AuditCommandFunc is set by main to audit-log a command execution.
 // When nil, auditing is no-op.
 var AuditCommandFunc func(entry CommandAuditEntry)
