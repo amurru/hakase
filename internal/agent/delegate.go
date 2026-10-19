@@ -3,6 +3,7 @@ package agent
 import (
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
@@ -452,6 +453,24 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	// preserving the prior no-timeout behavior.
 	var runCtx context.Context = ctx
 	var cancel context.CancelFunc
+	// Flow Guard delegate inheritance (FG-001/H4, T2.3): the child runs
+	// under a mutable copy of the parent label carried in ctx. Child
+	// BeforeToolCallbacks resolve the label from ctx first (never from a
+	// fresh session), so child egress is denied by the parent label; the
+	// terminal child label merges back into the parent with Meet below
+	// (narrowing only; transcript hash / filesModified stay audit-only).
+	// The snapshot copy via session.WithFlowLabel covers transports that
+	// do not share the mutable state.
+	var parentFlow *permissions.SessionLabel
+	if parentSession != "" {
+		parentFlow = hakasesession.DefaultRegistry.Get(parentSession)
+		if parentFlow == nil {
+			l := permissions.StartLabel()
+			parentFlow = &l
+		}
+	}
+	runCtx = WithDelegateFlowState(runCtx, parentFlow)
+	runCtx = hakasesession.WithFlowLabel(runCtx, parentFlow)
 	watchdogActive := deps.DelegateTimeout > 0
 	var lastActivityMu sync.Mutex
 	lastActivity := time.Now()
@@ -462,7 +481,9 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	}
 	done := make(chan struct{})
 	if watchdogActive {
-		runCtx, cancel = context.WithCancel(ctx)
+		// Derive from runCtx (not ctx) so the delegate flow label
+		// values above survive cancellation wrapping.
+		runCtx, cancel = context.WithCancel(runCtx)
 		defer cancel()
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
@@ -574,6 +595,16 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 		}
 	}
 	close(done)
+
+	// Flow Guard terminal merge (H4): the child's terminal label narrows
+	// the parent via Meet. Child egress was already denied by the parent
+	// label during the run; this only carries taint back, never rulings.
+	if st := DelegateFlowStateFromCtx(runCtx); st != nil && parentSession != "" {
+		st.mu.Lock()
+		terminal := st.label
+		st.mu.Unlock()
+		MergeDelegateLabel(parentSession, terminal)
+	}
 
 	status := "completed"
 	if watchdogActive && runCtx.Err() != nil {
