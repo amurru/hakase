@@ -8,6 +8,7 @@ package permissions
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/url"
 	"strings"
 
@@ -55,8 +56,12 @@ func NormalizeURL(raw string) string {
 	if ascii, err := idna.Lookup.ToASCII(host); err == nil && ascii != "" {
 		host = ascii
 	}
+	// Hostname() strips IPv6 brackets: restore them so rule patterns
+	// written for [::1] still match (JoinHostPort adds brackets).
 	if port := u.Port(); port != "" {
-		u.Host = host + ":" + port
+		u.Host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		u.Host = "[" + host + "]"
 	} else {
 		u.Host = host
 	}

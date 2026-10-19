@@ -324,6 +324,13 @@ func TestNormalizeURL(t *testing.T) {
 	if strings.Contains(homograph, "ev\u0131l.com") || !strings.Contains(homograph, "xn--") {
 		t.Errorf("homograph not punycoded: %q", homograph)
 	}
+	// IPv6: brackets survive with and without a port.
+	if got := NormalizeURL("http://[::1]:8080/x"); got != "http://[::1]:8080/x" {
+		t.Errorf("ipv6 with port: %q", got)
+	}
+	if got := NormalizeURL("http://[::1]/x"); got != "http://[::1]/x" {
+		t.Errorf("ipv6 without port: %q", got)
+	}
 	if got := NormalizeURL("not a url at all"); got != "not a url at all" {
 		t.Errorf("unparseable changed: %q", got)
 	}
@@ -338,14 +345,24 @@ func TestNormalizeURL(t *testing.T) {
 	}
 }
 
-// TestFlowBindingRoundTrip pins the (labelVersion, argsHash) record.
+// TestFlowBindingRoundTrip pins the (sessionID, labelVersion, argsHash)
+// record, scoped per session so reused flow keys never collide.
 func TestFlowBindingRoundTrip(t *testing.T) {
-	RecordFlowBinding("test-key", 7, "abc123")
-	v, h, ok := FlowBindingFor("test-key")
+	RecordFlowBinding("s1", "test-key", 7, "abc123")
+	v, h, ok := FlowBindingFor("s1", "test-key")
 	if !ok || v != 7 || h != "abc123" {
 		t.Errorf("binding = %d/%q/%v, want 7/abc123/true", v, h, ok)
 	}
-	if _, _, ok := FlowBindingFor("missing"); ok {
+	if _, _, ok := FlowBindingFor("s1", "missing"); ok {
 		t.Error("missing binding found, want false")
+	}
+	// Same idemKey in another session is a distinct binding.
+	RecordFlowBinding("s2", "test-key", 1, "def456")
+	v, h, ok = FlowBindingFor("s2", "test-key")
+	if !ok || v != 1 || h != "def456" {
+		t.Errorf("s2 binding = %d/%q/%v, want 1/def456/true", v, h, ok)
+	}
+	if v, _, _ := FlowBindingFor("s1", "test-key"); v != 7 {
+		t.Errorf("s1 binding overwritten = %d, want 7", v)
 	}
 }

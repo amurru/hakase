@@ -2,9 +2,10 @@
   // Flow Guard starter v2 rules (FG-002/T1.6) - EXPERIMENTAL until
   // Phase 2 sinks land (T2.1+T2.2). Load with HAKASE_FLOW_EXPERIMENTAL=1.
   //
-  // This file is JSONC documentation: strip // comments before loading
-  // (the strict loader rejects unknown keys AND comments). Copy the
-  // rules you need into ~/.hakase/permissions.json or
+  // This file is JSONC documentation (.jsonc so editors and linters do
+  // not treat the comments as broken JSON): strip // comments before
+  // loading (the strict loader rejects unknown keys AND comments). Copy
+  // the rules you need into ~/.hakase/permissions.json or
   // <root>/.hakase/permissions.json (project layer is trust-gated).
   //
   // Conventions used here:

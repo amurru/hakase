@@ -108,7 +108,7 @@ func TestFlowFixtures(t *testing.T) {
 // takes comment-free JSON).
 func TestExampleLoads(t *testing.T) {
 	t.Setenv("HAKASE_FLOW_EXPERIMENTAL", "1")
-	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "flow-guard", "permissions.example.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "flow-guard", "permissions.example.jsonc"))
 	if err != nil {
 		t.Fatalf("ReadFile example: %v", err)
 	}

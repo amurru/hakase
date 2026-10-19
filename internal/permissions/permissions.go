@@ -361,7 +361,7 @@ func (cp *CompiledPolicy) evaluateAgentWithLabel(agentName string, label *Sessio
 	if len(gates) > 0 && !checkRequires(effective, gates) {
 		hash := ShortHash(append([]string{action}, resources...)...)
 		detail := fmt.Sprintf("flow: %s blocked (%s, v%d) by permissions policy (argsHash %s)", action, labelString(effective), effective.Version, hash)
-		RecordFlowBinding("pre:"+hash, effective.Version, hash)
+		RecordFlowBinding("", "pre:"+hash, effective.Version, hash)
 		if baseEff == EffectDeny || denyGate {
 			return EffectDeny, baseRule, detail
 		}

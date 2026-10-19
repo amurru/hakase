@@ -248,11 +248,19 @@ func (s *SessionStore) saveUnlockedFlocked(session *Session) error {
 // Load reads a session from disk by its ID. A torn file is quarantined aside
 // and reported as a corruption error (not "not found") so callers can
 // distinguish a crash artifact from a missing session.
+//
+// Loading registers the persisted flow label (recomputing conservative
+// when absent) so a resumed narrowed session never runs widest.
 func (s *SessionStore) Load(id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.loadUnlocked(id)
+	sess, err := s.loadUnlocked(id)
+	if err != nil {
+		return nil, err
+	}
+	RegisterLoaded(sess)
+	return sess, nil
 }
 
 // List returns all non-archived sessions sorted by updated_at descending.

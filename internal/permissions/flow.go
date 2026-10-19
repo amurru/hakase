@@ -293,21 +293,32 @@ type flowBindingsT struct {
 
 var flowBindings = flowBindingsT{m: make(map[string]flowBinding)}
 
-// RecordFlowBinding stores (labelVersion, argsHash) for idemKey.
-func RecordFlowBinding(idemKey string, labelVersion uint64, argsHash string) {
+// flowBindingKey scopes a binding by (sessionID, idemKey): flow keys
+// repeat across sessions (same Sequence + tool_call_id shape), so a
+// session-blind key would let a later fold overwrite an earlier
+// session's version and hash.
+func flowBindingKey(sessionID, idemKey string) string {
+	return sessionID + "\x00" + idemKey
+}
+
+// RecordFlowBinding stores (labelVersion, argsHash) for
+// (sessionID, idemKey). sessionID may be "" for session-agnostic
+// pre-checks (the Phase 2 consumer records session-scoped keys).
+func RecordFlowBinding(sessionID, idemKey string, labelVersion uint64, argsHash string) {
 	if idemKey == "" {
 		return
 	}
 	flowBindings.Lock()
 	defer flowBindings.Unlock()
-	flowBindings.m[idemKey] = flowBinding{labelVersion: labelVersion, argsHash: argsHash}
+	flowBindings.m[flowBindingKey(sessionID, idemKey)] = flowBinding{labelVersion: labelVersion, argsHash: argsHash}
 }
 
-// FlowBindingFor returns the recorded binding, if any.
-func FlowBindingFor(idemKey string) (uint64, string, bool) {
+// FlowBindingFor returns the recorded binding for (sessionID, idemKey),
+// if any.
+func FlowBindingFor(sessionID, idemKey string) (uint64, string, bool) {
 	flowBindings.RLock()
 	defer flowBindings.RUnlock()
-	b, ok := flowBindings.m[idemKey]
+	b, ok := flowBindings.m[flowBindingKey(sessionID, idemKey)]
 	if !ok {
 		return 0, "", false
 	}

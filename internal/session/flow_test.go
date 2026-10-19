@@ -63,7 +63,7 @@ func TestRegistryFoldIdempotent(t *testing.T) {
 	if narrowed2 || n2.Version != 1 {
 		t.Fatalf("re-admit = %+v/%v, want no-op v1", n2, narrowed2)
 	}
-	if v, h, ok := permissions.FlowBindingFor(key); !ok || v != 1 || h != hash {
+	if v, h, ok := permissions.FlowBindingFor("s1", key); !ok || v != 1 || h != hash {
 		t.Errorf("binding = %d/%q/%v, want 1/%q/true", v, h, ok, hash)
 	}
 }
@@ -144,6 +144,69 @@ func TestSessionFlowPersist(t *testing.T) {
 	}
 	if s.MarkFlowApplied(FlowKey(0, "c1")) {
 		t.Error("double MarkFlowApplied = true, want false")
+	}
+}
+
+// TestRegisterLoaded pins resume registration: persisted labels import
+// verbatim, absent flow recomputes conservative, and Sync round-trips
+// folds back into the session for Save.
+func TestRegisterLoaded(t *testing.T) {
+	r := NewFlowRegistry()
+	s := NewSession("resume")
+	s.Flow = &permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudienceInternal, Version: 3}
+	s.FlowApplied = map[string]bool{FlowKey(9, "c9"): true}
+	if recomputed := RegisterLoadedWith(r, s); recomputed {
+		t.Error("RegisterLoadedWith recomputed persisted flow, want false")
+	}
+	got := r.Get(s.ID)
+	if got == nil || got.Version != 3 || got.Audience != permissions.AudienceInternal {
+		t.Fatalf("registry = %+v, want imported suspicious/internal v3", got)
+	}
+	// Fold then Sync: session carries the narrowing for Save.
+	key := FlowKey(10, "c10")
+	next, narrowed := r.Fold(s.ID, permissions.FlowDelta{Trust: "suspicious"}, key, "h10")
+	if narrowed {
+		t.Error("already-suspicious fold narrowed, want no-op version")
+	}
+	r.Sync(s)
+	if s.Flow.Version != next.Version || !s.FlowApplied[key] || !s.FlowApplied[FlowKey(9, "c9")] {
+		t.Errorf("synced session = %+v/%v, want v%d with both keys", s.Flow, s.FlowApplied, next.Version)
+	}
+	// Absent flow recomputes conservative, never widest.
+	old := NewSession("old")
+	if recomputed := RegisterLoadedWith(r, old); !recomputed {
+		t.Error("RegisterLoadedWith old = false, want true")
+	}
+	if old.Flow.Trust != permissions.TrustSuspicious || old.Flow.Audience != permissions.AudienceInternal {
+		t.Errorf("recomputed = %+v, want suspicious/internal", old.Flow)
+	}
+}
+
+// TestStoreLoadRegistersFlow pins the Store.Load resume path: a narrowed
+// persisted session is visible to the sandbox resolvers (DefaultRegistry)
+// instead of falling back to StartLabel.
+func TestStoreLoadRegistersFlow(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	s := NewSession("narrowed")
+	s.Flow = &permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudienceSelf, Version: 2}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := DefaultRegistry.Get(s.ID)
+	t.Cleanup(func() {
+		DefaultRegistry = NewFlowRegistry()
+		_ = loaded
+	})
+	if got == nil || got.Version != 2 || got.Audience != permissions.AudienceSelf {
+		t.Errorf("DefaultRegistry after Load = %+v, want suspicious/self v2", got)
 	}
 }
 

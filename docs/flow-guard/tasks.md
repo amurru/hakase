@@ -15,7 +15,7 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 - [x] **T1.3 [BE]** label registry + ctx propagation + `Session.Flow` + `FlowApplied[(Sequence, tool_call_id)]` + absent-flow recompute + resume notice (`internal/session/` + `session_store.go`). Spec: FG-001/006 + H3/H4/M1. Old files never widest.
 - [x] **T1.4 [BE]** pre-dispatch wiring shell/file (`gate.go` 4b, `fileops taskResolve`, `AuditSystemCommandPaths` + `@-file` best-effort rule) with `(labelVersion, argsHash)` binding under mutex. Spec: FG-003 + H2. Flow only escalates, `RiskUnknown` still asks. v2 experimental until T2.1+T2.2.
 - [x] **T1.5 [QA]** fold matrix + zero-value trap + v1 parity + layering x flow matrix + idempotency. Spec: FG-001/002/003. Monotone descent, ceiling `min`, `allowManagedOnly` preserved, double-admit no-op.
-- [x] **T1.6 [DOCS]** starter v2 rules as `docs/flow-guard/permissions.example.json` (commented, ask-not-deny, no `sanitizable:true` on `send_message *`; canonical permissions-policy example path, not `config.json.example` which is the general `Config` example) + fixtures v1 set grown from T0.1.
+- [x] **T1.6 [DOCS]** starter v2 rules as `docs/flow-guard/permissions.example.jsonc` (JSONC so comments do not break tooling; commented, ask-not-deny, no `sanitizable:true` on `send_message *`; canonical permissions-policy example path, not `config.json.example` which is the general `Config` example) + fixtures v1 set grown from T0.1.
 
 ## Phase 2 — sinks + post-admission
 

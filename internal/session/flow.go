@@ -220,7 +220,62 @@ func (r *FlowRegistry) Fold(sessionID string, delta permissions.FlowDelta, idemK
 	r.labels[sessionID] = cur
 	if idemKey != "" {
 		r.applied[sessionID][idemKey] = true
-		permissions.RecordFlowBinding(idemKey, cur.Version, argsHash)
+		permissions.RecordFlowBinding(sessionID, idemKey, cur.Version, argsHash)
 	}
 	return cur, narrowed
+}
+
+// Import seeds the registry from persisted session state (resume path):
+// installs the label and the admitted-key set verbatim. No version bump;
+// imported state is already authoritative.
+func (r *FlowRegistry) Import(sessionID string, l permissions.SessionLabel, applied map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.labels[sessionID] = l
+	set := map[string]bool{}
+	for k, v := range applied {
+		set[k] = v
+	}
+	r.applied[sessionID] = set
+	r.initialized[sessionID] = true
+}
+
+// Sync copies the registry label and applied-key set back into sess
+// (callers persist with Save after folds). No-op for unknown sessions.
+func (r *FlowRegistry) Sync(sess *Session) {
+	if sess == nil {
+		return
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.initialized[sess.ID] {
+		return
+	}
+	l := r.labels[sess.ID]
+	sess.Flow = &l
+	set := map[string]bool{}
+	for k, v := range r.applied[sess.ID] {
+		set[k] = v
+	}
+	sess.FlowApplied = set
+}
+
+// RegisterLoaded ensures a just-loaded session resumes under its
+// persisted label: absent flow recomputes conservative (never widest),
+// then the registry imports label + applied set. Returns true when it
+// recomputed (caller audits flow_recomputed and shows the one-time
+// resume notice).
+func RegisterLoaded(sess *Session) bool {
+	return RegisterLoadedWith(DefaultRegistry, sess)
+}
+
+// RegisterLoadedWith is RegisterLoaded against an explicit registry
+// (tests).
+func RegisterLoadedWith(r *FlowRegistry, sess *Session) bool {
+	if sess == nil || r == nil {
+		return false
+	}
+	recomputed := sess.RecomputeFlow()
+	r.Import(sess.ID, *sess.Flow, sess.FlowApplied)
+	return recomputed
 }
