@@ -200,28 +200,36 @@ type runView struct {
 	dirty           bool   // seg changed since the last edit
 	finished        bool   // finalize has run; pump must not edit anymore
 	sessionID       string // hakase session of this run (flow egress gate)
-	flowChecked     bool   // channel egress verdict cached
-	flowWithhold    string // non-empty when the answer must be withheld
+	flowWithhold    string // sticky withhold reason (a withhold never clears; allows re-evaluate)
 }
 
-// flowGate evaluates the channel egress gate once per run (FG-003, T2.1):
-// a narrowed label with a send_message policy withholds the answer instead
-// of exfiltrating. Returns the withhold reason or "". No installed policy
-// keeps v1 behavior exactly. Note: streaming creations already delivered
-// cannot be unsent; tool-dispatch gates are the primary enforcement and
-// this is defense-in-depth at delivery.
+// flowGate evaluates the channel egress gate (FG-003, T2.1): a narrowed
+// label with a send_message policy withholds the answer instead of
+// exfiltrating. Returns the withhold reason or "". Only a withhold is
+// cached (sticky): an allow is re-evaluated on every call so a label that
+// narrows mid-run (model streams text, then calls a source tool) still
+// withholds at finalize. No installed policy keeps v1 behavior exactly.
+// Note: streaming creations already delivered cannot be unsent;
+// tool-dispatch gates are the primary enforcement and this is
+// defense-in-depth at delivery.
 func (rv *runView) flowGate() string {
 	rv.mu.Lock()
-	defer rv.mu.Unlock()
-	if !rv.flowChecked {
-		rv.flowChecked = true
-		if rv.sessionID != "" {
-			if allow, reason := hakaseagent.CheckChannelEgress(rv.sessionID, ChannelName, chatKey(rv.c.chatID)); !allow {
-				rv.flowWithhold = reason
-			}
-		}
+	if rv.flowWithhold != "" {
+		reason := rv.flowWithhold
+		rv.mu.Unlock()
+		return reason
 	}
-	return rv.flowWithhold
+	rv.mu.Unlock()
+	if rv.sessionID == "" {
+		return ""
+	}
+	if allow, reason := hakaseagent.CheckChannelEgress(rv.sessionID, ChannelName, chatKey(rv.c.chatID)); !allow {
+		rv.mu.Lock()
+		rv.flowWithhold = reason
+		rv.mu.Unlock()
+		return reason
+	}
+	return ""
 }
 
 // fullText returns the accumulated raw answer text (thread-safe: writes

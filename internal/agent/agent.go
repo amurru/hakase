@@ -173,11 +173,18 @@ func hookToolCallbacks(r *hooks.Runner) ([]llmagent.BeforeToolCallback, []llmage
 // Flow Guard Phase 2 (FG-004): CheckPostFlow runs first so a withhold or
 // error redaction wins over hook context. On tool failure it redacts and
 // folds, returning (nil, redactedErr) so the ADK failure is preserved with
-// a redacted carrier (never a result override when runErr != nil).
+// a redacted carrier (never a result override when runErr != nil). Hooks
+// still observe the failure via CheckPostToolUse (which suppresses its own
+// override on errors, so the flow carrier always wins).
 func makeHookAfterToolCallback(r *hooks.Runner) llmagent.AfterToolCallback {
 	return func(ctx agent.Context, t tool.Tool, args, result map[string]any, runErr error) (map[string]any, error) {
-		if override, ferr := CheckPostFlow(ctx, t, args, result, runErr); override != nil || ferr != nil {
-			return override, ferr
+		override, ferr := CheckPostFlow(ctx, t, args, result, runErr)
+		if ferr != nil {
+			_ = r.CheckPostToolUse(ctx, t.Name(), args, result, ferr)
+			return nil, ferr
+		}
+		if override != nil {
+			return override, nil
 		}
 		if override := r.CheckPostToolUse(ctx, t.Name(), args, result, runErr); override != nil {
 			return override, nil

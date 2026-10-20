@@ -670,19 +670,14 @@ func CheckChannelEgress(sessionID, channel, recipient string) (allow bool, reaso
 }
 
 // MergeDelegateLabel merges a finished child's terminal label into the
-// parent session (H4): Meet-only (narrowing), hash for audit only.
+// parent session (H4): Meet-only (narrowing), hash for audit only. The
+// merge is atomic in the registry so a concurrent parent Fold cannot be
+// overwritten by a stale snapshot (H2).
 func MergeDelegateLabel(parentSessionID string, child permissions.SessionLabel) {
 	if parentSessionID == "" {
 		return
 	}
-	reg := hakasesession.DefaultRegistry
-	cur := reg.Get(parentSessionID)
-	if cur == nil {
-		l := permissions.StartLabel()
-		cur = &l
-	}
-	merged := permissions.Meet(*cur, child)
-	reg.Set(parentSessionID, merged)
+	hakasesession.DefaultRegistry.Merge(parentSessionID, child)
 	persistFlowLabel(parentSessionID)
 }
 
