@@ -215,6 +215,20 @@ func CheckPreFlowAsk(ctx context.Context, toolName string, args map[string]any) 
 	return true, true, flowDenialResult(ctx, toolName, action, label, effect), effect, reason
 }
 
+// CheckPreFlowDeny evaluates the flow verdict for a call whose approval
+// is owned by the tool itself. The python gate asks once, with the flow
+// reason, on the same prompt as the python risk - so a flow Ask there
+// must not also prompt from the pre-dispatch callback (the human would
+// be asked twice for one call). Only a hard flow deny stops the call
+// here; the Ask is left to the tool's own gate.
+func CheckPreFlowDeny(ctx context.Context, toolName string, args map[string]any) (ok bool, denied bool, result map[string]any) {
+	ok, blocked, result, eff, _ := CheckPreFlow(ctx, toolName, args)
+	if !ok || !blocked || eff != permissions.EffectDeny {
+		return ok, false, nil
+	}
+	return ok, true, result
+}
+
 // flowSanitizableRule reports whether a redacted payload may
 // auto-proceed: the deciding rule must allow it and mark it
 // sanitizable, and the resource must be narrow - a wildcard resource

@@ -328,8 +328,18 @@ func TestFlowResumeCompactionVersionUnchanged(t *testing.T) {
 		t.Errorf("resumed label = %+v, want trusted/internal", loaded.Flow)
 	}
 	// Re-admitting the same fold key after the resume is a no-op: the
-	// applied set survived the round trip.
-	after, narrowed2 := DefaultRegistry.Fold(sess.ID, permissions.FlowDelta{Audience: []string{"internal"}}, key, "h1")
+	// applied set survived the round trip. The check runs against a
+	// FRESH registry seeded from the loaded session - the old registry
+	// still holds the in-memory applied set, so folding there would
+	// pass even if the persisted set was lost.
+	if !loaded.FlowApplied[key] {
+		t.Fatalf("resumed session lost the applied key %q", key)
+	}
+	r := NewFlowRegistry()
+	if recomputed := RegisterLoadedWith(r, loaded); recomputed {
+		t.Fatal("resumed v2 session recomputed, want imported")
+	}
+	after, narrowed2 := r.Fold(sess.ID, permissions.FlowDelta{Audience: []string{"internal"}}, key, "h1")
 	if narrowed2 || after.Version != before.Version {
 		t.Errorf("re-admit after resume = %+v/%v, want no-op v%d", after, narrowed2, before.Version)
 	}

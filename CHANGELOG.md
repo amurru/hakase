@@ -17,7 +17,7 @@ guaranteed stable until 1.0.
 
 ### Changed
 
-- **The Flow Guard ask no longer dead-ends a turn.** Before this phase a flow ask (a `requires` failure or an unmapped sink on a narrowed label) blocked the call outright, so the only way forward was to edit the policy. Now the ask reaches the operator through the approval surfaces they already use, and the per-tool re-checks only refuse a hard flow deny (the ADK pre-dispatch callback owns the ask, so a call is never prompted twice).
+- **The Flow Guard ask no longer dead-ends a turn.** Before this phase a flow ask (a `requires` failure or an unmapped sink on a narrowed label) blocked the call outright, so the only way forward was to edit the policy. Now the ask reaches the operator through the approval surfaces they already use, and the per-tool re-checks only refuse a hard flow deny. The python tool keeps its own approval (the flow reason rides the python prompt), so a call is never prompted twice.
 
 ### Fixed
 

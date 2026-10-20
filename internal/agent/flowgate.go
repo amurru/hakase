@@ -415,7 +415,11 @@ func checkPreFlow(ctx context.Context, toolName string, args map[string]any, aud
 		if audit {
 			AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
 		}
-		return true, true, flowDenialResult(ctx, toolName, action, label, eff), eff, r
+		// This result is only a candidate: the flow Ask is routed to the
+		// human, and the denial the model actually sees is built when
+		// that answer comes back. The one-time resume notice rides that
+		// denial, so it is not consumed here.
+		return true, true, flowBlockResult(toolName, flowDenialText(action, label, eff)), eff, r
 	default:
 		// A secret-shaped payload that no rule marked sanitizable is
 		// not admissible on a narrowed label: it needs the human (H1).

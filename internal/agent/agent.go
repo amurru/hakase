@@ -140,12 +140,23 @@ func hookResultStr(result map[string]any, key string) string {
 // so a flow Ask reaches the human through the existing approval gate
 // (web queue, TUI, Telegram/Discord) instead of dead-ending the call.
 // The approval covers exactly this call and never resets the label.
+//
+// The python tool is the one exception: checkPythonGate owns its flow
+// approval (it asks once, with the flow reason, on the same prompt as
+// the python risk), so the callback only enforces a flow deny for it -
+// asking here as well would prompt the human twice for one call.
 func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
 	return func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 		blocked, result := r.CheckPreToolUse(ctx, t.Name(), args)
 		if blocked {
 			AuditHookBlock(t.Name(), hookResultStr(result, "hook"), hookResultStr(result, "error"), interfaces.SessionIDFromCtx(ctx))
 			return result, nil
+		}
+		if t.Name() == "python_interpreter" {
+			if ok, denied, fresult := CheckPreFlowDeny(ctx, t.Name(), args); ok && denied {
+				return fresult, nil
+			}
+			return nil, nil
 		}
 		if ok, fblocked, fresult, _, _ := CheckPreFlowAsk(ctx, t.Name(), args); ok && fblocked {
 			return fresult, nil

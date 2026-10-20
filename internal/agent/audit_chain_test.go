@@ -254,6 +254,17 @@ func TestAuditCSVVersionAwareParser(t *testing.T) {
 	if _, err := ParseAuditCSV([]byte("a,b,c\n1,2,3\n")); err == nil {
 		t.Error("ParseAuditCSV accepted an unknown header")
 	}
+	// A reordered header is refused: the parser maps columns by
+	// position, so a permuted header would read the wrong fields.
+	reordered := strings.Replace(AuditCSVHeaderV2, "tool,decision", "decision,tool", 1) + "\n" + AuditCSVRow(e) + "\n"
+	if _, err := ParseAuditCSV([]byte(reordered)); err == nil {
+		t.Error("ParseAuditCSV accepted a reordered header")
+	}
+	// A row with an unsupported flow version is refused.
+	badVersion := AuditCSVHeaderV2 + "\n" + strings.TrimSuffix(AuditCSVRow(e), AuditCSVVersion) + "9\n"
+	if _, err := ParseAuditCSV([]byte(badVersion)); err == nil {
+		t.Error("ParseAuditCSV accepted an unsupported flow version")
+	}
 }
 
 // TestAuditHMACChain pins L1: a keyed chain verifies with the key,

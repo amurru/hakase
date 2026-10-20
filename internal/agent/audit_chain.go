@@ -277,23 +277,40 @@ func AuditCSVRow(e CommandAuditEntry) string {
 	}, ",")
 }
 
-// auditCSVSchema returns the schema version of an audit CSV header.
+// auditCSVColumnsV1 and auditCSVColumnsV2 are the expected column
+// names, in order. The parser maps positions, so a header is only
+// accepted when every name matches its position.
+var (
+	auditCSVColumnsV1 = strings.Split(AuditCSVHeader, ",")
+	auditCSVColumnsV2 = strings.Split(AuditCSVHeaderV2, ",")
+)
+
+// auditCSVHeaderMatches reports whether every column name matches the
+// expected schema at its position.
+func auditCSVHeaderMatches(header, want []string) bool {
+	if len(header) != len(want) {
+		return false
+	}
+	for i := range want {
+		if header[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// auditCSVSchema returns the schema version of an audit CSV header. The
+// column names AND their positions must match: a reordered or renamed
+// header is refused rather than parsed positionally into the wrong
+// fields.
 func auditCSVSchema(header []string) (int, error) {
-	switch strings.Join(header, ",") {
-	case AuditCSVHeader:
+	switch {
+	case auditCSVHeaderMatches(header, auditCSVColumnsV1):
 		return auditCSVSchemaV1, nil
-	case AuditCSVHeaderV2:
+	case auditCSVHeaderMatches(header, auditCSVColumnsV2):
 		return auditCSVSchemaV2, nil
 	}
-	// Column-count fallback for a header written by another exporter
-	// with the same shape.
-	switch len(header) {
-	case 10:
-		return auditCSVSchemaV1, nil
-	case 13:
-		return auditCSVSchemaV2, nil
-	}
-	return 0, fmt.Errorf("audit csv: unknown header (%d columns)", len(header))
+	return 0, fmt.Errorf("audit csv: unknown header %q", strings.Join(header, ","))
 }
 
 // ParseAuditCSV parses a metadata-only audit CSV export. The header
@@ -334,6 +351,11 @@ func ParseAuditCSV(data []byte) ([]AuditCSVRecord, error) {
 			EntryHash:    rec[9],
 		}
 		if version == auditCSVSchemaV2 {
+			// The row declares its own schema version: an empty or
+			// unknown one is refused rather than half-read.
+			if rec[12] != AuditCSVVersion {
+				return nil, fmt.Errorf("audit csv: row %d has flow version %q, want %q", i+2, rec[12], AuditCSVVersion)
+			}
 			row.FlowLabel = rec[10]
 			row.FlowArgsHash = rec[11]
 			row.FlowVersion = rec[12]

@@ -16,6 +16,7 @@ import (
 	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/permissions"
+	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
 
 	"google.golang.org/adk/v2/agent"
@@ -319,7 +320,7 @@ func TestFlowSanitizedPayloadAsksWithoutTaintClaim(t *testing.T) {
 	if !strings.Contains(reason, "flow: send_message blocked") {
 		t.Errorf("ask reason misses the real blocker: %q", reason)
 	}
-	if strings.Contains(reason, "by permissions policy (argsHash") && strings.Count(reason, "by permissions policy") != 1 {
+	if strings.Count(reason, "by permissions policy") != 1 {
 		t.Errorf("ask reason repeats the policy suffix: %q", reason)
 	}
 	if body, _ := args["body"].(string); strings.Contains(body, "supersecret123456") {
@@ -349,9 +350,14 @@ func TestFlowDenialTextShape(t *testing.T) {
 
 // TestFlowRecomputedNoticeOnFirstDenial pins the one-time resume notice
 // (FG-005/M1): a pre-v2 session resumes conservative, the first denial
-// says so once, and the recompute is audited.
+// the model actually sees says so once, and the recompute is audited.
 func TestFlowRecomputedNoticeOnFirstDenial(t *testing.T) {
 	installFlowPolicy(t, exfilPolicy())
+	// The human denies the flow ask: the denial the model sees is built
+	// on that answer, and the notice rides it.
+	installFlowGate(t, "interactive", func(req interfaces.ApprovalRequest) (bool, error) {
+		return false, nil
+	})
 	sess := "flow-recompute-1"
 	// A pre-v2 session file: no flow field at all.
 	old := hakasesession.NewSession("pre-v2")
@@ -362,7 +368,7 @@ func TestFlowRecomputedNoticeOnFirstDenial(t *testing.T) {
 	}
 	ctx := flowSessionCtx(t, "task-recompute-1", sess)
 
-	ok, blocked, result, _, _ := CheckPreFlow(ctx, "send_message", map[string]any{"channel": "#general", "body": "hello"})
+	ok, blocked, result, _, _ := CheckPreFlowAsk(ctx, "send_message", map[string]any{"channel": "#general", "body": "hello"})
 	if !ok || !blocked {
 		t.Fatalf("pre-v2 send: ok=%v blocked=%v, want true/true", ok, blocked)
 	}
@@ -371,7 +377,7 @@ func TestFlowRecomputedNoticeOnFirstDenial(t *testing.T) {
 		t.Errorf("first denial lacks the resume notice: %q", msg)
 	}
 	// The notice is one-time: the next denial carries none.
-	_, _, result2, _, _ := CheckPreFlow(ctx, "send_message", map[string]any{"channel": "#general", "body": "hello"})
+	_, _, result2, _, _ := CheckPreFlowAsk(ctx, "send_message", map[string]any{"channel": "#general", "body": "hello"})
 	msg2, _ := result2["error"].(string)
 	if strings.Contains(msg2, "pre-v2 session resumed") {
 		t.Errorf("second denial repeats the resume notice: %q", msg2)
@@ -551,6 +557,53 @@ func TestFlowWiringAskReachesTheGate(t *testing.T) {
 	}
 	if asked != 2 {
 		t.Errorf("gate asked %d times, want 2", asked)
+	}
+}
+
+// TestFlowPythonAsksOnce pins that the python tool owns its flow
+// approval: the pre-dispatch callback does not prompt for it, so the
+// human is asked exactly once - on the python gate's prompt, which
+// carries the flow reason.
+func TestFlowPythonAsksOnce(t *testing.T) {
+	installFlowPolicy(t, permissions.Policy{Version: 2, Default: "ask", Rules: []permissions.Rule{
+		{Action: "python_interpreter", Resource: "*", Effect: "allow", Requires: &permissions.FlowRequires{Trust: "trusted"}},
+	}})
+	var asked int
+	installFlowGate(t, "interactive", func(req interfaces.ApprovalRequest) (bool, error) {
+		asked++
+		if req.FlowReason == "" {
+			t.Error("python flow ask without a flow reason")
+		}
+		return true, nil
+	})
+	sess := "flow-python-once"
+	ctx := flowSessionCtx(t, "task-python-once", sess)
+	hakasesession.DefaultRegistry.Fold(sess, permissions.FlowDelta{Trust: "suspicious"}, "k", "h")
+
+	// The callback must not prompt for python: the gate below owns it.
+	actx := agent.NewContext(&flowWiringCtx{sess: flowWiringSession{id: "task-python-once"}})
+	cb := makeHookBeforeToolCallback(hookTestRunner(t, hooks.Config{}))
+	res, err := cb(actx, &fakeHookTool{name: "python_interpreter"}, map[string]any{"code": "print(1)"})
+	if err != nil {
+		t.Fatalf("callback err: %v", err)
+	}
+	if res != nil {
+		t.Errorf("the python flow ask must not block in the callback: %v", res)
+	}
+	if asked != 0 {
+		t.Errorf("callback asked %d times, want 0 (the python gate owns the ask)", asked)
+	}
+
+	// The python gate asks once, with the flow reason.
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"python_interpreter": "allow"},
+	}
+	if err := checkPythonGate(ctx, sb, "print(1)", sess); err != nil {
+		t.Fatalf("checkPythonGate: %v", err)
+	}
+	if asked != 1 {
+		t.Errorf("python gate asked %d times, want 1", asked)
 	}
 }
 
