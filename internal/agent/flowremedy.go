@@ -277,29 +277,31 @@ func flowPayloadTainted(label *permissions.SessionLabel, action string, args map
 
 // flowSanitizePass runs the sanitize remedy on one pre-dispatch call:
 // it redacts the payload, re-evaluates the policy against the redacted
-// resources and reports the new verdict.
+// resources and reports the new verdict and the rule that decided it.
 //
 // Redacted is false when nothing was redacted (the caller keeps its
-// verdict). When the payload was redacted, the returned effect and
-// detail are the re-checked ones: a rule that allowed the sanitized
-// payload keeps the call admissible, anything else escalates.
-func flowSanitizePass(label *permissions.SessionLabel, toolName, action string, args map[string]any, rule *permissions.Rule) (redacted bool, eff permissions.Effect, detail string) {
+// verdict). When the payload was redacted, the returned effect, detail
+// and rule are the re-checked ones: a rule that allowed the sanitized
+// payload keeps the call admissible, anything else escalates. The rule
+// matters as much as the effect - the redaction changes the resources
+// (the body hash moves), so the deciding rule can change with them.
+func flowSanitizePass(label *permissions.SessionLabel, toolName, action string, args map[string]any, rule *permissions.Rule) (redacted bool, eff permissions.Effect, detail string, reRule *permissions.Rule) {
 	if !flowRedactableAction(action) {
 		// Code payloads are never rewritten behind the operator's back.
-		return false, "", ""
+		return false, "", "", nil
 	}
 	if !flowSanitizableRule(rule) {
-		return false, "", ""
+		return false, "", "", nil
 	}
 	// Redact in place: the ADK hands the same args map to the tool
 	// after the pre-dispatch callback, so the tool receives the
 	// sanitized payload.
 	if !redactArgsInPlace(args) {
-		return false, "", ""
+		return false, "", "", nil
 	}
 	resources := flowResources(toolName, args)
-	eff, _, detail, _ = permissions.LookupWithLabel(label, action, resources...)
-	return true, eff, detail
+	eff, reRule, detail, _ = permissions.LookupWithLabel(label, action, resources...)
+	return true, eff, detail, reRule
 }
 
 // redactArgsInPlace replaces secret-shaped strings in the tool args with

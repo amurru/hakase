@@ -350,12 +350,14 @@ func checkPreFlow(ctx context.Context, toolName string, args map[string]any, aud
 	// against the redacted resources; the redaction changes the payload
 	// hash, so the binding is recorded again.
 	tainted := flowPayloadTainted(label, action, args)
+	sanitizedPayload := false
 	if tainted && eff != permissions.EffectDeny {
-		if redacted, reEff, reDetail := flowSanitizePass(label, toolName, action, args, rule); redacted {
+		if redacted, reEff, reDetail, reRule := flowSanitizePass(label, toolName, action, args, rule); redacted {
 			resources = flowResources(toolName, args)
 			argsHash = flowArgsHash(toolName, action, resources)
 			permissions.RecordFlowBinding(sessionID, flowIdemKey(toolName, argsHash), labelVersion, argsHash)
-			eff, detail = reEff, reDetail
+			eff, detail, rule = reEff, reDetail, reRule
+			sanitizedPayload = true
 			if audit {
 				AuditFlowSanitized(toolName, action, argsHash, sessionID, label)
 			}
@@ -376,7 +378,11 @@ func checkPreFlow(ctx context.Context, toolName string, args map[string]any, aud
 			r += fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
 		}
 		if detail != "" {
-			r = detail + " by permissions policy"
+			// The flow detail already names the policy; do not repeat it.
+			r = detail
+			if !strings.Contains(r, "by permissions policy") {
+				r += " by permissions policy"
+			}
 		}
 		if audit {
 			AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
@@ -395,9 +401,15 @@ func checkPreFlow(ctx context.Context, toolName string, args map[string]any, aud
 			r += fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
 		}
 		if detail != "" {
-			r = detail + " by permissions policy"
+			// The flow detail already names the policy; do not repeat it.
+			r = detail
+			if !strings.Contains(r, "by permissions policy") {
+				r += " by permissions policy"
+			}
 		}
-		if tainted && !strings.Contains(r, flowTaintReason) {
+		// The taint is only worth naming when the payload still carries
+		// it: a sanitized payload reached this point clean.
+		if tainted && !sanitizedPayload && !strings.Contains(r, flowTaintReason) {
 			r += " (" + flowTaintReason + ")"
 		}
 		if audit {
@@ -407,7 +419,7 @@ func checkPreFlow(ctx context.Context, toolName string, args map[string]any, aud
 	default:
 		// A secret-shaped payload that no rule marked sanitizable is
 		// not admissible on a narrowed label: it needs the human (H1).
-		if tainted && !flowSanitizableRule(rule) {
+		if tainted && !sanitizedPayload && !flowSanitizableRule(rule) {
 			r := flowTaintReason
 			if audit {
 				AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)

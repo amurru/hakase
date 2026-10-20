@@ -13,9 +13,13 @@ import (
 	"time"
 
 	"amurru/hakase/internal/config"
+	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/permissions"
 	hakasesession "amurru/hakase/internal/session"
+
+	"google.golang.org/adk/v2/agent"
+	adksession "google.golang.org/adk/v2/session"
 )
 
 // installFlowGate wires an approval gate for the ask-human path and
@@ -287,6 +291,42 @@ func TestFlowSanitizeNeverRewritesCode(t *testing.T) {
 	}
 }
 
+// TestFlowSanitizedPayloadAsksWithoutTaintClaim pins that a sanitized
+// payload is not blamed for a risk the sanitizer already removed: the
+// ask names the real blocker (the requires failure), and the payload
+// itself is redacted.
+func TestFlowSanitizedPayloadAsksWithoutTaintClaim(t *testing.T) {
+	installFlowPolicy(t, permissions.Policy{Version: 2, Default: "ask", Rules: []permissions.Rule{
+		{Action: "send_message", Resource: "alerts/*", Effect: "allow", Sanitizable: true,
+			Requires: &permissions.FlowRequires{AudienceContains: []string{"public"}}},
+	}})
+	sess := "flow-sanitize-requires"
+	ctx := flowSessionCtx(t, "task-sanitize-requires", sess)
+	// The label is internal: the public send still needs the human.
+	hakasesession.DefaultRegistry.Fold(sess, permissions.FlowDelta{Audience: []string{"internal"}}, "k", "h")
+
+	args := map[string]any{"channel": "alerts/ops", "body": "token=supersecret123456"}
+	ok, blocked, _, eff, reason := CheckPreFlow(ctx, "send_message", args)
+	if !ok || !blocked {
+		t.Fatalf("sanitized payload under a requires failure: ok=%v blocked=%v, want true/true", ok, blocked)
+	}
+	if eff != permissions.EffectAsk {
+		t.Errorf("effect = %q, want ask", eff)
+	}
+	if strings.Contains(reason, flowTaintReason) {
+		t.Errorf("ask reason blames a taint the sanitizer removed: %q", reason)
+	}
+	if !strings.Contains(reason, "flow: send_message blocked") {
+		t.Errorf("ask reason misses the real blocker: %q", reason)
+	}
+	if strings.Contains(reason, "by permissions policy (argsHash") && strings.Count(reason, "by permissions policy") != 1 {
+		t.Errorf("ask reason repeats the policy suffix: %q", reason)
+	}
+	if body, _ := args["body"].(string); strings.Contains(body, "supersecret123456") {
+		t.Errorf("payload not redacted: %q", body)
+	}
+}
+
 // TestFlowDenialTextShape pins the FG-005 denial format and that the
 // denial text never carries a secret.
 func TestFlowDenialTextShape(t *testing.T) {
@@ -447,6 +487,72 @@ func errFlow(msg string) error { return &flowTestError{msg: msg} }
 type flowTestError struct{ msg string }
 
 func (e *flowTestError) Error() string { return e.msg }
+
+// flowWiringSession is a minimal ADK session stub: the flow gate only
+// needs the session id (the task id the run is registered under).
+type flowWiringSession struct{ id string }
+
+func (s flowWiringSession) ID() string                { return s.id }
+func (s flowWiringSession) AppName() string           { return "test" }
+func (s flowWiringSession) UserID() string            { return "u" }
+func (s flowWiringSession) State() adksession.State   { return nil }
+func (s flowWiringSession) Events() adksession.Events { return nil }
+func (s flowWiringSession) LastUpdateTime() time.Time { return time.Time{} }
+
+// flowWiringCtx is an ADK invocation context whose session resolves the
+// task id, so the flow gate finds the hakase session of the run.
+type flowWiringCtx struct {
+	agent.ContextMock
+	sess adksession.Session
+}
+
+func (c flowWiringCtx) Session() adksession.Session { return c.sess }
+
+// TestFlowWiringAskReachesTheGate pins the production path: the ADK
+// pre-dispatch callback (the exact callback the agents are built with)
+// routes a flow ask to the human, lets an approved call run, and turns a
+// denied one into the flow denial.
+func TestFlowWiringAskReachesTheGate(t *testing.T) {
+	installFlowPolicy(t, exfilPolicy())
+	approve := true
+	var asked int
+	installFlowGate(t, "interactive", func(req interfaces.ApprovalRequest) (bool, error) {
+		asked++
+		return approve, nil
+	})
+	sess := "flow-wiring-1"
+	interfaces.RegisterTaskSession("task-wiring-1", sess)
+	t.Cleanup(func() { interfaces.UnregisterTask("task-wiring-1") })
+	hakasesession.DefaultRegistry.Fold(sess, permissions.FlowDelta{Audience: []string{"internal"}}, "k", "h")
+
+	ctx := agent.NewContext(&flowWiringCtx{sess: flowWiringSession{id: "task-wiring-1"}})
+	cb := makeHookBeforeToolCallback(hookTestRunner(t, hooks.Config{}))
+
+	// Approved: the callback lets the tool run (nil, nil).
+	res, err := cb(ctx, &fakeHookTool{name: "send_message"}, map[string]any{"channel": "#general", "body": "hello"})
+	if err != nil {
+		t.Fatalf("callback err: %v", err)
+	}
+	if res != nil {
+		t.Errorf("approved flow ask must let the tool run, got %v", res)
+	}
+	if asked != 1 {
+		t.Errorf("gate asked %d times, want 1", asked)
+	}
+
+	// Denied: the flow denial becomes the tool result.
+	approve = false
+	res, err = cb(ctx, &fakeHookTool{name: "send_message"}, map[string]any{"channel": "#general", "body": "hello"})
+	if err != nil {
+		t.Fatalf("callback err: %v", err)
+	}
+	if res == nil || res["blocked_by"] != "flow_guard" {
+		t.Errorf("denied flow ask = %v, want the flow denial", res)
+	}
+	if asked != 2 {
+		t.Errorf("gate asked %d times, want 2", asked)
+	}
+}
 
 // --- replay fixtures -------------------------------------------------------
 
