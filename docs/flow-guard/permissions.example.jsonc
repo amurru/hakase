@@ -1,6 +1,9 @@
 {
-  // Flow Guard starter v2 rules (FG-002/T1.6) - EXPERIMENTAL until
-  // Phase 2 sinks land (T2.1+T2.2). Load with HAKASE_FLOW_EXPERIMENTAL=1.
+  // Flow Guard starter v2 rules (FG-002/T1.6) - EXPERIMENTAL: load with
+  // HAKASE_FLOW_EXPERIMENTAL=1. Phase 3 (T3.1-T3.5) added the remedies
+  // (ask-human, sanitize, drop-result), the flow audit decisions and the
+  // replay fixtures; the gate stays experimental until operators have
+  // measured a real session.
   //
   // This file is JSONC documentation (.jsonc so editors and linters do
   // not treat the comments as broken JSON): strip // comments before

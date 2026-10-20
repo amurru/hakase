@@ -35,9 +35,6 @@ import (
 	"google.golang.org/adk/v2/tool"
 )
 
-// flowWithholdAlternative names the allowed alternative in withhold text.
-const flowWithholdAlternative = "ask-human | sanitize | drop-result"
-
 // delegateFlowKey carries the child-run mutable label for delegate
 // inheritance (FG-001/H4, Phase 2 T2.3).
 type delegateFlowKey struct{}
@@ -291,40 +288,19 @@ func pythonFileOperands(code string) []string {
 
 // flowBlockResult is the model-legible denial returned as the tool result
 // so the block lands in the audit/canvas trail like any other outcome
-// (mirrors hooks.blockResult, blocked_by names the flow guard).
+// (mirrors hooks.blockResult, blocked_by names the flow guard). The
+// reason is redacted: it may quote a rule resource, and resources can
+// carry secrets.
 func flowBlockResult(toolName, reason string) map[string]any {
 	if reason == "" {
 		reason = "blocked by flow guard"
 	}
+	reason, _ = util.RedactSecrets(reason)
 	return map[string]any{
 		"error":      fmt.Sprintf("tool %q blocked by flow guard: %s", toolName, reason),
 		"blocked_by": "flow_guard",
 		"tool":       toolName,
 	}
-}
-
-// flowDenialText renders the FG-005 denial shape (redacted inputs only;
-// callers must pass hashes, never raw args).
-func flowDenialText(action string, l *permissions.SessionLabel, argsHash string) string {
-	ls := "narrowed"
-	ver := uint64(0)
-	if l != nil {
-		trust := "trusted"
-		if l.Trust == permissions.TrustSuspicious {
-			trust = "suspicious"
-		}
-		aud := "public"
-		switch l.Audience {
-		case permissions.AudienceSelf:
-			aud = "self"
-		case permissions.AudienceInternal:
-			aud = "internal"
-		}
-		ls = trust + "/" + aud
-		ver = l.Version
-	}
-	return fmt.Sprintf("flow: %s blocked (%s v%d, argsHash %s). Allowed: %s",
-		action, ls, ver, argsHash, flowWithholdAlternative)
 }
 
 // CheckPreFlow evaluates one tool call under the flow label. ok=false means
@@ -333,7 +309,20 @@ func flowDenialText(action string, l *permissions.SessionLabel, argsHash string)
 // the flow verdict (ask or deny). Flow only escalates: base allows without
 // a requires failure pass through, and RiskUnknown-style handling stays
 // with the existing per-tool gates.
+//
+// Phase 3 (FG-005): a secret-shaped payload on a narrowed label is
+// sanitized and re-checked when the deciding rule allows it
+// (effect:allow + sanitizable:true on a narrow resource); otherwise the
+// call escalates to the human ask.
 func CheckPreFlow(ctx context.Context, toolName string, args map[string]any) (ok bool, blocked bool, result map[string]any, effect permissions.Effect, reason string) {
+	return checkPreFlow(ctx, toolName, args, true)
+}
+
+// checkPreFlow is CheckPreFlow with an audit switch: the per-tool
+// handlers re-check a call the ADK pre-dispatch callback already
+// audited (and possibly asked), so the re-check must not write a second
+// flow_blocked entry for the same call.
+func checkPreFlow(ctx context.Context, toolName string, args map[string]any, audit bool) (ok bool, blocked bool, result map[string]any, effect permissions.Effect, reason string) {
 	action, resources := flowMapTool(toolName, args)
 	label := flowLabelForCtx(ctx)
 	eff, rule, detail, found := permissions.LookupWithLabel(label, action, resources...)
@@ -346,10 +335,35 @@ func CheckPreFlow(ctx context.Context, toolName string, args map[string]any) (ok
 	if label != nil {
 		labelVersion = label.Version
 	}
+	// A pre-v2 session resumed under a conservative label is audited once
+	// (flow_recomputed, M1); the one-time notice rides the first denial.
+	if audit && hakasesession.DefaultRegistry.TakeFlowRecomputed(sessionID) {
+		AuditFlowRecomputed(sessionID, label)
+	}
 	// Bind (labelVersion, argsHash) for the post-admission re-check (H2):
 	// parallel read+send in one turn is denied because send re-validates
 	// against the folded label.
 	permissions.RecordFlowBinding(sessionID, flowIdemKey(toolName, argsHash), labelVersion, argsHash)
+	// Sanitize remedy (FG-005/H1): a secret-shaped payload on a narrowed
+	// label is not admissible as-is. When the deciding rule allows a
+	// sanitized payload, the guard redacts it and re-checks the policy
+	// against the redacted resources; the redaction changes the payload
+	// hash, so the binding is recorded again.
+	tainted := flowPayloadTainted(label, action, args)
+	sanitizedPayload := false
+	if tainted && eff != permissions.EffectDeny {
+		if redacted, reEff, reDetail, reRule := flowSanitizePass(label, toolName, action, args, rule); redacted {
+			resources = flowResources(toolName, args)
+			argsHash = flowArgsHash(toolName, action, resources)
+			permissions.RecordFlowBinding(sessionID, flowIdemKey(toolName, argsHash), labelVersion, argsHash)
+			eff, detail, rule = reEff, reDetail, reRule
+			sanitizedPayload = true
+			if audit {
+				AuditFlowSanitized(toolName, action, argsHash, sessionID, label)
+			}
+			flowDebugf("sanitized tool=%s action=%s argsHash=%s", toolName, action, argsHash)
+		}
+	}
 	// No flow signal and no deciding rule: v1 behavior (a bare policy
 	// default alone never changes a verdict).
 	if detail == "" && rule == nil {
@@ -364,10 +378,16 @@ func CheckPreFlow(ctx context.Context, toolName string, args map[string]any) (ok
 			r += fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
 		}
 		if detail != "" {
-			r = detail + " by permissions policy"
+			// The flow detail already names the policy; do not repeat it.
+			r = detail
+			if !strings.Contains(r, "by permissions policy") {
+				r += " by permissions policy"
+			}
 		}
-		AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
-		return true, true, flowBlockResult(toolName, r), eff, r
+		if audit {
+			AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
+		}
+		return true, true, flowDenialResult(ctx, toolName, action, label, eff), eff, r
 	case permissions.EffectAsk:
 		// A bare base ask without a deciding rule is the policy default:
 		// leave it to the existing per-tool approval path (v1 parity).
@@ -381,13 +401,50 @@ func CheckPreFlow(ctx context.Context, toolName string, args map[string]any) (ok
 			r += fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
 		}
 		if detail != "" {
-			r = detail + " by permissions policy"
+			// The flow detail already names the policy; do not repeat it.
+			r = detail
+			if !strings.Contains(r, "by permissions policy") {
+				r += " by permissions policy"
+			}
 		}
-		AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
-		return true, true, flowBlockResult(toolName, r), eff, r
+		// The taint is only worth naming when the payload still carries
+		// it: a sanitized payload reached this point clean.
+		if tainted && !sanitizedPayload && !strings.Contains(r, flowTaintReason) {
+			r += " (" + flowTaintReason + ")"
+		}
+		if audit {
+			AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
+		}
+		// This result is only a candidate: the flow Ask is routed to the
+		// human, and the denial the model actually sees is built when
+		// that answer comes back. The one-time resume notice rides that
+		// denial, so it is not consumed here.
+		return true, true, flowBlockResult(toolName, flowDenialText(action, label, eff)), eff, r
 	default:
+		// A secret-shaped payload that no rule marked sanitizable is
+		// not admissible on a narrowed label: it needs the human (H1).
+		if tainted && !sanitizedPayload && !flowSanitizableRule(rule) {
+			r := flowTaintReason
+			if audit {
+				AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
+			}
+			return true, true, flowDenialResult(ctx, toolName, action, label, permissions.EffectAsk), permissions.EffectAsk, r
+		}
 		return true, false, nil, eff, ""
 	}
+}
+
+// checkPreFlowVerdict re-evaluates one call under the flow label
+// without audit side effects (the ADK pre-dispatch callback already
+// audited the same call and, for a flow Ask, routed it to the human).
+// blocked=true means the flow verdict stops the call: effect is deny
+// (refuse) or ask (already asked - do not prompt twice).
+func checkPreFlowVerdict(ctx context.Context, toolName string, args map[string]any) (blocked bool, effect permissions.Effect, reason string) {
+	ok, blocked, _, eff, reason := checkPreFlow(ctx, toolName, args, false)
+	if !ok {
+		return false, "", ""
+	}
+	return blocked, eff, reason
 }
 
 // foldFlowLabel folds delta into the session label (or the delegate child
@@ -540,6 +597,8 @@ func CheckPostFlow(ctx context.Context, t tool.Tool, args, result map[string]any
 		if hasDelta {
 			foldFlowLabel(ctx, delta, idemKey, argsHash)
 		}
+		AuditFlowErrorRedacted(toolName, action, argsHash, flowSessionID(ctx), flowLabelForCtx(ctx))
+		flowDebugf("error redacted tool=%s action=%s argsHash=%s", toolName, action, argsHash)
 		return nil, errors.New(redacted)
 	}
 
@@ -555,6 +614,20 @@ func CheckPostFlow(ctx context.Context, t tool.Tool, args, result map[string]any
 	// Snapshot pre-redaction strings for the taint check, then redact.
 	pre := marshalResultStrings(result)
 	sanitized := redactResultInPlace(result)
+	sessionID := flowSessionID(ctx)
+	// auditSanitized records the redaction once (FG-006); withhold
+	// records the block that keeps the redacted result out of the
+	// context.
+	auditSanitized := func() {
+		if sanitized {
+			AuditFlowSanitized(toolName, action, argsHash, sessionID, label)
+		}
+	}
+	withhold := func(rule *permissions.Rule) map[string]any {
+		auditSanitized()
+		AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
+		return flowWithholdOverride(toolName, action, label)
+	}
 
 	// Fold first so the re-check below sees the post-call label (the send
 	// in a parallel read+send turn is denied because the read already
@@ -576,43 +649,46 @@ func CheckPostFlow(ctx context.Context, t tool.Tool, args, result map[string]any
 		// on tainted content only (non-tainted results still pass; the
 		// pre-dispatch gate already asked).
 		if flowResultTainted(&permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudienceSelf}, pre) {
-			return flowWithholdOverride(toolName, action, argsHash), nil
+			return withhold(nil), nil
 		}
-		if sanitized {
-			AuditFlowSanitized(toolName, action, argsHash, flowSessionID(ctx))
-		}
+		auditSanitized()
 		return nil, nil
 	}
 	if flowResultTainted(label, pre) {
 		// Re-validate requires against the CURRENT (folded) label: a
 		// requires failure withholds even if the pre-check passed (H2).
-		if eff, _, detail, ok := permissions.LookupWithLabel(label, action, resources...); ok && (eff == permissions.EffectAsk || eff == permissions.EffectDeny || detail != "") {
-			return flowWithholdOverride(toolName, action, argsHash), nil
+		eff, rule, detail, ok := permissions.LookupWithLabel(label, action, resources...)
+		if ok && (eff == permissions.EffectAsk || eff == permissions.EffectDeny || detail != "") {
+			return withhold(rule), nil
 		}
 		// No requires on this action (a pure source): tainted source
 		// output is still redacted (done above) and audited, but admitted:
 		// the SEND will ask at its own pre-dispatch. Withhold only when
 		// this result is addressed outward (sinks).
 		if isEgressAction(action) {
-			return flowWithholdOverride(toolName, action, argsHash), nil
+			// Sanitize remedy (FG-005/H1): a rule that marked the
+			// resource sanitizable lets the redacted payload proceed -
+			// the secret is gone, the destination is unchanged.
+			if flowSanitizableRule(rule) {
+				auditSanitized()
+				flowDebugf("sanitized admit tool=%s action=%s argsHash=%s", toolName, action, argsHash)
+				return nil, nil
+			}
+			return withhold(rule), nil
 		}
-		if sanitized {
-			AuditFlowSanitized(toolName, action, argsHash, flowSessionID(ctx))
-		}
+		auditSanitized()
 		return nil, nil
 	}
-	if sanitized {
-		AuditFlowSanitized(toolName, action, argsHash, flowSessionID(ctx))
-	}
+	auditSanitized()
 	return nil, nil
 }
 
 // flowWithholdOverride builds the non-admissible override (H1): the result
 // never enters context; the model sees the withhold text with the allowed
 // alternative instead.
-func flowWithholdOverride(toolName, action, argsHash string) map[string]any {
-	l := permissions.StartLabel()
-	text := flowDenialText(action, &l, argsHash)
+func flowWithholdOverride(toolName, action string, label *permissions.SessionLabel) map[string]any {
+	text := flowDenialText(action, label, permissions.EffectAsk)
+	text, _ = util.RedactSecrets(text)
 	return map[string]any{
 		"withheld":   true,
 		"reason":     text,
@@ -637,7 +713,8 @@ func isEgressAction(action string) bool {
 // CheckChannelEgress evaluates an outbound channel push (Telegram/Discord
 // answer delivery) under the session label. allow=true keeps v1 behavior
 // (no policy, start label, or explicit allow). Otherwise the caller must
-// withhold (Phase 2: no approval round-trip here; approval reuse is T3.1).
+// withhold: the channel answer carries no approval round-trip of its own,
+// so the withheld notice names the ask-human remedy (FG-005).
 func CheckChannelEgress(sessionID, channel, recipient string) (allow bool, reason string) {
 	var label *permissions.SessionLabel
 	if sessionID != "" {
@@ -651,7 +728,7 @@ func CheckChannelEgress(sessionID, channel, recipient string) (allow bool, reaso
 			return true, ""
 		}
 		if eff == permissions.EffectDeny {
-			return false, flowDenialText("send_message", nil, permissions.ShortHash(channel, recipient))
+			return false, flowDenialText("send_message", nil, permissions.EffectDeny)
 		}
 		return true, ""
 	}
@@ -666,7 +743,7 @@ func CheckChannelEgress(sessionID, channel, recipient string) (allow bool, reaso
 	if eff == permissions.EffectAllow {
 		return true, ""
 	}
-	return false, flowDenialText("send_message", label, permissions.ShortHash(channel, recipient))
+	return false, flowDenialText("send_message", label, eff)
 }
 
 // MergeDelegateLabel merges a finished child's terminal label into the
@@ -679,47 +756,6 @@ func MergeDelegateLabel(parentSessionID string, child permissions.SessionLabel) 
 	}
 	hakasesession.DefaultRegistry.Merge(parentSessionID, child)
 	persistFlowLabel(parentSessionID)
-}
-
-// AuditFlowBlock records a pre-dispatch flow denial (decision
-// "flow_blocked", metadata only: hashes + label snapshot, never raw args).
-func AuditFlowBlock(toolName, action, argsHash, sessionID string, rule *permissions.Rule, label *permissions.SessionLabel) {
-	var pr permissions.PolicyRule
-	if rule != nil {
-		pr = rule.Citation()
-	}
-	ls := "uninitialized"
-	if label != nil {
-		trust := "trusted"
-		if label.Trust == permissions.TrustSuspicious {
-			trust = "suspicious"
-		}
-		aud := "public"
-		switch label.Audience {
-		case permissions.AudienceSelf:
-			aud = "self"
-		case permissions.AudienceInternal:
-			aud = "internal"
-		}
-		ls = fmt.Sprintf("%s/%s v%d", trust, aud, label.Version)
-	}
-	pr.Flow = fmt.Sprintf("label %s argsHash %s", ls, argsHash)
-	AuditCommandExec(CommandAuditEntry{
-		Tool: toolName, Command: "flow:" + action,
-		SessionID: sessionID, Decision: "flow_blocked",
-		Reason:     "flow guard blocked " + action,
-		PolicyRule: pr,
-	})
-}
-
-// AuditFlowSanitized records a post-admission redaction (decision
-// "flow_sanitized", metadata only).
-func AuditFlowSanitized(toolName, action, argsHash, sessionID string) {
-	AuditCommandExec(CommandAuditEntry{
-		Tool: toolName, Command: "flow:" + action,
-		SessionID: sessionID, Decision: "flow_sanitized",
-		Reason: "flow guard redacted secret-shaped content",
-	})
 }
 
 // agentToolName safely reads a tool name (nil-safe for tests).

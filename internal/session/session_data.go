@@ -1,3 +1,11 @@
+// Package session holds the persisted conversation state: sessions,
+// messages, attachments, gate pauses, and the Flow Guard session
+// data-flow label.
+//
+// The Flow Guard parts are inspired by the OpenAPPA APPA model (Agentic
+// Permissions Policy Algebra), paper arxiv 2607.24625, MIT (c) 2026
+// Archestra Inc. No OpenAPPA code was copied: clean-room Go
+// implementation, no TOML, no sidecar.
 package session
 
 import (
@@ -135,9 +143,12 @@ type SessionSummary struct {
 }
 
 // NewSession creates a new Session with a generated ID and current timestamps.
+// The Flow Guard label starts at the start label (widest): a new session
+// has observed nothing yet. A pre-v2 session file carries no flow field at
+// all and resumes conservative instead (see RecomputeFlow).
 func NewSession(title string) *Session {
 	now := time.Now().UTC()
-	return &Session{
+	s := &Session{
 		ID:        generateSessionID(),
 		Title:     title,
 		CreatedAt: now,
@@ -145,6 +156,8 @@ func NewSession(title string) *Session {
 		Messages:  make([]Message, 0),
 		TaskRefs:  make([]TaskRef, 0),
 	}
+	s.EnsureFlow()
+	return s
 }
 
 // AddMessage appends a plain text message to the session and updates the

@@ -11,6 +11,11 @@
 //
 // Exit code convention (mirrors the root package): 0 = success/help,
 // 1 = runtime failure, 2 = usage error. The caller decides whether to exit.
+//
+// The audit export (metadata-only CSV, Flow Guard columns appended at the
+// end) follows the OpenAPPA APPA model (Agentic Permissions Policy
+// Algebra), paper arxiv 2607.24625, MIT (c) 2026 Archestra Inc. No
+// OpenAPPA code was copied: clean-room Go implementation.
 package cli
 
 import (

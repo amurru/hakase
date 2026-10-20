@@ -286,9 +286,17 @@ type flowBinding struct {
 	argsHash     string
 }
 
+// maxFlowBindings bounds the binding registry: it is a per-call
+// advisory record, and a long-running process (the web server) must
+// not grow it without limit. The oldest entries are dropped first.
+const maxFlowBindings = 4096
+
 type flowBindingsT struct {
 	sync.RWMutex
 	m map[string]flowBinding
+	// order keeps the insertion order so the oldest entry can be
+	// dropped when the registry is full.
+	order []string
 }
 
 var flowBindings = flowBindingsT{m: make(map[string]flowBinding)}
@@ -310,7 +318,16 @@ func RecordFlowBinding(sessionID, idemKey string, labelVersion uint64, argsHash 
 	}
 	flowBindings.Lock()
 	defer flowBindings.Unlock()
-	flowBindings.m[flowBindingKey(sessionID, idemKey)] = flowBinding{labelVersion: labelVersion, argsHash: argsHash}
+	key := flowBindingKey(sessionID, idemKey)
+	if _, ok := flowBindings.m[key]; !ok {
+		flowBindings.order = append(flowBindings.order, key)
+	}
+	flowBindings.m[key] = flowBinding{labelVersion: labelVersion, argsHash: argsHash}
+	for len(flowBindings.order) > maxFlowBindings {
+		oldest := flowBindings.order[0]
+		flowBindings.order = flowBindings.order[1:]
+		delete(flowBindings.m, oldest)
+	}
 }
 
 // FlowBindingFor returns the recorded binding for (sessionID, idemKey),

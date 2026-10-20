@@ -58,11 +58,17 @@ func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
 	// decided to execute: replay policy is untouched, so mode=allow
 	// never replays side effects on resume (see ReplayPolicyFor -
 	// system_exec stays ReplayNever).
+	//
+	// Flow Guard (docs/flow-guard FG-005, H5): a flow ask is never
+	// auto-approved by mode=allow - the human decides, because the flow
+	// ask exists exactly because the label says this call is not
+	// admissible. The approval covers one exact call (tool, argsHash,
+	// labelVersion) and never resets the session label.
 	switch approvalMode() {
 	case "deny":
 		return false, fmt.Errorf("approval denied by approval.mode=deny")
 	case "allow":
-		if !permissions.BypassDisabled() {
+		if req.FlowReason == "" && !permissions.BypassDisabled() {
 			return true, nil
 		}
 	}

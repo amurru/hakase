@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -94,9 +95,12 @@ func TestRegistryConcurrent(t *testing.T) {
 
 // TestRecomputeFlow pins old-file conservative backfill, never widest.
 func TestRecomputeFlow(t *testing.T) {
+	// A pre-v2 session file carries no flow field at all: the label is
+	// nil until the recompute backfills it conservatively.
 	s := NewSession("old")
+	s.Flow = nil
 	if s.Flow != nil {
-		t.Fatal("new session Flow non-nil")
+		t.Fatal("pre-v2 session Flow non-nil")
 	}
 	if !s.RecomputeFlow() {
 		t.Fatal("RecomputeFlow = false, want true")
@@ -115,10 +119,32 @@ func TestRecomputeFlow(t *testing.T) {
 	}
 }
 
+// TestNewSessionStartsWidest pins that a new session starts at the start
+// label: only a pre-v2 file (no flow field) resumes conservative.
+func TestNewSessionStartsWidest(t *testing.T) {
+	s := NewSession("new")
+	if s.Flow == nil {
+		t.Fatal("new session Flow nil")
+	}
+	if !permissions.IsStart(*s.Flow) {
+		t.Errorf("new session label = %+v, want start", s.Flow)
+	}
+	r := NewFlowRegistry()
+	if recomputed := RegisterLoadedWith(r, s); recomputed {
+		t.Error("RegisterLoadedWith new session recomputed, want false")
+	}
+	if r.TakeFlowNotice(s.ID) != "" {
+		t.Error("new session carries a resume notice, want none")
+	}
+}
+
 // TestSessionFlowPersist pins Flow/FlowApplied JSON round-trip and
 // omitempty (nil Flow omitted so old files stay small).
 func TestSessionFlowPersist(t *testing.T) {
 	s := NewSession("plain")
+	// A pre-v2 session carries no flow field: the pointer stays nil so
+	// omitempty drops it.
+	s.Flow = nil
 	raw, err := json.Marshal(s)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -174,6 +200,7 @@ func TestRegisterLoaded(t *testing.T) {
 	}
 	// Absent flow recomputes conservative, never widest.
 	old := NewSession("old")
+	old.Flow = nil
 	if recomputed := RegisterLoadedWith(r, old); !recomputed {
 		t.Error("RegisterLoadedWith old = false, want true")
 	}
@@ -251,5 +278,101 @@ func TestFlowCtx(t *testing.T) {
 	got := FlowLabelFromCtx(ctx)
 	if got == nil || !permissions.IsStart(*got) {
 		t.Errorf("ctx label = %+v, want start", got)
+	}
+}
+
+// TestFlowResumeCompactionVersionUnchanged pins H3: a fold survives a
+// compaction and a resume with the same version - the label never
+// widens and never double-folds on the way back.
+func TestFlowResumeCompactionVersionUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSessionStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	svc, err := NewSessionService(store)
+	if err != nil {
+		t.Fatalf("NewSessionService: %v", err)
+	}
+	sess := NewSession("compaction")
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Fold once (the source read taints the audience).
+	key := FlowKey(1, "call_1")
+	before, narrowed := DefaultRegistry.Fold(sess.ID, permissions.FlowDelta{Audience: []string{"internal"}}, key, "h1")
+	if !narrowed || before.Version != 1 {
+		t.Fatalf("fold = %+v/%v, want internal v1 narrowed", before, narrowed)
+	}
+	DefaultRegistry.Sync(sess)
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save after fold: %v", err)
+	}
+	// Compaction: the summary inherits the session (the label travels
+	// with the session file, not with the transcript).
+	if err := svc.AppendSummary(sess.ID, "summary of the private doc"); err != nil {
+		t.Fatalf("AppendSummary: %v", err)
+	}
+	// Resume: the persisted label is imported verbatim.
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Flow == nil {
+		t.Fatal("resumed session has no flow label")
+	}
+	if loaded.Flow.Version != before.Version {
+		t.Errorf("resumed version = %d, want %d (unchanged by compaction)", loaded.Flow.Version, before.Version)
+	}
+	if loaded.Flow.Audience != permissions.AudienceInternal || loaded.Flow.Trust != permissions.TrustTrusted {
+		t.Errorf("resumed label = %+v, want trusted/internal", loaded.Flow)
+	}
+	// Re-admitting the same fold key after the resume is a no-op: the
+	// applied set survived the round trip. The check runs against a
+	// FRESH registry seeded from the loaded session - the old registry
+	// still holds the in-memory applied set, so folding there would
+	// pass even if the persisted set was lost.
+	if !loaded.FlowApplied[key] {
+		t.Fatalf("resumed session lost the applied key %q", key)
+	}
+	r := NewFlowRegistry()
+	if recomputed := RegisterLoadedWith(r, loaded); recomputed {
+		t.Fatal("resumed v2 session recomputed, want imported")
+	}
+	after, narrowed2 := r.Fold(sess.ID, permissions.FlowDelta{Audience: []string{"internal"}}, key, "h1")
+	if narrowed2 || after.Version != before.Version {
+		t.Errorf("re-admit after resume = %+v/%v, want no-op v%d", after, narrowed2, before.Version)
+	}
+}
+
+// TestFlowRecomputedNoticeOnce pins the one-time resume notice: it rides
+// the first denial and never repeats.
+func TestFlowRecomputedNoticeOnce(t *testing.T) {
+	r := NewFlowRegistry()
+	old := NewSession("pre-v2")
+	old.Flow = nil
+	if recomputed := RegisterLoadedWith(r, old); !recomputed {
+		t.Fatal("RegisterLoadedWith old = false, want true")
+	}
+	if !r.TakeFlowRecomputed(old.ID) {
+		t.Error("TakeFlowRecomputed = false, want true")
+	}
+	if r.TakeFlowRecomputed(old.ID) {
+		t.Error("second TakeFlowRecomputed = true, want false")
+	}
+	notice := r.TakeFlowNotice(old.ID)
+	if !strings.Contains(notice, "pre-v2") {
+		t.Errorf("notice = %q, want the pre-v2 text", notice)
+	}
+	if r.TakeFlowNotice(old.ID) != "" {
+		t.Error("second TakeFlowNotice non-empty, want empty (one-time)")
+	}
+	// A session with a persisted label never recomputes.
+	fresh := NewSession("v2")
+	if recomputed := RegisterLoadedWith(r, fresh); recomputed {
+		t.Error("RegisterLoadedWith fresh = true, want false")
+	}
+	if r.TakeFlowNotice(fresh.ID) != "" {
+		t.Error("notice for a persisted label, want empty")
 	}
 }

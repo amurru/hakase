@@ -91,3 +91,73 @@ Enterprise `allow_managed_only` strips allow rules from the user and
 project layers; `disable_bypass` turns `approval.mode=allow` back into
 interactive. Per-agent overlays (`agents.<name>.rules`) merge under the
 same precedence.
+
+## Version 2 (experimental): session data-flow labels
+
+> **Experimental.** A `version: 2` policy only loads with
+> `HAKASE_FLOW_EXPERIMENTAL=1` (or `true`). Without the gate the loader
+> refuses it loudly instead of silently ignoring the flow rules - a
+> partially-enforced taint policy is worse than none. Start from the
+> commented starter set in
+> [`../flow-guard/permissions.example.jsonc`](../flow-guard/permissions.example.jsonc).
+
+Version 2 adds three optional keys to a rule and one per-session label:
+
+```jsonc
+{"version": 2, "default": "ask",
+ "rules": [
+   {"action": "read", "resource": "docs/internal/*", "effect": "allow",
+    "delta": {"audience": ["internal"]}},
+   {"action": "webfetch", "resource": "*", "effect": "allow",
+    "delta": {"trust": "suspicious"}},
+   {"action": "send_message", "resource": "*", "effect": "allow",
+    "requires": {"trust": "trusted", "audience_contains": ["public"]},
+    "sanitizable": false}]}
+```
+
+- **`delta`** taints the *future*: after the call, the session label
+  narrows (trust goes up, the audience ceiling goes down). Sources
+  (`read`, `webfetch`) carry a delta; sinks do not.
+- **`requires`** gates the call against the current label. A failure
+  escalates to *ask* (or *deny* when the rule says so) - it never
+  widens anything.
+- **`sanitizable`** marks a narrow resource where a redacted payload may
+  proceed on its own. Never set it on a wildcard `send_message *`: a
+  wildcard is never sanitizable, and the engine refuses the auto-proceed
+  even if you try.
+
+The session label is `(trust, audience, version)`: `trusted < suspicious`
+and `self < internal < public`. It only ever narrows, is stored with the
+session (so a resume keeps it), and is recomputed conservatively for
+session files written before version 2 existed - an old session never
+resumes widest.
+
+**What a block looks like.** The model sees the remedy, not the payload:
+
+```
+flow: send_message blocked (trusted/internal v2).
+Allowed: ask-human (approve this exact call).
+Offer: ask-human | sanitize | drop-result
+```
+
+- **ask-human** routes the ask to the normal approval queue (web, TUI,
+  Telegram, Discord). `approval.mode=allow` never auto-approves a flow
+  ask, and the answer authorizes exactly one call - it never widens the
+  label.
+- **sanitize** redacts the secret-shaped parts of the payload and
+  re-checks the rule. It proceeds on its own only for a narrow
+  `sanitizable: true` resource; everything else asks. Message payloads
+  only - a code payload (python, a saved skill) is never rewritten
+  behind your back, it asks.
+- **drop-result** is the model not retrying.
+
+**Audit.** Flow decisions add four entries to `logs/exec-audit.jsonl`:
+`flow_blocked`, `flow_sanitized`, `flow_error_redacted` and
+`flow_recomputed`. They carry the label snapshot and the args hash -
+never the raw args or the payload. The CSV export appends the
+`flow_label`, `flow_args_hash` and `flow_version` columns at the end of
+the row (the older 10-column export stays readable).
+
+**Debugging.** `HAKASE_FLOW_DEBUG=1` prints the flow decisions and the
+args hashes to stderr. It never writes full arguments, and it never
+writes to the audit file or the logs.

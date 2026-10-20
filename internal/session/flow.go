@@ -142,6 +142,13 @@ type FlowRegistry struct {
 	labels      map[string]permissions.SessionLabel
 	applied     map[string]map[string]bool
 	initialized map[string]bool
+	// recomputed marks sessions whose flow state was backfilled
+	// conservative on load (pre-v2 files, M1). The flags drive the
+	// one-time flow_recomputed audit entry and the one-time resume
+	// notice; neither is persisted.
+	recomputed map[string]bool
+	notice     map[string]bool
+	noticed    map[string]bool
 }
 
 // NewFlowRegistry creates an empty registry.
@@ -150,6 +157,9 @@ func NewFlowRegistry() *FlowRegistry {
 		labels:      map[string]permissions.SessionLabel{},
 		applied:     map[string]map[string]bool{},
 		initialized: map[string]bool{},
+		recomputed:  map[string]bool{},
+		notice:      map[string]bool{},
+		noticed:     map[string]bool{},
 	}
 }
 
@@ -297,5 +307,45 @@ func RegisterLoadedWith(r *FlowRegistry, sess *Session) bool {
 	}
 	recomputed := sess.RecomputeFlow()
 	r.Import(sess.ID, *sess.Flow, sess.FlowApplied)
+	if recomputed {
+		r.mu.Lock()
+		r.recomputed[sess.ID] = true
+		r.notice[sess.ID] = true
+		r.mu.Unlock()
+	}
 	return recomputed
+}
+
+// TakeFlowRecomputed reports (once) that the session's flow state was
+// backfilled conservative on load, so the caller can audit
+// flow_recomputed. The second call for the same session reports false:
+// the recompute is a one-time event.
+func (r *FlowRegistry) TakeFlowRecomputed(sessionID string) bool {
+	if r == nil || sessionID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.recomputed[sessionID] {
+		return false
+	}
+	delete(r.recomputed, sessionID)
+	return true
+}
+
+// TakeFlowNotice returns the one-time resume notice for a recomputed
+// session ("") once it has been shown; the notice is dropped after the
+// first read so the model sees it exactly once (FG-005).
+func (r *FlowRegistry) TakeFlowNotice(sessionID string) string {
+	if r == nil || sessionID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.notice[sessionID] || r.noticed[sessionID] {
+		return ""
+	}
+	r.noticed[sessionID] = true
+	delete(r.notice, sessionID)
+	return FlowResumeNotice(true)
 }
