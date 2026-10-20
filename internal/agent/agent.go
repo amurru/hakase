@@ -128,12 +128,21 @@ func hookResultStr(result map[string]any, key string) string {
 // tool.Run) and is recorded on the audit trail; anything else allows.
 // A disabled runner allows everything. Named (not inline) so wiring tests
 // can drive the exact production path.
+//
+// Flow Guard Phase 2 (FG-003): after the hooks gate allows, CheckPreFlow
+// evaluates the call under the session flow label. It covers every ADK
+// tool uniformly (built-ins, MCP toolsets, python/download/skill/
+// sidekick/vision), so allowlisted MCP tools that never hit an ask branch
+// still hit flow. With no installed policy it passes through (v1 parity).
 func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
 	return func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 		blocked, result := r.CheckPreToolUse(ctx, t.Name(), args)
 		if blocked {
 			AuditHookBlock(t.Name(), hookResultStr(result, "hook"), hookResultStr(result, "error"), interfaces.SessionIDFromCtx(ctx))
 			return result, nil
+		}
+		if ok, fblocked, fresult, _, _ := CheckPreFlow(ctx, t.Name(), args); ok && fblocked {
+			return fresult, nil
 		}
 		return nil, nil
 	}
@@ -160,8 +169,23 @@ func hookToolCallbacks(r *hooks.Runner) ([]llmagent.BeforeToolCallback, []llmage
 // makeHookAfterToolCallback adapts a hooks Runner to ADK's
 // AfterToolCallback: collected PostToolUse context overrides the result,
 // otherwise the tool result passes through. Named for the same reason.
+//
+// Flow Guard Phase 2 (FG-004): CheckPostFlow runs first so a withhold or
+// error redaction wins over hook context. On tool failure it redacts and
+// folds, returning (nil, redactedErr) so the ADK failure is preserved with
+// a redacted carrier (never a result override when runErr != nil). Hooks
+// still observe the failure via CheckPostToolUse (which suppresses its own
+// override on errors, so the flow carrier always wins).
 func makeHookAfterToolCallback(r *hooks.Runner) llmagent.AfterToolCallback {
 	return func(ctx agent.Context, t tool.Tool, args, result map[string]any, runErr error) (map[string]any, error) {
+		override, ferr := CheckPostFlow(ctx, t, args, result, runErr)
+		if ferr != nil {
+			_ = r.CheckPostToolUse(ctx, t.Name(), args, result, ferr)
+			return nil, ferr
+		}
+		if override != nil {
+			return override, nil
+		}
 		if override := r.CheckPostToolUse(ctx, t.Name(), args, result, runErr); override != nil {
 			return override, nil
 		}
@@ -189,6 +213,13 @@ func createAskSidekickTool(log LogFunc, sk *sidekick.Sidekick) (tool.Tool, error
 	}, func(ctx agent.Context, input askSidekickInput) (askSidekickOutput, error) {
 		if strings.TrimSpace(input.Question) == "" {
 			return askSidekickOutput{}, fmt.Errorf("ask_sidekick: empty question")
+		}
+		// Flow Guard pre-dispatch (FG-003/H4, T2.1): the question is
+		// gated as egress and the answer folds as suspicious ingress in
+		// CheckPostFlow. Ask and deny both refuse here (approval reuse
+		// is T3.1). No installed policy keeps v1 behavior.
+		if ok, blocked, _, _, freason := CheckPreFlow(ctx, "ask_sidekick", map[string]any{"question": input.Question}); ok && blocked {
+			return askSidekickOutput{}, fmt.Errorf("ask_sidekick blocked by flow guard: %s", freason)
 		}
 		ans, err := sk.Ask(ctx, input.Question)
 		if err != nil {
@@ -555,7 +586,23 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 		})
 		return fmt.Errorf("python_interpreter is denied by sandbox permissions")
 	}
-	if perm == "allow" {
+	// Flow Guard pre-dispatch (FG-003, T2.1): a flow deny refuses here; a
+	// flow ask forces the approval path below even when the sandbox allows
+	// python outright (flow only escalates). No installed policy keeps v1
+	// behavior exactly (CheckPreFlow ok=false).
+	forceAsk := false
+	if ok, blocked, _, eff, freason := CheckPreFlow(ctx, "python_interpreter", map[string]any{"code": code}); ok && blocked {
+		if eff == "deny" {
+			AuditCommandExec(CommandAuditEntry{
+				Timestamp: time.Now(), Tool: "python_interpreter",
+				Decision: "denied", Risk: "high", Reason: "flow guard: " + freason,
+				SandboxMode: sandboxMode, SessionID: sessionID,
+			})
+			return fmt.Errorf("python_interpreter blocked by flow guard: %s", freason)
+		}
+		forceAsk = true
+	}
+	if perm == "allow" && !forceAsk {
 		AuditCommandExec(CommandAuditEntry{
 			Timestamp: time.Now(), Tool: "python_interpreter",
 			Decision: "allowed", Risk: "high",
@@ -834,6 +881,12 @@ type FileDownloadOutput struct {
 
 func createDownloadTool() (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input FileDownloadInput) (FileDownloadOutput, error) {
+		// Flow Guard pre-dispatch (FG-003, T2.1): unknown-sink fail-closed
+		// on a narrowed label; ask and deny both refuse here (approval
+		// reuse for asks is T3.1). No installed policy keeps v1 behavior.
+		if ok, blocked, _, _, freason := CheckPreFlow(ctx, "download_file", map[string]any{"url": input.URL}); ok && blocked {
+			return FileDownloadOutput{}, fmt.Errorf("download blocked by flow guard: %s", freason)
+		}
 		req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
 		if err != nil {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create request: %w", err)
@@ -983,6 +1036,12 @@ type SaveSkillOutput struct {
 // createSaveSkillTool creates a tool to save tested Python code into ./skills/
 func createSaveSkillTool() (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input SaveSkillInput) (SaveSkillOutput, error) {
+		// Flow Guard pre-dispatch (FG-003, T2.1): persisting a skill under
+		// a narrowed label is gated as a sink (ask and deny both refuse
+		// here; approval reuse is T3.1). No installed policy keeps v1.
+		if ok, blocked, _, _, freason := CheckPreFlow(ctx, "save_skill", map[string]any{"name": input.Name}); ok && blocked {
+			return SaveSkillOutput{}, fmt.Errorf("save_skill blocked by flow guard: %s", freason)
+		}
 		skillsDir := "./skills"
 		if err := os.MkdirAll(skillsDir, 0755); err != nil {
 			return SaveSkillOutput{}, fmt.Errorf("failed to create skills directory: %w", err)

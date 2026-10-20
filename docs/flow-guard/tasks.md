@@ -19,10 +19,10 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 2 — sinks + post-admission
 
-- [ ] **T2.1 [BE]** MCP egress at dispatch (`mcp/runserver/gates.go`, not only ask branch) + channel push (`telegram/send.go`, `discord/push.go`) + python/download/skill/sidekick-question gates, unknown-sink fail-closed. Spec: FG-003 + C2/M3. Sources fold on success and error.
-- [ ] **T2.2 [BE]** post-admission withhold/redact + error redact-and-fold returning `(nil, redactedErr)` (`agent.go` AfterTool, `util.RedactSecrets` reuse, denial redacted for model). Spec: FG-004 + C1/H1/H2. Never return a result override when `runErr != nil`. Vision/sidekick answers same path.
-- [ ] **T2.3 [BE]** delegate inherit via ctx + explicit terminal label merge (`delegate.go`). Spec: FG-001/004 + H4. Child egress denied by parent label, hash for audit only, forbid narrowed delegate unless no net egress or Ask.
-- [ ] **T2.4 [QA]** exfil fixtures (read-private-then-send-public denied, webfetch-then-send asks, sanitized send still asks unless narrow `sanitizable:true`) + error redact/fold + parallel TOCTOU under mutex + failure-pass-through tests. Spec: FG-003/004 + H1/H2/C1.
+- [x] **T2.1 [BE]** MCP egress at dispatch (`mcp/runserver/gates.go`, not only ask branch) + channel push (`telegram/send.go`, `discord/push.go`) + python/download/skill/sidekick-question gates, unknown-sink fail-closed. Spec: FG-003 + C2/M3. Sources fold on success and error.
+- [x] **T2.2 [BE]** post-admission withhold/redact + error redact-and-fold returning `(nil, redactedErr)` (`agent.go` AfterTool, `util.RedactSecrets` reuse, denial redacted for model). Spec: FG-004 + C1/H1/H2. Never return a result override when `runErr != nil`. Vision/sidekick answers same path.
+- [x] **T2.3 [BE]** delegate inherit via ctx + explicit terminal label merge (`delegate.go`). Spec: FG-001/004 + H4. Child egress denied by parent label, hash for audit only, forbid narrowed delegate unless no net egress or Ask.
+- [x] **T2.4 [QA]** exfil fixtures (read-private-then-send-public denied, webfetch-then-send asks, sanitized send still asks unless narrow `sanitizable:true`) + error redact/fold + parallel TOCTOU under mutex + failure-pass-through tests. Spec: FG-003/004 + H1/H2/C1.
 
 ## Phase 3 — remedies + audit + replay CI
 

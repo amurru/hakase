@@ -240,6 +240,26 @@ func (r *FlowRegistry) Import(sessionID string, l permissions.SessionLabel, appl
 	r.initialized[sessionID] = true
 }
 
+// Merge folds other into sessionID's label with Meet (narrowing only)
+// atomically under the write mutex, so a concurrent Fold between read and
+// write cannot be lost (H2/H4). An uninitialized session merges from the
+// start label. Returns the merged label.
+func (r *FlowRegistry) Merge(sessionID string, other permissions.SessionLabel) permissions.SessionLabel {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.labels[sessionID]
+	if !ok || !r.initialized[sessionID] {
+		cur = permissions.StartLabel()
+		if r.applied[sessionID] == nil {
+			r.applied[sessionID] = map[string]bool{}
+		}
+		r.initialized[sessionID] = true
+	}
+	merged := permissions.Meet(cur, other)
+	r.labels[sessionID] = merged
+	return merged
+}
+
 // Sync copies the registry label and applied-key set back into sess
 // (callers persist with Save after folds). No-op for unknown sessions.
 func (r *FlowRegistry) Sync(sess *Session) {

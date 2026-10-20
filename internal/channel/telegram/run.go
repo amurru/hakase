@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/channel"
 	"amurru/hakase/internal/channel/state"
 	"amurru/hakase/internal/interfaces"
@@ -84,7 +85,7 @@ func (b *Bot) startRun(ctx context.Context, c conv, promptID int, prompt string,
 	}
 	content := genai.NewContentFromParts(parts, genai.RoleUser)
 
-	rv := newRunView(b, c, promptID, runCtx, voiceLang, fromVoice)
+	rv := newRunView(b, c, promptID, runCtx, voiceLang, fromVoice, sessionID)
 	go func() {
 		defer b.runs.Finish(rk)
 		rv.begin() // 👀 receipt and the optional turn pin
@@ -198,6 +199,37 @@ type runView struct {
 	streamedAny     bool   // at least one non-blank content delta arrived
 	dirty           bool   // seg changed since the last edit
 	finished        bool   // finalize has run; pump must not edit anymore
+	sessionID       string // hakase session of this run (flow egress gate)
+	flowWithhold    string // sticky withhold reason (a withhold never clears; allows re-evaluate)
+}
+
+// flowGate evaluates the channel egress gate (FG-003, T2.1): a narrowed
+// label with a send_message policy withholds the answer instead of
+// exfiltrating. Returns the withhold reason or "". Only a withhold is
+// cached (sticky): an allow is re-evaluated on every call so a label that
+// narrows mid-run (model streams text, then calls a source tool) still
+// withholds at finalize. No installed policy keeps v1 behavior exactly.
+// Note: streaming creations already delivered cannot be unsent;
+// tool-dispatch gates are the primary enforcement and this is
+// defense-in-depth at delivery.
+func (rv *runView) flowGate() string {
+	rv.mu.Lock()
+	if rv.flowWithhold != "" {
+		reason := rv.flowWithhold
+		rv.mu.Unlock()
+		return reason
+	}
+	rv.mu.Unlock()
+	if rv.sessionID == "" {
+		return ""
+	}
+	if allow, reason := hakaseagent.CheckChannelEgress(rv.sessionID, ChannelName, chatKey(rv.c.chatID)); !allow {
+		rv.mu.Lock()
+		rv.flowWithhold = reason
+		rv.mu.Unlock()
+		return reason
+	}
+	return ""
 }
 
 // fullText returns the accumulated raw answer text (thread-safe: writes
@@ -208,7 +240,7 @@ func (rv *runView) fullText() string {
 	return rv.full.String()
 }
 
-func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceLang string, fromVoice bool) *runView {
+func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceLang string, fromVoice bool, sessionID string) *runView {
 	voiceReply := false
 	if b.synthesizer != nil {
 		switch b.voiceModeFor(c) {
@@ -220,7 +252,7 @@ func newRunView(b *Bot, c conv, promptID int, ctx context.Context, voiceLang str
 	}
 	return &runView{
 		b: b, c: c, promptID: promptID, started: time.Now(), ctx: ctx,
-		voiceReply: voiceReply, voiceLang: voiceLang,
+		voiceReply: voiceReply, voiceLang: voiceLang, sessionID: sessionID,
 	}
 }
 
@@ -314,6 +346,10 @@ func (rv *runView) pump() {
 				html, commit := rv.renderSegment(done)
 				rv.b.editText(rv.ctx, rv.c, answerID, html, nil)
 				commit()
+			} else if rv.flowGate() != "" {
+				// Withheld: drop this segment without creating the
+				// answer message; finalize delivers the withhold
+				// notice instead.
 			} else {
 				// No message owns the closed part yet: create it now. This is
 				// the first answer creation — the turn's one notification.
@@ -332,6 +368,9 @@ func (rv *runView) pump() {
 	if answerID == 0 {
 		if !dirty {
 			return // nothing new to render into a message yet
+		}
+		if rv.flowGate() != "" {
+			return // withheld: finalize delivers the notice instead
 		}
 		// First content arrived: create the answer message (the turn's one
 		// notification; continuation messages are created silently). Render
@@ -432,6 +471,18 @@ func (rv *runView) finalize() {
 		// No text (or an error): only the silent status line moves and the
 		// ❌ receipt lands — the phone never buzzes for a reply-less run.
 		rv.editStatus(ctx, statusID, statusFailed(elapsed, lastError, hasError))
+		rv.b.react(ctx, rv.c, rv.promptID, reactionFailed)
+	case rv.flowGate() != "":
+		// Flow Guard egress withhold (FG-003, T2.1): the answer stays
+		// undelivered; the phone gets the withhold notice with the
+		// allowed alternative instead (approval reuse is T3.1).
+		notice := "⛔ " + rv.flowGate()
+		if answerID == 0 {
+			rv.b.sendText(ctx, rv.c, esc(notice), nil, false)
+		} else {
+			rv.b.editText(ctx, rv.c, answerID, esc(notice), nil)
+		}
+		rv.editStatus(ctx, statusID, statusDone(elapsed, tokens, lastError, hasError))
 		rv.b.react(ctx, rv.c, rv.promptID, reactionFailed)
 	default:
 		// Voice replies speak the whole answer; on any synthesis failure the

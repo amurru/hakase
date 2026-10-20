@@ -399,6 +399,47 @@ func (cp *CompiledPolicy) matchingRules(extra []compiledRule, action string, res
 	return out
 }
 
+// DeltaFor returns the most-narrowing union of deltas from every rule
+// (base only) matching action+resources, for post-admission folding
+// (FG-004, Phase 2). ok is false when no matched rule carries a delta or
+// the policy is not flow-enabled. The union takes max trust / min
+// audience across matches, mirroring evaluateAgentWithLabel.
+func (cp *CompiledPolicy) DeltaFor(action string, resources ...string) (FlowDelta, bool) {
+	if cp == nil || !cp.flow {
+		return FlowDelta{}, false
+	}
+	matched := cp.matchingRules(nil, action, resources...)
+	var ds []compiledDelta
+	for _, m := range matched {
+		if m.hasDelta {
+			ds = append(ds, m.delta)
+		}
+	}
+	if len(ds) == 0 {
+		return FlowDelta{}, false
+	}
+	u := unionDelta(ds)
+	var out FlowDelta
+	if u.hasTrust {
+		if u.trust == TrustSuspicious {
+			out.Trust = "suspicious"
+		} else {
+			out.Trust = "trusted"
+		}
+	}
+	if u.hasAud {
+		switch u.aud {
+		case AudienceSelf:
+			out.Audience = []string{"self"}
+		case AudienceInternal:
+			out.Audience = []string{"internal"}
+		default:
+			out.Audience = []string{"public"}
+		}
+	}
+	return out, true
+}
+
 func labelString(l SessionLabel) string {
 	trust := "trusted"
 	if l.Trust == TrustSuspicious {

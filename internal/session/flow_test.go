@@ -210,6 +210,37 @@ func TestStoreLoadRegistersFlow(t *testing.T) {
 	}
 }
 
+// TestRegistryMergeAtomic pins atomic delegate merges (H2/H4): a Merge
+// racing a Fold must keep both narrowings, never overwrite one with a
+// stale snapshot (no widening under -race).
+func TestRegistryMergeAtomic(t *testing.T) {
+	r := NewFlowRegistry()
+	r.Ensure("p")
+	const n = 16
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				r.Fold("p", permissions.FlowDelta{Audience: []string{"internal"}}, "k", "h")
+			} else {
+				r.Merge("p", permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudiencePublic})
+			}
+		}(i)
+	}
+	wg.Wait()
+	got := r.Get("p")
+	if got == nil || got.Trust != permissions.TrustSuspicious || got.Audience != permissions.AudienceInternal {
+		t.Fatalf("merged = %+v, want suspicious/internal (both narrowings kept)", got)
+	}
+	// Merge into an uninitialized session starts from StartLabel.
+	m := r.Merge("fresh", permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudienceInternal})
+	if m.Trust != permissions.TrustSuspicious || m.Audience != permissions.AudienceInternal {
+		t.Errorf("fresh merge = %+v, want suspicious/internal", m)
+	}
+}
+
 // TestFlowCtx pins ctx carry for delegate inheritance (Phase 2 reads it).
 func TestFlowCtx(t *testing.T) {
 	if FlowLabelFromCtx(nil) != nil {

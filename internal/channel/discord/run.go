@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"amurru/hakase/internal/agent"
 	"amurru/hakase/internal/agentrun"
 	"amurru/hakase/internal/channel/state"
 	"amurru/hakase/internal/interfaces"
@@ -219,8 +220,16 @@ func (rv *runView) finalize(ctx context.Context) {
 		_ = rv.b.sender.Edit(rv.channelID, statusID, outcome)
 	}
 	if streamed && answer != "" {
-		for _, chunk := range ChunkText(MarkdownToDiscord(answer)) {
-			rv.b.sendText(ctx, rv.userID, chunk)
+		// Flow Guard channel egress (FG-003, T2.1): a narrowed label with
+		// a send_message policy withholds the answer instead of
+		// exfiltrating (approval reuse for asks is T3.1). No installed
+		// policy keeps v1 behavior exactly.
+		if allow, reason := agent.CheckChannelEgress(rv.sessionID, "discord", fmt.Sprintf("discord:%d", rv.userID)); !allow {
+			rv.b.sendText(ctx, rv.userID, "⛔ "+reason)
+		} else {
+			for _, chunk := range ChunkText(MarkdownToDiscord(answer)) {
+				rv.b.sendText(ctx, rv.userID, chunk)
+			}
 		}
 	} else if !streamed && !hasError {
 		rv.b.sendText(ctx, rv.userID, "Done — no text output.")

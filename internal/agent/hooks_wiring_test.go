@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"amurru/hakase/internal/hooks"
+	"amurru/hakase/internal/permissions"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -149,6 +150,38 @@ func TestHookAfterToolFailedPassthrough(t *testing.T) {
 	}
 	if res != nil {
 		t.Errorf("failed tool must pass through un-overridden, got %v", res)
+	}
+}
+
+// TestHookAfterToolFailedStillObserved pins the review fix: with a v2
+// policy installed, a failed tool still runs PostToolUse observers, while
+// the flow's redacted carrier wins the return (never a result override,
+// so the ADK failure is preserved).
+func TestHookAfterToolFailedStillObserved(t *testing.T) {
+	sh := hookTestShell(t)
+	installFlowPolicy(t, permissions.Policy{Version: 2, Default: "ask", Rules: []permissions.Rule{
+		{Action: "read", Resource: "*", Effect: "allow", Delta: &permissions.FlowDelta{Trust: "suspicious"}},
+	}})
+	marker := filepath.Join(t.TempDir(), "observed")
+	r := hookTestRunner(t, hooks.Config{PostToolUse: []hooks.Group{{Matcher: ".*", Hooks: []hooks.Handler{{
+		Command: []string{sh, "-c", "echo observed > " + marker},
+	}}}}})
+	cb := makeHookAfterToolCallback(r)
+	ctx := agent.NewContext(&agent.ContextMock{})
+
+	secret := "token=supersecret123456"
+	res, err := cb(ctx, &fakeHookTool{name: "read_file"},
+		map[string]any{"path": "a"}, map[string]any{"content": secret},
+		errors.New("boom: "+secret))
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("err = %v, want redacted carrier", err)
+	}
+	if res != nil {
+		t.Errorf("res = %v, want nil (failure preserved)", res)
+	}
+	raw, rerr := os.ReadFile(marker)
+	if rerr != nil || !strings.Contains(string(raw), "observed") {
+		t.Errorf("PostToolUse hook did not observe the failure (marker %q, err %v)", raw, rerr)
 	}
 }
 

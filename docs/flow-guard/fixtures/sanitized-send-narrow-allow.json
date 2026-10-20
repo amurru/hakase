@@ -1,0 +1,18 @@
+{
+  "name": "sanitized send narrow allow",
+  "description": "T2.4: a sanitized send still asks on the broad resource; only a narrow sanitizable:true resource allows under a tainted label (H1). Requires are monotonic: the narrow rule carries its own gate, the broad rule never covers it.",
+  "policy": {
+    "version": 2,
+    "default": "ask",
+    "rules": [
+      {"action": "read", "resource": "docs/internal/*", "effect": "allow", "delta": {"audience": ["internal"]}},
+      {"action": "send_message", "resource": "#general", "effect": "allow", "requires": {"trust": "trusted", "audience_contains": ["public"]}},
+      {"action": "send_message", "resource": "alerts/*", "effect": "allow", "requires": {"trust": "trusted", "audience_contains": ["internal"]}, "sanitizable": true}
+    ]
+  },
+  "steps": [
+    {"tool": "read", "args": ["docs/internal/secret.md"], "label_before": {"trust": "trusted", "audience": "public"}, "apply_delta_on": "success"},
+    {"tool": "send_message", "args": ["#general"], "label_before": {"trust": "trusted", "audience": "internal"}, "expect": "ask"},
+    {"tool": "send_message", "args": ["alerts/ops"], "label_before": {"trust": "trusted", "audience": "internal"}, "expect": "allow"}
+  ]
+}

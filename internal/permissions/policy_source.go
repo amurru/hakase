@@ -95,6 +95,19 @@ func Installed() *LayeredPolicy {
 	return installedLayers
 }
 
+// DeltaForInstalled returns the most-narrowing union delta for
+// action+resources under the installed policy (FG-004 folding). ok is
+// false when no policy is installed, the policy is not v2, or no matched
+// rule carries a delta.
+func DeltaForInstalled(action string, resources ...string) (FlowDelta, bool) {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	if installedPolicy == nil {
+		return FlowDelta{}, false
+	}
+	return installedPolicy.DeltaFor(action, resources...)
+}
+
 // BypassDisabled reports whether the installed enterprise layer sets
 // disable_bypass (neutralizes approval.mode=allow). False when no
 // layered policy is installed.
