@@ -222,8 +222,10 @@ func (rv *runView) finalize(ctx context.Context) {
 	if streamed && answer != "" {
 		// Flow Guard channel egress (FG-003, T2.1): a narrowed label with
 		// a send_message policy withholds the answer instead of
-		// exfiltrating (approval reuse for asks is T3.1). No installed
-		// policy keeps v1 behavior exactly.
+		// exfiltrating. The ask-human remedy (T3.1) covers the
+		// tool-call path; a channel reply has no tool call to bind an
+		// approval to, so it stays withheld. No installed policy keeps
+		// v1 behavior exactly.
 		if allow, reason := agent.CheckChannelEgress(rv.sessionID, "discord", fmt.Sprintf("discord:%d", rv.userID)); !allow {
 			rv.b.sendText(ctx, rv.userID, "⛔ "+reason)
 		} else {

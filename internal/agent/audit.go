@@ -39,6 +39,13 @@ type CommandAuditEntry struct {
 	// PolicyRule cites the permissions rule behind a policy decision
 	// (PM-004); empty when the risk gate decided on its own.
 	PolicyRule permissions.PolicyRule `json:"policy_rule,omitempty"`
+	// FlowLabel is the Flow Guard label snapshot behind a flow
+	// decision ("trusted/internal v2"); empty for non-flow entries.
+	FlowLabel string `json:"flow_label,omitempty"`
+	// FlowArgsHash is the hash of the canonical (tool, action,
+	// resources) triple of the flow-checked call. Hashes only, never
+	// raw args (FG-006/M2).
+	FlowArgsHash string `json:"flow_args_hash,omitempty"`
 	// PrevHash/EntryHash chain entries tamper-evidently (PM-004):
 	// entry_hash = sha256(prev_hash + canonical entry JSON).
 	PrevHash  string `json:"prev_hash,omitempty"`

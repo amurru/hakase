@@ -26,8 +26,8 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 3 — remedies + audit + replay CI
 
-- [ ] **T3.1 [BE]** denial text (redacted, resume notice) + ask-human reuse (patch `ApproveExec` `mode==allow` shortcut + `disable_bypass`, single-use `(tool,argsHash,labelVersion)`) + sanitize re-check. Spec: FG-005 + H1/H5.
-- [ ] **T3.2 [BE]** audit `flow_blocked`/`flow_sanitized`/`flow_error_redacted`/`flow_recomputed` + appended CSV with version header + redacted reasons + args hashes + `HAKASE_FLOW_DEBUG=1` logging `argsHash` to stderr only (never full args). Spec: FG-006 + M2/M5. Metadata only, rotation unchanged.
-- [ ] **T3.3 [QA]** replay fixture driver + e2e read-then-send + resume/compaction Version-unchanged + CSV parser tests (old strict parser on old-format rows, version-aware parser on both). Spec: FG-006 + H3/L3.
-- [ ] **T3.4 [DOCS]** `docs/permissions/guide.md` v2 experimental section + CHANGELOG + inspiration line in touched packages.
-- [ ] **T3.5 [QA]** Full suite green: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.
+- [x] **T3.1 [BE]** denial text (redacted, resume notice) + ask-human reuse (patch `ApproveExec` `mode==allow` shortcut + `disable_bypass`, single-use `(tool,argsHash,labelVersion)`) + sanitize re-check. Spec: FG-005 + H1/H5. `internal/agent/flowremedy.go` + `flowgate.go`, `approval.go`, `internal/interfaces`.
+- [x] **T3.2 [BE]** audit `flow_blocked`/`flow_sanitized`/`flow_error_redacted`/`flow_recomputed` + appended CSV with version header + redacted reasons + args hashes + `HAKASE_FLOW_DEBUG=1` logging `argsHash` to stderr only (never full args). Spec: FG-006 + M2/M5. Metadata only, rotation unchanged. `internal/agent/flowaudit.go` + `audit.go`/`audit_chain.go`.
+- [x] **T3.3 [QA]** replay fixture driver + e2e read-then-send + resume/compaction Version-unchanged + CSV parser tests (old strict parser on old-format rows, version-aware parser on both). Spec: FG-006 + H3/L3. `internal/agent/flowremedy_test.go`, `internal/session/flow_test.go`, `internal/agent/audit_chain_test.go`.
+- [x] **T3.4 [DOCS]** `docs/permissions/guide.md` v2 experimental section + CHANGELOG + inspiration line in touched packages.
+- [x] **T3.5 [QA]** Full suite green: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.

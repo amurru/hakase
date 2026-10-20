@@ -8,6 +8,7 @@ import (
 	"amurru/hakase/internal/hooks"
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/knowledge"
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/project"
 	"amurru/hakase/internal/sandbox"
 	hakasesession "amurru/hakase/internal/session"
@@ -134,6 +135,11 @@ func hookResultStr(result map[string]any, key string) string {
 // tool uniformly (built-ins, MCP toolsets, python/download/skill/
 // sidekick/vision), so allowlisted MCP tools that never hit an ask branch
 // still hit flow. With no installed policy it passes through (v1 parity).
+//
+// Flow Guard Phase 3 (FG-005): the check runs with the ask-human remedy,
+// so a flow Ask reaches the human through the existing approval gate
+// (web queue, TUI, Telegram/Discord) instead of dead-ending the call.
+// The approval covers exactly this call and never resets the label.
 func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
 	return func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 		blocked, result := r.CheckPreToolUse(ctx, t.Name(), args)
@@ -141,7 +147,7 @@ func makeHookBeforeToolCallback(r *hooks.Runner) llmagent.BeforeToolCallback {
 			AuditHookBlock(t.Name(), hookResultStr(result, "hook"), hookResultStr(result, "error"), interfaces.SessionIDFromCtx(ctx))
 			return result, nil
 		}
-		if ok, fblocked, fresult, _, _ := CheckPreFlow(ctx, t.Name(), args); ok && fblocked {
+		if ok, fblocked, fresult, _, _ := CheckPreFlowAsk(ctx, t.Name(), args); ok && fblocked {
 			return fresult, nil
 		}
 		return nil, nil
@@ -216,9 +222,12 @@ func createAskSidekickTool(log LogFunc, sk *sidekick.Sidekick) (tool.Tool, error
 		}
 		// Flow Guard pre-dispatch (FG-003/H4, T2.1): the question is
 		// gated as egress and the answer folds as suspicious ingress in
-		// CheckPostFlow. Ask and deny both refuse here (approval reuse
-		// is T3.1). No installed policy keeps v1 behavior.
-		if ok, blocked, _, _, freason := CheckPreFlow(ctx, "ask_sidekick", map[string]any{"question": input.Question}); ok && blocked {
+		// CheckPostFlow. Phase 3 (T3.1): the ADK pre-dispatch callback
+		// already routed a flow Ask to the human, so this re-check only
+		// refuses a flow Deny (defense in depth: the label may have
+		// narrowed since the callback). No installed policy keeps v1
+		// behavior.
+		if blocked, eff, freason := checkPreFlowVerdict(ctx, "ask_sidekick", map[string]any{"question": input.Question}); blocked && eff == permissions.EffectDeny {
 			return askSidekickOutput{}, fmt.Errorf("ask_sidekick blocked by flow guard: %s", freason)
 		}
 		ans, err := sk.Ask(ctx, input.Question)
@@ -590,9 +599,16 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 	// flow ask forces the approval path below even when the sandbox allows
 	// python outright (flow only escalates). No installed policy keeps v1
 	// behavior exactly (CheckPreFlow ok=false).
+	//
+	// Phase 3 (T3.1, H5): the flow ask rides the SAME approval prompt as
+	// the python risk, and the flow reason marks it as a flow ask, so
+	// approval.mode=allow never auto-approves it. The ADK pre-dispatch
+	// callback already asked the human for this call, so this re-check
+	// never prompts twice.
 	forceAsk := false
-	if ok, blocked, _, eff, freason := CheckPreFlow(ctx, "python_interpreter", map[string]any{"code": code}); ok && blocked {
-		if eff == "deny" {
+	flowReason := ""
+	if blocked, eff, freason := checkPreFlowVerdict(ctx, "python_interpreter", map[string]any{"code": code}); blocked {
+		if eff == permissions.EffectDeny {
 			AuditCommandExec(CommandAuditEntry{
 				Timestamp: time.Now(), Tool: "python_interpreter",
 				Decision: "denied", Risk: "high", Reason: "flow guard: " + freason,
@@ -601,6 +617,7 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 			return fmt.Errorf("python_interpreter blocked by flow guard: %s", freason)
 		}
 		forceAsk = true
+		flowReason = freason
 	}
 	if perm == "allow" && !forceAsk {
 		AuditCommandExec(CommandAuditEntry{
@@ -621,6 +638,8 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 		Source:    "direct",
 		ExpiresAt: time.Now().Add(ApprovalExpiry()),
 		SessionID: sessionID,
+		// A flow ask is never auto-approved by approval.mode=allow (H5).
+		FlowReason: flowReason,
 	})
 	if aerr != nil || !approved {
 		AuditCommandExec(CommandAuditEntry{
@@ -882,9 +901,11 @@ type FileDownloadOutput struct {
 func createDownloadTool() (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input FileDownloadInput) (FileDownloadOutput, error) {
 		// Flow Guard pre-dispatch (FG-003, T2.1): unknown-sink fail-closed
-		// on a narrowed label; ask and deny both refuse here (approval
-		// reuse for asks is T3.1). No installed policy keeps v1 behavior.
-		if ok, blocked, _, _, freason := CheckPreFlow(ctx, "download_file", map[string]any{"url": input.URL}); ok && blocked {
+		// on a narrowed label. Phase 3 (T3.1): the ADK pre-dispatch
+		// callback already routed a flow Ask to the human, so this
+		// re-check only refuses a flow Deny. No installed policy keeps v1
+		// behavior.
+		if blocked, eff, freason := checkPreFlowVerdict(ctx, "download_file", map[string]any{"url": input.URL}); blocked && eff == permissions.EffectDeny {
 			return FileDownloadOutput{}, fmt.Errorf("download blocked by flow guard: %s", freason)
 		}
 		req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
@@ -1037,9 +1058,11 @@ type SaveSkillOutput struct {
 func createSaveSkillTool() (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input SaveSkillInput) (SaveSkillOutput, error) {
 		// Flow Guard pre-dispatch (FG-003, T2.1): persisting a skill under
-		// a narrowed label is gated as a sink (ask and deny both refuse
-		// here; approval reuse is T3.1). No installed policy keeps v1.
-		if ok, blocked, _, _, freason := CheckPreFlow(ctx, "save_skill", map[string]any{"name": input.Name}); ok && blocked {
+		// a narrowed label is gated as a sink. Phase 3 (T3.1): the ADK
+		// pre-dispatch callback already routed a flow Ask to the human,
+		// so this re-check only refuses a flow Deny. No installed policy
+		// keeps v1.
+		if blocked, eff, freason := checkPreFlowVerdict(ctx, "save_skill", map[string]any{"name": input.Name}); blocked && eff == permissions.EffectDeny {
 			return SaveSkillOutput{}, fmt.Errorf("save_skill blocked by flow guard: %s", freason)
 		}
 		skillsDir := "./skills"

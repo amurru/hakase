@@ -12,6 +12,12 @@
 // matching so "/a/../b" matches "/b". Callers must canonicalize values
 // first (e.g. via sandbox ResolveScopedPath); the engine only cleans.
 //
+// The Flow Guard extension (version 2 policies: delta, requires,
+// sanitizable, and the session data-flow label) is inspired by the
+// OpenAPPA APPA model (Agentic Permissions Policy Algebra), paper arxiv
+// 2607.24625, MIT (c) 2026 Archestra Inc. No OpenAPPA code was copied:
+// clean-room Go implementation, no TOML, no sidecar.
+//
 // Layering (user < project < enterprise), file loading, and the enterprise
 // sync land in Phase 2; this file is the pure engine plus the policy
 // schema (JSON tags included so the loader reuses these types).

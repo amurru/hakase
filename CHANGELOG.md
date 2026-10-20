@@ -10,6 +10,19 @@ guaranteed stable until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Flow Guard phase 3: remedies, audit and replay (T3.1-T3.5)** - the third and final phase of the session data-flow labels in `permissions.json` v2 (see `docs/flow-guard/`). A flow denial now offers three remedies to the model instead of dead-ending the call: **ask-human** routes the flow ask through the existing approval gate (web queue, TUI, Telegram, Discord - first responder wins) and the answer authorizes exactly one call, bound to `(tool, argsHash, labelVersion)` and never resetting the session label; **sanitize** redacts the secret-shaped parts of the payload with the shared `RedactSecrets` engine and re-checks the policy, proceeding on its own only for a narrow `sanitizable: true` resource (a wildcard `send_message *` never qualifies); **drop-result** is the model not retrying. The denial text carries redacted metadata only (`flow: <action> blocked (<trust>/<audience> v<version>). Allowed: ... Offer: ask-human | sanitize | drop-result`), and a pre-v2 session resumed under a conservative label says so once (`note: pre-v2 session resumed with conservative label`). `approval.mode=allow` never auto-approves a flow ask (enterprise `disable_bypass` still neutralizes the shortcut for everything else). Four new audit decisions ride the always-on trail - `flow_blocked`, `flow_sanitized`, `flow_error_redacted`, `flow_recomputed` - carrying the label snapshot and the args hash, never raw args; the metadata-only CSV export appends `flow_label`, `flow_args_hash` and `flow_version` at the end of the row (the older 10-column export keeps its shape, and a version-aware parser reads both), and `HAKASE_FLOW_DEBUG=1` prints the decisions and the args hashes to stderr only. New sessions start at the widest label; only a pre-v2 session file (no `flow` field) resumes conservative.
+- **Flow Guard replay fixtures** - scripted `{tool, args, label_before, expect}` fixtures in `docs/flow-guard/fixtures/` now drive the gate's own tool-to-policy mapping end to end (no tool runs), next to the existing engine-level driver: a private read taints the session and the later public send is refused with the remedies named.
+
+### Changed
+
+- **The Flow Guard ask no longer dead-ends a turn.** Before this phase a flow ask (a `requires` failure or an unmapped sink on a narrowed label) blocked the call outright, so the only way forward was to edit the policy. Now the ask reaches the operator through the approval surfaces they already use, and the per-tool re-checks only refuse a hard flow deny (the ADK pre-dispatch callback owns the ask, so a call is never prompted twice).
+
+### Fixed
+
+- **A new session no longer resumes under the conservative flow label.** Every session file written before Flow Guard has no `flow` field, and the backfill treated a missing label as "pre-v2" - so a brand-new session came back narrowed to `suspicious/internal` and audited a recompute on every load. New sessions now carry the start label; only a genuinely pre-v2 file resumes conservative.
+
 ## [0.1.0] - 2026-10-13
 
 First stable release. Rolls up everything since `0.1.0-alpha.10`: prompt-cache

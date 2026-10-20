@@ -117,15 +117,15 @@ func Meet(a, b SessionLabel) SessionLabel {
 
 ## Definition of done
 
-- [ ] `version 2` policy with sink rule set enforces read-private-then-send-public denial in a Go test, with withhold text naming the alternative.
-- [ ] Error-path test: secret in failed tool result is redacted + folded, error still surfaces (C1).
-- [ ] Unknown-tool test: narrowed label + unmapped sink asks/denies, start label unchanged (C2).
-- [ ] Parallel read+send in one turn denied via post re-check (H2). Resume/compaction tests show no double-fold and no widen (H3).
-- [ ] Delegate/sidekick/vision tests: child egress denied, answer folded suspicious, question gated (H4).
-- [ ] Layering test: project cannot remove enterprise `requires`, `mode=allow` does not auto-approve flow Ask (H5).
-- [ ] No v2 fields = byte-identical behavior; full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).
-- [ ] Blocked exfil result never reaches model context (post-admission test asserts override path).
-- [ ] Audit shows `flow_blocked` with rule citation + label + argsHash; old-format rows open under old strict parser, both schemas under version-aware parser; `HAKASE_FLOW_DEBUG=1` never writes to file logs.
+- [x] `version 2` policy with sink rule set enforces read-private-then-send-public denial in a Go test, with withhold text naming the alternative.
+- [x] Error-path test: secret in failed tool result is redacted + folded, error still surfaces (C1).
+- [x] Unknown-tool test: narrowed label + unmapped sink asks/denies, start label unchanged (C2).
+- [x] Parallel read+send in one turn denied via post re-check (H2). Resume/compaction tests show no double-fold and no widen (H3).
+- [x] Delegate/sidekick/vision tests: child egress denied, answer folded suspicious, question gated (H4).
+- [x] Layering test: project cannot remove enterprise `requires`, `mode=allow` does not auto-approve flow Ask (H5).
+- [x] No v2 fields = byte-identical behavior; full suite green (`gofmt`, `vet`, `go test ./...`, `pnpm test`).
+- [x] Blocked exfil result never reaches model context (post-admission test asserts override path).
+- [x] Audit shows `flow_blocked` with rule citation + label + argsHash; old-format rows open under old strict parser, both schemas under version-aware parser; `HAKASE_FLOW_DEBUG=1` never writes to file logs.
 
 ## Validation against codebase (2026-10-19)
 

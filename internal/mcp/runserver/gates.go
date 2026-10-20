@@ -116,10 +116,16 @@ func (g *Gates) elicit(ctx context.Context, sessionID string, params *mcp.Elicit
 // AskApproval resolves one approval request. Mode allow/deny short-circuit;
 // interactive mode elicits the client. Fail-closed on every failure path.
 // The timeout is derived from ctx so run cancellation (/stop) propagates.
+//
+// A Flow Guard ask (FG-005, H5) is never auto-approved by mode=allow: the
+// ask exists because the session label says the call is not admissible, so
+// the client decides.
 func (g *Gates) AskApproval(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
 	switch g.approvalC.Mode {
 	case "allow":
-		return true, nil
+		if req.FlowReason == "" {
+			return true, nil
+		}
 	case "deny":
 		return false, nil
 	}

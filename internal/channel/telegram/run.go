@@ -475,7 +475,9 @@ func (rv *runView) finalize() {
 	case rv.flowGate() != "":
 		// Flow Guard egress withhold (FG-003, T2.1): the answer stays
 		// undelivered; the phone gets the withhold notice with the
-		// allowed alternative instead (approval reuse is T3.1).
+		// allowed alternative instead. The ask-human remedy (T3.1)
+		// covers the tool-call path; a channel reply has no tool call
+		// to bind an approval to, so it stays withheld.
 		notice := "⛔ " + rv.flowGate()
 		if answerID == 0 {
 			rv.b.sendText(ctx, rv.c, esc(notice), nil, false)

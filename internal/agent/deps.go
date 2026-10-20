@@ -1,6 +1,12 @@
 // Package agent provides the core AI agent orchestration: ADK setup,
 // sub-agent delegation, model providers, approval/clarify gates, tool
 // management, and task tracking.
+//
+// The Flow Guard (permissions.json v2) parts of this package are
+// inspired by the OpenAPPA APPA model (Agentic Permissions Policy
+// Algebra), paper arxiv 2607.24625, MIT (c) 2026 Archestra Inc. No
+// OpenAPPA code was copied: clean-room Go implementation, no TOML, no
+// sidecar.
 package agent
 
 import (

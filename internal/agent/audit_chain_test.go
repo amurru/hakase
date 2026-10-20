@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -190,8 +191,68 @@ func TestAuditCSVRow(t *testing.T) {
 			t.Errorf("CSV row missing %q: %s", want, row)
 		}
 	}
-	if n := strings.Count(row, ","); n != strings.Count(AuditCSVHeader, ",") {
-		t.Errorf("CSV row has %d commas, header has %d", n, strings.Count(AuditCSVHeader, ","))
+	if n := strings.Count(row, ","); n != strings.Count(AuditCSVHeaderV2, ",") {
+		t.Errorf("CSV row has %d commas, header has %d", n, strings.Count(AuditCSVHeaderV2, ","))
+	}
+}
+
+// TestAuditCSVVersionAwareParser pins the CSV schema evolution (FG-006):
+// the old strict parser opens old-format rows, and the version-aware
+// parser reads both schemas.
+func TestAuditCSVVersionAwareParser(t *testing.T) {
+	oldCSV := AuditCSVHeader + "\n" +
+		"2026-10-20T10:00:00Z,system_exec,denied,high,amy,appr_1,enterprise,deny,p,h\n"
+	// The old strict parser (FieldsPerRecord = the v1 column count)
+	// opens an old-format export.
+	r := csv.NewReader(strings.NewReader(oldCSV))
+	r.FieldsPerRecord = len(strings.Split(AuditCSVHeader, ","))
+	if _, err := r.ReadAll(); err != nil {
+		t.Fatalf("old strict parser on old-format rows: %v", err)
+	}
+	// The version-aware parser reads the same rows.
+	rows, err := ParseAuditCSV([]byte(oldCSV))
+	if err != nil {
+		t.Fatalf("ParseAuditCSV (v1): %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("v1 rows = %d, want 1", len(rows))
+	}
+	if rows[0].Tool != "system_exec" || rows[0].Decision != "denied" || rows[0].EntryHash != "h" {
+		t.Errorf("v1 row = %+v, want the old columns", rows[0])
+	}
+	if rows[0].FlowLabel != "" || rows[0].FlowVersion != "" {
+		t.Errorf("v1 row carries flow columns: %+v", rows[0])
+	}
+
+	// A v2 export: the flow columns are appended at the end.
+	e := CommandAuditEntry{
+		Timestamp: time.Now(), Tool: "send_message", Decision: "flow_blocked",
+		FlowLabel: "trusted/internal v2", FlowArgsHash: "abc123",
+	}
+	v2CSV := AuditCSVHeaderV2 + "\n" + AuditCSVRow(e) + "\n"
+	rows2, err := ParseAuditCSV([]byte(v2CSV))
+	if err != nil {
+		t.Fatalf("ParseAuditCSV (v2): %v", err)
+	}
+	if len(rows2) != 1 {
+		t.Fatalf("v2 rows = %d, want 1", len(rows2))
+	}
+	if rows2[0].FlowLabel != "trusted/internal v2" || rows2[0].FlowArgsHash != "abc123" {
+		t.Errorf("v2 row = %+v, want the flow columns", rows2[0])
+	}
+	if rows2[0].FlowVersion != AuditCSVVersion {
+		t.Errorf("v2 row version = %q, want %q", rows2[0].FlowVersion, AuditCSVVersion)
+	}
+	// The old strict parser refuses a v2 row: the shape changed, and a
+	// v1 consumer must not silently read a truncated row.
+	r2 := csv.NewReader(strings.NewReader(v2CSV))
+	r2.FieldsPerRecord = len(strings.Split(AuditCSVHeader, ","))
+	if _, err := r2.ReadAll(); err == nil {
+		t.Error("old strict parser accepted a v2 row")
+	}
+	// An unknown header is refused.
+	if _, err := ParseAuditCSV([]byte("a,b,c\n1,2,3\n")); err == nil {
+		t.Error("ParseAuditCSV accepted an unknown header")
 	}
 }
 

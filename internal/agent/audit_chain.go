@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -218,11 +219,48 @@ func ReadAuditEntries(dir string, since time.Time) ([]CommandAuditEntry, error) 
 	return out, nil
 }
 
-// AuditCSVHeader is the metadata-only export header: no command bodies,
-// args, or reasons (PM-004 "CSV drops body/lineage").
+// AuditCSVHeader is the v1 metadata-only export header: no command bodies,
+// args, or reasons (PM-004 "CSV drops body/lineage"). Kept so a strict
+// parser of an older export still recognizes its shape.
 const AuditCSVHeader = "timestamp,tool,decision,risk,actor,trace_id,policy_source,policy_effect,prev_hash,entry_hash"
 
-// AuditCSVRow renders one entry's metadata-only CSV row.
+// AuditCSVHeaderV2 appends the Flow Guard metadata columns (FG-006/M2):
+// the label snapshot, the args hash and the row schema version. Columns
+// are appended at the end only, so a v1 export keeps its shape for a v1
+// strict parser while a version-aware parser reads both schemas.
+const AuditCSVHeaderV2 = AuditCSVHeader + ",flow_label,flow_args_hash,flow_version"
+
+// AuditCSVVersion is the flow metadata schema version carried in the
+// flow_version column of a v2 row.
+const AuditCSVVersion = "2"
+
+// audit CSV schema versions.
+const (
+	auditCSVSchemaV1 = 1
+	auditCSVSchemaV2 = 2
+)
+
+// AuditCSVRecord is one parsed metadata-only audit row.
+type AuditCSVRecord struct {
+	Timestamp    string
+	Tool         string
+	Decision     string
+	Risk         string
+	Actor        string
+	TraceID      string
+	PolicySource string
+	PolicyEffect string
+	PrevHash     string
+	EntryHash    string
+	// Flow columns (v2 only, empty in a v1 row).
+	FlowLabel    string
+	FlowArgsHash string
+	FlowVersion  string
+}
+
+// AuditCSVRow renders one entry's metadata-only CSV row (v2 shape: the
+// flow columns are appended at the end and stay empty for entries
+// without a flow decision).
 func AuditCSVRow(e CommandAuditEntry) string {
 	q := func(s string) string {
 		if strings.ContainsAny(s, ",\"\n\r") {
@@ -235,7 +273,74 @@ func AuditCSVRow(e CommandAuditEntry) string {
 		q(e.Tool), q(e.Decision), q(e.Risk), q(e.Actor), q(e.TraceID),
 		q(e.PolicyRule.Source), q(e.PolicyRule.Effect),
 		q(e.PrevHash), q(e.EntryHash),
+		q(e.FlowLabel), q(e.FlowArgsHash), AuditCSVVersion,
 	}, ",")
+}
+
+// auditCSVSchema returns the schema version of an audit CSV header.
+func auditCSVSchema(header []string) (int, error) {
+	switch strings.Join(header, ",") {
+	case AuditCSVHeader:
+		return auditCSVSchemaV1, nil
+	case AuditCSVHeaderV2:
+		return auditCSVSchemaV2, nil
+	}
+	// Column-count fallback for a header written by another exporter
+	// with the same shape.
+	switch len(header) {
+	case 10:
+		return auditCSVSchemaV1, nil
+	case 13:
+		return auditCSVSchemaV2, nil
+	}
+	return 0, fmt.Errorf("audit csv: unknown header (%d columns)", len(header))
+}
+
+// ParseAuditCSV parses a metadata-only audit CSV export. The header
+// selects the schema: a v1 export (10 columns) and a v2 export (13
+// columns) are both accepted, and every row must match the header
+// (a strict field count per row, like the old parser).
+func ParseAuditCSV(data []byte) ([]AuditCSVRecord, error) {
+	r := csv.NewReader(bytes.NewReader(data))
+	// The field count is checked per row below, against the header.
+	r.FieldsPerRecord = -1
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("audit csv: %w", err)
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	header := records[0]
+	version, err := auditCSVSchema(header)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AuditCSVRecord, 0, len(records)-1)
+	for i, rec := range records[1:] {
+		if len(rec) != len(header) {
+			return nil, fmt.Errorf("audit csv: row %d has %d fields, want %d", i+2, len(rec), len(header))
+		}
+		row := AuditCSVRecord{
+			Timestamp:    rec[0],
+			Tool:         rec[1],
+			Decision:     rec[2],
+			Risk:         rec[3],
+			Actor:        rec[4],
+			TraceID:      rec[5],
+			PolicySource: rec[6],
+			PolicyEffect: rec[7],
+			PrevHash:     rec[8],
+			EntryHash:    rec[9],
+		}
+		if version == auditCSVSchemaV2 {
+			row.FlowLabel = rec[10]
+			row.FlowArgsHash = rec[11]
+			row.FlowVersion = rec[12]
+		}
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 // AuditApprovalAnswer records who answered a gate prompt: the actor is

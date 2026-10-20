@@ -1,0 +1,319 @@
+// flowremedy.go - Flow Guard Phase 3 remedies (FG-005).
+//
+// A flow denial offers three remedies to the model:
+//
+//   - ask-human routes the flow ask through the existing approval gate
+//     (ApproveExec), so the web queue, the TUI and the Telegram/Discord
+//     transports answer it with the same first-responder-wins flow. A
+//     flow ask is never auto-approved by approval.mode=allow (H5), and
+//     the answer authorizes exactly one call: (tool, argsHash,
+//     labelVersion). The approval never resets the session label.
+//   - sanitize redacts the payload with util.RedactSecrets and
+//     re-checks the policy against the redacted payload. It
+//     auto-proceeds only for a rule with effect:allow and
+//     sanitizable:true on a narrow resource (H1) - never on a wildcard,
+//     never on a requires failure.
+//   - drop-result is the model simply not retrying.
+//
+// The denial text carries redacted metadata only (action, label
+// snapshot, remedy): never raw resource paths or arg preimages, which
+// can carry secrets.
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"amurru/hakase/internal/permissions"
+	hakasesession "amurru/hakase/internal/session"
+	"amurru/hakase/internal/util"
+)
+
+// flowOffers is the remedy list a flow denial shows the model.
+const flowOffers = "ask-human | sanitize | drop-result"
+
+// flowTaintReason names the payload risk in a flow denial (a
+// secret-shaped payload that no rule marked sanitizable).
+const flowTaintReason = "payload carries secret-shaped content"
+
+// flowAllowedAlternative names what the model may do next: a flow ask
+// can still be approved by a human, a flow deny only by dropping the
+// result.
+func flowAllowedAlternative(effect permissions.Effect) string {
+	if effect == permissions.EffectAsk {
+		return "ask-human (approve this exact call)"
+	}
+	return "drop-result (skip this call)"
+}
+
+// flowDenialText renders the FG-005 denial shape: redacted metadata
+// only (action, label snapshot, remedy) - never raw resource paths or
+// arg preimages.
+func flowDenialText(action string, l *permissions.SessionLabel, effect permissions.Effect) string {
+	return fmt.Sprintf("flow: %s blocked (%s). Allowed: %s. Offer: %s",
+		action, flowLabelSnapshot(l), flowAllowedAlternative(effect), flowOffers)
+}
+
+// flowDenialResult builds the model-legible denial result: the denial
+// text plus the one-time resume notice when a pre-v2 session was
+// recomputed conservative (FG-005/M1).
+func flowDenialResult(ctx context.Context, toolName, action string, l *permissions.SessionLabel, effect permissions.Effect) map[string]any {
+	text := flowDenialText(action, l, effect)
+	if notice := hakasesession.DefaultRegistry.TakeFlowNotice(flowSessionID(ctx)); notice != "" {
+		text += " " + notice
+	}
+	return flowBlockResult(toolName, text)
+}
+
+// flowAskBinding binds one flow ask to the exact call it covers.
+type flowAskBinding struct {
+	sessionID    string
+	tool         string
+	argsHash     string
+	labelVersion uint64
+}
+
+// flowGrants holds the one-shot approvals for flow asks (FG-005). A
+// grant authorizes exactly one dispatch of (tool, argsHash,
+// labelVersion): another payload, another tool or a label that moved on
+// invalidates it, and it never resets the session label.
+var flowGrants = struct {
+	sync.Mutex
+	m map[string]struct{}
+}{m: make(map[string]struct{})}
+
+// flowGrantKey is the grant key: the four binding parts are joined
+// with NUL so no value can forge another key.
+func flowGrantKey(b flowAskBinding) string {
+	return b.sessionID + "\x00" + b.tool + "\x00" + b.argsHash + "\x00" +
+		strconv.FormatUint(b.labelVersion, 10)
+}
+
+// grantFlowCall installs the one-shot grant for an approved flow ask.
+func grantFlowCall(b flowAskBinding) {
+	flowGrants.Lock()
+	flowGrants.m[flowGrantKey(b)] = struct{}{}
+	flowGrants.Unlock()
+}
+
+// hasFlowGrant reports whether a grant for this exact call is pending
+// (an approval that has not been dispatched yet).
+func hasFlowGrant(b flowAskBinding) bool {
+	flowGrants.Lock()
+	defer flowGrants.Unlock()
+	_, ok := flowGrants.m[flowGrantKey(b)]
+	return ok
+}
+
+// consumeFlowGrant reports and consumes a matching grant (one-shot).
+func consumeFlowGrant(b flowAskBinding) bool {
+	flowGrants.Lock()
+	defer flowGrants.Unlock()
+	k := flowGrantKey(b)
+	if _, ok := flowGrants.m[k]; !ok {
+		return false
+	}
+	delete(flowGrants.m, k)
+	return true
+}
+
+// flowApprovalPreview renders the human-facing approval prompt line:
+// the canonical resources (never the raw args) plus the action, so the
+// approver sees what is about to run without the payload. Resources can
+// carry secrets (a path or a URL with a token), so the preview is
+// redacted before it is stored in the pause registry.
+func flowApprovalPreview(action string, resources []string) string {
+	parts := make([]string, 0, len(resources))
+	for _, r := range resources {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		parts = append(parts, truncateRes(r, 120))
+	}
+	preview := "flow:" + action
+	if len(parts) > 0 {
+		preview += " " + strings.Join(parts, " ")
+	}
+	preview, _ = util.RedactSecrets(preview)
+	return truncateRes(preview, 400)
+}
+
+// ApproveFlowAsk runs the ask-human remedy for a flow ask (FG-005):
+// the request goes to the existing approval gate (web queue, TUI,
+// Telegram/Discord), never auto-approved by approval.mode=allow, and
+// the answer authorizes exactly one dispatch of this call. The returned
+// binding must be consumed by the dispatcher; a grant that does not
+// match means the approval did not cover this call (fail closed).
+func ApproveFlowAsk(ctx context.Context, toolName string, args map[string]any, reason string) (flowAskBinding, bool) {
+	action, resources := flowMapTool(toolName, args)
+	b := flowAskBinding{
+		sessionID: flowSessionID(ctx),
+		tool:      toolName,
+		argsHash:  flowArgsHash(toolName, action, resources),
+	}
+	if label := flowLabelForCtx(ctx); label != nil {
+		b.labelVersion = label.Version
+	}
+	// A pending approval for this exact call covers it: no second
+	// prompt, and the dispatcher consumes the grant.
+	if hasFlowGrant(b) {
+		return b, true
+	}
+	approved, err := ApproveExec(ctx, ApprovalRequest{
+		Tool:             toolName,
+		Command:          flowApprovalPreview(action, resources),
+		Risk:             "flow",
+		Reason:           reason,
+		Source:           "direct",
+		ExpiresAt:        time.Now().Add(ApprovalExpiry()),
+		SessionID:        b.sessionID,
+		FlowReason:       reason,
+		FlowArgsHash:     b.argsHash,
+		FlowLabelVersion: b.labelVersion,
+	})
+	if err != nil || !approved {
+		flowDebugf("ask denied tool=%s action=%s argsHash=%s", toolName, action, b.argsHash)
+		return b, false
+	}
+	// Bind the approval to this exact call: the dispatch consumes it
+	// once, so a repeat of the same call asks again.
+	grantFlowCall(b)
+	flowDebugf("ask approved tool=%s action=%s argsHash=%s labelVersion=%d",
+		toolName, action, b.argsHash, b.labelVersion)
+	return b, true
+}
+
+// CheckPreFlowAsk is the pre-dispatch entry point with the ask-human
+// remedy (FG-005). It layers the remedy on top of CheckPreFlow:
+//
+//   - flow Deny: blocked with the denial text (a deny stays a deny).
+//   - flow Ask: routed to the human through ApproveExec. An approved
+//     call proceeds (the approval covers exactly this call); a denied
+//     one gets the denial text.
+//   - no flow verdict: unchanged (v1 parity).
+func CheckPreFlowAsk(ctx context.Context, toolName string, args map[string]any) (ok bool, blocked bool, result map[string]any, effect permissions.Effect, reason string) {
+	ok, blocked, result, effect, reason = CheckPreFlow(ctx, toolName, args)
+	if !ok || !blocked || effect != permissions.EffectAsk {
+		return ok, blocked, result, effect, reason
+	}
+	action, _ := flowMapTool(toolName, args)
+	label := flowLabelForCtx(ctx)
+	binding, approved := ApproveFlowAsk(ctx, toolName, args, reason)
+	if approved && consumeFlowGrant(binding) {
+		// The human approved this exact call: it may run.
+		flowDebugf("dispatch allowed tool=%s action=%s argsHash=%s labelVersion=%d",
+			binding.tool, action, binding.argsHash, binding.labelVersion)
+		return true, false, nil, effect, reason
+	}
+	// Denied, or the approval did not cover this call: the denial text
+	// is the tool result.
+	return true, true, flowDenialResult(ctx, toolName, action, label, effect), effect, reason
+}
+
+// flowSanitizableRule reports whether a redacted payload may
+// auto-proceed: the deciding rule must allow it and mark it
+// sanitizable, and the resource must be narrow - a wildcard resource
+// never qualifies (H1).
+func flowSanitizableRule(rule *permissions.Rule) bool {
+	if rule == nil || !rule.Sanitizable || rule.Effect != permissions.EffectAllow {
+		return false
+	}
+	res := strings.TrimSpace(rule.Resource)
+	if res == "" || res == "*" || res == "**" {
+		return false
+	}
+	return true
+}
+
+// flowTaintCheckedAction reports whether the pre-dispatch payload taint
+// check applies to the action. Only outward-facing sinks are checked:
+// a local file write is not egress, and its content is judged by the
+// post-admission path.
+func flowTaintCheckedAction(action string) bool {
+	switch action {
+	case "send_message", "ask_sidekick", "save_skill", "vision", "python_interpreter":
+		return true
+	default:
+		return false
+	}
+}
+
+// flowRedactableAction reports whether the payload may be redacted in
+// place and proceed. Only message-like payloads qualify: redacting the
+// body of a message is the point of the remedy, while redacting code
+// (python, a saved skill) would silently corrupt the execution, so
+// those payloads only ever reach the human.
+func flowRedactableAction(action string) bool {
+	switch action {
+	case "send_message", "ask_sidekick":
+		return true
+	default:
+		return false
+	}
+}
+
+// flowPayloadTainted reports whether the call's payload carries
+// secret-shaped content on a narrowed label (the pre-dispatch mirror of
+// the post-admission taint check).
+func flowPayloadTainted(label *permissions.SessionLabel, action string, args map[string]any) bool {
+	if label == nil || permissions.IsStart(*label) {
+		return false
+	}
+	if !flowTaintCheckedAction(action) {
+		return false
+	}
+	for _, s := range marshalResultStrings(args) {
+		if _, ok := util.RedactSecrets(s); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// flowSanitizePass runs the sanitize remedy on one pre-dispatch call:
+// it redacts the payload, re-evaluates the policy against the redacted
+// resources and reports the new verdict.
+//
+// Redacted is false when nothing was redacted (the caller keeps its
+// verdict). When the payload was redacted, the returned effect and
+// detail are the re-checked ones: a rule that allowed the sanitized
+// payload keeps the call admissible, anything else escalates.
+func flowSanitizePass(label *permissions.SessionLabel, toolName, action string, args map[string]any, rule *permissions.Rule) (redacted bool, eff permissions.Effect, detail string) {
+	if !flowRedactableAction(action) {
+		// Code payloads are never rewritten behind the operator's back.
+		return false, "", ""
+	}
+	if !flowSanitizableRule(rule) {
+		return false, "", ""
+	}
+	// Redact in place: the ADK hands the same args map to the tool
+	// after the pre-dispatch callback, so the tool receives the
+	// sanitized payload.
+	if !redactArgsInPlace(args) {
+		return false, "", ""
+	}
+	resources := flowResources(toolName, args)
+	eff, _, detail, _ = permissions.LookupWithLabel(label, action, resources...)
+	return true, eff, detail
+}
+
+// redactArgsInPlace replaces secret-shaped strings in the tool args with
+// typed redaction tokens (util.RedactSecrets). Reports whether any rule
+// fired.
+func redactArgsInPlace(args map[string]any) bool {
+	if args == nil {
+		return false
+	}
+	return redactResultInPlace(args)
+}
+
+// flowResources maps (tool, args) onto the canonical policy resources.
+func flowResources(toolName string, args map[string]any) []string {
+	_, resources := flowMapTool(toolName, args)
+	return resources
+}
