@@ -126,6 +126,43 @@ type SearchFilesOutput struct {
 	Context string `json:"context,omitempty" doc:"Project context hint (AGENTS.md) for the search root, when one exists"`
 }
 
+// SaveSkillGateFunc, when set (wired by the agent package in
+// SetupRunner), routes Python-skill-library denials through the unified
+// save_skill provenance gate (flow deny-wins + code/description joint
+// binding + fresh update approval). write_file/patch never persist
+// executable skills even when the gate passes - registry and joint
+// binding stay owned by save_skill - but evaluating the gate here keeps
+// the flow/provenance legs from drifting from the static suffix check.
+// Nil (sandbox unit tests, agent unwired) falls back to the static
+// confinement refusal (fail-closed either way).
+var SaveSkillGateFunc func(ctx context.Context, name, code, description string) error
+
+// skillGateName derives the candidate skill name for the unified gate
+// from a confined path (extension stripped; registry names carry no
+// suffix). Names the gate rejects (skills.json, __init__) stay refused.
+func skillGateName(absPath string) string {
+	base := filepath.Base(absPath)
+	if i := strings.LastIndexByte(base, '.'); i > 0 {
+		base = base[:i]
+	}
+	return base
+}
+
+// EffectiveWriteRoot resolves the S24 confined root for tool writes:
+// the per-task sandbox root when known, otherwise the workspace root from
+// ctx (fail-closed: "" when no sandbox applies, callers fall back to the
+// rootless choke). Centralizes the M1 guarantee that the confined InRoot
+// variant owns the write whenever a root is known.
+func EffectiveWriteRoot(ctx context.Context, sandboxRoot string) string {
+	if sandboxRoot != "" {
+		return sandboxRoot
+	}
+	if sb := ConfigFrom(ctx); sb != nil {
+		return sb.WorkspaceRoot()
+	}
+	return ""
+}
+
 // createFileOpsTools builds the four-tool file operations toolset shared by
 // the general-purpose agent. All tools operate on absolute or
 // working-directory-relative paths. When a sessionManager and taskID are
@@ -166,6 +203,30 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		if input.Overwrite != nil {
 			overwrite = *input.Overwrite
 		}
+		// S28 skills confinement (deny-first): the executable Python skill
+		// library is save_skill's domain (provenance-gated, S16). A direct
+		// write_file/patch into it would persist unproven code, so it
+		// refuses before any write - and before the Stat below, so a
+		// confined path denies even when the Stat would fail first.
+		// Checked before MkdirAll so deny always wins over the write.
+		// R32 reroute: the unified save_skill gate evaluates first
+		// (flow/provenance legs cannot drift from this static check);
+		// write_file still never persists executable skills (registry +
+		// joint binding stay owned by save_skill), so a passing gate
+		// still refuses here with the save_skill alternative named.
+		if err := denySkillsWrite(path); err != nil {
+			if SaveSkillGateFunc != nil {
+				// M5 non-interactive reroute: evaluate the unified
+				// gate without prompting (forWriteTool mode) - a
+				// passing gate still refuses below with the
+				// save_skill alternative, so prompting here would
+				// raise an approval and then deny anyway.
+				if gerr := SaveSkillGateFunc(RerouteNoPromptCtx(ctx), skillGateName(path), input.Content, ""); gerr != nil {
+					return WriteFileOutput{}, gerr
+				}
+			}
+			return WriteFileOutput{}, err
+		}
 		created := false
 		if _, err := os.Stat(path); err == nil {
 			if !overwrite {
@@ -180,7 +241,22 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return WriteFileOutput{}, fmt.Errorf("failed to create parent directories for %q: %w", path, err)
 		}
-		if err := os.WriteFile(path, []byte(input.Content), 0644); err != nil {
+		// S24: scoped exclusive write (O_EXCL create-only, O_NOFOLLOW
+		// always) - the pre-check Stat above is advisory; the exclusive
+		// open is the atomic guarantee. The confined InRoot owns the
+		// write whenever a root is known (M1): the per-task root when
+		// set, otherwise the workspace root from ctx; the rootless
+		// choke applies only when no root resolves.
+		root := EffectiveWriteRoot(ctx, sandboxRoot)
+		if root != "" {
+			if rel, rerr := filepath.Rel(root, path); rerr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				if _, serr := ScopedWriteFileInRoot(root, rel, []byte(input.Content), 0644, overwrite); serr != nil {
+					return WriteFileOutput{}, fmt.Errorf("failed to write file %q: %w", path, serr)
+				}
+			} else if _, serr := ScopedWriteFile(path, []byte(input.Content), 0644, overwrite); serr != nil {
+				return WriteFileOutput{}, fmt.Errorf("failed to write file %q: %w", path, serr)
+			}
+		} else if _, err := ScopedWriteFile(path, []byte(input.Content), 0644, overwrite); err != nil {
 			return WriteFileOutput{}, fmt.Errorf("failed to write file %q: %w", path, err)
 		}
 		if log != nil {
@@ -212,6 +288,21 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		if err != nil {
 			return PatchOutput{}, err
 		}
+		// S28 skills confinement (deny-first, before any read): patching
+		// skill code refuses the same as write_file, and a confined
+		// missing file denies instead of surfacing a read error. R32
+		// reroute: the unified save_skill gate evaluates first (the
+		// candidate content is the replacement text); patch still never
+		// persists executable skills.
+		if err := denySkillsWrite(path); err != nil {
+			if SaveSkillGateFunc != nil {
+				// M5 non-interactive reroute (same as write_file).
+				if gerr := SaveSkillGateFunc(RerouteNoPromptCtx(ctx), skillGateName(path), input.NewString, ""); gerr != nil {
+					return PatchOutput{}, gerr
+				}
+			}
+			return PatchOutput{}, err
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return PatchOutput{}, fmt.Errorf("failed to read file %q: %w", path, err)
@@ -235,7 +326,21 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 			updated = strings.Replace(content, input.OldString, input.NewString, 1)
 		}
 
-		if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		// S24: scoped write (O_NOFOLLOW) - a planted symlink refuses
+		// instead of redirecting the patch. The confined InRoot owns
+		// the write whenever a root is known (M1: per-task root, else
+		// workspace root from ctx); the rootless choke applies only
+		// when no root resolves.
+		root := EffectiveWriteRoot(ctx, sandboxRoot)
+		if root != "" {
+			if rel, rerr := filepath.Rel(root, path); rerr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				if _, serr := ScopedWriteFileInRoot(root, rel, []byte(updated), 0644, true); serr != nil {
+					return PatchOutput{}, fmt.Errorf("failed to write file %q: %w", path, serr)
+				}
+			} else if _, serr := ScopedWriteFile(path, []byte(updated), 0644, true); serr != nil {
+				return PatchOutput{}, fmt.Errorf("failed to write file %q: %w", path, serr)
+			}
+		} else if _, err := ScopedWriteFile(path, []byte(updated), 0644, true); err != nil {
 			return PatchOutput{}, fmt.Errorf("failed to write file %q: %w", path, err)
 		}
 		if log != nil {
@@ -260,7 +365,11 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 		if root == "" {
 			root = "."
 		}
-		rootAbs, err := taskResolve(ctx, root, false, sandboxRoot)
+		// High loop 5 single identity: the search root resolves with
+		// action "grep" (the same action flowMapTool binds for
+		// search_files), so the base/flow lookups and the downstream
+		// grant consume share one identity.
+		rootAbs, err := taskResolveWithAction(ctx, root, "grep", false, sandboxRoot)
 		if err != nil {
 			return SearchFilesOutput{}, err
 		}
@@ -365,6 +474,21 @@ func CreateFileOpsTools(log interfaces.LogFunc, sessionManager ExecSessionProvid
 // behavior (sandbox-root join or plain resolvePath). The write flag
 // selects write vs read containment in sandbox mode.
 func taskResolve(ctx context.Context, path string, write bool, sandboxRoot string) (string, error) {
+	action := "read"
+	if write {
+		action = "edit"
+	}
+	return taskResolveWithAction(ctx, path, action, write, sandboxRoot)
+}
+
+// taskResolveWithAction is taskResolve with an explicit policy action
+// (High loop 5 single identity): the search_files tool resolves its root
+// with action "grep" so the base Lookup, the flow LookupWithLabel and the
+// downstream grant consume all use the same action the agent
+// pre-dispatch bound (flowMapTool "search_files" -> "grep"). Reads use
+// "read", writes use "edit". The write flag still selects write vs read
+// containment in sandbox mode.
+func taskResolveWithAction(ctx context.Context, path, action string, write bool, sandboxRoot string) (string, error) {
 	var resolved string
 	if sb := ConfigFrom(ctx); sb != nil && sb.Mode != SandboxModeOff {
 		r, err := sb.ResolveScopedPath(path, write)
@@ -387,10 +511,6 @@ func taskResolve(ctx context.Context, path string, write bool, sandboxRoot strin
 	// Permissions policy (PM-002): deny enforcement on the resolved
 	// absolute path. Ask is left to the existing tool-risk approval path;
 	// no installed policy = zero behavior change.
-	action := "read"
-	if write {
-		action = "edit"
-	}
 	if eff, rule, ok := permissions.Lookup(action, resolved); ok && rule != nil && eff == permissions.EffectDeny {
 		suffix := ""
 		if rule != nil {
@@ -398,15 +518,36 @@ func taskResolve(ctx context.Context, path string, write bool, sandboxRoot strin
 		}
 		return "", fmt.Errorf("path %q denied by permissions policy%s", resolved, suffix)
 	}
-	// Flow Guard pre-dispatch (FG-003): deny enforcement under the call
-	// label. Reads/edits are usually sources (delta, enforced
-	// post-admission in Phase 2), so only Deny escalates here; Ask stays
-	// on the tool-risk approval path. Skipped when the label resolves to
-	// start on a v1-equivalent policy (LookupWithLabel mirrors Lookup).
-	if label := flowLabelFromCtx(ctx); label != nil {
-		if eff, _, detail, ok := permissions.LookupWithLabel(label, action, resolved); ok && detail != "" && eff == permissions.EffectDeny {
+	// Flow Guard pre-dispatch (FG-003): a flow Deny never reaches the
+	// filesystem; a flow Ask admits only with a one-shot human approval
+	// threaded from the pre-dispatch (S9/H1). Reads/edits are usually
+	// sources (delta, enforced post-admission in Phase 2), but a
+	// narrowed label with a requires failure (Ask) or an unknown sink
+	// must not reach the filesystem without that approval: the
+	// pre-dispatch callback already routed the Ask to the human, and
+	// this layer consumes its grant. S9: no nil guard - a nil label
+	// (present-but-unregistered session under v2) is fail-closed inside
+	// LookupWithLabel (evaluated as narrowest), so skipping on nil would
+	// fail open. Without a v2 policy the lookup reports ok=false and the
+	// gate keeps exact v1 behavior.
+	if eff, _, detail, ok := permissions.LookupWithLabel(flowLabelFromCtx(ctx), action, resolved); ok && detail != "" && eff != permissions.EffectAllow {
+		if eff == permissions.EffectDeny {
 			return "", fmt.Errorf("path %q denied by flow guard: %s", resolved, detail)
 		}
+		// Ask: admit only with the pre-dispatch approval grant.
+		label := flowLabelFromCtx(ctx)
+		var version uint64
+		if label != nil {
+			version = label.Version
+		}
+		sessionID := ""
+		if ctx != nil {
+			sessionID = interfaces.SessionIDFromCtx(ctx)
+		}
+		if tryConsumeFileApproval(sessionID, action, path, version) {
+			return resolved, nil
+		}
+		return "", fmt.Errorf("path %q denied by flow guard: %s", resolved, detail)
 	}
 	return resolved, nil
 }
@@ -473,6 +614,19 @@ func wrapUntrustedData(s string) string {
 	return s
 }
 
+// appendEscapeNote emits the M3 model-legible escape note: WrapUntrustedData
+// neutralizes smuggled framing tags (live brackets become ‹ ›), so the
+// displayed content no longer matches the file bytes a patch old_string
+// must carry. When neutralization fired, the note tells the model to use
+// the original file bytes for edits. Clean content carries no note and
+// read->patch round-trips byte-identically (pinned by test).
+func appendEscapeNote(wrapped string) string {
+	if strings.Contains(wrapped, "‹UNTRUSTED_DATA›") || strings.Contains(wrapped, "‹/UNTRUSTED_DATA›") {
+		return wrapped + "\n[escape-note: framing tags in this file were escaped as ‹ › for safety; patch old_string must use the original file bytes, not the escaped display]"
+	}
+	return wrapped
+}
+
 // searchFile scans a single file with the compiled regex and returns matches
 // shaped according to the output mode. Binary files and unreadable files
 // produce no matches.
@@ -506,7 +660,7 @@ func searchFile(path string, re *regexp.Regexp, mode string) []SearchMatch {
 			line++
 			text := sc.Text()
 			if re.MatchString(text) {
-				out = append(out, SearchMatch{Path: path, Line: line, Content: wrapUntrustedData(text)})
+				out = append(out, SearchMatch{Path: path, Line: line, Content: appendEscapeNote(wrapUntrustedData(text))})
 			}
 		}
 		return out
@@ -573,7 +727,7 @@ func readFileContent(ctx context.Context, input ReadFileInput, sandboxRoot strin
 	}
 	return ReadFileOutput{
 		Path:      path,
-		Content:   wrapUntrustedData(content),
+		Content:   appendEscapeNote(wrapUntrustedData(content)),
 		Lines:     total,
 		Offset:    offset,
 		Truncated: end < total,

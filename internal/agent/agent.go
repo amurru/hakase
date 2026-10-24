@@ -20,12 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -538,35 +536,32 @@ func venvCreatorCommands(venvDir string) [][]string {
 }
 
 // getVenvPython returns the executable path to the virtualenv python binary, creating .venv if missing.
-func getVenvPython(log LogFunc) (string, error) {
-	venvDir := "./.venv"
+// H1 single absolute root: the workspace anchors creation (venvDir =
+// absJoin(workDir, .venv)) so the creator, the start verify, the spawn,
+// and the pip choke share one root even when the process cwd differs
+// from the run workspace. An empty workDir falls back to the process
+// cwd (absJoin(".", ".venv")). The result is always absolute.
+func getVenvPython(log LogFunc, workDir string) (string, error) {
+	base := strings.TrimSpace(workDir)
+	if base == "" {
+		base = "."
+	}
+	venvDir := absJoin(base, ".venv")
 	pyBin := filepath.Join(venvDir, "bin", "python3")
 	if runtime.GOOS == "windows" {
 		pyBin = filepath.Join(venvDir, "Scripts", "python.exe")
 	}
 
-	// Create .venv if it does not exist
+	// Create .venv if it does not exist. Spawned through the single
+	// choke (S23 inventory row: venv create -> choke, net closed,
+	// .venv only writable).
 	if _, err := os.Stat(pyBin); os.IsNotExist(err) {
 		if log != nil {
 			log("📦 [sys] Initializing local Python virtual environment in ./.venv ...")
 		}
 		var lastErr error
 		for _, spec := range venvCreatorCommands(venvDir) {
-			cmd := &exec.Cmd{Path: spec[0], Args: append([]string(nil), spec...)}
-			// Mirror the stdlib os/exec PATH resolution of a bare name; a
-			// lookup failure is stored on cmd.Err and surfaces from cmd.Run.
-			if filepath.Base(spec[0]) == spec[0] {
-				if lp, lerr := exec.LookPath(spec[0]); lp != "" {
-					cmd.Path = lp
-					if lerr != nil {
-						cmd.Err = lerr
-					}
-				} else if lerr != nil {
-					cmd.Err = lerr
-				}
-			}
-			sandbox.ConfigureProcess(cmd)
-			lastErr = cmd.Run()
+			lastErr = execCreateVenv(spec)
 			if lastErr == nil {
 				break
 			}
@@ -636,11 +631,55 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 			Decision: "allowed", Risk: "high",
 			SandboxMode: sandboxMode, SessionID: sessionID,
 		})
+		// S16: an allowed run proves the code for save_skill in this
+		// session (hash only, never raw code).
+		recordSkillProvenance(sessionID, skillCodeHash(code))
 		return nil
 	}
 	// nil sandbox, "" (missing), or "ask": require approval (fail closed).
 	// Source: "direct" for the root orchestrator. Delegation source tracking
 	// is out of scope for the initial implementation.
+	//
+	// Flow Guard resume binding (H2): the python tool owns its flow ask
+	// (the pre-dispatch callback only denies for python, so the ask is not
+	// prompted twice), so the ask must carry the (argsHash, labelVersion)
+	// binding like ApproveFlowAsk does: the pause record scopes the resume
+	// grant to this exact call, and a re-drive consumes the grant instead
+	// of prompting twice.
+	pythonArgs := map[string]any{"code": code}
+	var flowHash, flowSession string
+	var flowLabelVersion uint64
+	if flowReason != "" {
+		flowAction, flowRes := flowMapTool("python_interpreter", pythonArgs)
+		flowHash = flowArgsHash("python_interpreter", flowAction, flowRes)
+		flowSession = sessionID
+		if flowSession == "" {
+			flowSession = flowSessionID(ctx)
+		}
+		if label := flowLabelForCtx(ctx); label != nil {
+			flowLabelVersion = label.Version
+		}
+		if consumeFlowGrantDual(flowAskBinding{sessionID: flowSession, tool: "python_interpreter", argsHash: flowHash, labelVersion: flowLabelVersion}) {
+			// S9/H1 + S25 hygiene: the approval minted twin v1+v2
+			// records; the dual consume drains both, so the grant
+			// stays one-shot with no leak into a later turn.
+			AuditCommandExec(CommandAuditEntry{
+				Timestamp: time.Now(), Tool: "python_interpreter",
+				Command:  util.RedactTruncate(code, util.MaxLogField),
+				Decision: "approved", Risk: "high",
+				Reason:      "flow grant consumed: " + flowReason,
+				SandboxMode: sandboxMode, SessionID: sessionID,
+			})
+			// S16: an approved (grant-consumed) run proves the code.
+			recordSkillProvenance(sessionID, skillCodeHash(code))
+			return nil
+		}
+	}
+	// S13: the approval prompt carries the full truncated code (the
+	// human must see what they approve); redaction applies audit-only
+	// (audit entries below + pause detail) - never a gate input and
+	// never the prompt. The unified redact-then-truncate order keeps
+	// the 2000-rune bound on every redacted surface.
 	approved, aerr := ApproveExec(ctx, ApprovalRequest{
 		Tool:      "python_interpreter",
 		Command:   util.TruncateStr(code),
@@ -650,12 +689,14 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 		ExpiresAt: time.Now().Add(ApprovalExpiry()),
 		SessionID: sessionID,
 		// A flow ask is never auto-approved by approval.mode=allow (H5).
-		FlowReason: flowReason,
+		FlowReason:       flowReason,
+		FlowArgsHash:     flowHash,
+		FlowLabelVersion: flowLabelVersion,
 	})
 	if aerr != nil || !approved {
 		AuditCommandExec(CommandAuditEntry{
 			Timestamp: time.Now(), Tool: "python_interpreter",
-			Command:  util.TruncateStr(code),
+			Command:  util.RedactTruncate(code, util.MaxLogField),
 			Decision: "not_approved", Risk: "high",
 			Reason:      "python code execution not approved by user",
 			SandboxMode: sandboxMode, SessionID: sessionID,
@@ -664,11 +705,14 @@ func checkPythonGate(ctx context.Context, sb *sandbox.SandboxConfig, code string
 	}
 	AuditCommandExec(CommandAuditEntry{
 		Timestamp: time.Now(), Tool: "python_interpreter",
-		Command:  util.TruncateStr(code),
+		Command:  util.RedactTruncate(code, util.MaxLogField),
 		Decision: "approved", Risk: "high",
 		Reason:      "arbitrary Python code execution",
 		SandboxMode: sandboxMode, SessionID: sessionID,
 	})
+	// S16: an explicitly approved run proves the code for save_skill in
+	// this session, even when the run itself has not happened yet.
+	recordSkillProvenance(sessionID, skillCodeHash(code))
 	return nil
 }
 
@@ -679,21 +723,57 @@ func pipAllowed(sb *sandbox.SandboxConfig) bool {
 }
 
 // createPythonTool returns an ADK tool that executes Python code in a temporary directory.
-// If parentEnv is non-nil, it is used as the environment for subprocess execution
-// instead of os.Environ(). This ensures the sub-agent can find Python even when
-// the ADK runner strips environment variables.
+// The child environment is built from scratch (S20: scrubbed, no ambient
+// inheritance, no PYTHONPATH); skills load by absolute path via the loader
+// preamble. parentEnv is retained for signature compatibility but is
+// deliberately ignored: delegation inherits nothing ambient (S20).
 func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 	// Function tool handler signature takes agent.Context
 	execHandler := func(ctx agent.Context, input PythonExecInput) (PythonExecOutput, error) {
+		// S20: delegation inherits nothing ambient - the captured parent
+		// environment is deliberately not merged into the child.
+		_ = parentEnv
 		// Harmful-command protection gate: runs BEFORE getVenvPython so
 		// denied code never triggers venv creation side effects.
 		if err := checkPythonGate(ctx, deps.SandboxConfig, input.Code, interfaces.SessionIDFromCtx(ctx)); err != nil {
 			return PythonExecOutput{}, err
 		}
 
-		pyBin, err := getVenvPython(log)
+		// H1 single absolute root: the workspace anchors creation, so
+		// the creator, the start verify, the spawn, and the pip choke
+		// share one root even when the process cwd differs from the
+		// run workspace.
+		workDirEarly := pythonWorkDir()
+		pyBin, err := getVenvPython(log, workDirEarly)
 		if err != nil {
 			return PythonExecOutput{}, err
+		}
+
+		// Anchor the interpreter binary at the run workspace before
+		// verify/spawn/choke so cwd != workspace cannot split the venv
+		// (verify, child env, spawn and pipBinForPyBin all derive from
+		// this absolute pyBin). Idempotent: the creator already
+		// returned an absolute workspace-anchored path.
+		pyBin = absPyBin(pyBin, workDirEarly)
+		pipBinForVerify := pipBinForPyBin(pyBin, workDirEarly)
+
+		// R31 interpreter-startup integrity: the interpreter's own venv
+		// verifies on every start, not only on strict pip installs. A
+		// planted import hook or code-executing .pth persists across
+		// plain runs, so the start refuses fail-closed here (scoped to
+		// this venv: only this start denies, nothing is deleted or
+		// quarantined). No configured sandbox (unit-test path) skips
+		// the check - production always configures one in SetupRunner.
+		// The denial carries no paths (hash-only audit discipline).
+		if sb := agentSandboxConfig(); sb != nil {
+			if verr := verifyVenvIntegrity(absVenvRoot(pipBinForVerify), sb.PipTrustedSitecustomize); verr != nil {
+				AuditCommandExec(CommandAuditEntry{
+					Timestamp: time.Now(), Tool: "python_interpreter",
+					Decision: "denied", Risk: "high", Reason: verr.Error(),
+					SandboxMode: agentSandboxModeName(sb), SessionID: interfaces.SessionIDFromCtx(ctx),
+				})
+				return PythonExecOutput{}, fmt.Errorf("python interpreter refused: %w", verr)
+			}
 		}
 
 		// Sandbox-aware temp directory: when the sandbox is active, write
@@ -724,163 +804,29 @@ func createPythonTool(log LogFunc, parentEnv ...[]string) (tool.Tool, error) {
 			defer os.RemoveAll(tmpDir)
 		}
 		scriptPath = filepath.Join(tmpDir, "script.py")
-		if err := os.WriteFile(scriptPath, []byte(input.Code), 0600); err != nil {
+		// S20: the script runs with the loader preamble (absolute-path
+		// skill imports, sys.path pinned to the script dir) under the
+		// scrubbed child env - no PYTHONPATH, no ambient inheritance.
+		if err := writePythonScript(scriptPath, input.Code, tmpDir, skillsDirAbs()); err != nil {
 			return PythonExecOutput{}, err
 		}
 
-		runScript := func() (string, string) {
-			cmd := &exec.Cmd{Path: pyBin, Args: []string{pyBin, scriptPath}}
-			cmd.Env = append(os.Environ(), "PYTHONPATH=.:./skills")
-			// If a parent environment was captured at delegation time,
-			// merge it on top so the sub-agent inherits the parent's
-			// environment even if the ADK runner strips env vars.
-			if len(parentEnv) > 0 && parentEnv[0] != nil {
-				cmd.Env = append(parentEnv[0], cmd.Env...)
-			}
-			// Sandbox: pin cmd.Dir to the workspace root so the script
-			// runs inside the approved workspace.
-			if deps.SandboxConfig != nil && deps.SandboxConfig.Mode != sandbox.SandboxModeOff {
-				if root := deps.SandboxConfig.WorkspaceRoot(); root != "" {
-					cmd.Dir = root
-				}
-			}
-			// Process hardening: platform tree management via the
-			// sandbox helpers (process group + Pdeathsig on Unix,
-			// Job Object on Windows).
-			sandbox.ConfigureProcess(cmd)
-			// Pdeathsig fires on the OS thread that calls Start; lock it
-			// so the runtime does not recycle it before the child is
-			// started (golang/go#27505). Harmless on Windows.
-			runtime.LockOSThread()
-			var outBuf bytes.Buffer
-			cmd.Stdout = &outBuf
-			cmd.Stderr = &outBuf
-			if err := cmd.Start(); err != nil {
-				runtime.UnlockOSThread()
-				return "", err.Error()
-			}
-			if err := sandbox.AttachProcessTree(cmd); err != nil {
-				util.DebugWarn("python_job_attach_failed", "error", err.Error())
-			}
-			runtime.UnlockOSThread()
-
-			// Bounded wait: CommandContext cancels only the direct child;
-			// Wait cannot return while a descendant still holds the
-			// inherited output pipe. On cancellation, kill the whole tree
-			// first so Wait is guaranteed to complete.
-			waitCh := make(chan error, 1)
-			go func() { waitCh <- cmd.Wait() }()
-			var errOut error
-			select {
-			case errOut = <-waitCh:
-			case <-ctx.Done():
-				_ = sandbox.KillProcessTree(cmd)
-				errOut = <-waitCh
-			}
-			sandbox.ReleaseProcessTree(cmd)
-			errStr := ""
-			if errOut != nil {
-				errStr = errOut.Error()
-			}
-			return outBuf.String(), errStr
+		// Sandbox: the script runs inside the approved workspace.
+		workDir := pythonWorkDir()
+		childEnv := buildPythonChildEnv(pyBin)
+		sessionID := sessionIDFromAgentCtx(ctx)
+		run := func() (string, string) {
+			return execPythonScript(ctx, pyBin, scriptPath, workDir, childEnv)
 		}
 
-		stdout, stderr := runScript()
-
-		// Auto-Dependency Resolution Loop
-		// If execution failed due to a missing package, attempt pip install inside .venv and retry
-		if strings.Contains(stdout, "ModuleNotFoundError: No module named") {
-			re := regexp.MustCompile(`ModuleNotFoundError: No module named '([^']+)'`)
-			matches := re.FindStringSubmatch(stdout)
-			if len(matches) > 1 {
-				missingPkg := strings.Split(matches[1], ".")[0] // Handle sub-modules like 'bs4.element' -> 'bs4'
-
-				// Pip install gate: controlled by sandbox.AllowPipInstall.
-				// fail closed (nil sandbox → not allowed).
-				if !pipAllowed(deps.SandboxConfig) {
-					sandboxMode := "off"
-					if deps.SandboxConfig != nil {
-						sandboxMode = string(deps.SandboxConfig.Mode)
-					}
-					AuditCommandExec(CommandAuditEntry{
-						Timestamp: time.Now(), Tool: "pip",
-						Command:  "pip install " + missingPkg,
-						Decision: "denied", Risk: "medium",
-						Reason:      "pip install not allowed (allow_pip_install)",
-						SandboxMode: sandboxMode, SessionID: interfaces.SessionIDFromCtx(ctx),
-					})
-					return PythonExecOutput{Stdout: stdout, Stderr: stderr}, nil
-				}
-				sandboxMode := "off"
-				if deps.SandboxConfig != nil {
-					sandboxMode = string(deps.SandboxConfig.Mode)
-				}
-				AuditCommandExec(CommandAuditEntry{
-					Timestamp: time.Now(), Tool: "pip",
-					Command:  "pip install " + missingPkg,
-					Decision: "allowed", Risk: "medium",
-					SandboxMode: sandboxMode, SessionID: interfaces.SessionIDFromCtx(ctx),
-				})
-
-				pipBin := filepath.Join("./.venv", "bin", "pip")
-				if runtime.GOOS == "windows" {
-					pipBin = filepath.Join("./.venv", "Scripts", "pip.exe")
-				}
-
-				// 📡 Log progress directly to the side pane!
-				if log != nil {
-					log(
-						fmt.Sprintf(
-							"⚡ [code_interpreter] Missing package '%s' detected. Auto-installing into .venv...",
-							missingPkg,
-						),
-					)
-				}
-				installCmd := &exec.Cmd{Path: pipBin, Args: []string{pipBin, "install", missingPkg}}
-				// Merge parent env into the pip install command too
-				if len(parentEnv) > 0 && parentEnv[0] != nil {
-					installCmd.Env = append(parentEnv[0], installCmd.Env...)
-				}
-				// Sandbox: pin pip's working dir to the workspace root.
-				if deps.SandboxConfig != nil && deps.SandboxConfig.Mode != sandbox.SandboxModeOff {
-					if root := deps.SandboxConfig.WorkspaceRoot(); root != "" {
-						installCmd.Dir = root
-					}
-				}
-				// Same platform process hardening as the script-run
-				// command, with the same bounded wait so a descendant
-				// holding the output pipe cannot block cancellation.
-				sandbox.ConfigureProcess(installCmd)
-				runtime.LockOSThread()
-				if startErr := installCmd.Start(); startErr == nil {
-					if aerr := sandbox.AttachProcessTree(installCmd); aerr != nil {
-						util.DebugWarn("pip_job_attach_failed", "error", aerr.Error())
-					}
-				}
-				runtime.UnlockOSThread()
-				pipWait := make(chan error, 1)
-				go func() { pipWait <- installCmd.Wait() }()
-				select {
-				case <-pipWait:
-				case <-ctx.Done():
-					_ = sandbox.KillProcessTree(installCmd)
-					<-pipWait
-				}
-				sandbox.ReleaseProcessTree(installCmd)
-
-				if log != nil {
-					log(
-						fmt.Sprintf(
-							"✅ [code_interpreter] Package '%s' installed successfully.",
-							missingPkg,
-						),
-					)
-				}
-
-				// Retry running the script after package installation
-				stdout, stderr = runScript()
-			}
-		}
+		// Auto-dependency resolution: a missing module triggers the S18
+		// gated installer at most once, then exactly one retry (S18+S22).
+		// Deny (config, allowlist, human, install error) keeps the
+		// original output unchanged with no retry. Quiet: no side-pane
+		// progress (audit lines stay, package name hashed).
+		stdout, stderr := runPythonWithAutoPip(ctx, run, func(ctx context.Context, pkg string) error {
+			return gateAndInstallPip(ctx, pkg, sessionID, pyBin, workDir)
+		})
 
 		return PythonExecOutput{
 			Stdout: stdout,
@@ -919,14 +865,33 @@ func createDownloadTool() (tool.Tool, error) {
 		if blocked, eff, freason := checkPreFlowVerdict(ctx, "download_file", map[string]any{"url": input.URL}); blocked && eff == permissions.EffectDeny {
 			return FileDownloadOutput{}, fmt.Errorf("download blocked by flow guard: %s", freason)
 		}
-		req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
+		// Scheme allowlist (S19): http/https only. Anything else
+		// (file:, gopher:, ftp:) is refused before dial.
+		parsed, perr := url.Parse(input.URL)
+		if perr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return FileDownloadOutput{}, fmt.Errorf("download refused: unsupported URL scheme (http/https only)")
+		}
+		// Pre-flight (S19): fail fast on the initial host before dial;
+		// the dial-time GuardedDialContext stays authoritative and every
+		// redirect hop is re-checked by the shared redirect guard.
+		if err := downloadHostCheck(parsed.Host); err != nil {
+			return FileDownloadOutput{}, fmt.Errorf("download refused: %w", err)
+		}
+		// S19: the ADK tool context is decoupled before it reaches
+		// net/http: the client Timeout is the total budget, and the ADK
+		// mock context panics on Deadline/Done. Values still propagate
+		// (WithoutCancel keeps them); cancellation is bounded by the
+		// client timeout instead of the run scope.
+		req, err := http.NewRequestWithContext(context.WithoutCancel(ctx), "GET", parsed.String(), nil)
 		if err != nil {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create request: %w", err)
 		}
 		// Modern User-Agent header to avoid basic scraping blocks
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HakaseAgent/1.0")
 
-		resp, err := http.DefaultClient.Do(req)
+		// S19: no http.DefaultClient anywhere on this path - the guarded
+		// leaf client (30s total, guarded dial, per-hop redirect re-check).
+		resp, err := newDownloadClient().Do(req)
 		if err != nil {
 			return FileDownloadOutput{}, fmt.Errorf("download request failed: %w", err)
 		}
@@ -940,11 +905,11 @@ func createDownloadTool() (tool.Tool, error) {
 			)
 		}
 
-		// Ensure local ./downloads directory exists
+		// The downloads directory is owned by the choke below (R33: no
+		// outer MkdirAll - the plant window between an outer mkdir and
+		// the guarded open is closed by letting the choke create parents
+		// and re-check them).
 		outDir := "./downloads"
-		if err := os.MkdirAll(outDir, 0755); err != nil {
-			return FileDownloadOutput{}, fmt.Errorf("failed to create downloads folder: %w", err)
-		}
 
 		// Resolve default filename if not provided. When a custom filename
 		// is supplied, strip it to its base component to prevent ../
@@ -976,26 +941,26 @@ func createDownloadTool() (tool.Tool, error) {
 				)
 			}
 			filePath = resolved
-			// Ensure the resolved downloads directory exists.
-			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-				return FileDownloadOutput{}, fmt.Errorf(
-					"failed to create downloads folder: %w",
-					err,
-				)
-			}
 		} else {
 			filePath = filepath.Join(outDir, filename)
 		}
 
-		out, err := os.Create(filePath)
+		// R33: the streaming create owns directory creation (no outer
+		// MkdirAll) and confines the open under the downloads root with
+		// an EvalSymlinks re-check (a planted symlinked parent refuses
+		// instead of redirecting the download). Truncate semantics
+		// preserved (same-name overwrite); partials are still unlinked
+		// by saveDownloadBody on over-cap.
+		downloadRoot := filepath.Dir(filePath)
+		out, filePath, err := sandbox.ScopedCreateFile(downloadRoot, filePath, 0644)
 		if err != nil {
 			return FileDownloadOutput{}, fmt.Errorf("failed to create destination file: %w", err)
 		}
 		defer out.Close()
 
-		bytesWritten, err := io.Copy(out, resp.Body)
+		bytesWritten, err := saveDownloadBody(resp.Body, out, filePath, vision.DownloadMaxBytes)
 		if err != nil {
-			return FileDownloadOutput{}, fmt.Errorf("failed to save file contents: %w", err)
+			return FileDownloadOutput{}, err
 		}
 
 		return FileDownloadOutput{
@@ -1068,29 +1033,39 @@ type SaveSkillOutput struct {
 // createSaveSkillTool creates a tool to save tested Python code into ./skills/
 func createSaveSkillTool() (tool.Tool, error) {
 	execHandler := func(ctx agent.Context, input SaveSkillInput) (SaveSkillOutput, error) {
-		// Flow Guard pre-dispatch (FG-003, T2.1): persisting a skill under
-		// a narrowed label is gated as a sink. Phase 3 (T3.1): the ADK
-		// pre-dispatch callback already routed a flow Ask to the human,
-		// so this re-check only refuses a flow Deny. No installed policy
-		// keeps v1.
-		if blocked, eff, freason := checkPreFlowVerdict(ctx, "save_skill", map[string]any{"name": input.Name}); blocked && eff == permissions.EffectDeny {
-			return SaveSkillOutput{}, fmt.Errorf("save_skill blocked by flow guard: %s", freason)
+		// S16 code-source gate (ADR condition 4, R32 joint binding): the
+		// flow re-check runs first (deny-wins over provenance), then name
+		// validation, then the provenance check, then a fresh human
+		// approval for overwrites binding the exact code+description
+		// joint. Refusals happen before any file or registry mutation
+		// (ADR condition 9). No installed policy keeps v1 flow behavior;
+		// provenance still applies.
+		if err := checkSaveSkillAllowed(ctx, input.Name, input.Code, input.Description); err != nil {
+			return SaveSkillOutput{}, err
 		}
-		skillsDir := "./skills"
+		// Low: the saver and the S20 loader must agree on the skills
+		// directory even when the process cwd differs from the run
+		// workspace - anchor at the run workspace (pythonWorkDir), not
+		// the ambient cwd, so save_skill lands where `import skills.*`
+		// loads from.
+		skillsDir := skillsDirAbs()
 		if err := os.MkdirAll(skillsDir, 0755); err != nil {
 			return SaveSkillOutput{}, fmt.Errorf("failed to create skills directory: %w", err)
 		}
 
-		// Ensure ./skills/__init__.py exists so it acts as a Python package
+		// Ensure ./skills/__init__.py exists so it acts as a Python package.
+		// S24: create-only (O_EXCL) - a planted file is never truncated
+		// here; the Stat + create pair is atomic via the exclusive open.
 		initPath := filepath.Join(skillsDir, "__init__.py")
 		if _, err := os.Stat(initPath); os.IsNotExist(err) {
-			_ = os.WriteFile(initPath, []byte("# Skills package\n"), 0644)
+			_, _ = sandbox.ScopedWriteFile(initPath, []byte("# Skills package\n"), 0644, false)
 		}
 
-		// Save Python code
+		// Save Python code. S24: scoped exclusive write (O_NOFOLLOW, a
+		// planted symlink refuses instead of redirecting the save).
 		scriptFileName := fmt.Sprintf("%s.py", input.Name)
 		scriptPath := filepath.Join(skillsDir, scriptFileName)
-		if err := os.WriteFile(scriptPath, []byte(input.Code), 0644); err != nil {
+		if _, err := sandbox.ScopedWriteFile(scriptPath, []byte(input.Code), 0644, true); err != nil {
 			return SaveSkillOutput{}, fmt.Errorf("failed to save skill code: %w", err)
 		}
 
@@ -1098,9 +1073,17 @@ func createSaveSkillTool() (tool.Tool, error) {
 		registryPath := filepath.Join(skillsDir, "skills.json")
 		var registry skill.SkillRegistry
 
+		// ADR condition 9: the registry keeps its tolerant-read behavior
+		// (a missing file starts empty), but a corrupt registry is an
+		// explicit error, never a silent overwrite.
 		data, err := os.ReadFile(registryPath)
+		if err != nil && !os.IsNotExist(err) {
+			return SaveSkillOutput{}, fmt.Errorf("failed to read skills registry: %w", err)
+		}
 		if err == nil {
-			_ = json.Unmarshal(data, &registry)
+			if uerr := json.Unmarshal(data, &registry); uerr != nil {
+				return SaveSkillOutput{}, fmt.Errorf("failed to parse skills registry (refusing to overwrite corrupt registry): %w", uerr)
+			}
 		}
 
 		// Check if skill exists and update, or append
@@ -1109,6 +1092,9 @@ func createSaveSkillTool() (tool.Tool, error) {
 			Description: input.Description,
 			FileName:    scriptFileName,
 			SavedAt:     time.Now().Format(time.RFC3339),
+			// R32: the durable code+description binding (hash-only) -
+			// this exact pair is what the update approval covered.
+			JointHash: skillJointHash(input.Code, input.Description),
 		}
 
 		updated := false
@@ -1125,7 +1111,9 @@ func createSaveSkillTool() (tool.Tool, error) {
 
 		regBytes, err := json.MarshalIndent(registry, "", "  ")
 		if err == nil {
-			_ = os.WriteFile(registryPath, regBytes, 0644)
+			// S24: scoped write (O_NOFOLLOW) - a planted registry
+			// symlink refuses instead of redirecting the write.
+			_, _ = sandbox.ScopedWriteFile(registryPath, regBytes, 0644, true)
 		}
 
 		return SaveSkillOutput{
@@ -1610,6 +1598,8 @@ var taskRegistryMu sync.Mutex
 // acquireTaskFileLock opens tasks.json.lock and takes an exclusive flock.
 // The caller must hold taskRegistryMu and release via releaseTaskFileLock.
 func acquireTaskFileLock() (*os.File, error) {
+	// s24-allow: fixed-path lock file disciplined by flock(2) (exclusive,
+	// held for the critical section); the lock path is not model-controlled.
 	f, err := os.OpenFile(tasksFile+".lock", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
@@ -1637,6 +1627,11 @@ func writeTasksFileAtomic(data []byte) error {
 			return err
 		}
 	}
+	// s24-allow: CreateTemp creates O_EXCL|O_NOFOLLOW-style unique files
+	// (0600 via umask-safe perm set below) and the durable commit is
+	// rename(2), which atomically replaces the fixed path (a symlink at
+	// the destination is replaced, never followed) - same guarantee as
+	// the S24 choke for this fixed-path persistence.
 	tmp, err := os.CreateTemp(".", ".tasks-*.tmp")
 	if err != nil {
 		return err
@@ -2106,7 +2101,10 @@ func writeTaskCheckpoint(registry *TaskRegistry) error {
 		checkpointDir,
 		fmt.Sprintf("checkpoint-%s.json", time.Now().Format("2006-01-02T15-04-05.000Z")),
 	)
-	return os.WriteFile(checkpointFile, checkpointBytes, 0644)
+	// S24: timestamped checkpoint names are unique per write (create-only
+	// O_EXCL); a planted file refuses instead of being overwritten.
+	_, err = sandbox.ScopedWriteFile(checkpointFile, checkpointBytes, 0644, false)
+	return err
 }
 
 // Task management tools
@@ -2210,6 +2208,15 @@ func archiveTaskTool(log LogFunc) (tool.Tool, error) {
 // orchestrator agent, including the list of available skills so skill
 // discovery happens at the orchestrator level, not only after delegation to
 // the code_interpreter sub-agent.
+// markdownSkillsInstruction is the orchestrator's markdown-skill rule
+// (S28, deny-first): discovery paths are writable via write_file, and a
+// write_file denial is never routed around via system_exec (the bypass
+// the old wording invited is closed - the model stops and asks the user).
+// buildOrchestratorInstruction composes it into the prompt; the wording
+// is pinned by TestS28NoBypassInstruction.
+const markdownSkillsInstruction = `### CREATING NEW MARKDOWN SKILLS:
+When the user asks you to create a new markdown skill, prefer writing it to the project root's '.agents/skills/' directory (e.g. <projectRoot>/.agents/skills/<skill-name>/SKILL.md), which is the portable, agent-agnostic location that discovery always scans. Never use 'system_exec' (or any other tool) to bypass a 'write_file' denial: deny-first - a blocked write stays blocked. If writing to '.agents/skills/' fails for any reason (permissions, sandbox, existing directory, etc.), you may write to another valid discovery location instead, in priority order: the project's '.claude/skills/', '.opencode/skills/', or '.gemini/skills/', then the user-level '~/.agents/skills/', '~/.claude/skills/', '~/.gemini/skills/', or '~/.config/opencode/skills/' (honoring XDG_CONFIG_HOME). If every discovery location is blocked, stop and ask the user instead of routing around the restriction. Do NOT create skills outside these discovery paths - a skill placed elsewhere will never be loaded. The skill directory name must match the 'name' in its SKILL.md frontmatter.`
+
 func buildOrchestratorInstruction(installedSkills string, cfg *config.Config) string {
 	return `You are an AI research & analysis coordinator.
 - web_researcher, code_interpreter, and general_purpose are SUB-AGENTS, NOT tools. To use one, call 'delegate_task' with 'agent_name' set to the sub-agent name (recommended: task tracking + isolated session), or 'transfer_to_agent' to hand control directly. The delegate_task schema takes 'goal' (required) and 'context' (optional) - there is no 'prompt' or 'task' field.
@@ -2242,8 +2249,7 @@ After a task that FAILED (repeated errors, dead-ends, blocked steps) or was COMP
 ### SKILL REUSE:
 Review the "AVAILABLE PRE-LEARNED SKILLS" list below. If a listed skill matches the user's request, load its full instructions with 'load_markdown_skill' and follow them, or delegate to the 'code_interpreter' sub-agent which can also reuse saved skills. Do not duplicate work that an existing skill already covers.
 
-### CREATING NEW MARKDOWN SKILLS:
-When the user asks you to create a new markdown skill, prefer writing it to the project root's '.agents/skills/' directory (e.g. <projectRoot>/.agents/skills/<skill-name>/SKILL.md), which is the portable, agent-agnostic location that discovery always scans. Use 'system_exec' to create the files if 'write_file' is blocked by workspace restrictions. If writing to '.agents/skills/' fails for any reason (permissions, sandbox, existing directory, etc.), you may write to another valid discovery location instead, in priority order: the project's '.claude/skills/', '.opencode/skills/', or '.gemini/skills/', then the user-level '~/.agents/skills/', '~/.claude/skills/', '~/.gemini/skills/', or '~/.config/opencode/skills/' (honoring XDG_CONFIG_HOME). Do NOT create skills outside these discovery paths - a skill placed elsewhere will never be loaded. The skill directory name must match the 'name' in its SKILL.md frontmatter.
+` + markdownSkillsInstruction + `
 
 ### MEDIA GENERATION:
 You have media generation tools: 'generate_image' (always available via pil fallback; cloud providers openai and fal used when keys present - prefer for photorealistic images, infographics, posters), 'generate_video' (requires a cloud provider: the OpenAI-compatible router such as OpenRouter via openai_video_key or openai_image_key, or fal via fal_key), 'generate_audio' (stub in v1). For generate_image, pil is the offline fallback that renders structured graphics (diagrams, posters, cards) deterministically from prompt+seed - not photorealistic but always works. Cloud providers are tried first when configured (order: openai, fal, pil). All generated media is saved under outputs/media/<ulid>.<ext> and rendered inline via /api/files/inline and mediaLinks - just include the returned markdown snippet in your final answer. Never write outside outputs/media; the store handles paths. Use provider:"auto" by default; explicit provider overrides auto ordering.
@@ -2331,6 +2337,12 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	// Store deps and runtime for internal access.
 	deps = d
 	rt = r
+
+	// R32 reroute: skills-library write denials (write_file/patch) route
+	// through the unified save_skill provenance gate (flow deny-wins +
+	// code/description joint + fresh update approval) so the static
+	// suffix check and the gate cannot drift apart.
+	wireSaveSkillGate()
 
 	// Load sandbox config before any tool creation so createPythonTool,
 	// createDownloadTool, and buildExecCommand can consult it.

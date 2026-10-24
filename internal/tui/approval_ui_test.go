@@ -402,6 +402,34 @@ func TestApprovalUICtrlCWhileModalQuits(t *testing.T) {
 	}
 }
 
+// TestApprovalUIModalShowsFlowMarker pins H3: a flow-scoped approval
+// names the flow marker in the modal so the operator sees this approval
+// authorizes exactly one flow-scoped call, never a reset.
+func TestApprovalUIModalShowsFlowMarker(t *testing.T) {
+	m := makeModel()
+	resp := make(chan bool, 1)
+	m.pendingApproval = &approvalPromptMsg{
+		Req: agent.ApprovalRequest{
+			Tool: "system_exec", Command: "ls", Risk: "HIGH",
+			Reason:     "test",
+			FlowReason: "flow: shell blocked",
+		},
+		Resp: resp,
+	}
+	got := m.approvalModalView().Content
+	if !strings.Contains(got, "flow: shell blocked") {
+		t.Errorf("flow modal missing flow marker, got: %s", safeHead(got, 400))
+	}
+
+	m.pendingApproval = &approvalPromptMsg{
+		Req:  agent.ApprovalRequest{Tool: "system_exec", Command: "ls", Risk: "LOW", Reason: "test"},
+		Resp: resp,
+	}
+	if got := m.approvalModalView().Content; strings.Contains(got, "[flow:") {
+		t.Errorf("non-flow modal must not carry a flow marker, got: %s", safeHead(got, 400))
+	}
+}
+
 func safeHead(s string, n int) string {
 	if len(s) <= n {
 		return s

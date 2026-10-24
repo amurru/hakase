@@ -463,6 +463,10 @@ func (d *Driver) persistAgentResponse(sessionID, content, thinking string, usage
 		log.Printf("agentrun: warning: failed to load session %s for persistence: %v", sessionID, err)
 		return
 	}
+	// The load above is resume-only (it never overwrites live registry
+	// folds, C1); sync the live label into the session before appending
+	// so turn-end persistence cannot write a stale label back to disk.
+	hakasesession.DefaultRegistry.Sync(sess)
 	sess.AddMessageWithMetaAndAttachments("agent", content, thinking, tokens, hakasesession.MessageKindText, nil)
 	if err := store.Save(sess); err != nil {
 		log.Printf("agentrun: warning: failed to persist agent reply for session %s: %v", sessionID, err)

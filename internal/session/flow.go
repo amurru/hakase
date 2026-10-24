@@ -193,6 +193,18 @@ func (r *FlowRegistry) Get(sessionID string) *permissions.SessionLabel {
 	return &l
 }
 
+// IsInitialized reports whether the registry holds a live entry for
+// sessionID. Load consults it so a read racing a turn never imports stale
+// disk state over live folds (C1).
+func (r *FlowRegistry) IsInitialized(sessionID string) bool {
+	if r == nil || sessionID == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.initialized[sessionID]
+}
+
 // Set installs a label unconditionally (load/resume path).
 func (r *FlowRegistry) Set(sessionID string, l permissions.SessionLabel) {
 	r.mu.Lock()
@@ -270,8 +282,63 @@ func (r *FlowRegistry) Merge(sessionID string, other permissions.SessionLabel) p
 	return merged
 }
 
-// Sync copies the registry label and applied-key set back into sess
-// (callers persist with Save after folds). No-op for unknown sessions.
+// ImportMeet atomically merges persisted session state into the registry
+// under a single write lock (F1: no check-then-act split between an
+// IsInitialized read lock and a later write lock, so a Load racing a turn
+// can neither widen the registry nor lose a concurrent fold).
+//
+// A registry with no live entry for sessionID imports the persisted label
+// verbatim (no version bump: the persisted version is authoritative, and
+// bumping every resume would break the H3 resume/compaction
+// version-unchanged invariant) and reports imported=true. A registry with
+// a live entry merges with permissions.Meet (narrowing only, never wider)
+// and reports imported=false. Either way the applied-key set becomes the
+// union of live and persisted keys (monotone: applied sets only grow), the
+// entry is marked initialized, and the merged label is returned.
+func (r *FlowRegistry) ImportMeet(sessionID string, persisted permissions.SessionLabel, applied map[string]bool) (merged permissions.SessionLabel, imported bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.initialized[sessionID] {
+		r.labels[sessionID] = persisted
+		set := map[string]bool{}
+		for k, v := range applied {
+			set[k] = v
+		}
+		r.applied[sessionID] = set
+		r.initialized[sessionID] = true
+		return persisted, true
+	}
+	cur := r.labels[sessionID]
+	merged = permissions.Meet(cur, persisted)
+	r.labels[sessionID] = merged
+	set := r.applied[sessionID]
+	if set == nil {
+		set = map[string]bool{}
+		r.applied[sessionID] = set
+	}
+	for k, v := range applied {
+		set[k] = v
+	}
+	return merged, false
+}
+
+// appliedCopy returns a copy of the applied-key set under the read lock
+// ("" or unknown sessions yield an empty set, never nil).
+func (r *FlowRegistry) appliedCopy(sessionID string) map[string]bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := map[string]bool{}
+	for k, v := range r.applied[sessionID] {
+		out[k] = v
+	}
+	return out
+}
+
+// Sync copies the registry label back into sess and unions the
+// applied-key sets (registry live keys plus whatever the loaded object
+// already carries, so a Load-then-Save round trip after a racing turn
+// preserves both narrowings' idempotency keys and never double-folds).
+// No-op for unknown sessions.
 func (r *FlowRegistry) Sync(sess *Session) {
 	if sess == nil {
 		return
@@ -287,26 +354,45 @@ func (r *FlowRegistry) Sync(sess *Session) {
 	for k, v := range r.applied[sess.ID] {
 		set[k] = v
 	}
+	for k, v := range sess.FlowApplied {
+		set[k] = v
+	}
 	sess.FlowApplied = set
 }
 
 // RegisterLoaded ensures a just-loaded session resumes under its
-// persisted label: absent flow recomputes conservative (never widest),
-// then the registry imports label + applied set. Returns true when it
-// recomputed (caller audits flow_recomputed and shows the one-time
-// resume notice).
+// persisted label (resume-only): absent flow recomputes conservative
+// (never widest), then the registry imports label + applied set. When the
+// registry already holds a live entry for the session (a turn folded after
+// the resume), the live entry is authoritative: the import is skipped and
+// the live label is synced into the loaded object instead, so a Load
+// racing a turn can neither widen the registry nor hand a read path a
+// stale label (C1). Returns true when it recomputed.
 func RegisterLoaded(sess *Session) bool {
 	return RegisterLoadedWith(DefaultRegistry, sess)
 }
 
 // RegisterLoadedWith is RegisterLoaded against an explicit registry
-// (tests).
+// (tests). The check-and-import holds a single write lock inside
+// ImportMeet: a Load racing a turn merges (Meet, narrowing only) instead
+// of letting stale disk state widen live folds, and the merged label is
+// synced back into the loaded object so read paths (turn-end persistence,
+// compaction, listings) see a label coherent with the registry they will
+// Save back. Returns true when it recomputed.
 func RegisterLoadedWith(r *FlowRegistry, sess *Session) bool {
 	if sess == nil || r == nil {
 		return false
 	}
 	recomputed := sess.RecomputeFlow()
-	r.Import(sess.ID, *sess.Flow, sess.FlowApplied)
+	merged, fresh := r.ImportMeet(sess.ID, *sess.Flow, sess.FlowApplied)
+	l := merged
+	sess.Flow = &l
+	if !fresh {
+		// Merged into a live entry: pick up the union applied set so
+		// the Save preserves both sides' idempotency keys. A fresh
+		// import already carries exactly the persisted set.
+		sess.FlowApplied = r.appliedCopy(sess.ID)
+	}
 	if recomputed {
 		r.mu.Lock()
 		r.recomputed[sess.ID] = true

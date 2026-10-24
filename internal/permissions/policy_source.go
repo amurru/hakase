@@ -95,6 +95,17 @@ func Installed() *LayeredPolicy {
 	return installedLayers
 }
 
+// FlowEnabled reports whether the installed policy enables flow (v2)
+// checks. False when no policy is installed or it is v0/v1: every flow
+// gate passes through unchanged (v1 parity, FG-003 H1 / FG-004 H2).
+// Unlike Installed, this also covers programmatically installed
+// (non-layered) policies, which tests and early wiring use.
+func FlowEnabled() bool {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	return installedPolicy != nil && installedPolicy.FlowEnabled()
+}
+
 // DeltaForInstalled returns the most-narrowing union delta for
 // action+resources under the installed policy (FG-004 folding). ok is
 // false when no policy is installed, the policy is not v2, or no matched

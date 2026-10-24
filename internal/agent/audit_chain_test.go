@@ -22,14 +22,16 @@ func tempAuditDir(t *testing.T) string {
 }
 
 // TestAuditSecretsRedacted pins M5: secret-shaped values never reach
-// the chained log (and hence never reach SIEM/export either).
+// the chained log (and hence never reach SIEM/export either). S13: the
+// fixtures use shapes the unified util.RedactSecrets engine catches
+// (typed [REDACTED:<kind>] tokens).
 func TestAuditSecretsRedacted(t *testing.T) {
 	dir := tempAuditDir(t)
 	AuditCommandExec(CommandAuditEntry{
 		Timestamp: time.Now(), Tool: "system_exec",
-		Command:  `curl -H "Authorization: Bearer abc123xyz" https://x.example`,
-		Args:     []string{"--token", "ghp_abcdefgh12345678"},
-		Reason:   "password=hunter2 run",
+		Command:  `curl -H "Authorization: Bearer abcdefghij1234567890" https://x.example`,
+		Args:     []string{"--token", "ghp_abcdefghij1234567890"},
+		Reason:   "password=hunter22 run",
 		Decision: "allowed",
 	})
 	entries, err := ReadAuditEntries(dir, time.Time{})
@@ -40,12 +42,12 @@ func TestAuditSecretsRedacted(t *testing.T) {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
 	blob, _ := json.Marshal(entries[0])
-	for _, secret := range []string{"abc123xyz", "ghp_abcdefgh12345678", "hunter2"} {
+	for _, secret := range []string{"abcdefghij1234567890", "ghp_abcdefghij1234567890", "hunter22"} {
 		if strings.Contains(string(blob), secret) {
 			t.Errorf("chained entry leaks %q: %s", secret, blob)
 		}
 	}
-	if !strings.Contains(string(blob), "[REDACTED]") {
+	if !strings.Contains(string(blob), "REDACTED") {
 		t.Errorf("no redaction marker in %s", blob)
 	}
 }

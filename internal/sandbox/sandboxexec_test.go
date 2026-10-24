@@ -30,7 +30,7 @@ func TestBuildBwrapArgv(t *testing.T) {
 		WorkspaceRoots: []string{tmpDir},
 	}
 
-	argv, err := buildBwrapArgv(sb, []string{"echo", "hello"}, tmpDir, false, nil)
+	argv, err := buildBwrapArgv(sb, []string{"echo", "hello"}, tmpDir, false, nil, false)
 	if err != nil {
 		t.Fatalf("buildBwrapArgv: %v", err)
 	}
@@ -73,14 +73,14 @@ func TestBuildBwrapArgvNetwork(t *testing.T) {
 	}
 
 	// needsNetwork=true: must NOT contain --unshare-net.
-	argv, _ := buildBwrapArgv(sb, []string{"curl"}, "", true, nil)
+	argv, _ := buildBwrapArgv(sb, []string{"curl"}, "", true, nil, false)
 	joined := strings.Join(argv, " ")
 	if strings.Contains(joined, "--unshare-net") {
 		t.Errorf("needsNetwork=true but argv contains --unshare-net; got: %s", joined)
 	}
 
 	// needsNetwork=false: MUST contain --unshare-net.
-	argv, _ = buildBwrapArgv(sb, []string{"curl"}, "", false, nil)
+	argv, _ = buildBwrapArgv(sb, []string{"curl"}, "", false, nil, false)
 	joined = strings.Join(argv, " ")
 	if !strings.Contains(joined, "--unshare-net") {
 		t.Errorf("needsNetwork=false but argv missing --unshare-net; got: %s", joined)
@@ -95,7 +95,7 @@ func TestBuildBwrapArgvExtraBinds(t *testing.T) {
 	}
 
 	// Extra bind in "src:dst" form.
-	argv, err := buildBwrapArgv(sb, []string{"python3"}, "", false, []string{venvDir + ":/opt/venv"})
+	argv, err := buildBwrapArgv(sb, []string{"python3"}, "", false, []string{venvDir + ":/opt/venv"}, false)
 	if err != nil {
 		t.Fatalf("buildBwrapArgv: %v", err)
 	}
@@ -107,12 +107,12 @@ func TestBuildBwrapArgvExtraBinds(t *testing.T) {
 
 func TestBuildBwrapArgvErrors(t *testing.T) {
 	// Nil config.
-	if _, err := buildBwrapArgv(nil, []string{"ls"}, "", false, nil); err == nil {
+	if _, err := buildBwrapArgv(nil, []string{"ls"}, "", false, nil, false); err == nil {
 		t.Error("expected error for nil config")
 	}
 	// Empty innerArgv.
 	sb := &SandboxConfig{Mode: SandboxModeBubblewrap, WorkspaceRoots: []string{"."}}
-	if _, err := buildBwrapArgv(sb, nil, "", false, nil); err == nil {
+	if _, err := buildBwrapArgv(sb, nil, "", false, nil, false); err == nil {
 		t.Error("expected error for empty innerArgv")
 	}
 }
@@ -129,7 +129,7 @@ func TestWrapBwrapCmdIntegration(t *testing.T) {
 		Mode:           SandboxModeBubblewrap,
 		WorkspaceRoots: []string{t.TempDir()},
 	}
-	cmd, err := wrapBwrapCmd(sb, []string{"echo", "hello-from-bwrap"}, "", false, nil)
+	cmd, err := wrapBwrapCmd(sb, []string{"echo", "hello-from-bwrap"}, "", false, nil, false)
 	if err != nil {
 		t.Fatalf("wrapBwrapCmd: %v", err)
 	}

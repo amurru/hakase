@@ -84,13 +84,13 @@ func TestFlowMapTool(t *testing.T) {
 		wantFrag string
 	}{
 		{"system_exec", map[string]any{"command": "ls -la"}, "shell", 1, "ls -la"},
-		{"read_file", map[string]any{"path": "docs/internal/x.md"}, "read", 1, "docs/internal/x.md"},
-		{"write_file", map[string]any{"path": "a/b.txt"}, "edit", 1, "a/b.txt"},
-		{"search_files", map[string]any{"path": "src"}, "grep", 1, "src"},
+		{"read_file", map[string]any{"path": "docs/internal/x.md"}, "read", 2, "docs/internal/x.md"},
+		{"write_file", map[string]any{"path": "a/b.txt"}, "edit", 2, "a/b.txt"},
+		{"search_files", map[string]any{"path": "src"}, "grep", 2, "src"},
 		{"python_interpreter", map[string]any{"code": "print(1)"}, "python_interpreter", 1, "code_hash:"},
 		{"download_file", map[string]any{"url": "https://Example.com/x?a=1#frag"}, "download_file", 1, "example.com"},
 		{"ask_sidekick", map[string]any{"question": "why?"}, "ask_sidekick", 2, "why?"},
-		{"save_skill", map[string]any{"name": "foo"}, "save_skill", 1, "skills/foo.py"},
+		{"save_skill", map[string]any{"name": "foo"}, "save_skill", 2, "skills/foo.py"},
 		{"vision", map[string]any{"image_url": "/tmp/a.png"}, "vision", 1, "/tmp/a.png"},
 		{"send_message", map[string]any{"channel": "#g", "body": "hi"}, "send_message", 2, "#g"},
 		{"mcp__github__create_issue", map[string]any{"title": "bug"}, "mcp__github__create_issue", 0, ""},

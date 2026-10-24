@@ -206,7 +206,7 @@ func compileRules(rules []Rule, version int) ([]compiledRule, error) {
 			return nil, fmt.Errorf("permissions: rule %d: %w", i, err)
 		}
 		hasFlowKeys := r.Delta != nil || r.Requires != nil || r.Sanitizable
-		if version != 2 && hasFlowKeys {
+		if version != 2 && hasFlowKeys && !IsV1DeltaRegistered(action) {
 			return nil, fmt.Errorf("permissions: rule %d: flow keys (delta/requires/sanitizable) require version 2", i)
 		}
 		re, err := compilePattern(normalizeSeparators(expandPattern(r.Resource)))
@@ -411,7 +411,14 @@ func (cp *CompiledPolicy) matchingRules(extra []compiledRule, action string, res
 // the policy is not flow-enabled. The union takes max trust / min
 // audience across matches, mirroring evaluateAgentWithLabel.
 func (cp *CompiledPolicy) DeltaFor(action string, resources ...string) (FlowDelta, bool) {
-	if cp == nil || !cp.flow {
+	if cp == nil {
+		return FlowDelta{}, false
+	}
+	// V1-DELTA register (S25 guardrail exception): a non-flow policy
+	// honors deltas only for explicitly registered actions; everything
+	// else keeps exact v1 behavior (no folding).
+	registeredOnly := !cp.flow
+	if registeredOnly && !IsV1DeltaRegistered(action) {
 		return FlowDelta{}, false
 	}
 	matched := cp.matchingRules(nil, action, resources...)

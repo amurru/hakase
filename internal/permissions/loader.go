@@ -108,23 +108,32 @@ func LoadPolicyFile(path string) (Policy, []byte, error) {
 	if p.Version == 2 && !FlowExperimentalEnabled() {
 		return Policy{}, raw, fmt.Errorf("permissions: %s: version 2 requires the flowExperimental gate (set HAKASE_FLOW_EXPERIMENTAL=1)", path)
 	}
-	if p.Version != 2 && policyHasFlowKeys(p) {
+	// V1-DELTA register: registered actions may carry flow keys under
+	// v0/v1 (mirrors Compile); everything else requires version 2.
+	if p.Version != 2 && policyHasUnregisteredFlowKeys(p) {
 		return Policy{}, raw, fmt.Errorf("permissions: %s: flow keys (delta/requires/sanitizable) require version 2", path)
 	}
 	return p, raw, nil
 }
 
-// policyHasFlowKeys reports whether any rule carries v2 flow fields.
-func policyHasFlowKeys(p Policy) bool {
+// policyHasUnregisteredFlowKeys reports whether any rule carries flow
+// fields on an action without a V1-DELTA sanction (the only permitted v1
+// flow-key carrier). The loader mirrors Compile: registered actions may
+// carry flow keys under v0/v1, everything else requires version 2.
+func policyHasUnregisteredFlowKeys(p Policy) bool {
 	for _, r := range p.Rules {
 		if r.Delta != nil || r.Requires != nil || r.Sanitizable {
-			return true
+			if !IsV1DeltaRegistered(strings.ToLower(strings.TrimSpace(r.Action))) {
+				return true
+			}
 		}
 	}
 	for _, ap := range p.Agents {
 		for _, r := range ap.Rules {
 			if r.Delta != nil || r.Requires != nil || r.Sanitizable {
-				return true
+				if !IsV1DeltaRegistered(strings.ToLower(strings.TrimSpace(r.Action))) {
+					return true
+				}
 			}
 		}
 	}
@@ -462,7 +471,7 @@ func (l *Loader) cachedProject(root, path string, raw []byte) (Policy, error) {
 	if p.Version == 2 && !FlowExperimentalEnabled() {
 		return Policy{}, fmt.Errorf("permissions: %s: version 2 requires the flowExperimental gate (set HAKASE_FLOW_EXPERIMENTAL=1)", path)
 	}
-	if p.Version != 2 && policyHasFlowKeys(p) {
+	if p.Version != 2 && policyHasUnregisteredFlowKeys(p) {
 		return Policy{}, fmt.Errorf("permissions: %s: flow keys (delta/requires/sanitizable) require version 2", path)
 	}
 	l.projects[root] = fileEntry{path: path, mtime: fi.ModTime(), size: int64(len(raw)), fp: want, policy: p, ok: true}

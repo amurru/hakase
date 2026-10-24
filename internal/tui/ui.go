@@ -2330,7 +2330,13 @@ func (m *AppModel) approvalModalView() tea.View {
 	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Width(8)
 	b.WriteString(label.Render("Tool") + req.Tool + "\n")
 	b.WriteString(label.Render("Risk") + riskBadge(req.Risk) + "\n")
-	b.WriteString(label.Render("Reason") + req.Reason + "\n\n")
+	reason := req.Reason
+	if req.FlowReason != "" {
+		// Flow ask marker (H3): the operator sees that this approval
+		// authorizes exactly one flow-scoped call, never a reset.
+		reason += " [flow: " + req.FlowReason + "]"
+	}
+	b.WriteString(label.Render("Reason") + reason + "\n\n")
 
 	b.WriteString("Command:\n")
 	// Wrap the command verbatim to the modal width and cap its height so

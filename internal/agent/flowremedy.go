@@ -23,9 +23,7 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"amurru/hakase/internal/permissions"
@@ -52,10 +50,11 @@ func flowAllowedAlternative(effect permissions.Effect) string {
 
 // flowDenialText renders the FG-005 denial shape: redacted metadata
 // only (action, label snapshot, remedy) - never raw resource paths or
-// arg preimages.
+// arg preimages. S26: the rendered text is tag-neutralized so rule or
+// tool text cannot smuggle live markup into the model context.
 func flowDenialText(action string, l *permissions.SessionLabel, effect permissions.Effect) string {
-	return fmt.Sprintf("flow: %s blocked (%s). Allowed: %s. Offer: %s",
-		action, flowLabelSnapshot(l), flowAllowedAlternative(effect), flowOffers)
+	return neutralizeFlowText(fmt.Sprintf("flow: %s blocked (%s). Allowed: %s. Offer: %s",
+		action, flowLabelSnapshot(l), flowAllowedAlternative(effect), flowOffers))
 }
 
 // flowDenialResult builds the model-legible denial result: the denial
@@ -77,48 +76,45 @@ type flowAskBinding struct {
 	labelVersion uint64
 }
 
-// flowGrants holds the one-shot approvals for flow asks (FG-005). A
-// grant authorizes exactly one dispatch of (tool, argsHash,
-// labelVersion): another payload, another tool or a label that moved on
-// invalidates it, and it never resets the session label.
-var flowGrants = struct {
-	sync.Mutex
-	m map[string]struct{}
-}{m: make(map[string]struct{})}
-
-// flowGrantKey is the grant key: the four binding parts are joined
-// with NUL so no value can forge another key.
-func flowGrantKey(b flowAskBinding) string {
-	return b.sessionID + "\x00" + b.tool + "\x00" + b.argsHash + "\x00" +
-		strconv.FormatUint(b.labelVersion, 10)
+// canonicalGrantTool normalizes the grant tool the same way flowArgsHash
+// does (S9/H1 single identity, loop 5): system_exec_start shares
+// BuildExecCommand with system_exec (Tool system_exec), and the generic
+// grep tool shares the search_files implementation, so all spellings bind
+// one key. The shared permissions store canonicalizes again, so this is
+// idempotent.
+func canonicalGrantTool(tool string) string {
+	return canonicalFlowTool(tool)
 }
 
-// grantFlowCall installs the one-shot grant for an approved flow ask.
+// grantFlowCall installs the one-shot grant for an approved flow ask in
+// the shared permissions store (single store, capped, loop 5 L2): the
+// sandbox path gates (fileops, system_exec) consume the same binding so
+// an approved Ask admits there instead of hard-denying. The store
+// canonicalizes the tool, so every spelling binds one key.
 func grantFlowCall(b flowAskBinding) {
-	flowGrants.Lock()
-	flowGrants.m[flowGrantKey(b)] = struct{}{}
-	flowGrants.Unlock()
+	permissions.GrantFlowBinding(permissions.FlowGrantBinding{
+		SessionID: b.sessionID, Tool: canonicalGrantTool(b.tool),
+		ArgsHash: b.argsHash, LabelVersion: b.labelVersion,
+	})
+}
+
+// flowGrantBinding converts a local ask binding to the shared store key.
+func flowGrantBinding(b flowAskBinding) permissions.FlowGrantBinding {
+	return permissions.FlowGrantBinding{
+		SessionID: b.sessionID, Tool: canonicalGrantTool(b.tool),
+		ArgsHash: b.argsHash, LabelVersion: b.labelVersion,
+	}
 }
 
 // hasFlowGrant reports whether a grant for this exact call is pending
 // (an approval that has not been dispatched yet).
 func hasFlowGrant(b flowAskBinding) bool {
-	flowGrants.Lock()
-	defer flowGrants.Unlock()
-	_, ok := flowGrants.m[flowGrantKey(b)]
-	return ok
+	return permissions.HasFlowBinding(flowGrantBinding(b))
 }
 
 // consumeFlowGrant reports and consumes a matching grant (one-shot).
 func consumeFlowGrant(b flowAskBinding) bool {
-	flowGrants.Lock()
-	defer flowGrants.Unlock()
-	k := flowGrantKey(b)
-	if _, ok := flowGrants.m[k]; !ok {
-		return false
-	}
-	delete(flowGrants.m, k)
-	return true
+	return permissions.ConsumeFlowBinding(flowGrantBinding(b))
 }
 
 // flowApprovalPreview renders the human-facing approval prompt line:
@@ -140,6 +136,11 @@ func flowApprovalPreview(action string, resources []string) string {
 		preview += " " + strings.Join(parts, " ")
 	}
 	preview, _ = util.RedactSecrets(preview)
+	// S26: neutralize live markup in the human-facing preview (a query
+	// resource can carry model-controlled <tags>); truncate last.
+	if n, changed := neutralizeFlowTags(preview); changed {
+		preview = n
+	}
 	return truncateRes(preview, 400)
 }
 
@@ -160,8 +161,9 @@ func ApproveFlowAsk(ctx context.Context, toolName string, args map[string]any, r
 		b.labelVersion = label.Version
 	}
 	// A pending approval for this exact call covers it: no second
-	// prompt, and the dispatcher consumes the grant.
-	if hasFlowGrant(b) {
+	// prompt, and the dispatcher consumes the grant. S25 dual-accept
+	// peek (narrowed labels require the v2 joint record).
+	if hasFlowGrantDual(b) {
 		return b, true
 	}
 	approved, err := ApproveExec(ctx, ApprovalRequest{
@@ -181,8 +183,11 @@ func ApproveFlowAsk(ctx context.Context, toolName string, args map[string]any, r
 		return b, false
 	}
 	// Bind the approval to this exact call: the dispatch consumes it
-	// once, so a repeat of the same call asks again.
+	// once, so a repeat of the same call asks again. S25: mint dual
+	// records (v1 for the sandbox downstream gates, v2 joint-hash for
+	// the narrowed-label fresh-approval rule) on one human decision.
 	grantFlowCall(b)
+	grantFlowCallV2(b)
 	flowDebugf("ask approved tool=%s action=%s argsHash=%s labelVersion=%d",
 		toolName, action, b.argsHash, b.labelVersion)
 	return b, true
@@ -204,15 +209,43 @@ func CheckPreFlowAsk(ctx context.Context, toolName string, args map[string]any) 
 	action, _ := flowMapTool(toolName, args)
 	label := flowLabelForCtx(ctx)
 	binding, approved := ApproveFlowAsk(ctx, toolName, args, reason)
-	if approved && consumeFlowGrant(binding) {
+	// Single shared store (loop 5 L2): a pending grant covers this exact
+	// call. Tools with a sandbox downstream gate leave it for that gate
+	// to consume (the dispatch is the sandbox exec); all others consume
+	// here so the grant stays one-shot (the dispatch is the use). S25:
+	// dual-accept consume (narrowed labels require the fresh v2 joint
+	// record; StartLabel accepts either).
+	if approved && hasFlowGrantDual(binding) {
 		// The human approved this exact call: it may run.
 		flowDebugf("dispatch allowed tool=%s action=%s argsHash=%s labelVersion=%d",
 			binding.tool, action, binding.argsHash, binding.labelVersion)
+		// S9/H1: tools with a sandbox downstream gate (file/shell)
+		// leave the shared grant for that gate to consume; tools
+		// without one consume it here so the grant stays one-shot
+		// with no leak (the dispatch is the use).
+		if !sandboxDownstreamTool(toolName) {
+			consumeFlowGrantDual(binding)
+		}
 		return true, false, nil, effect, reason
 	}
 	// Denied, or the approval did not cover this call: the denial text
 	// is the tool result.
 	return true, true, flowDenialResult(ctx, toolName, action, label, effect), effect, reason
+}
+
+// sandboxDownstreamTool reports whether the tool's execution passes
+// through a sandbox path gate (S9/H1) that consumes the shared grant.
+// Those tools leave the permissions mirror for the gate; all others
+// consume at pre-dispatch (the dispatch is the use).
+func sandboxDownstreamTool(toolName string) bool {
+	switch toolName {
+	case "read_file", "write_file", "patch", "search_files",
+		"read", "edit", "grep", "glob",
+		"system_exec", "system_exec_start", "shell":
+		return true
+	default:
+		return false
+	}
 }
 
 // CheckPreFlowDeny evaluates the flow verdict for a call whose approval

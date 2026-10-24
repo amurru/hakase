@@ -19,7 +19,7 @@ import (
 // the process tree themselves), so the context is not used here.
 func buildShellCommand(ctx context.Context, command, dir string) (*exec.Cmd, error) {
 	_ = dir
-	cmd := &exec.Cmd{Path: "sh", Args: []string{"sh", "-c", command}}
+	cmd := &exec.Cmd{Path: "sh", Args: []string{"sh", "-c", command}} // choke-allow: shared BuildExecCommand shell form (S23 sandbox constructor).
 	if resolved, err := exec.LookPath("sh"); err != nil {
 		cmd.Err = err
 	} else {
@@ -42,7 +42,7 @@ func buildShellCommand(ctx context.Context, command, dir string) (*exec.Cmd, err
 // caller-managed, so the context is not used here.
 func buildDirectCommand(ctx context.Context, command string, args []string, dir string) (*exec.Cmd, error) {
 	_ = dir
-	cmd := &exec.Cmd{Path: command, Args: append([]string{command}, args...)}
+	cmd := &exec.Cmd{Path: command, Args: append([]string{command}, args...)} // choke-allow: shared BuildExecCommand direct form (S23 sandbox constructor).
 	if filepath.Base(command) == command {
 		if resolved, err := exec.LookPath(command); err != nil {
 			cmd.Err = err

@@ -62,6 +62,7 @@ type (
 		MultiSelect bool     `json:"multi_select"`
 	}
 	cronPayload struct {
+		SessionID  string `json:"session_id"`
 		JobID      string `json:"job_id"`
 		Name       string `json:"name"`
 		Status     string `json:"status"`
@@ -69,8 +70,9 @@ type (
 		OutputPath string `json:"output_path"`
 	}
 	taskPayload struct {
-		Task   taskInfo `json:"task"`
-		Action string   `json:"action"`
+		SessionID string   `json:"session_id"`
+		Task      taskInfo `json:"task"`
+		Action    string   `json:"action"`
 	}
 	taskInfo struct {
 		ID     string `json:"id"`
@@ -78,10 +80,11 @@ type (
 		Status string `json:"status"`
 	}
 	delegationPayload struct {
-		TaskID  string `json:"task_id"`
-		Agent   string `json:"agent"`
-		Status  string `json:"status"`
-		Message string `json:"message"`
+		SessionID string `json:"session_id"`
+		TaskID    string `json:"task_id"`
+		Agent     string `json:"agent"`
+		Status    string `json:"status"`
+		Message   string `json:"message"`
 	}
 )
 
@@ -114,7 +117,7 @@ func (r *Router) dispatch(ev sse.Event) {
 		switch p.Status {
 		case "completed", "failed", "silent":
 			for _, push := range r.pushes {
-				push.CronEvent(p.Status, p.JobID, p.Name, p.Summary, p.OutputPath)
+				push.CronEvent(p.SessionID, p.Status, p.JobID, p.Name, p.Summary, p.OutputPath)
 			}
 		}
 	case "task":
@@ -125,7 +128,7 @@ func (r *Router) dispatch(ev sse.Event) {
 		switch p.Action {
 		case "completed", "failed":
 			for _, push := range r.pushes {
-				push.TaskEvent(p.Action, p.Task.ID, p.Task.Title, p.Task.Status)
+				push.TaskEvent(p.SessionID, p.Action, p.Task.ID, p.Task.Title, p.Task.Status)
 			}
 		}
 	case "delegation":
@@ -136,7 +139,7 @@ func (r *Router) dispatch(ev sse.Event) {
 		switch p.Status {
 		case "completed", "failed", "timed_out":
 			for _, push := range r.pushes {
-				push.DelegationEvent(p.Status, p.TaskID, p.Agent, p.Message)
+				push.DelegationEvent(p.SessionID, p.Status, p.TaskID, p.Agent, p.Message)
 			}
 		}
 	}

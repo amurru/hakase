@@ -71,7 +71,12 @@ func bwrapPath() (string, error) {
 // extraBinds are additional --bind entries (each "src:dst" or just "path"
 // which binds path to itself read-write). The workspace roots from sb are
 // always bound read-write; extraBinds covers non-workspace paths like .venv.
-func buildBwrapArgv(sb *SandboxConfig, innerArgv []string, workingDir string, needsNetwork bool, extraBinds []string) ([]string, error) {
+//
+// S22 pipProfile: the workspace roots bind read-only (--ro-bind) and only
+// the caller-supplied extraBinds (the .venv dir) stay writable, with
+// network explicitly OPEN for index egress (the S18 allowlist + approval
+// gates are the compensating controls, documented at ExecPipInstall).
+func buildBwrapArgv(sb *SandboxConfig, innerArgv []string, workingDir string, needsNetwork bool, extraBinds []string, pipProfile bool) ([]string, error) {
 	if sb == nil {
 		return nil, fmt.Errorf("buildBwrapArgv: sandbox config is nil")
 	}
@@ -110,12 +115,17 @@ func buildBwrapArgv(sb *SandboxConfig, innerArgv []string, workingDir string, ne
 		argv = append(argv, flag, d.path, d.path)
 	}
 
-	// Workspace roots: read-write.
+	// Workspace roots: read-write (read-only under the S22 pip profile,
+	// where only .venv stays writable via extraBinds).
+	wsFlag := "--bind"
+	if pipProfile {
+		wsFlag = "--ro-bind"
+	}
 	for _, root := range sb.WorkspaceRoots {
 		if _, err := os.Stat(root); err != nil {
 			continue
 		}
-		argv = append(argv, "--bind", root, root)
+		argv = append(argv, wsFlag, root, root)
 	}
 
 	// Extra binds (e.g. .venv, downloads) - each entry is either
@@ -170,12 +180,12 @@ func lastIndexByte(s string, c byte) int {
 // Returns (nil, error) if bwrap is not installed or the sandbox config is
 // invalid for bubblewrap mode. The caller should fall back to the non-sandbox
 // exec path on error - or fail loudly, depending on policy.
-func wrapBwrapCmd(sb *SandboxConfig, innerArgv []string, workingDir string, needsNetwork bool, extraBinds []string) (*exec.Cmd, error) {
+func wrapBwrapCmd(sb *SandboxConfig, innerArgv []string, workingDir string, needsNetwork bool, extraBinds []string, pipProfile bool) (*exec.Cmd, error) {
 	bp, err := bwrapPath()
 	if err != nil {
 		return nil, err
 	}
-	argv, err := buildBwrapArgv(sb, innerArgv, workingDir, needsNetwork, extraBinds)
+	argv, err := buildBwrapArgv(sb, innerArgv, workingDir, needsNetwork, extraBinds, pipProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -185,5 +195,5 @@ func wrapBwrapCmd(sb *SandboxConfig, innerArgv []string, workingDir string, need
 	// Timeout and cancellation are caller-managed (the system_exec runners
 	// and runGit Start/Wait and kill the process tree themselves); no ctx
 	// exists in this flow.
-	return &exec.Cmd{Path: bp, Args: append([]string{bp}, argv...)}, nil
+	return &exec.Cmd{Path: bp, Args: append([]string{bp}, argv...)}, nil // choke-allow: shared BuildExecCommand bwrap form (S23 sandbox constructor).
 }

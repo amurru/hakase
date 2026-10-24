@@ -96,14 +96,18 @@ func atFileOperands(command string, args []string) []string {
 // checkAtFileFlow applies the best-effort @-file body operand rule: a
 // shell command referencing a file the flow policy denies (or asks about
 // on a narrowed label) escalates here. Returns nil when no operand
-// escalates. Flow only escalates, never widens.
+// escalates. Flow only escalates, never widens. M6: operands match via
+// the dual canonical+raw legs (flowPathResources) and the fired leg is
+// audited debug-gated so rule authors can tighten toward canonical.
 func checkAtFileFlow(label *permissions.SessionLabel, command string, args []string) *GateDecision {
 	ops := atFileOperands(command, args)
 	for _, p := range ops {
-		eff, rule, detail, ok := permissions.LookupWithLabel(label, "read", p)
+		res := flowPathResources(p)
+		eff, rule, detail, ok := permissions.LookupWithLabel(label, "read", res...)
 		if !ok {
 			continue
 		}
+		flowAuditPathLeg(label, "read", res, rule, detail)
 		switch eff {
 		case permissions.EffectDeny:
 			reason := fmt.Sprintf("file operand %q denied by permissions policy", p) + ruleSuffix(rule)
@@ -1174,7 +1178,18 @@ func EvaluateCommandWithLabel(sb *sandbox.SandboxConfig, command string, args []
 	// when the requiring rule denies), and a narrowed label with no
 	// mapped rule fails closed (C2). The pre-check records
 	// (labelVersion, argsHash) for the post-admission re-check (H2).
-	if eff, rule, detail, ok := permissions.LookupWithLabel(label, "shell", command); ok {
+	// S14 single identity: the shell resources are dual
+	// (permissions.ShellResources: ShellLine primary + bare command
+	// fallback, M4) - the same strings the sandbox audit and the ask
+	// binding hash - so a rule that matches the full line (with args)
+	// cannot be bypassed by matching the bare command in one gate and
+	// the line in another. Migration note: rules authored against the
+	// bare command keep matching via the fallback leg; tighten toward
+	// the ShellLine form (see docs/permissions/guide.md).
+	shellRes := permissions.ShellResources(command, args)
+	if eff, rule, detail, ok := permissions.LookupWithLabel(label, "shell", shellRes...); ok {
+		// M4 fired-leg audit (debug-gated): log which shell leg fired.
+		flowAuditPathLeg(label, "shell", shellRes, rule, detail)
 		if detail != "" && rule == nil {
 			// Flow unknown-sink fail-closed on a narrowed label (C2).
 			if eff == permissions.EffectDeny {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Trust is the integrity axis: trusted(0) < suspicious(1).
@@ -297,6 +298,11 @@ type flowBindingsT struct {
 	// order keeps the insertion order so the oldest entry can be
 	// dropped when the registry is full.
 	order []string
+	// evicted counts dropped entries (M3): a post-admission lookup miss
+	// is ambiguous (never-recorded vs evicted under pressure), so the
+	// re-check path reports the count as its audit marker instead of
+	// guessing which case it is.
+	evicted uint64
 }
 
 var flowBindings = flowBindingsT{m: make(map[string]flowBinding)}
@@ -327,7 +333,16 @@ func RecordFlowBinding(sessionID, idemKey string, labelVersion uint64, argsHash 
 		oldest := flowBindings.order[0]
 		flowBindings.order = flowBindings.order[1:]
 		delete(flowBindings.m, oldest)
+		flowBindings.evicted++
 	}
+}
+
+// FlowBindingsEvicted reports how many bindings have been dropped under
+// the capacity cap (M3 audit marker for the binding-missing re-check).
+func FlowBindingsEvicted() uint64 {
+	flowBindings.RLock()
+	defer flowBindings.RUnlock()
+	return flowBindings.evicted
 }
 
 // FlowBindingFor returns the recorded binding for (sessionID, idemKey),
@@ -340,4 +355,179 @@ func FlowBindingFor(sessionID, idemKey string) (uint64, string, bool) {
 		return 0, "", false
 	}
 	return b.labelVersion, b.argsHash, true
+}
+
+// FlowGrantBinding binds one approved flow ask to the exact call it
+// covers (S9 shared one-shot grant): the agent pre-dispatch mints it on
+// human approval and the sandbox path gates consume it, so an approved
+// Ask admits at the filesystem/exec layer instead of hard-denying.
+// Keyed by (session, tool, argsHash, labelVersion) with NUL separators
+// so no value forges another key. Hashes only, never raw args.
+type FlowGrantBinding struct {
+	SessionID    string
+	Tool         string
+	ArgsHash     string
+	LabelVersion uint64
+}
+
+// canonicalFlowGrantTool normalizes tool spellings that share one
+// execution path to a single grant identity (loop 5 single identity):
+// system_exec_start shares BuildExecCommand with system_exec, and the
+// generic grep tool shares the search_files implementation.
+func canonicalFlowGrantTool(tool string) string {
+	switch tool {
+	case "system_exec_start":
+		return "system_exec"
+	case "grep":
+		return "search_files"
+	default:
+		return tool
+	}
+}
+
+func flowGrantKey(b FlowGrantBinding) string {
+	return b.SessionID + "\x00" + canonicalFlowGrantTool(b.Tool) + "\x00" + b.ArgsHash + "\x00" +
+		fmt.Sprintf("%d", b.LabelVersion)
+}
+
+// maxFlowGrants bounds the one-shot grant store (S17): grants are
+// per-call records on a long-lived process (the web server), so the
+// oldest entries are dropped first rather than growing without bound.
+// A dropped grant fails closed (the call asks again) - the cap never
+// widens access. Legacy pre-grants share the same TTL and cap via the
+// agent resume store; the key domains stay separate (a legacy key never
+// matches a flow binding and vice versa, ADR condition 3).
+const maxFlowGrants = 1024
+
+// flowGrantTTL bounds one approved flow ask (S17): a grant minted for an
+// exact call expires 15 minutes after mint. Expiry is lazy on Has/Consume
+// plus an opportunistic sweep on Grant (no goroutine, no sliding window:
+// reads never extend the deadline).
+const flowGrantTTL = 15 * time.Minute
+
+// flowGrantEntry is one live one-shot grant with its mint deadline.
+type flowGrantEntry struct {
+	expires time.Time
+}
+
+var flowGrantStore = struct {
+	sync.Mutex
+	m       map[string]flowGrantEntry
+	order   []string
+	evicted uint64
+}{m: make(map[string]flowGrantEntry)}
+
+// sweepFlowGrantsLocked drops expired entries. Callers hold flowGrantStore.
+func sweepFlowGrantsLocked(now time.Time) {
+	for k, e := range flowGrantStore.m {
+		if !now.Before(e.expires) {
+			delete(flowGrantStore.m, k)
+		}
+	}
+	if len(flowGrantStore.order) > len(flowGrantStore.m)*2 {
+		kept := flowGrantStore.order[:0]
+		for _, k := range flowGrantStore.order {
+			if _, ok := flowGrantStore.m[k]; ok {
+				kept = append(kept, k)
+			}
+		}
+		flowGrantStore.order = kept
+	}
+}
+
+// emptyVersionedGrant reports whether b must never satisfy a grant:
+// an empty session is valid only for the session-less StartLabel
+// carve-out (v1-parity callers bind labelVersion 0). Any versioned
+// binding with no session fails closed on both mint and consume, so a
+// grant minted for one session's narrowed label can never be picked up
+// session-less.
+func emptyVersionedGrant(b FlowGrantBinding) bool {
+	return b.SessionID == "" && b.LabelVersion != 0
+}
+
+// GrantFlowBinding installs the one-shot grant for an approved flow ask.
+func GrantFlowBinding(b FlowGrantBinding) {
+	if emptyVersionedGrant(b) {
+		return
+	}
+	flowGrantStore.Lock()
+	defer flowGrantStore.Unlock()
+	now := time.Now()
+	sweepFlowGrantsLocked(now)
+	k := flowGrantKey(b)
+	if _, ok := flowGrantStore.m[k]; !ok {
+		flowGrantStore.order = append(flowGrantStore.order, k)
+	}
+	flowGrantStore.m[k] = flowGrantEntry{expires: now.Add(flowGrantTTL)}
+	for len(flowGrantStore.order) > maxFlowGrants {
+		oldest := flowGrantStore.order[0]
+		flowGrantStore.order = flowGrantStore.order[1:]
+		delete(flowGrantStore.m, oldest)
+		flowGrantStore.evicted++
+	}
+}
+
+// FlowGrantsEvicted reports how many one-shot grants have been dropped
+// under the capacity cap (audit marker: a missing grant is either
+// never-minted or evicted, both fail closed to another ask).
+func FlowGrantsEvicted() uint64 {
+	flowGrantStore.Lock()
+	defer flowGrantStore.Unlock()
+	return flowGrantStore.evicted
+}
+
+// HasFlowBinding reports whether a grant for this exact call is pending.
+// Expired grants report false (lazy expiry: the entry is dropped).
+// Empty-session versioned bindings never match (mirror of the mint
+// guard: a grant that could not be installed can never be observed).
+func HasFlowBinding(b FlowGrantBinding) bool {
+	if emptyVersionedGrant(b) {
+		return false
+	}
+	flowGrantStore.Lock()
+	defer flowGrantStore.Unlock()
+	e, ok := flowGrantStore.m[flowGrantKey(b)]
+	if !ok {
+		return false
+	}
+	if !time.Now().Before(e.expires) {
+		delete(flowGrantStore.m, flowGrantKey(b))
+		return false
+	}
+	return true
+}
+
+// ConsumeFlowBinding reports and consumes a matching grant (one-shot).
+// Expired grants report false (lazy expiry: the entry is dropped).
+// Empty-session versioned bindings never match (mirror of the mint
+// guard).
+func ConsumeFlowBinding(b FlowGrantBinding) bool {
+	if emptyVersionedGrant(b) {
+		return false
+	}
+	return consumeFlowGrantByKey(flowGrantKey(b))
+}
+
+func consumeFlowGrantByKey(k string) bool {
+	flowGrantStore.Lock()
+	defer flowGrantStore.Unlock()
+	e, ok := flowGrantStore.m[k]
+	if !ok {
+		return false
+	}
+	delete(flowGrantStore.m, k)
+	// Drop the consumed key from the eviction order so the cap
+	// counts live grants only (no leak, no premature evict).
+	for i, q := range flowGrantStore.order {
+		if q == k {
+			flowGrantStore.order = append(flowGrantStore.order[:i], flowGrantStore.order[i+1:]...)
+			break
+		}
+	}
+	// An expired grant consumes as absent: the entry is dropped and the
+	// consume reports false (fail-closed, no sliding window).
+	if !time.Now().Before(e.expires) {
+		return false
+	}
+	return true
 }

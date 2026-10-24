@@ -345,6 +345,66 @@ func TestNormalizeURL(t *testing.T) {
 	}
 }
 
+// TestFlowGrantEmptySessionFailClosed pins the session-less carve-out:
+// an empty SessionID grants only for the StartLabel binding
+// (labelVersion 0, v1-parity callers). A versioned binding with no
+// session never installs and never consumes - the grant and consume
+// sides mirror, so a narrowed label can never be picked up session-less.
+func TestFlowGrantEmptySessionFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		b           FlowGrantBinding
+		wantGrant   bool
+		wantHas     bool
+		wantConsume bool
+	}{
+		{
+			name:        "empty session start label grants",
+			b:           FlowGrantBinding{SessionID: "", Tool: "system_exec", ArgsHash: "empty-start", LabelVersion: 0},
+			wantGrant:   true,
+			wantHas:     true,
+			wantConsume: true,
+		},
+		{
+			name:        "empty session versioned never grants",
+			b:           FlowGrantBinding{SessionID: "", Tool: "system_exec", ArgsHash: "empty-versioned", LabelVersion: 1},
+			wantGrant:   false,
+			wantHas:     false,
+			wantConsume: false,
+		},
+		{
+			name:        "empty session high version never grants",
+			b:           FlowGrantBinding{SessionID: "", Tool: "search_files", ArgsHash: "empty-high", LabelVersion: 42},
+			wantGrant:   false,
+			wantHas:     false,
+			wantConsume: false,
+		},
+		{
+			name:        "sessioned versioned grants",
+			b:           FlowGrantBinding{SessionID: "sess-empty-1", Tool: "system_exec", ArgsHash: "sess-versioned", LabelVersion: 3},
+			wantGrant:   true,
+			wantHas:     true,
+			wantConsume: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			GrantFlowBinding(tc.b)
+			if got := HasFlowBinding(tc.b); got != tc.wantHas {
+				t.Errorf("HasFlowBinding = %v, want %v", got, tc.wantHas)
+			}
+			if got := ConsumeFlowBinding(tc.b); got != tc.wantConsume {
+				t.Errorf("ConsumeFlowBinding = %v, want %v", got, tc.wantConsume)
+			}
+			// One-shot: a granted binding is gone after consume.
+			if tc.wantGrant {
+				if ConsumeFlowBinding(tc.b) {
+					t.Error("one-shot grant consumed twice, want single consume")
+				}
+			}
+		})
+	}
+}
+
 // TestFlowBindingRoundTrip pins the (sessionID, labelVersion, argsHash)
 // record, scoped per session so reused flow keys never collide.
 func TestFlowBindingRoundTrip(t *testing.T) {

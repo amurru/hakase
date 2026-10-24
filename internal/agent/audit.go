@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -63,28 +61,15 @@ const hashAlgHMAC = "hmac-sha256"
 // auditLogDir is where the always-on audit log is written. Overridable in tests.
 var auditLogDir = "logs"
 
-// secretKV matches secret-shaped key=value assignments (keeps the key,
-// redacts the value); secretToken matches bare well-known token shapes.
-// Applied to audit entries BEFORE chaining/forwarding/export so secrets
-// never sprawl to logs or SIEM in cleartext (M5).
-var (
-	secretKV     = regexp.MustCompile(`(?i)(token|password|passwd|secret|api[_-]?key|auth)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)`)
-	secretScheme = regexp.MustCompile(`(?i)(bearer|basic)\s+\S+`)
-	secretJSON   = regexp.MustCompile(`(?i)("(?:token|password|passwd|secret|api[_-]?key|auth)")\s*:\s*"[^"]*"`)
-	secretToken  = regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|xox[bap]-[A-Za-z0-9-]{8,})\b`)
-)
-
-// redactSecrets replaces secret-shaped values with [REDACTED].
+// redactSecrets redacts secret-shaped values before audit chaining,
+// forwarding, and export so secrets never sprawl to logs or SIEM in
+// cleartext (M5). S13: unified onto util.RedactSecrets (the single
+// canonical engine, typed [REDACTED:<kind>] tokens) - the local ad-hoc
+// regex set is retired. Audit-only: output tokens change, gate verdicts
+// do not.
 func redactSecrets(s string) string {
-	s = secretKV.ReplaceAllString(s, "$1=[REDACTED]")
-	s = secretScheme.ReplaceAllStringFunc(s, func(m string) string {
-		if i := strings.IndexAny(m, " \t"); i >= 0 {
-			return m[:i+1] + "[REDACTED]"
-		}
-		return "[REDACTED]"
-	})
-	s = secretJSON.ReplaceAllString(s, `$1:"[REDACTED]"`)
-	return secretToken.ReplaceAllString(s, "[REDACTED]")
+	red, _ := util.RedactSecrets(s)
+	return red
 }
 
 // AuditDir returns the audit log directory (honors test overrides).
@@ -117,12 +102,11 @@ var auditMu sync.Mutex
 // Concurrent-safe via auditMu + cross-process flock; size-rotated via
 // AuditMaxBytes/AuditMaxBackups.
 func AuditCommandExec(entry CommandAuditEntry) {
-	// Truncate long string fields to keep the audit log bounded.
-	entry.Command = util.TruncateStr(entry.Command)
-	entry.Reason = util.TruncateStr(entry.Reason)
-	// Redact secret-shaped values before chaining/forwarding/export (M5).
-	entry.Command = redactSecrets(entry.Command)
-	entry.Reason = redactSecrets(entry.Reason)
+	// Redact-then-truncate (S12/S13 unified order): redaction runs
+	// BEFORE the bound so a secret straddling the cut point can never
+	// survive it. TruncateStr keeps the audit marker.
+	entry.Command = util.TruncateStr(redactSecrets(entry.Command))
+	entry.Reason = util.TruncateStr(redactSecrets(entry.Reason))
 	// Clone before redacting: the caller's slice must not be mutated.
 	redacted := make([]string, len(entry.Args))
 	for i, a := range entry.Args {
@@ -141,6 +125,8 @@ func AuditCommandExec(entry CommandAuditEntry) {
 	path := filepath.Join(auditLogDir, "exec-audit.jsonl")
 
 	// Cross-process lock so TUI + web rotation/append is safe.
+	// s24-allow: fixed-path lock file disciplined by flock(2); the lock
+	// path is operator-configured, never model-controlled.
 	lock, err := os.OpenFile(filepath.Join(auditLogDir, "exec-audit.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err == nil {
 		if ferr := util.FlockExclusive(lock); ferr == nil {
@@ -174,6 +160,8 @@ func AuditCommandExec(entry CommandAuditEntry) {
 		return // best-effort: encoding failure is not actionable
 	}
 
+	// s24-allow: fixed-path append-only audit log (O_APPEND never follows a
+	// new path; the log path is operator-configured, never model-controlled).
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

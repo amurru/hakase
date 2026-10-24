@@ -68,9 +68,11 @@ func TestTaskResolveFlowDeny(t *testing.T) {
 	}
 }
 
-// TestTaskResolveFlowSourceProceeds pins sources proceeding under Ask:
-// allow+requires on read yields Ask (no Deny), so the read is admitted
-// and taints later - only the exfil send is gated.
+// TestTaskResolveFlowSourceProceeds pins S9 fail-closed: a requires Ask
+// on read denies in taskResolve (the sandbox has no approval round-trip
+// of its own). The pre-dispatch callback already routed the Ask to the
+// human; this layer denies so a direct tool path can never bypass it.
+// Only an allow (no flow detail) proceeds to the filesystem.
 func TestTaskResolveFlowSourceProceeds(t *testing.T) {
 	dir := t.TempDir()
 	installV2Policy(t, permissions.Policy{Rules: []permissions.Rule{
@@ -78,8 +80,10 @@ func TestTaskResolveFlowSourceProceeds(t *testing.T) {
 			Requires: &permissions.FlowRequires{AudienceContains: []string{"public"}}},
 	}})
 	stubFlowLabel(t, flowNarrowed())
-	if _, err := taskResolve(context.Background(), dir+"/notes.txt", false, ""); err != nil {
-		t.Errorf("narrowed source read failed: %v (sources proceed, send gates)", err)
+	if _, err := taskResolve(context.Background(), dir+"/notes.txt", false, ""); err == nil {
+		t.Error("narrowed source read passed, want flow guard denial (S9 fail-closed)")
+	} else if !strings.Contains(err.Error(), "flow guard") {
+		t.Errorf("error = %q, want flow guard citation", err)
 	}
 }
 

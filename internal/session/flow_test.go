@@ -376,3 +376,197 @@ func TestFlowRecomputedNoticeOnce(t *testing.T) {
 		t.Error("notice for a persisted label, want empty")
 	}
 }
+
+// TestImportMeetVerbatimThenMerge pins the F1 atomic primitive: a fresh
+// registry imports the persisted label verbatim (no version bump, so the
+// H3 resume/compaction version-unchanged invariant holds), while a live
+// entry merges with Meet (narrowing only, never wider) and unions the
+// applied sets.
+func TestImportMeetVerbatimThenMerge(t *testing.T) {
+	r := NewFlowRegistry()
+	persisted := permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudienceInternal, Version: 3}
+	diskKey := FlowKey(9, "disk_call")
+	merged, fresh := r.ImportMeet("s", persisted, map[string]bool{diskKey: true})
+	if !fresh {
+		t.Error("fresh ImportMeet imported=false, want true")
+	}
+	if merged != persisted {
+		t.Errorf("fresh ImportMeet = %+v, want verbatim %+v", merged, persisted)
+	}
+	if got := r.Get("s"); got == nil || *got != persisted {
+		t.Fatalf("registry after fresh import = %+v, want %+v", got, persisted)
+	}
+	// Live fold, then a WIDER disk state merges in: the registry must
+	// not widen, and the applied set must union both sides.
+	liveKey := FlowKey(10, "live_call")
+	if _, narrowed := r.Fold("s", permissions.FlowDelta{Audience: []string{"self"}}, liveKey, "h"); !narrowed {
+		t.Fatal("live fold did not narrow")
+	}
+	before := *r.Get("s")
+	wider := permissions.StartLabel()
+	merged2, fresh2 := r.ImportMeet("s", wider, map[string]bool{FlowKey(11, "stale_call"): true})
+	if fresh2 {
+		t.Error("merge into live ImportMeet imported=true, want false")
+	}
+	if merged2 != before {
+		t.Errorf("merge with wider disk = %+v, want live %+v (no widen)", merged2, before)
+	}
+	for _, k := range []string{diskKey, liveKey, FlowKey(11, "stale_call")} {
+		if got := r.appliedCopy("s"); !got[k] {
+			t.Errorf("applied set lost key %q after merge", k)
+		}
+	}
+}
+
+// TestRegisterLoadedVsFoldConcurrent pins F1 under -race: concurrent Loads
+// (fresh Session per Load, the production shape) racing mid-turn folds
+// merge atomically, so the final label keeps both narrowings and the
+// applied set is the union. Deterministic end state: the persisted
+// audience narrowing plus the folded trust narrowing, version bumped
+// exactly once past the persisted version by the single effective merge.
+func TestRegisterLoadedVsFoldConcurrent(t *testing.T) {
+	r := NewFlowRegistry()
+	const id = "load-race"
+	persisted := permissions.SessionLabel{Trust: permissions.TrustTrusted, Audience: permissions.AudienceInternal, Version: 5}
+	diskKey := FlowKey(2, "disk_call")
+	const n = 32
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				s := NewSession(id)
+				s.ID = id
+				l := persisted
+				s.Flow = &l
+				s.FlowApplied = map[string]bool{diskKey: true}
+				RegisterLoadedWith(r, s)
+				return
+			}
+			r.Fold(id, permissions.FlowDelta{Trust: "suspicious"}, FlowKey(1000+int64(i), "fold_call"), "h")
+		}(i)
+	}
+	wg.Wait()
+	got := r.Get(id)
+	if got == nil {
+		t.Fatal("registry entry missing after concurrent load/fold")
+	}
+	if got.Trust != permissions.TrustSuspicious || got.Audience != permissions.AudienceInternal {
+		t.Errorf("merged label = %+v, want suspicious/internal (both narrowings kept)", got)
+	}
+	if got.Version != 6 {
+		t.Errorf("merged version = %d, want 6 (persisted v5 + one narrowing step)", got.Version)
+	}
+	applied := r.appliedCopy(id)
+	if !applied[diskKey] {
+		t.Errorf("applied set lost disk key %q", diskKey)
+	}
+	for i := 1; i < n; i += 2 {
+		if k := FlowKey(1000+int64(i), "fold_call"); !applied[k] {
+			t.Errorf("applied set lost fold key %q", k)
+		}
+	}
+}
+
+// TestSyncUnionsApplied pins F2: Sync unions the registry live keys with
+// whatever the loaded object already carries, so a Load-then-Save round
+// trip after a racing turn preserves both sides' idempotency keys and
+// never double-folds (H3).
+func TestSyncUnionsApplied(t *testing.T) {
+	r := NewFlowRegistry()
+	r.Ensure("u")
+	regKey := FlowKey(1, "reg_call")
+	if _, narrowed := r.Fold("u", permissions.FlowDelta{Audience: []string{"internal"}}, regKey, "h"); !narrowed {
+		t.Fatal("registry fold did not narrow")
+	}
+	s := NewSession("u")
+	s.ID = "u"
+	diskKey := FlowKey(2, "disk_call")
+	s.Flow = nil
+	s.FlowApplied = map[string]bool{diskKey: true}
+	r.Sync(s)
+	if s.Flow == nil || s.Flow.Audience != permissions.AudienceInternal {
+		t.Fatalf("synced Flow = %+v, want live internal", s.Flow)
+	}
+	if !s.FlowApplied[regKey] || !s.FlowApplied[diskKey] {
+		t.Errorf("synced FlowApplied = %v, want union of %q and %q", s.FlowApplied, regKey, diskKey)
+	}
+	// Unknown sessions stay untouched (nil Flow preserved, no keys).
+	unknown := NewSession("unknown")
+	unknown.ID = "unknown-" + t.Name()
+	unknown.Flow = nil
+	unknown.FlowApplied = nil
+	r.Sync(unknown)
+	if unknown.Flow != nil || unknown.FlowApplied != nil {
+		t.Errorf("Sync touched unknown session: Flow=%+v Applied=%v", unknown.Flow, unknown.FlowApplied)
+	}
+	// Nil session is a no-op, never a panic.
+	r.Sync(nil)
+}
+
+// TestStoreLoadPreservesLiveFold pins C1 at the store layer: a Load racing
+// a turn (turn-end persistence, compaction reads) must not overwrite live
+// registry folds with stale disk state, and the returned session must carry
+// the live label so a Load-then-Save round trip preserves the narrowing.
+func TestStoreLoadPreservesLiveFold(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	s := NewSession("live-fold")
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	orig := DefaultRegistry
+	DefaultRegistry = NewFlowRegistry()
+	t.Cleanup(func() { DefaultRegistry = orig })
+
+	// Turn start: resume imports the persisted (start) label.
+	if _, err := store.Load(s.ID); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// A source tool folds mid-turn.
+	key := FlowKey(4, "call_live")
+	if _, narrowed := DefaultRegistry.Fold(s.ID, permissions.FlowDelta{Trust: "suspicious"}, key, "h"); !narrowed {
+		t.Fatal("fold did not narrow")
+	}
+	// Turn-end read path: Load must not clobber the live fold with the
+	// stale on-disk (start) label...
+	reloaded, err := store.Load(s.ID)
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if got := DefaultRegistry.Get(s.ID); got == nil || got.Trust != permissions.TrustSuspicious || got.Version != 1 {
+		t.Fatalf("registry after Load = %+v, want live suspicious v1", got)
+	}
+	// ...and the loaded object carries the live label, so saving it back
+	// (the persistAgentResponse shape) preserves the narrowing.
+	if reloaded.Flow == nil || reloaded.Flow.Trust != permissions.TrustSuspicious {
+		t.Fatalf("reloaded Flow = %+v, want live suspicious", reloaded.Flow)
+	}
+	if err := store.Save(reloaded); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Resume into a fresh registry: narrowing + applied set survive, and
+	// re-admitting the fold key is a no-op (no double-fold, H3).
+	raw, err := store.loadUnlocked(s.ID)
+	if err != nil {
+		t.Fatalf("loadUnlocked: %v", err)
+	}
+	if raw.Flow == nil || raw.Flow.Trust != permissions.TrustSuspicious {
+		t.Fatalf("persisted Flow = %+v, want suspicious", raw.Flow)
+	}
+	if !raw.FlowApplied[key] {
+		t.Fatalf("persisted FlowApplied lost key %q", key)
+	}
+	r2 := NewFlowRegistry()
+	if recomputed := RegisterLoadedWith(r2, raw); recomputed {
+		t.Fatal("resumed v2 session recomputed, want imported")
+	}
+	after, narrowed := r2.Fold(s.ID, permissions.FlowDelta{Trust: "suspicious"}, key, "h")
+	if narrowed || after.Version != 1 {
+		t.Errorf("re-admit after resume = %+v/%v, want no-op v1", after, narrowed)
+	}
+}

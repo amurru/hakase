@@ -77,8 +77,11 @@ func TestToolResultGuardHandlesNested(t *testing.T) {
 	}
 
 	title := first["title"].(string)
-	if strings.Contains(title, "<UNTRUSTED_DATA>") {
-		t.Errorf("short string should NOT be wrapped, got: %s", title)
+	if !strings.Contains(title, "<UNTRUSTED_DATA>") {
+		t.Errorf("R30: no length exemption - short strings frame too, got: %s", title)
+	}
+	if !strings.Contains(title, "</UNTRUSTED_DATA>") {
+		t.Errorf("R30: framing requires both tags, got: %s", title)
 	}
 }
 
@@ -103,7 +106,7 @@ func TestToolResultGuardReturnsNilNil(t *testing.T) {
 	}
 }
 
-func TestToolResultGuardSkipsShortStrings(t *testing.T) {
+func TestToolResultGuardWrapsShortStrings(t *testing.T) {
 	short := "short string"
 	fr := &genai.FunctionResponse{
 		Name: "simple",
@@ -119,8 +122,9 @@ func TestToolResultGuardSkipsShortStrings(t *testing.T) {
 	_, _ = ToolResultGuard(ctx, req)
 
 	result := fr.Response["key"].(string)
-	if result != short {
-		t.Errorf("short string should be unchanged, got: %s", result)
+	// R30: no length exemption - even short strings frame with both tags.
+	if !strings.Contains(result, "<UNTRUSTED_DATA>") || !strings.Contains(result, "</UNTRUSTED_DATA>") {
+		t.Errorf("short string must frame with both tags, got: %s", result)
 	}
 }
 
@@ -202,11 +206,11 @@ func TestToolResultGuardHandleStringSlice(t *testing.T) {
 	_, _ = ToolResultGuard(ctx, req)
 
 	items := fr.Response["items"].([]any)
-	if s, ok := items[0].(string); ok && strings.Contains(s, "<UNTRUSTED_DATA>") {
-		t.Errorf("short string in slice should NOT be wrapped, got: %s", s)
-	}
-	if s, ok := items[1].(string); ok && !strings.Contains(s, "<UNTRUSTED_DATA>") {
-		t.Errorf("long string in slice should be wrapped, got: %s", s)
+	// R30: no length exemption - every non-empty string frames.
+	for i, item := range items {
+		if s, ok := item.(string); !ok || !strings.Contains(s, "<UNTRUSTED_DATA>") {
+			t.Errorf("slice item %d must frame, got: %v", i, item)
+		}
 	}
 }
 

@@ -249,8 +249,9 @@ func (s *SessionStore) saveUnlockedFlocked(session *Session) error {
 // and reported as a corruption error (not "not found") so callers can
 // distinguish a crash artifact from a missing session.
 //
-// Loading registers the persisted flow label (recomputing conservative
-// when absent) so a resumed narrowed session never runs widest.
+// Loading registers the persisted flow label (resume-only: a live
+// registry entry is never overwritten with stale disk state, C1) so a
+// resumed narrowed session never runs widest.
 func (s *SessionStore) Load(id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

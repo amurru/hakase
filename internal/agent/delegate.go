@@ -37,14 +37,47 @@ func blockedTools() map[string]bool {
 	}
 }
 
+// parentFlowForDelegate resolves the label seed for a delegate child
+// (S4, v2-scoped nil fail-closed). Empty session ID means no principal
+// (session-less callers, TUI tests): StartLabel, always. A registered
+// session seeds its copy. A non-empty session with no registry entry
+// (unregistered/unknown) propagates nil under a v2 policy - the child
+// evaluates nil as narrowest (WithDelegateFlowState) - and StartLabel
+// otherwise (v1 parity, byte-identical without v2).
+func parentFlowForDelegate(parentSession string) *permissions.SessionLabel {
+	if parentSession == "" {
+		l := permissions.StartLabel()
+		return &l
+	}
+	if l := hakasesession.DefaultRegistry.Get(parentSession); l != nil {
+		return l
+	}
+	if !permissions.FlowEnabled() {
+		l := permissions.StartLabel()
+		return &l
+	}
+	return nil
+}
+
 // delegationCacheTTL is how long a completed delegation result is reused to
 // answer identical (normalized) goals without re-spawning a sub-agent.
 var delegationCacheTTL = 10 * time.Minute
 
-// delegationCacheEntry stores a terminal delegation result and its timestamp.
+// delegateSubRunOverride is a test seam (loop 5 M3): when non-nil,
+// delegateTaskHandler uses it instead of building/running a real
+// sub-agent runner. The fake receives the child runCtx (carrying the
+// mutable delegate label) so it can fold taint like a real run, and
+// returns the summary/files/error. Production leaves it nil.
+var delegateSubRunOverride func(runCtx context.Context, goal string) (summary string, filesModified []string, err error)
+
+// delegationCacheEntry stores a terminal delegation result, its timestamp,
+// and the child terminal label (S11): a cache hit must still narrow the
+// parent via Meet, or the taint from the cached run is lost.
 type delegationCacheEntry struct {
 	result DelegateTaskResult
 	ts     time.Time
+	label  permissions.SessionLabel
+	hasLbl bool
 }
 
 // delegationCache deduplicates recent delegations by normalized goal so the
@@ -83,11 +116,60 @@ func delegationCacheGet(norm string) (DelegateTaskResult, bool) {
 	return e.result, true
 }
 
-// delegationCachePut stores a terminal delegation result keyed by norm.
-func delegationCachePut(norm string, r DelegateTaskResult) {
+// delegationCacheEntryFor returns the raw entry for merge-on-hit (S11).
+func delegationCacheEntryFor(norm string) (delegationCacheEntry, bool) {
 	delegationCache.mu.Lock()
 	defer delegationCache.mu.Unlock()
-	delegationCache.m[norm] = delegationCacheEntry{result: r, ts: time.Now()}
+	e, ok := delegationCache.m[norm]
+	if !ok {
+		return delegationCacheEntry{}, false
+	}
+	if time.Since(e.ts) > delegationCacheTTL {
+		delete(delegationCache.m, norm)
+		return delegationCacheEntry{}, false
+	}
+	return e, true
+}
+
+// delegationCachePut stores a terminal delegation result keyed by norm.
+// The child terminal label rides with the entry so a hit can Meet it
+// into the parent (S11); callers without a label store no taint.
+func delegationCachePut(norm string, r DelegateTaskResult) {
+	delegationCachePutWithLabel(norm, r, permissions.SessionLabel{}, false)
+}
+
+// delegationCachePutWithLabel stores the result with its terminal label.
+func delegationCachePutWithLabel(norm string, r DelegateTaskResult, label permissions.SessionLabel, hasLbl bool) {
+	delegationCache.mu.Lock()
+	defer delegationCache.mu.Unlock()
+	delegationCache.m[norm] = delegationCacheEntry{result: r, ts: time.Now(), label: label, hasLbl: hasLbl}
+}
+
+// delegationCacheKey binds the cache key to the caller's session and flow
+// label (S11): the same goal under different labels - or different
+// sessions at the same label - is different work. A narrowed session
+// must never reuse a result computed under a wider label, and a widest
+// session must not inherit narrowed handling. Without a v2 policy the
+// key stays the bare goal (v1 parity, exact same-string dedupe as
+// before); a nil label under v2 binds the narrowest fingerprint
+// (fail-closed, never the widest). Key-binding (not disabling) keeps
+// the TTL dedupe for the common same-label case.
+func delegationCacheKey(norm string, label *permissions.SessionLabel) string {
+	return delegationCacheKeyFor(norm, "", label)
+}
+
+// delegationCacheKeyFor is delegationCacheKey with the session binding:
+// same label in different sessions must not share (S11 cross-session
+// isolation). Empty session keeps the legacy label-only key.
+func delegationCacheKeyFor(norm, sessionID string, label *permissions.SessionLabel) string {
+	if !permissions.FlowEnabled() {
+		return norm
+	}
+	prefix := norm + "\x00sess:" + sessionID
+	if label == nil {
+		return prefix + "\x00narrowest"
+	}
+	return prefix + fmt.Sprintf("\x00%d/%d/v%d", label.Trust, label.Audience, label.Version)
 }
 
 // notifyDelegation streams sub-agent progress to the event notifier.
@@ -337,11 +419,30 @@ type DelegateTaskResult struct {
 // toolset. The sub-agent runs in an isolated runner with a fresh
 // InMemoryService.
 func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTaskResult, error) {
-	// Dedupe: if an equivalent goal completed recently, return the cached
-	// result without spawning a duplicate sub-agent.
+	// Dedupe: if an equivalent goal completed recently under the same
+	// flow label, return the cached result without re-spawning a
+	// duplicate sub-agent. The key binds the label (S11): the same goal
+	// under a different label is different work, never a cache hit.
 	normGoal := normalizeDelegationGoal(input.Goal)
-	if cached, ok := delegationCacheGet(normGoal); ok {
-		return cached, nil
+	parentSessForKey := interfaces.SessionIDFromCtx(ctx)
+	parentLblForKey := parentFlowForDelegate(parentSessForKey)
+	cacheKey := delegationCacheKeyFor(normGoal, parentSessForKey, parentLblForKey)
+	if cached, ok := delegationCacheGet(cacheKey); ok {
+		// S11 merge-on-hit: the cached run still carries taint. Meet
+		// it into the live parent unless the parent moved past the
+		// cached version (bypass: a moved parent re-runs instead of
+		// inheriting stale taint). Read-only entries (no label) hit.
+		if e, hasEntry := delegationCacheEntryFor(cacheKey); hasEntry && e.hasLbl && parentSessForKey != "" {
+			if cur := hakasesession.DefaultRegistry.Get(parentSessForKey); cur != nil && cur.Version != e.label.Version {
+				// Parent moved since the cached run: bypass the cache,
+				// fall through to a fresh delegation below.
+			} else {
+				MergeDelegateLabel(parentSessForKey, e.label)
+				return cached, nil
+			}
+		} else {
+			return cached, nil
+		}
 	}
 
 	// 1. Generate or resolve task_id
@@ -380,6 +481,49 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	reporter := newDelegationReporter(taskID, agentLabel, parentSession, parentTaskID)
 	reporter.started(input.Goal)
 
+	// Test seam (loop 5 M3): a fake sub-runner drives the handler's
+	// post-run merge + cache paths without an LLM. The fake receives
+	// the child runCtx (mutable delegate label) so it can fold taint
+	// like a real run; the merge below binds the post-run entry to the
+	// merged label.
+	if delegateSubRunOverride != nil {
+		parentFlow := parentFlowForDelegate(parentSession)
+		fakeRunCtx := WithDelegateFlowState(ctx, parentFlow)
+		fakeRunCtx = hakasesession.WithFlowLabel(fakeRunCtx, parentFlow)
+		fakeSummary, fakeFiles, fakeErr := delegateSubRunOverride(fakeRunCtx, input.Goal)
+		var fakeTerminal permissions.SessionLabel
+		fakeHasTerminal := false
+		if st := DelegateFlowStateFromCtx(fakeRunCtx); st != nil && parentSession != "" {
+			st.mu.Lock()
+			terminal := st.label
+			st.mu.Unlock()
+			fakeTerminal = MergeDelegateLabel(parentSession, terminal)
+			fakeHasTerminal = true
+		}
+		fakeStatus := "completed"
+		if fakeErr != nil {
+			fakeStatus = "failed"
+		}
+		sessionMgr.CleanupInactive(0)
+		reporter.finish(fakeStatus, fakeErr, strings.TrimSpace(fakeSummary))
+		fakeResult := DelegateTaskResult{
+			TaskID: taskID, Status: fakeStatus,
+			Summary: strings.TrimSpace(fakeSummary), FilesModified: fakeFiles,
+		}
+		if fakeErr != nil {
+			fakeResult.Error = fakeErr.Error()
+		}
+		if fakeHasTerminal {
+			delegationCachePutWithLabel(cacheKey, fakeResult, fakeTerminal, true)
+			if postKey := delegationCacheKeyFor(normGoal, parentSessForKey, &fakeTerminal); postKey != cacheKey {
+				delegationCachePutWithLabel(postKey, fakeResult, fakeTerminal, true)
+			}
+		} else {
+			delegationCachePut(cacheKey, fakeResult)
+		}
+		return fakeResult, nil
+	}
+
 	// 3. Build a restricted sub-agent via llmagent.New() with
 	// blocked tools stripped from the toolset.
 	subAgentLogFunc := func(msg string) { reporter.log(msg) }
@@ -417,7 +561,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 			Status: "failed",
 			Error:  fmt.Sprintf("failed to create sub-agent: %v", err),
 		}
-		delegationCachePut(normGoal, result)
+		delegationCachePut(cacheKey, result)
 		return result, err
 	}
 	// 4. Run the sub-agent in an isolated runner with fresh
@@ -441,7 +585,7 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 			Status: "failed",
 			Error:  fmt.Sprintf("failed to create sub-agent runner: %v", err),
 		}
-		delegationCachePut(normGoal, result)
+		delegationCachePut(cacheKey, result)
 		return result, err
 	}
 
@@ -461,14 +605,12 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	// (narrowing only; transcript hash / filesModified stay audit-only).
 	// The snapshot copy via session.WithFlowLabel covers transports that
 	// do not share the mutable state.
-	var parentFlow *permissions.SessionLabel
-	if parentSession != "" {
-		parentFlow = hakasesession.DefaultRegistry.Get(parentSession)
-		if parentFlow == nil {
-			l := permissions.StartLabel()
-			parentFlow = &l
-		}
-	}
+	//
+	// S4 nil fail-closed (v2-scoped): see parentFlowForDelegate. An
+	// empty session ID means no principal (session-less callers, TUI
+	// tests): it keeps StartLabel v1 parity. A non-empty unregistered
+	// session propagates nil (narrowest under v2).
+	parentFlow := parentFlowForDelegate(parentSession)
 	runCtx = WithDelegateFlowState(runCtx, parentFlow)
 	runCtx = hakasesession.WithFlowLabel(runCtx, parentFlow)
 	watchdogActive := deps.DelegateTimeout > 0
@@ -599,11 +741,19 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	// Flow Guard terminal merge (H4): the child's terminal label narrows
 	// the parent via Meet. Child egress was already denied by the parent
 	// label during the run; this only carries taint back, never rulings.
+	// S11: the terminal rides with the cache entry so a hit still
+	// narrows the parent.
+	var terminalLbl permissions.SessionLabel
+	hasTerminal := false
 	if st := DelegateFlowStateFromCtx(runCtx); st != nil && parentSession != "" {
 		st.mu.Lock()
 		terminal := st.label
 		st.mu.Unlock()
-		MergeDelegateLabel(parentSession, terminal)
+		// M5: bind the post-run key and the entry to the merged
+		// label (what the parent now carries), not the raw child
+		// terminal - a stale version would split the cache line.
+		terminalLbl = MergeDelegateLabel(parentSession, terminal)
+		hasTerminal = true
 	}
 
 	status := "completed"
@@ -634,7 +784,17 @@ func delegateTaskHandler(ctx agent.Context, input DelegateTaskArgs) (DelegateTas
 	if finalErr != nil {
 		result.Error = finalErr.Error()
 	}
-	delegationCachePut(normGoal, result)
+	if hasTerminal {
+		delegationCachePutWithLabel(cacheKey, result, terminalLbl, true)
+		// S11/M5: also store under the post-run key (goal + session +
+		// terminal label) so a later call at the narrowed label hits
+		// without re-running; lookup Meets the cached taint back.
+		if postKey := delegationCacheKeyFor(normGoal, parentSessForKey, &terminalLbl); postKey != cacheKey {
+			delegationCachePutWithLabel(postKey, result, terminalLbl, true)
+		}
+	} else {
+		delegationCachePut(cacheKey, result)
+	}
 	return result, nil
 }
 

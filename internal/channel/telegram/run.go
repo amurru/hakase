@@ -370,6 +370,12 @@ func (rv *runView) pump() {
 			return // nothing new to render into a message yet
 		}
 		if rv.flowGate() != "" {
+			// Withheld: freeze answer creation (finalize delivers the
+			// one notice instead) but keep the status line ticking so
+			// the run provably is not hung (S2 liveness).
+			if statusID != 0 {
+				rv.b.editText(rv.ctx, rv.c, statusID, statusWorking(lastTool, time.Since(rv.started)), nil)
+			}
 			return // withheld: finalize delivers the notice instead
 		}
 		// First content arrived: create the answer message (the turn's one
@@ -396,6 +402,18 @@ func (rv *runView) pump() {
 		return
 	}
 	if dirty && len(seg) > 0 {
+		if rv.flowGate() != "" {
+			// Frozen: post-narrow deltas must not leak into the already
+			// created answer message, but the status line keeps ticking
+			// so the freeze never reads as a hang (S2). Finalize
+			// replaces the answer with the single withhold notice; no
+			// unsend/delete of the streamed prefix is attempted (it
+			// would race the edit throttle).
+			if statusID != 0 {
+				rv.b.editText(rv.ctx, rv.c, statusID, statusWorking(lastTool, time.Since(rv.started)), nil)
+			}
+			return
+		}
 		html, commit := rv.renderSegment(seg)
 		rv.b.editText(rv.ctx, rv.c, answerID, html, nil)
 		commit()
