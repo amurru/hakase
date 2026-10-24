@@ -70,7 +70,8 @@ func Meet(a, b SessionLabel) SessionLabel {
 - Canonical resources (M4), v1 table:
   - `shell` -> raw command line (existing `EvaluateCommand` parsing).
   - `read/edit/glob/grep` -> scoped absolute path via `ResolveScopedPath`.
-  - `webfetch` -> normalized URL (lowercase host, strip fragment, keep query for decision, IDNA via `golang.org/x/net/idna` already reachable through `golang.org/x/text` in `session_data.go`, or explicitly defer punycode to follow-up; stdlib `net/url` alone is not enough for homograph `evil.com` vs `evıl.com`).
+  - `webfetch` -> normalized URL (lowercase host, strip fragment, keep query for decision, IDNA via `golang.org/x/net/idna` already reachable through `golang.org/x/text` in `session_data.go`, or explicitly defer punycode to follow-up; stdlib `net/url` alone is not enough for homograph `evil.com` vs `evıl.com`). Mapping note: the tool names `webfetch`, `web_fetch`, `web_search`, and the `web_search_fallback` toolset name all map to the `webfetch` policy action (bare `webfetch` kept for MCP-shaped callers); unknown `web_*` spellings are NOT prefix-matched and stay unknown-sink fail-closed.
+  - `web_search` -> search query text + `query_hash` (sha256 of query, first 12 hex in audit), same shape as `ask_sidekick` question resources; taints `trust: suspicious` under a v2 `webfetch` rule instead of failing closed as an unknown sink.
   - `git push` -> remote URL + branch.
   - `python_interpreter` -> `code_hash` (sha256 of code, first 12 hex in audit) + file-operand extraction at tool-arg parse (`agent.go:608-822` site), best-effort only. Never deny on `@secret` substring alone (false-positive in string literals, false-negative on `getattr(open,...)` indirection).
   - `download_file` -> URL host + path (same normalization as `webfetch`).

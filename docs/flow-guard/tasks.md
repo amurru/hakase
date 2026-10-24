@@ -31,3 +31,19 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 - [x] **T3.3 [QA]** replay fixture driver + e2e read-then-send + resume/compaction Version-unchanged + CSV parser tests (old strict parser on old-format rows, version-aware parser on both). Spec: FG-006 + H3/L3. `internal/agent/flowremedy_test.go`, `internal/session/flow_test.go`, `internal/agent/audit_chain_test.go`.
 - [x] **T3.4 [DOCS]** `docs/permissions/guide.md` v2 experimental section + CHANGELOG + inspiration line in touched packages.
 - [x] **T3.5 [QA]** Full suite green: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.
+## Phase 3 — remedies + audit + replay CI
+
+- [x] **T3.6 [QA]** Fix-up loop 3/2 (epic #124): F1 atomic `ImportMeet` (single write lock, no check-then-act; concurrent Load-vs-Fold stress test `-race` clean) + F2 `Sync` applied-set union + M2 `FlowEnabled` Install/InstallLayered v1/v2 matrix + L5/F3 `web_search_fallback` explicit case mapping to `webfetch` with post-flow fold test. Spec FG-003 canonical table updated (web_search entry, webfetch mapping note).
+
+## Full lane hardening — S24-S29 (epic #124 open, ADR-009)
+
+Spec: [s24-s29-blueprint.md](s24-s29-blueprint.md) - ADR:
+[adr-009-s24-s29.md](../architecture/adr-009-s24-s29.md) - inventory:
+[s24-s29-inventory.md](s24-s29-inventory.md) (choke tables + 29-name index).
+
+- [x] **S24 [BE+QA]** scoped exclusive file creation (`internal/sandbox/scopedfile.go`: confinement + EvalSymlinks re-check + Lstat refusal + O_NOFOLLOW, O_EXCL create-only); wired into write_file/patch, save_skill, python scratch, downloads, task checkpoint.
+- [x] **S25 [BE+QA]** joint-hash v2 grants + dual-accept + fresh approval (twins minted on approve/resume, dual consumed at pre-dispatch/python/sandbox gates); V1-DELTA register (production registers nothing).
+- [x] **S26 [BE+QA]** output tag neutralization (both families, no span >32) on denial/withhold/preview renderers; hash-only audit unchanged.
+- [x] **S27 [BE+QA]** pip strict pins (exact ==, require-hashes argv, transitive/extras refusal, .venv + sitecustomize integrity); additive config, non-strict byte-identical.
+- [x] **S28 [BE+QA]** deny-first ordering pin + write_file/patch skills confinement (`denySkillsWrite`, save_skill owns the domain) + :2182 bypass instruction closed.
+- [x] **S29 [QA]** scan + inventory last (`TestS29ScanInventory`, `TestS29ChokeInventory`, `TestS29MeetOnlyLabels`); lane fails on reintroduction.
