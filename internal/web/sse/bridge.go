@@ -10,6 +10,7 @@ package sse
 
 import (
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/util"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -217,36 +218,60 @@ func (b *EventBridge) SendClarifyTimeout(sessionID, id string) {
 	b.publish(sessionID, "clarify_timeout", payload)
 }
 
-// SendDelegation sends a delegation progress event.
+// SendDelegation sends a delegation progress event. sessionID is the
+// producer (parent run's) session, carried in the payload as session_id
+// so channel transports can gate the push on the producer label (S8);
+// the frame is published to the producer topic for per-session SSE views
+// and additionally to the global topic (""), which the channel Router
+// subscribes to. An empty sessionID publishes to the global topic once
+// (v1 parity for session-less producers). S12: redact-only - the message
+// may carry tool output; it still publishes (no gating, no binding at
+// the bridge - per-recipient gating stays at the push transports).
 func (b *EventBridge) SendDelegation(sessionID, taskID, agent, status, message string) {
 	payload, _ := json.Marshal(map[string]string{
-		"task_id": taskID,
-		"agent":   agent,
-		"status":  status,
-		"message": message,
+		"session_id": sessionID,
+		"task_id":    taskID,
+		"agent":      agent,
+		"status":     status,
+		"message":    util.RedactTruncate(message, 0),
 	})
 	b.publish(sessionID, "delegation", payload)
+	if sessionID != "" {
+		b.publish("", "delegation", payload)
+	}
 }
 
-// SendCron sends a cron job event.
+// SendCron sends a cron job event. sessionID is the producer session
+// (see SendDelegation); empty keeps the legacy global-only publish.
+// S12: redact-only (see SendDelegation) - the summary may carry the job
+// prompt or run output.
 func (b *EventBridge) SendCron(sessionID, jobID, name, status, summary, outputPath string) {
 	payload, _ := json.Marshal(map[string]string{
+		"session_id":  sessionID,
 		"job_id":      jobID,
-		"name":        name,
+		"name":        util.RedactTruncate(name, 0),
 		"status":      status,
-		"summary":     summary,
-		"output_path": outputPath,
+		"summary":     util.RedactTruncate(summary, 0),
+		"output_path": util.RedactTruncate(outputPath, 0),
 	})
 	b.publish(sessionID, "cron", payload)
+	if sessionID != "" {
+		b.publish("", "cron", payload)
+	}
 }
 
-// SendTask sends a task board update.
+// SendTask sends a task board update. sessionID is the producer session
+// (see SendDelegation); empty keeps the legacy global-only publish.
 func (b *EventBridge) SendTask(sessionID string, task map[string]any, action string) {
 	payload, _ := json.Marshal(map[string]any{
-		"task":   task,
-		"action": action,
+		"session_id": sessionID,
+		"task":       task,
+		"action":     action,
 	})
 	b.publish(sessionID, "task", payload)
+	if sessionID != "" {
+		b.publish("", "task", payload)
+	}
 }
 
 // SendUsage sends a token usage update (SSE v2: cost_usd and budget_pct
@@ -267,7 +292,9 @@ func (b *EventBridge) SendUsage(sessionID string, tokens, cached int, percent in
 // interfaces.EventNotifier implementation
 // ---------------------------------------------------------------------------
 
-// TaskUpdate pushes a task board mutation to SSE subscribers.
+// TaskUpdate pushes a task board mutation to SSE subscribers. Task
+// mutations carry no producer session (the board is shared state), so
+// the push stays global and channels gate on the recipient label.
 func (b *EventBridge) TaskUpdate(action string, task interfaces.TaskMeta) {
 	taskMap := map[string]any{
 		"id":           task.ID,
@@ -288,12 +315,18 @@ func (b *EventBridge) TaskUpdate(action string, task interfaces.TaskMeta) {
 	b.SendTask("", taskMap, action)
 }
 
-// DelegationProgress streams sub-agent progress to SSE subscribers.
+// DelegationProgress streams sub-agent progress to SSE subscribers. The
+// producer session resolves via the task registry (delegate.go registers
+// the delegation task id against the parent run's session); unknown tasks
+// stay session-less (recipient-gated fallback, v1 parity).
 func (b *EventBridge) DelegationProgress(status, taskID, agent, message string) {
-	b.SendDelegation("", taskID, agent, status, message)
+	b.SendDelegation(interfaces.SessionForTask(taskID), taskID, agent, status, message)
 }
 
 // CronJobEvent pushes a cron job lifecycle event to SSE subscribers.
+// Cron producers run session-less, so the push stays global and channels
+// gate on the recipient label; SendCron with a session routes a
+// session-scoped producer when a caller has one.
 func (b *EventBridge) CronJobEvent(status, jobID, name, summary, outputPath string) {
 	b.SendCron("", jobID, name, status, summary, outputPath)
 }

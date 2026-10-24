@@ -16,6 +16,7 @@ import (
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/sandbox"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/mcptoolset"
 	"google.golang.org/adk/v2/tool/toolutils"
@@ -475,6 +477,66 @@ func (m *MCPServerManager) SetDisabled(name string, disabled bool) error {
 	return m.reload()
 }
 
+// probeContext is a minimal agent.ReadonlyContext for out-of-band server
+// probes (the /mcp modal's reconnect). Only the embedded context drives
+// behavior: the ADK toolset uses it for cancellation and deadlines, and no
+// tool filter is configured, so the invocation accessors stay zero.
+type probeContext struct {
+	context.Context
+}
+
+var _ agent.ReadonlyContext = probeContext{}
+
+func (probeContext) UserContent() *genai.Content          { return nil }
+func (probeContext) InvocationID() string                 { return "" }
+func (probeContext) AgentName() string                    { return "" }
+func (probeContext) ReadonlyState() session.ReadonlyState { return nil }
+func (probeContext) UserID() string                       { return "" }
+func (probeContext) AppName() string                      { return "" }
+func (probeContext) SessionID() string                    { return "" }
+func (probeContext) Branch() string                       { return "" }
+
+// Sentinel errors for ProbeServer lookups so callers (web handlers, TUI)
+// can map unknown/disabled servers to client status codes with errors.Is
+// instead of treating every failure as a dial error.
+var (
+	ErrMCPServerNotFound = errors.New("mcp server not found")
+	ErrMCPServerDisabled = errors.New("mcp server is disabled")
+)
+
+// ProbeServer dials one server immediately for the /mcp modal's reconnect:
+// clears cooldown and tool cache, lists tools within the server's listing
+// budget, and records status/count exactly like a turn fetch. It blocks up
+// to the budget; callers must run it off the UI loop.
+func (m *MCPServerManager) ProbeServer(ctx context.Context, name string) error {
+	m.mu.Lock()
+	ms, ok := m.servers[name]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no mcp server named %q: %w", name, ErrMCPServerNotFound)
+	}
+	if ms.cfg.Disabled {
+		return fmt.Errorf("mcp server %q is disabled; enable it first: %w", name, ErrMCPServerDisabled)
+	}
+	if ms.toolset == nil {
+		return fmt.Errorf("mcp server %q has no toolset (check the command or URL in config)", name)
+	}
+	ms.clearCooldown()
+	ms.invalidateToolCache()
+	attemptStarted := time.Now()
+	tools, err := ms.toolsCached(probeContext{Context: ctx}, attemptStarted)
+	if err != nil {
+		ms.startCooldown(time.Now(), attemptStarted)
+		ms.setStatus("failed", err.Error())
+		ms.setToolCount(0)
+		return err
+	}
+	ms.clearCooldown()
+	ms.setStatus("connected", "")
+	ms.setToolCount(len(tools))
+	return nil
+}
+
 // Reconnect clears a server's status so its next tool fetch re-runs connect
 // and tools/list. The underlying ADK mcptoolset reconnects lazily with retry
 // on every Tools() call, so this is mostly a status reset for the /mcp view.
@@ -483,10 +545,10 @@ func (m *MCPServerManager) Reconnect(name string) error {
 	ms, ok := m.servers[name]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("no mcp server named %q", name)
+		return fmt.Errorf("no mcp server named %q: %w", name, ErrMCPServerNotFound)
 	}
 	if ms.cfg.Disabled {
-		return fmt.Errorf("mcp server %q is disabled; enable it first", name)
+		return fmt.Errorf("mcp server %q is disabled; enable it first: %w", name, ErrMCPServerDisabled)
 	}
 	// Manual reconnect is explicit user intent: dial on the next Tools()
 	// call regardless of any armed failure cooldown.

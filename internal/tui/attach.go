@@ -150,8 +150,9 @@ func (m *AppModel) mentionMenuOpen() bool {
 	return strings.HasPrefix(word, "@")
 }
 
-// mentionCandidates returns the cached bounded workspace file listing used by
-// the @ menu (lazily walked on first use).
+// mentionCandidates returns the bounded workspace file listing used by
+// the @ menu. filterMentionCandidates refreshes it on every menu open;
+// this stays as the lazy fallback for direct callers.
 func (m *AppModel) mentionCandidates() []string {
 	if m.mentionFiles == nil {
 		m.mentionFiles = walkWorkspaceFiles(".", maxMentionFiles)
@@ -193,11 +194,18 @@ func walkWorkspaceFiles(root string, max int) []string {
 }
 
 // filterMentionCandidates recomputes the filtered @ file list from the
-// current filter text (the word after "@").
+// current filter text (the word after "@"). The workspace walk refreshes
+// on every closed-to-open transition so files created mid-session appear;
+// while the menu stays open the listing is stable.
 func (m *AppModel) filterMentionCandidates() {
 	word, _ := currentWord(m.input.Value())
+	isOpen := strings.HasPrefix(word, "@")
+	if isOpen && !m.mentionWasOpen {
+		m.mentionFiles = walkWorkspaceFiles(".", maxMentionFiles)
+	}
+	m.mentionWasOpen = isOpen
 	filter := ""
-	if strings.HasPrefix(word, "@") {
+	if isOpen {
 		filter = strings.ToLower(word[1:])
 	}
 	m.mentionFiltered = m.mentionFiltered[:0]
@@ -384,29 +392,42 @@ func (m *AppModel) chipRow() string {
 }
 
 // mentionMenuView renders the @ file menu overlay: the filtered workspace
-// files with the highlighted selection marked.
+// files with the highlighted selection marked. The list windows over the
+// matches and always contains the selection so long lists scroll.
 func (m *AppModel) mentionMenuView() string {
 	m.filterMentionCandidates()
 	if len(m.mentionFiltered) == 0 {
 		return menuBoxStyle.Render("  (no matching files)  ")
 	}
 
-	maxLines := 8
+	const maxLines = 8
+	start := m.mentionMenuIndex - maxLines + 1
+	if start < 0 {
+		start = 0
+	}
+	if maxStart := len(m.mentionFiltered) - maxLines; maxStart > 0 && start > maxStart {
+		start = maxStart
+	}
+	if start > m.mentionMenuIndex {
+		start = m.mentionMenuIndex
+	}
 	var lines []string
-	for i, f := range m.mentionFiltered {
-		if i >= maxLines {
-			lines = append(lines, "  …")
-			break
-		}
+	for i := start; i < len(m.mentionFiltered) && i < start+maxLines; i++ {
+		f := m.mentionFiltered[i]
 		marker := "  "
 		if i == m.mentionMenuIndex {
 			marker = "❯ "
 		}
+		// Suffix-biased, rune-aware truncation: the tail of a path
+		// carries the filename, and byte cuts split multibyte runes.
 		name := f
-		if len(name) > 40 {
-			name = "…" + name[len(name)-39:]
+		if runes := []rune(name); len(runes) > 40 {
+			name = "…" + string(runes[len(runes)-39:])
 		}
 		lines = append(lines, marker+"@"+name)
+	}
+	if len(m.mentionFiltered) > maxLines {
+		lines = append(lines, fmt.Sprintf("  … %d of %d", maxLines, len(m.mentionFiltered)))
 	}
 	return menuBoxStyle.Render(strings.Join(lines, "\n"))
 }

@@ -17,7 +17,7 @@ platform: linux
 version: ${NFPM_VERSION}
 section: utils
 priority: optional
-maintainer: Amurru Zerouk <amurru@users.noreply.github.com>
+maintainer: Ammar Zerouk <amurru@users.noreply.github.com>
 description: |-
   Go agent harness with an embedded Vue 3 web UI.
   Hakase is a single static binary that orchestrates LLM-driven coding

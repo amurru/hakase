@@ -40,6 +40,12 @@ func (m *AppModel) AskApproval(ctx context.Context, req interfaces.ApprovalReque
 			Risk:    req.Risk,
 			Reason:  req.Reason,
 			Source:  req.Source,
+			// Flow binding rides into the TUI modal (H3): the prompt
+			// shows the flow marker and the answer authorizes exactly
+			// this (argsHash, labelVersion) call.
+			FlowReason:       req.FlowReason,
+			FlowArgsHash:     req.FlowArgsHash,
+			FlowLabelVersion: req.FlowLabelVersion,
 		},
 		Resp: resp,
 	})

@@ -33,6 +33,21 @@ func UnregisterTask(taskID string) {
 	taskSessions.Unlock()
 }
 
+// SessionForTask returns the hakase session registered for an ADK task
+// id, or "" when unknown. The channel fan-out uses it to resolve the
+// producer session of lifecycle pushes (delegation progress is reported
+// under the delegation task id, which delegate.go registers against the
+// parent run's session). Best-effort: "" keeps the recipient-gated
+// fallback (v1 parity).
+func SessionForTask(taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	taskSessions.RLock()
+	defer taskSessions.RUnlock()
+	return taskSessions.m[taskID]
+}
+
 // SessionIDFromCtx resolves the hakase session for gate prompts from an ADK
 // invocation context (tools receive one as ctx). Returns "" outside a
 // registered run (TUI, CLI utilities), which keeps those gates

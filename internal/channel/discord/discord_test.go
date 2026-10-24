@@ -536,7 +536,7 @@ func TestPushRouting(t *testing.T) {
 	if nb != 1 {
 		t.Errorf("gate-routed approval sent %d messages, want 1 (originating DM only)", nb)
 	}
-	b.TaskEvent("completed", "t1", "Title", "done")
+	b.TaskEvent("", "completed", "t1", "Title", "done")
 	sender.mu.Lock()
 	ns := len(sender.sends)
 	sender.mu.Unlock()

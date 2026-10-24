@@ -127,7 +127,9 @@ func runAuditExport(args []string) int {
 	}
 	out := os.Stdout
 	if *format == "csv" {
-		fmt.Fprintln(out, hakaseagent.AuditCSVHeader)
+		// v2 header: the flow metadata columns are appended at the end
+		// (FG-006/M2). A version-aware parser reads both schemas.
+		fmt.Fprintln(out, hakaseagent.AuditCSVHeaderV2)
 		for _, e := range entries {
 			fmt.Fprintln(out, hakaseagent.AuditCSVRow(e))
 		}

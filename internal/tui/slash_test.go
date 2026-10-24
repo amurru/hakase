@@ -1,6 +1,7 @@
 package tui
 
 import (
+	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/session"
 	"context"
 	"regexp"
@@ -255,6 +256,69 @@ func (m *AppModel) sendInput(text string) (*AppModel, tea.Cmd) {
 	m.input.CursorEnd()
 	model, cmd := m.Update(keyMsg("enter"))
 	return model.(*AppModel), cmd
+}
+
+// TestRunSlashCommandModelShowsCurrent verifies P-09: bare /model reports
+// the active model without changing anything.
+func TestRunSlashCommandModelShowsCurrent(t *testing.T) {
+	m := newTestModel(t)
+	m.modelName = "test-model"
+
+	mm, cmd := m.sendInput("/model")
+	if cmd != nil {
+		t.Fatalf("/model must not return a command, got %v", cmd)
+	}
+	if mm.modelName != "test-model" {
+		t.Fatalf("/model must not change the model, got %q", mm.modelName)
+	}
+	found := false
+	for _, l := range mm.logLines {
+		if strings.Contains(l, "test-model") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("/model should log the current model, got %v", mm.logLines)
+	}
+}
+
+// TestRunSlashCommandModelSwitches verifies P-09: /model <name> switches
+// the next turn's model and drops stale provider caps.
+func TestRunSlashCommandModelSwitches(t *testing.T) {
+	m := newTestModel(t)
+	m.modelInfo = &hakaseagent.ModelInfo{Name: "test-model", ContextWindow: 200_000}
+
+	mm, _ := m.sendInput("/model foo-bar")
+	if mm.modelName != "foo-bar" {
+		t.Fatalf("expected model foo-bar, got %q", mm.modelName)
+	}
+	if mm.modelInfo != nil {
+		t.Fatalf("switching models must drop stale provider info, got %+v", mm.modelInfo)
+	}
+	if mm.IsProcessing {
+		t.Fatal("/model must not start a run")
+	}
+}
+
+// TestRunSlashCommandModelBlockedWhileProcessing verifies the switch is
+// refused mid-run like /new and /compact.
+func TestRunSlashCommandModelBlockedWhileProcessing(t *testing.T) {
+	m := newTestModel(t)
+	m.IsProcessing = true
+
+	mm, _ := m.sendInput("/model foo-bar")
+	if mm.modelName != "test-model" {
+		t.Fatalf("model must not switch while processing, got %q", mm.modelName)
+	}
+	found := false
+	for _, l := range mm.logLines {
+		if strings.Contains(l, "cannot switch models") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("blocked switch should explain why, got %v", mm.logLines)
+	}
 }
 
 // newModelWithSvc builds a TUI model backed by a real session service (needed

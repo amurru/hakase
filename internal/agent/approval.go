@@ -48,7 +48,13 @@ func ApprovalExpiry() time.Duration {
 // While blocked, the pause is recorded for durable resume
 // (best-effort; never fails the gate) and removed on resolve.
 func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
-	if consumePreGrant(req.Tool, req.Command) {
+	// Flow Guard (S7): a one-shot pre-grant minted by ResolveApprovalPause
+	// for a (tool, command) re-drive must never satisfy a flow ask. The
+	// pre-grant carries no (argsHash, labelVersion) binding, so it cannot
+	// prove it evaluated the flow Requires that produced this FlowReason;
+	// skip it and fall through to the human. S17: the grant is session
+	// scoped - only the asking session's grant satisfies it.
+	if req.FlowReason == "" && consumePreGrant(req.Tool, req.Command, req.SessionID) {
 		return true, nil
 	}
 	// approval.mode (PM-002): "deny" auto-denies and "allow"
@@ -58,11 +64,17 @@ func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
 	// decided to execute: replay policy is untouched, so mode=allow
 	// never replays side effects on resume (see ReplayPolicyFor -
 	// system_exec stays ReplayNever).
+	//
+	// Flow Guard (docs/flow-guard FG-005, H5): a flow ask is never
+	// auto-approved by mode=allow - the human decides, because the flow
+	// ask exists exactly because the label says this call is not
+	// admissible. The approval covers one exact call (tool, argsHash,
+	// labelVersion) and never resets the session label.
 	switch approvalMode() {
 	case "deny":
 		return false, fmt.Errorf("approval denied by approval.mode=deny")
 	case "allow":
-		if !permissions.BypassDisabled() {
+		if req.FlowReason == "" && !permissions.BypassDisabled() {
 			return true, nil
 		}
 	}
@@ -74,13 +86,38 @@ func ApproveExec(ctx context.Context, req ApprovalRequest) (bool, error) {
 		return false, fmt.Errorf("no approval mechanism available (headless mode)")
 	}
 	pauseID := recordGatePause(ctx, hakasesession.PauseGateApproval, req.SessionID,
-		"approval: "+req.Tool+" "+util.TruncateStr(req.Command),
-		map[string]any{
-			"tool": req.Tool, "command": req.Command,
-			"risk": req.Risk, "reason": req.Reason,
-		})
+		"approval: "+req.Tool+" "+util.RedactTruncate(req.Command, util.MaxLogField),
+		approvalPauseDetail(req))
 	if pauseID != "" {
 		defer unrecordGatePause(pauseID)
 	}
 	return g.AskApproval(ctx, req)
+}
+
+// approvalPauseDetail builds the pause detail for an approval gate. Flow
+// asks additionally carry their binding (FlowReason/FlowArgsHash/
+// FlowLabelVersion) so a restart can tell a flow-scoped pause from a
+// legacy record and scope the resume grant accordingly (S7). The keys
+// are written whenever a v2 policy is installed (even for non-flow
+// asks, with empty flow values) so legacy records - which lack the keys
+// entirely - fail closed under v2 instead of silently mapping onto the
+// new key. No v2 policy keeps the record shape byte-identical (v1).
+func approvalPauseDetail(req ApprovalRequest) map[string]any {
+	// S13 audit-only redaction: the pause record is persisted (resume
+	// replays it), so the command is redacted here; the live approval
+	// prompt (req.Command) stays full truncated for the human.
+	detail := map[string]any{
+		"tool": req.Tool, "command": util.RedactTruncate(req.Command, util.MaxLogField),
+		"risk": req.Risk, "reason": req.Reason,
+		// S10/M3: the unredacted grant hash rides alongside the
+		// redacted command so resume can mint the pre-grant without
+		// persisting (or re-deriving from) cleartext. Hash only.
+		"grantHash": permissions.ArgsHash(req.Tool, req.Command),
+	}
+	if permissions.FlowEnabled() {
+		detail["flowReason"] = req.FlowReason
+		detail["flowArgsHash"] = req.FlowArgsHash
+		detail["flowLabelVersion"] = req.FlowLabelVersion
+	}
+	return detail
 }

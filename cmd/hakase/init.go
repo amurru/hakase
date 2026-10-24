@@ -9,6 +9,7 @@ import (
 	"amurru/hakase/internal/config"
 	hctx "amurru/hakase/internal/context"
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/sandbox"
 	"amurru/hakase/internal/session"
 	"amurru/hakase/internal/skill"
@@ -39,18 +40,48 @@ func init() {
 		}
 	}
 
+	// Sandbox hook: flow-aware command evaluation gate (FG-003). Preferred
+	// over EvaluateCommandFunc when set; resolves the session label from
+	// ctx and enforces requires gates plus unknown-sink fail-closed.
+	sandbox.EvaluateCommandWithLabelFunc = func(sb *sandbox.SandboxConfig, command string, args []string, label *permissions.SessionLabel) sandbox.GateDecision {
+		d := hakaseagent.EvaluateCommandWithLabel(sb, command, args, label)
+		return sandbox.GateDecision{
+			Action:     sandbox.GateAction(d.Action),
+			Risk:       sandbox.CommandRisk(d.Risk),
+			Reason:     d.Reason,
+			PolicyRule: d.PolicyRule,
+		}
+	}
+
+	// Sandbox hook: Flow Guard label resolution. Narrowed session labels
+	// resolve from the registry; empty sessions and v1 (flow off) stay at
+	// start (v1 parity). A present-but-unregistered session returns nil when
+	// flow is enabled (fail-closed, mirroring flowLabelForCtx), so an
+	// unknown label can never pass as widest.
+	sandbox.FlowLabelFunc = func(ctx context.Context) *permissions.SessionLabel {
+		// H1 live child label: the delegate mutable state (and the
+		// session snapshot) resolve first, so sandbox gates see the
+		// same label the pre-dispatch bound. Falls back to the
+		// registry/start logic inside the agent accessor.
+		if l := hakaseagent.FlowLabelForSandbox(ctx); l != nil {
+			return l
+		}
+		// Nil under v2 (present-but-unregistered) fails closed
+		// inside LookupWithLabel; return nil rather than widest.
+		if permissions.FlowEnabled() {
+			return nil
+		}
+		l := permissions.StartLabel()
+		return &l
+	}
+
 	// Sandbox hook: approval. Wires through to the agent's approval gate.
+	// Flow fields ride along so a sandbox-raised flow ask keeps its
+	// (argsHash, labelVersion) binding into the pause record and the
+	// resume grant (H3); without them the pause cannot pre-grant safely
+	// and fails closed on re-drive.
 	sandbox.ApproveFunc = func(ctx context.Context, req interfaces.ApprovalRequest) (bool, error) {
-		return hakaseagent.ApproveExec(ctx, hakaseagent.ApprovalRequest{
-			Tool:      req.Tool,
-			Command:   req.Command,
-			Args:      req.Args,
-			Risk:      req.Risk,
-			Reason:    req.Reason,
-			Source:    req.Source,
-			ExpiresAt: req.ExpiresAt,
-			SessionID: req.SessionID,
-		})
+		return hakaseagent.ApproveExec(ctx, sandboxApprovalRequest(req))
 	}
 
 	// Sandbox hook: approval expiry timeout (default 60 seconds).
@@ -101,5 +132,26 @@ func init() {
 	// Test-only bridge: allocate DiscoverMarkdownSkillsForTest.
 	skill.DiscoverMarkdownSkillsForTest = func(cwd string, extraDirs []string, log interfaces.LogFunc) []skill.MarkdownSkill {
 		return skill.DiscoverMarkdownSkills(cwd, extraDirs, log)
+	}
+}
+
+// sandboxApprovalRequest maps a sandbox approval request onto the agent
+// gate request without dropping the Flow Guard binding (H3): a
+// sandbox-raised flow ask (system_exec/python via the sandbox path)
+// must keep FlowReason/FlowArgsHash/FlowLabelVersion so the pause record
+// scopes the resume grant to the exact call. Named for tests.
+func sandboxApprovalRequest(req interfaces.ApprovalRequest) hakaseagent.ApprovalRequest {
+	return hakaseagent.ApprovalRequest{
+		Tool:             req.Tool,
+		Command:          req.Command,
+		Args:             req.Args,
+		Risk:             req.Risk,
+		Reason:           req.Reason,
+		Source:           req.Source,
+		ExpiresAt:        req.ExpiresAt,
+		SessionID:        req.SessionID,
+		FlowReason:       req.FlowReason,
+		FlowArgsHash:     req.FlowArgsHash,
+		FlowLabelVersion: req.FlowLabelVersion,
 	}
 }

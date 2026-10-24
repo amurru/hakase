@@ -67,6 +67,63 @@ func ruleSuffix(rule *permissions.Rule) string {
 	return fmt.Sprintf(" (rule: %s %q -> %s)", rule.Action, rule.Resource, rule.Effect)
 }
 
+// atFileOperands extracts best-effort @-file body operands from a shell
+// command line and its args (M4): tokens starting with "@" whose tail
+// looks like a path (contains "/" or "."). Quoting and trailing commas
+// are stripped. Never errors: unparseable input yields no operands.
+func atFileOperands(command string, args []string) []string {
+	var toks []string
+	toks = append(toks, strings.Fields(command)...)
+	toks = append(toks, args...)
+	var out []string
+	for _, tok := range toks {
+		t := strings.Trim(strings.TrimSpace(tok), "\"',")
+		if len(t) < 2 || !strings.HasPrefix(t, "@") {
+			continue
+		}
+		p := t[1:]
+		if p == "" || strings.ContainsAny(p, " \t\n<>|&;()") {
+			continue
+		}
+		if !strings.ContainsAny(p, "/.") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// checkAtFileFlow applies the best-effort @-file body operand rule: a
+// shell command referencing a file the flow policy denies (or asks about
+// on a narrowed label) escalates here. Returns nil when no operand
+// escalates. Flow only escalates, never widens. M6: operands match via
+// the dual canonical+raw legs (flowPathResources) and the fired leg is
+// audited debug-gated so rule authors can tighten toward canonical.
+func checkAtFileFlow(label *permissions.SessionLabel, command string, args []string) *GateDecision {
+	ops := atFileOperands(command, args)
+	for _, p := range ops {
+		res := flowPathResources(p)
+		eff, rule, detail, ok := permissions.LookupWithLabel(label, "read", res...)
+		if !ok {
+			continue
+		}
+		flowAuditPathLeg(label, "read", res, rule, detail)
+		switch eff {
+		case permissions.EffectDeny:
+			reason := fmt.Sprintf("file operand %q denied by permissions policy", p) + ruleSuffix(rule)
+			if detail != "" {
+				reason = detail + " by permissions policy"
+			}
+			return &GateDecision{Action: ActionDeny, Risk: RiskUnknown, Reason: reason, PolicyRule: rule}
+		case permissions.EffectAsk:
+			if detail != "" {
+				return &GateDecision{Action: ActionAsk, Risk: RiskUnknown, Reason: detail + " by permissions policy", PolicyRule: rule}
+			}
+		}
+	}
+	return nil
+}
+
 // parseCommandArgv splits a shell command line into argv the way the shell
 // would evaluate it (quote removal, whitespace). Returns nil on parse error.
 func parseCommandArgv(command string) []string {
@@ -1016,8 +1073,19 @@ func effectiveRiskThreshold(sb *sandbox.SandboxConfig) CommandRisk {
 
 // EvaluateCommand applies the full policy to one system command.
 // argv is parseCommandArgv(command) when len(args)==0, else
-// append([]string{command}, args...).
+// append([]string{command}, args...). The flow label defaults to the
+// start label (v1 parity); use EvaluateCommandWithLabel for flow-aware
+// gating.
 func EvaluateCommand(sb *sandbox.SandboxConfig, command string, args []string) GateDecision {
+	l := permissions.StartLabel()
+	return EvaluateCommandWithLabel(sb, command, args, &l)
+}
+
+// EvaluateCommandWithLabel applies the full policy plus the Flow Guard
+// pre-dispatch check (FG-003) under label. A nil label is fail-closed
+// (evaluated as narrowest). Flow can only escalate, never widen: base
+// deny-class verdicts stand, RiskUnknown still always asks.
+func EvaluateCommandWithLabel(sb *sandbox.SandboxConfig, command string, args []string, label *permissions.SessionLabel) GateDecision {
 	var argv []string
 	if len(args) == 0 {
 		argv = parseCommandArgv(command)
@@ -1100,21 +1168,63 @@ func EvaluateCommand(sb *sandbox.SandboxConfig, command string, args []string) G
 		}
 	}
 
-	// 4b. Permissions policy (permissions.json, PM-002): evaluated after
-	// every deny-class check above (hard-deny, deny patterns, allowlist,
-	// interpreter escalation) and before the risk threshold, so a policy
-	// can never widen a deny. No installed policy = skip with zero
-	// behavior change. A policy allow still falls through on RiskUnknown
-	// (fail-closed, step 5 below).
-	if eff, rule, ok := permissions.Lookup("shell", command); ok && rule != nil {
-		switch eff {
-		case permissions.EffectDeny:
-			return GateDecision{Action: ActionDeny, Risk: risk, Reason: "denied by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
-		case permissions.EffectAsk:
-			return GateDecision{Action: ActionAsk, Risk: risk, Reason: "requires approval by permissions policy" + ruleSuffix(rule), PolicyRule: rule}
-		case permissions.EffectAllow:
-			if risk != RiskUnknown {
-				return GateDecision{Action: ActionAllow, Risk: risk, Reason: ""}
+	// 4b. Permissions policy (permissions.json, PM-002) + Flow Guard
+	// pre-dispatch (FG-003): evaluated after every deny-class check above
+	// (hard-deny, deny patterns, allowlist, interpreter escalation) and
+	// before the risk threshold, so a policy can never widen a deny. No
+	// installed policy = skip with zero behavior change. A policy allow
+	// still falls through on RiskUnknown (fail-closed, step 5 below).
+	// Flow only escalates: a requires failure moves allow->ask (or ->deny
+	// when the requiring rule denies), and a narrowed label with no
+	// mapped rule fails closed (C2). The pre-check records
+	// (labelVersion, argsHash) for the post-admission re-check (H2).
+	// S14 single identity: the shell resources are dual
+	// (permissions.ShellResources: ShellLine primary + bare command
+	// fallback, M4) - the same strings the sandbox audit and the ask
+	// binding hash - so a rule that matches the full line (with args)
+	// cannot be bypassed by matching the bare command in one gate and
+	// the line in another. Migration note: rules authored against the
+	// bare command keep matching via the fallback leg; tighten toward
+	// the ShellLine form (see docs/permissions/guide.md).
+	shellRes := permissions.ShellResources(command, args)
+	if eff, rule, detail, ok := permissions.LookupWithLabel(label, "shell", shellRes...); ok {
+		// M4 fired-leg audit (debug-gated): log which shell leg fired.
+		flowAuditPathLeg(label, "shell", shellRes, rule, detail)
+		if detail != "" && rule == nil {
+			// Flow unknown-sink fail-closed on a narrowed label (C2).
+			if eff == permissions.EffectDeny {
+				return GateDecision{Action: ActionDeny, Risk: risk, Reason: detail + " by permissions policy"}
+			}
+			return GateDecision{Action: ActionAsk, Risk: risk, Reason: detail + " by permissions policy"}
+		}
+		if rule != nil {
+			flowReason := ""
+			if detail != "" {
+				flowReason = detail + " by permissions policy"
+			}
+			switch eff {
+			case permissions.EffectDeny:
+				reason := "denied by permissions policy" + ruleSuffix(rule)
+				if flowReason != "" {
+					reason = flowReason
+				}
+				return GateDecision{Action: ActionDeny, Risk: risk, Reason: reason, PolicyRule: rule}
+			case permissions.EffectAsk:
+				reason := "requires approval by permissions policy" + ruleSuffix(rule)
+				if flowReason != "" {
+					reason = flowReason
+				}
+				return GateDecision{Action: ActionAsk, Risk: risk, Reason: reason, PolicyRule: rule}
+			case permissions.EffectAllow:
+				// Best-effort @-file operand check (M4) before allowing
+				// or falling through to RiskUnknown: a shell command
+				// referencing a flow-denied file escalates here.
+				if d := checkAtFileFlow(label, command, args); d != nil {
+					return *d
+				}
+				if risk != RiskUnknown {
+					return GateDecision{Action: ActionAllow, Risk: risk, Reason: ""}
+				}
 			}
 		}
 	}

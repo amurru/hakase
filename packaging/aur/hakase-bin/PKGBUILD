@@ -1,4 +1,4 @@
-# Maintainer: Amurru Zerouk <amurru@users.noreply.github.com>
+# Maintainer: Ammar Zerouk <amurru@users.noreply.github.com>
 #
 # Prebuilt-binary package (-bin): installs the linux/amd64 hakase binary
 # published on GitHub releases by .github/workflows/release.yml. No

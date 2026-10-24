@@ -31,7 +31,7 @@ func buildShellCommand(ctx context.Context, command, dir string) (*exec.Cmd, err
 	if err != nil {
 		return nil, err
 	}
-	cmd := &exec.Cmd{Path: "cmd", Args: []string{"cmd", "/D", "/C", hardened}}
+	cmd := &exec.Cmd{Path: "cmd", Args: []string{"cmd", "/D", "/C", hardened}} // choke-allow: shared BuildExecCommand shell form (S23 sandbox constructor).
 	if resolved, err := exec.LookPath("cmd"); err != nil {
 		cmd.Err = err
 	} else {
@@ -56,7 +56,7 @@ func buildDirectCommand(ctx context.Context, command string, args []string, dir 
 	if err != nil {
 		return nil, err
 	}
-	cmd := &exec.Cmd{Path: resolved, Args: append([]string{resolved}, args...)}
+	cmd := &exec.Cmd{Path: resolved, Args: append([]string{resolved}, args...)} // choke-allow: shared BuildExecCommand direct form (S23 sandbox constructor).
 	if filepath.Base(resolved) == resolved {
 		if p, err := exec.LookPath(resolved); err != nil {
 			cmd.Err = err

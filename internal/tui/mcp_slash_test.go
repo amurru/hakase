@@ -67,10 +67,11 @@ func TestMCPSlashNoArgsOpensModal(t *testing.T) {
 	setupTestMCPManager(t)
 
 	m := newModelWithSvc(t)
-	model, cmd := m.sendInput("/mcp")
+	model, _ := m.sendInput("/mcp")
 	mm := model
-	if cmd != nil {
-		t.Fatalf("/mcp returned unexpected cmd %v", cmd)
+	// cmd is the live-refresh tick, not a quit/run command.
+	if mm.IsProcessing {
+		t.Fatal("/mcp must not start a run")
 	}
 	if !mm.showMCPList {
 		t.Fatal("/mcp with no args must open the server list modal")

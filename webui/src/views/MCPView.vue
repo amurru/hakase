@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -67,6 +67,10 @@ const loading = ref(false)
 const error = ref('')
 const actionPending = ref<string | null>(null)
 const savingServer = ref(false)
+let pollTimer: ReturnType<typeof setInterval> | null = null
+// Shared sequence for every server-list request: a stale poll resolving
+// after an action's loadServers must not overwrite the newer result.
+let serverRequestSequence = 0
 
 // Add/Edit dialog state
 const dialogOpen = ref(false)
@@ -85,10 +89,12 @@ const formError = ref('')
 const dialogTitle = computed(() => (editingName.value ? `Edit server ${editingName.value}` : 'Add MCP server'))
 
 async function loadServers() {
+  const requestSequence = ++serverRequestSequence
   loading.value = true
   error.value = ''
   try {
-    servers.value = await apiFetch<MCPServer[]>('/mcp/servers')
+    const list = await apiFetch<MCPServer[]>('/mcp/servers')
+    if (requestSequence === serverRequestSequence) servers.value = list
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to load servers'
   } finally {
@@ -277,7 +283,31 @@ function typeIcon(type: string) {
   return type === 'http' ? Plug : Server
 }
 
-onMounted(loadServers)
+onMounted(() => {
+  loadServers()
+  // Background refresh so statuses and tool counts follow turns and
+  // probes running elsewhere. Quiet: never touches loading/error, so a
+  // transient failure keeps the last good list instead of flashing.
+  pollTimer = setInterval(async () => {
+    if (actionPending.value || loading.value) return
+    const requestSequence = ++serverRequestSequence
+    try {
+      const list = await apiFetch<MCPServer[]>('/mcp/servers')
+      if (requestSequence === serverRequestSequence && !actionPending.value && !loading.value) {
+        servers.value = list
+      }
+    } catch {
+      /* next tick retries */
+    }
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 </script>
 
 <template>
