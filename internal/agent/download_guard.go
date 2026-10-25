@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"amurru/hakase/internal/vision"
 )
@@ -28,8 +29,15 @@ func saveDownloadBody(body io.Reader, dst *os.File, filePath string, maxBytes in
 		return 0, fmt.Errorf("failed to save file contents: %w", err)
 	}
 	if n > maxBytes {
-		// Over-cap: unlink the partial file, never leave it.
-		_ = os.Remove(filePath)
+		// Over-cap: unlink the partial file, never leave it. Clean +
+		// identity re-check: the unlink targets exactly the file this
+		// helper opened (dst.Name), so a mismatched or uncleaned
+		// spelling can never delete elsewhere. dst.Name stays valid
+		// after Close (it reports the open path, no syscall).
+		clean := filepath.Clean(filePath)
+		if opened := filepath.Clean(dst.Name()); clean == opened {
+			_ = os.Remove(clean)
+		}
 		return 0, fmt.Errorf("download exceeds 50MB limit")
 	}
 	return n, nil

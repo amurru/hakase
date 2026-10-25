@@ -7,6 +7,7 @@ import (
 	"amurru/hakase/internal/skill"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -243,7 +244,7 @@ func TestKnowledgeIndexCache(t *testing.T) {
 
 func TestLoadBenchSet(t *testing.T) {
 	dir := t.TempDir()
-	path := dir + "/bench.json"
+	path := filepath.Join(dir, "bench.json")
 	content := `{"queries":[{"query":"quantum","expected":["quantum-notes"],"k":3}]}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("writeFile: %v", err)
@@ -257,10 +258,10 @@ func TestLoadBenchSet(t *testing.T) {
 	}
 
 	// Empty queries must fail.
-	if err := os.WriteFile(dir+"/empty.json", []byte(`{"queries":[]}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "empty.json"), []byte(`{"queries":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := skill.LoadBenchSet(dir + "/empty.json"); err == nil {
+	if _, err := skill.LoadBenchSet(filepath.Join(dir, "empty.json")); err == nil {
 		t.Error("skill.LoadBenchSet accepted an empty set")
 	}
 }
