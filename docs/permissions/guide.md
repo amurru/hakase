@@ -68,7 +68,9 @@ answers record the actor (web username or `telegram:<id>` /
   verify/export commands take `--hmac-key-file` for HMAC-chained logs.
 
 Notes: command lines are redacted for secret-shaped values (`password=`,
-`Bearer` tokens, `sk-`/`ghp_`/`xox-` shapes) before chaining. Operator
+`Bearer`/`Basic` tokens (credential-shaped: digit, uppercase, symbol, or
+16+ chars, so prose like "bearer information" is untouched),
+`sk-`/`ghp_`/`xox-` shapes) before chaining. Operator
 URLs (enterprise poll, SIEM forward) never follow redirects. Serve the
 enterprise policy over an authenticated transport (HTTPS/TLS): strict
 decoding and validation check the payload's shape, not its origin, so a
@@ -91,3 +93,135 @@ Enterprise `allow_managed_only` strips allow rules from the user and
 project layers; `disable_bypass` turns `approval.mode=allow` back into
 interactive. Per-agent overlays (`agents.<name>.rules`) merge under the
 same precedence.
+
+## Version 2 (experimental): session data-flow labels
+
+> **Experimental.** A `version: 2` policy only loads with
+> `HAKASE_FLOW_EXPERIMENTAL=1` (or `true`). Without the gate the loader
+> refuses it loudly instead of silently ignoring the flow rules - a
+> partially-enforced taint policy is worse than none. Start from the
+> commented starter set in
+> [`../flow-guard/permissions.example.jsonc`](../flow-guard/permissions.example.jsonc).
+
+Version 2 adds three optional keys to a rule and one per-session label:
+
+```jsonc
+{"version": 2, "default": "ask",
+ "rules": [
+   {"action": "read", "resource": "docs/internal/*", "effect": "allow",
+    "delta": {"audience": ["internal"]}},
+   {"action": "webfetch", "resource": "*", "effect": "allow",
+    "delta": {"trust": "suspicious"}},
+   {"action": "send_message", "resource": "*", "effect": "allow",
+    "requires": {"trust": "trusted", "audience_contains": ["public"]},
+    "sanitizable": false}]}
+```
+
+- **`delta`** taints the *future*: after the call, the session label
+  narrows (trust goes up, the audience ceiling goes down). Sources
+  (`read`, `webfetch`) carry a delta; sinks do not.
+- **`requires`** gates the call against the current label. A failure
+  escalates to *ask* (or *deny* when the rule says so) - it never
+  widens anything.
+- **`sanitizable`** marks a narrow resource where a redacted payload may
+  proceed on its own. Never set it on a wildcard `send_message *`: a
+  wildcard is never sanitizable, and the engine refuses the auto-proceed
+  even if you try.
+
+The session label is `(trust, audience, version)`: `trusted < suspicious`
+and `self < internal < public`. It only ever narrows, is stored with the
+session (so a resume keeps it), and is recomputed conservatively for
+session files written before version 2 existed - an old session never
+resumes widest.
+
+**What a block looks like.** The model sees the remedy, not the payload:
+
+```
+flow: send_message blocked (trusted/internal v2).
+Allowed: ask-human (approve this exact call).
+Offer: ask-human | sanitize | drop-result
+```
+
+- **ask-human** routes the ask to the normal approval queue (web, TUI,
+  Telegram, Discord). `approval.mode=allow` never auto-approves a flow
+  ask, and the answer authorizes exactly one call - it never widens the
+  label.
+- **sanitize** redacts the secret-shaped parts of the payload and
+  re-checks the rule. It proceeds on its own only for a narrow
+  `sanitizable: true` resource; everything else asks. Message payloads
+  only - a code payload (python, a saved skill) is never rewritten
+  behind your back, it asks.
+- **drop-result** is the model not retrying.
+
+**Audit.** Flow decisions add four entries to `logs/exec-audit.jsonl`:
+`flow_blocked`, `flow_sanitized`, `flow_error_redacted` and
+`flow_recomputed`. They carry the label snapshot and the args hash -
+never the raw args or the payload. The CSV export appends the
+`flow_label`, `flow_args_hash` and `flow_version` columns at the end of
+the row (the older 10-column export stays readable).
+
+**Debugging.** `HAKASE_FLOW_DEBUG=1` prints the flow decisions and the
+args hashes to stderr. It never writes full arguments, and it never
+writes to the audit file or the logs.
+
+**Delivery hardening (S9-S14).** The sandbox gates fail closed on an
+unregistered session under v2: a nil label flows into the policy
+lookup (evaluated as narrowest) instead of skipping the check, at the
+file-ops resolver and the system-exec path audit. File-ops denies a
+flow Deny outright and a flow Ask without a one-shot human approval
+threaded from the pre-dispatch (S9/H1: an approved Ask admits on
+grant consume; deny stays deny).
+A shell flow ask carries the same `(reason, argsHash, labelVersion)`
+binding as the python gate (dual `permissions.ShellResources` identity -
+`ShellLine` primary plus bare command fallback (M4), canonical
+`permissions.FlowArgsHash("system_exec","shell",resources)` over both
+legs, no API change), so `approval.mode=allow` never auto-approves it.
+Migration note (M4): rules authored against the bare command keep
+matching via the fallback leg; tighten new rules toward the full
+`ShellLine` form. Approval prompts
+(Telegram, Discord) and lifecycle push bodies (cron/task/delegation,
+SSE bridge included) redact secret-shaped content with the unified
+redact-then-truncate helper and still deliver - redaction never
+withholds, gates, or binds; clarify question + choices redact the same
+way in both transports. Delegation results are cached per
+(session, label, goal) under v2 (same goal under a different label or
+session is different work); a hit still Meets the cached terminal
+label into the parent, and a parent that moved past the cached version
+bypasses the cache. Without v2 the cache key is unchanged (v1 parity:
+no policy means no gate, no fold, no cache split). The python approval
+prompt carries the full truncated code (the human must see what they
+approve); redaction applies audit-only (audit entries + persisted pause
+detail) - never the prompt, never the gate verdict. Prompt parity:
+approval and clarify prompts show the full text live in every transport
+(web/TUI/Telegram/Discord) while the persisted pause record carries
+only redacted summaries and details. The audit trail
+itself redacts through the single `util.RedactSecrets` engine
+(redact-before-truncate everywhere).
+
+**Deferred (S12).** Per-recipient push fan-out gating stays
+read-only/per-evaluation (no sticky, no fold); the S12 throttle-count
+audit is deferred - withholds log per recipient at debug level, no
+counting test pins the volume.
+
+**Resolved (S14/H1 loop 4).** `system_exec_start` shares
+`BuildExecCommand` (Tool `system_exec`), so its binding hashes the
+canonical `system_exec` tool on both sides (agent grant + sandbox
+consume both normalize; the sandbox tries both spellings). The bare
+command fallback leg (M4) is intentional migration coverage, not a
+widening: rules authored against the bare command keep matching while
+new rules tighten toward the full `ShellLine` form.
+
+**Resolved (loop 5).** `search_files` and the generic `grep` tool share
+one binding identity (`search_files`, action `grep`): the fileops
+search root resolves with action `grep` so the base/flow lookups and
+the downstream grant consume the same triple. Win32 alias folds
+(device namespaces, ADS suffixes, trailing dots/spaces) apply only to
+windows-shaped inputs (drive `C:\`/`C:/`, UNC/device `\\`, or
+`GOOS=windows`); POSIX names such as `a:b` pass through unchanged.
+Security sign-off: the raw leg still matches, so a missed fold never
+widens access - it only skips an extra canonical leg.
+
+**Post-admission (T2-5).** `CheckPostFlow` re-validates `requires`
+after the fold (TOCTOU): a label move between pre-check and admission
+withholds egress, admits redacted sources; a missing/evicted binding
+on a narrowed label re-validates fail-closed.

@@ -46,26 +46,55 @@ type SandboxConfig struct {
 	DenyBasenames   []string
 	AllowNetwork    bool
 	AllowPipInstall bool
-	Permissions     map[string]string
-	AllowedCommands []string
-	DenyPatterns    []string
-	RiskThreshold   string
-	AllowFallback   bool
+	// PipAllowlist gates auto-pip installs by package name (S18): empty
+	// means deny-all (fail-closed). Matching is exact lowercase, no globs.
+	// Under S27 strict pins, entries may carry an exact pin (name==version);
+	// the pin is what installs.
+	PipAllowlist []string
+	// PipStrictPins turns on the S27 lane (additive, default off = exact
+	// S18 behavior, no v1 break): allowlist entries must carry exact
+	// == pins, recorded hashes are required when PipHashes is non-empty,
+	// and the .venv integrity gate runs before the choke.
+	PipStrictPins bool
+	// PipHashes maps lowercase package base name to allowed sha256 hex
+	// digests (S27 require-hashes). Consulted only under PipStrictPins;
+	// when non-empty, a package without a recorded hash is denied.
+	PipHashes map[string][]string
+	// PipTrustedSitecustomize holds allowed sha256 hex digests of
+	// sitecustomize.py / usercustomize.py content (S27 .venv integrity).
+	// Consulted only under PipStrictPins; empty means any such file
+	// present in .venv denies (fail-closed: unexpected import hooks).
+	PipTrustedSitecustomize []string
+	Permissions             map[string]string
+	AllowedCommands         []string
+	DenyPatterns            []string
+	RiskThreshold           string
+	AllowFallback           bool
 }
 
 // SandboxJSON is the on-disk JSON shape for the "sandbox" config block.
 type SandboxJSON struct {
-	Mode            string            `json:"mode,omitempty"`
-	WorkspaceRoots  []string          `json:"workspace_roots,omitempty"`
-	ReadRoots       []string          `json:"read_roots,omitempty"`
-	DenyRoots       []string          `json:"deny_roots,omitempty"`
-	AllowNetwork    bool              `json:"allow_network,omitempty"`
-	AllowPipInstall bool              `json:"allow_pip_install,omitempty"`
-	Permissions     map[string]string `json:"permissions,omitempty"`
-	AllowedCommands []string          `json:"allowed_commands,omitempty"`
-	DenyPatterns    []string          `json:"deny_patterns,omitempty"`
-	RiskThreshold   string            `json:"risk_threshold,omitempty"`
-	AllowFallback   bool              `json:"allow_fallback,omitempty"`
+	Mode            string   `json:"mode,omitempty"`
+	WorkspaceRoots  []string `json:"workspace_roots,omitempty"`
+	ReadRoots       []string `json:"read_roots,omitempty"`
+	DenyRoots       []string `json:"deny_roots,omitempty"`
+	AllowNetwork    bool     `json:"allow_network,omitempty"`
+	AllowPipInstall bool     `json:"allow_pip_install,omitempty"`
+	// PipAllowlist gates auto-pip installs by package name (S18, additive,
+	// default empty = deny-all). Exact lowercase match, no globs.
+	// Under S27 strict pins entries may carry == pins.
+	PipAllowlist []string `json:"pip_allowlist,omitempty"`
+	// PipStrictPins turns on the S27 lane (additive, default off).
+	PipStrictPins bool `json:"pip_strict_pins,omitempty"`
+	// PipHashes maps lowercase base name to allowed sha256 hex digests.
+	PipHashes map[string][]string `json:"pip_hashes,omitempty"`
+	// PipTrustedSitecustomize holds allowed import-hook content hashes.
+	PipTrustedSitecustomize []string          `json:"pip_trusted_sitecustomize,omitempty"`
+	Permissions             map[string]string `json:"permissions,omitempty"`
+	AllowedCommands         []string          `json:"allowed_commands,omitempty"`
+	DenyPatterns            []string          `json:"deny_patterns,omitempty"`
+	RiskThreshold           string            `json:"risk_threshold,omitempty"`
+	AllowFallback           bool              `json:"allow_fallback,omitempty"`
 }
 
 // CurrentSandbox is the package-level sandbox configuration consulted by
@@ -126,11 +155,27 @@ func LoadSandboxConfig(s *SandboxJSON) *SandboxConfig {
 		DenyRoots:       append([]string(nil), s.DenyRoots...),
 		AllowNetwork:    s.AllowNetwork,
 		AllowPipInstall: s.AllowPipInstall,
-		Permissions:     s.Permissions,
-		AllowedCommands: append([]string(nil), s.AllowedCommands...),
-		DenyPatterns:    append([]string(nil), s.DenyPatterns...),
-		RiskThreshold:   s.RiskThreshold,
-		AllowFallback:   s.AllowFallback,
+		PipAllowlist:    append([]string(nil), s.PipAllowlist...),
+		PipStrictPins:   s.PipStrictPins,
+		PipHashes: func() map[string][]string {
+			if s.PipHashes == nil {
+				return nil
+			}
+			// Low config surface: keys normalize to lowercase at load so
+			// "Requests" and "requests" bind the same allowlist entry
+			// (matchStrictAllowlist compares lowercase).
+			out := make(map[string][]string, len(s.PipHashes))
+			for k, v := range s.PipHashes {
+				out[strings.ToLower(strings.TrimSpace(k))] = append([]string(nil), v...)
+			}
+			return out
+		}(),
+		PipTrustedSitecustomize: append([]string(nil), s.PipTrustedSitecustomize...),
+		Permissions:             s.Permissions,
+		AllowedCommands:         append([]string(nil), s.AllowedCommands...),
+		DenyPatterns:            append([]string(nil), s.DenyPatterns...),
+		RiskThreshold:           s.RiskThreshold,
+		AllowFallback:           s.AllowFallback,
 	}
 
 	switch sb.Mode {
@@ -652,6 +697,12 @@ func (r CommandRisk) String() string {
 // EvaluateCommandFunc is set by main to gate-evaluate a system command.
 // When nil, gate evaluation is skipped (fail-open; tests with nil sandbox).
 var EvaluateCommandFunc func(sb *SandboxConfig, command string, args []string) GateDecision
+
+// EvaluateCommandWithLabelFunc is set by main to gate-evaluate a system
+// command under a Flow Guard label (FG-003). When non-nil, buildExecCommand
+// prefers it over EvaluateCommandFunc, resolving the label from the call
+// context. A nil label is fail-closed. Nil = flow gate off (legacy path).
+var EvaluateCommandWithLabelFunc func(sb *SandboxConfig, command string, args []string, label *permissions.SessionLabel) GateDecision
 
 // AuditCommandFunc is set by main to audit-log a command execution.
 // When nil, auditing is no-op.

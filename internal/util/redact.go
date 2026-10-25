@@ -15,6 +15,8 @@ package util
 
 import (
 	"regexp"
+	"strings"
+	"unicode"
 )
 
 // redactionRule pairs a secret-shaped pattern with its replacement token.
@@ -27,10 +29,17 @@ var redactionRules = []struct {
 	token string
 }{
 	{"aws-key", regexp.MustCompile(`\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}`), "[REDACTED:aws-key]"},
-	{"github-token", regexp.MustCompile(`(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}`), "[REDACTED:github-token]"},
-	{"openai-key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}`), "[REDACTED:openai-key]"},
+	{"github-token", regexp.MustCompile(`(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}`), "[REDACTED:github-token]"},
+	{"openai-key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`), "[REDACTED:openai-key]"},
 	{"slack-token", regexp.MustCompile(`\bxox[abceoprs]-[A-Za-z0-9-]+`), "[REDACTED:slack-token]"},
-	{"bearer", regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9\-._~+/=]{10,}`), "[REDACTED:bearer]"},
+	{"bearer", regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9\-._~+/=]{8,}`), "[REDACTED:bearer]"},
+	// Basic auth scheme (S13 unify: the retired audit-local engine
+	// covered `basic` too, so the canonical engine must not lose it).
+	// S10 low: bearer/basic carry a token-shape guard (see tokenShaped):
+	// the scheme word alone with a common word (e.g. "bearer information")
+	// must not redact - the token needs a digit, an uppercase letter,
+	// or a symbol to look like a credential.
+	{"basic", regexp.MustCompile(`(?i)\bbasic\s+[A-Za-z0-9\-._~+/=]{8,}`), "[REDACTED:basic]"},
 	// Full PEM block first (RE2 non-greedy is linear-time), header-only as
 	// fallback for truncated excerpts (audit B1: body alone matches nothing).
 	{"private-key", regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`), "[REDACTED:private-key]"},
@@ -43,7 +52,10 @@ var redactionRules = []struct {
 	// Generic credential assignment: `name = value`, `"name": "value"`
 	// (JSON), `name:value`. The name boundary excludes `_`-prefixed names
 	// (covered above); the optional quote covers JSON keys (audit B2).
-	{"credential", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])((?:api[_-]?key|api[_-]?secret|secret[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret|secret|token|password|passwd|pwd))["']?\s*[:=]\s*['"]?\S{8,}`), "[REDACTED:credential]"},
+	// S13 retired-engine parity: bare `auth` (Authorization: ..., auth=...)
+	// and quoted values (`password="..."`, `'token': '...'`) match too;
+	// the 8-rune floor matches the retired engine (Bearer 8+, ghp 8+).
+	{"credential", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])((?:api[_-]?key|api[_-]?secret|secret[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret|secret|token|password|passwd|pwd|auth))["']?\s*[:=]\s*['"]?\S{8,}`), "[REDACTED:credential]"},
 }
 
 // RedactSecrets replaces secret-shaped substrings with typed
@@ -53,12 +65,94 @@ var redactionRules = []struct {
 func RedactSecrets(s string) (string, bool) {
 	redacted := false
 	for _, r := range redactionRules {
+		if r.name == "bearer" || r.name == "basic" {
+			// S10 low token-shape guard: the scheme word with a common
+			// word (e.g. "bearer information") is prose, not a
+			// credential. Only replace tokens carrying a digit, an
+			// uppercase letter, or a symbol.
+			if !r.re.MatchString(s) {
+				continue
+			}
+			ns := r.re.ReplaceAllStringFunc(s, func(m string) string {
+				if !tokenShaped(m) {
+					return m
+				}
+				return r.token
+			})
+			if ns != s {
+				s = ns
+				redacted = true
+			}
+			continue
+		}
 		if r.re.MatchString(s) {
 			s = r.re.ReplaceAllString(s, r.token)
 			redacted = true
 		}
 	}
 	return s, redacted
+}
+
+// tokenShaped reports whether a bearer/basic match carries a
+// credential-shaped token past the scheme word. Guards against
+// redacting prose like "bearer information". The split is on any
+// unicode whitespace (not just ASCII space); the token is the first
+// field after the scheme. Credential-shaped means carrying a digit,
+// an uppercase letter, or a symbol (anything beyond lowercase
+// letters), or a long opaque string (len>=10) even when all
+// lowercase.
+func tokenShaped(m string) bool {
+	i := strings.IndexFunc(m, unicode.IsSpace)
+	if i < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(m[i+1:])
+	if rest == "" {
+		return false
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return false
+	}
+	tok := fields[0]
+	if len([]rune(tok)) >= 10 {
+		return true
+	}
+	for _, r := range tok {
+		if unicode.IsDigit(r) || unicode.IsUpper(r) {
+			return true
+		}
+		if !unicode.IsLower(r) && !unicode.IsDigit(r) {
+			// Symbol: anything that is not a lowercase letter or
+			// digit (covers = + / . - _ ~ and punctuation).
+			// unicode.IsLower already excluded; digits excluded
+			// above, so any remaining rune (including symbols)
+			// counts. Space cannot appear (single field).
+			return true
+		}
+	}
+	return false
+}
+
+// RedactTruncate redacts secret-shaped substrings first, then caps the
+// result to n runes (… suffix). Redaction runs BEFORE truncation so a
+// secret straddling the cut point can never survive it, and so every
+// caller (gate prompts, push bodies, code previews, audit fields) shares
+// one redact-then-truncate order (S10/S12/S13 unified helper). n <= 0
+// disables truncation.
+func RedactTruncate(s string, n int) string {
+	red, _ := RedactSecrets(s)
+	if n <= 0 {
+		return red
+	}
+	r := []rune(red)
+	if len(r) <= n {
+		return red
+	}
+	if n == 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // RedactionRuleCount reports how many redaction rules are active. Tests use
@@ -79,6 +173,11 @@ func RedactedPatterns() []string {
 		"xoxb-12345-67890-abcdefghijklmnopqrstuv",
 		"xoxe-1-23456-abcdef",
 		"Bearer abcdefghij1234567890",
+		"Basic dXNlcjpwYXNz",
+		// H1 10-char all-lowercase floor (tokenShaped len>=10): opaque
+		// lowercase tokens redact; shorter lowercase prose does not.
+		"Bearer abcdefghij",
+		"Basic abcdefghij",
 		"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq cor rupted body line\n-----END RSA PRIVATE KEY-----",
 		"-----BEGIN RSA PRIVATE KEY----- (truncated excerpt, no footer)",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",

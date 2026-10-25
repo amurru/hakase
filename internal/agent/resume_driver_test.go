@@ -291,21 +291,22 @@ func TestResolveApprovalPauseApproveClean(t *testing.T) {
 		t.Fatalf("approve clean: drive=%v err=%v, want true,nil", drive, err)
 	}
 	// Pre-grant passes the exact command without a gate (rt has none:
-	// without the grant this fails closed).
-	ok, err := ApproveExec(ctx, ApprovalRequest{Tool: "system_exec", Command: "ls /tmp"})
+	// without the grant this fails closed). S17: the grant is session
+	// scoped, so the re-drive carries the paused session.
+	ok, err := ApproveExec(ctx, ApprovalRequest{Tool: "system_exec", Command: "ls /tmp", SessionID: "sess-2"})
 	if err != nil || !ok {
 		t.Fatalf("pre-granted ApproveExec = %v,%v; want true,nil", ok, err)
 	}
 	// One-shot: a second identical request fails closed again.
-	if _, err := ApproveExec(ctx, ApprovalRequest{Tool: "system_exec", Command: "ls /tmp"}); err == nil {
+	if _, err := ApproveExec(ctx, ApprovalRequest{Tool: "system_exec", Command: "ls /tmp", SessionID: "sess-2"}); err == nil {
 		t.Fatal("pre-grant reused: want fail-closed error on second use")
 	}
 	// Different command never matched.
-	grantApproval("system_exec", "echo scoped")
-	if consumePreGrant("system_exec", "echo other") {
+	grantApproval("system_exec", "echo scoped", "sess-scope")
+	if consumePreGrant("system_exec", "echo other", "sess-scope") {
 		t.Fatal("pre-grant matched a different command")
 	}
-	if !consumePreGrant("system_exec", "echo scoped") {
+	if !consumePreGrant("system_exec", "echo scoped", "sess-scope") {
 		t.Fatal("pre-grant did not match its exact command")
 	}
 }
@@ -371,5 +372,33 @@ func TestPausedTurnInputFirstUserMessage(t *testing.T) {
 	}
 	if _, err := PausedTurnInput(ctx, "missing"); err == nil {
 		t.Fatal("PausedTurnInput missing session: want error")
+	}
+}
+
+// TestResolveApprovalPauseFlowRefusesRiskyHistory pins H-1: a flow
+// pause whose crashed turn already completed a never-replay side
+// effect (system_exec) refuses the fresh-turn re-drive with the
+// unsafe-to-redrive error, the same gate as the legacy path.
+func TestResolveApprovalPauseFlowRefusesRiskyHistory(t *testing.T) {
+	dir := t.TempDir()
+	preg := resumeTestDeps(t, dir)
+	ctx := context.Background()
+	craftPausedHistory(t, dir, "turn-flow-risky", "send_message", "call-open", []string{"system_exec"})
+	pauseID := recordPause(t, preg, hakasesession.PauseRecord{
+		HakaseSessionID: "sess-flow", ADKSessionID: "turn-flow-risky",
+		Gate: hakasesession.PauseGateApproval,
+		Detail: map[string]any{
+			"tool": "send_message", "command": "hello",
+			"flowReason": "requires approval", "flowArgsHash": "deadbeef",
+			"flowLabelVersion": 3,
+		},
+	})
+	if _, err := ResolveApprovalPause(ctx, pauseID, true); err == nil {
+		t.Fatal("approve flow pause with completed system_exec: want refusal")
+	} else if !strings.Contains(err.Error(), "unsafe to re-drive") || !strings.Contains(err.Error(), "system_exec") {
+		t.Fatalf("flow refusal should name unsafe-to-redrive + system_exec, got: %v", err)
+	}
+	if recs, _ := preg.ListForSession("sess-flow"); len(recs) != 1 {
+		t.Fatal("refused flow pause must keep its record for manual handling")
 	}
 }

@@ -137,11 +137,13 @@ var VisionInjected sync.Map
 var VisionDescribeCache sync.Map
 
 // httpClient is the shared HTTP client for image downloads, with connection
-// pooling, sane timeouts, and SSRF-preventing redirect checks.
+// pooling, sane timeouts, and SSRF-preventing redirect checks. Dialing goes
+// through GuardedDialContext (S21): a plain Dialer here would let a
+// rebinding DNS answer split the check from the connect.
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		DialContext:           GuardedDialContext,
 		MaxIdleConns:          8,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -705,26 +707,63 @@ func CheckIPPublic(ip netip.Addr) error {
 	return nil
 }
 
+// lookupIPAddr resolves a host to its FULL answer set. It is an
+// indirection over net.DefaultResolver.LookupIPAddr (S21) so tests inject
+// answers without real DNS. It is a plain var, never cached: rebinding
+// defenses need fresh resolution per check and per dial.
+var lookupIPAddr = func(ctx gocontext.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
+// guardedDial performs the TCP connect for GuardedDialContext. It is a var
+// so tests observe the pinned address without real network (default: a
+// fresh net.Dialer, same as before).
+var guardedDial = func(ctx gocontext.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
+}
+
 // CheckHostPublic resolves a host (with optional port) and rejects it when
-// any resolved address is not a public target. Callers that then DIAL the
-// host must use GuardedDialContext: a pre-flight check alone can be defeated
-// by DNS rebinding (the check-time and dial-time resolutions happen apart).
+// ANY resolved address is not a public target (S21 deny-wins across the
+// set: round-robin / rebinding DNS must not smuggle an unvetted address
+// past a first-answer check). Literal IPs are validated without DNS.
+// An empty answer set fails closed. IPv6 zone IDs are rejected outright.
+// Host-with-port splitting is preserved. Callers that then DIAL the host
+// must use GuardedDialContext: a pre-flight check alone can be defeated by
+// DNS rebinding (the check-time and dial-time resolutions happen apart).
 func CheckHostPublic(host string) error {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
 		// No port or invalid port; use the host directly.
 		h = host
 	}
-	addrs, err := net.ResolveIPAddr("ip", h)
+	if strings.Contains(h, "%") {
+		return fmt.Errorf("blocked internal address: %s: IPv6 zone IDs rejected", h)
+	}
+	if ip, perr := netip.ParseAddr(h); perr == nil {
+		if cerr := CheckIPPublic(ip); cerr != nil {
+			return fmt.Errorf("%s: %w", h, cerr)
+		}
+		return nil
+	}
+	if h == "" {
+		return fmt.Errorf("cannot resolve empty host")
+	}
+	addrs, err := lookupIPAddr(gocontext.Background(), h)
 	if err != nil {
 		return fmt.Errorf("cannot resolve host %s: %w", h, err)
 	}
-	ip, ok := netip.AddrFromSlice(addrs.IP)
-	if !ok {
-		return fmt.Errorf("cannot parse resolved IP for %s", h)
+	if len(addrs) == 0 {
+		return fmt.Errorf("no addresses for host %s", h)
 	}
-	if cerr := CheckIPPublic(ip); cerr != nil {
-		return fmt.Errorf("%s: %w", h, cerr)
+	for _, a := range addrs {
+		ip, ok := netip.AddrFromSlice(a.IP)
+		if !ok {
+			return fmt.Errorf("cannot parse resolved IP for %s", h)
+		}
+		if cerr := CheckIPPublic(ip); cerr != nil {
+			return fmt.Errorf("%s: %w", h, cerr)
+		}
 	}
 	return nil
 }
@@ -745,10 +784,9 @@ func GuardedDialContext(ctx gocontext.Context, network, addr string) (net.Conn, 
 		if cerr := CheckIPPublic(ip); cerr != nil {
 			return nil, cerr
 		}
-		var d net.Dialer
-		return d.DialContext(ctx, network, addr)
+		return guardedDial(ctx, network, addr)
 	}
-	addrs, rerr := net.DefaultResolver.LookupIPAddr(ctx, h)
+	addrs, rerr := lookupIPAddr(ctx, h)
 	if rerr != nil {
 		return nil, fmt.Errorf("cannot resolve host %s: %w", h, rerr)
 	}
@@ -766,8 +804,7 @@ func GuardedDialContext(ctx gocontext.Context, network, addr string) (net.Conn, 
 	}
 	// Pin the dial to a validated address: the Host header and TLS SNI still
 	// come from the URL, so the remote identity is unchanged.
-	var d net.Dialer
-	return d.DialContext(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
+	return guardedDial(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
 }
 
 // isKnownImageMime checks a server-reported Content-Type against known image

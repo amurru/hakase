@@ -1,0 +1,16 @@
+{
+  "name": "unknown sink fail closed",
+  "description": "T2.4: an unmapped tool (e.g. a new MCP egress) on a narrowed label fails closed with ask, while the start label keeps the allow default (C2).",
+  "policy": {
+    "version": 2,
+    "default": "allow",
+    "rules": [
+      {"action": "read", "resource": "*", "effect": "allow", "delta": {"trust": "suspicious"}}
+    ]
+  },
+  "steps": [
+    {"tool": "mcp__github__create_issue", "args": ["title"], "label_before": {"trust": "trusted", "audience": "public"}, "expect": "allow"},
+    {"tool": "read", "args": ["notes.md"], "label_before": {"trust": "trusted", "audience": "public"}, "apply_delta_on": "success"},
+    {"tool": "mcp__github__create_issue", "args": ["title"], "label_before": {"trust": "suspicious", "audience": "public"}, "expect": "ask"}
+  ]
+}

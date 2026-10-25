@@ -88,7 +88,9 @@ func ProjectPolicyPath(root string) string {
 }
 
 // LoadPolicyFile reads and strict-decodes one policy file: unknown keys
-// and unsupported versions are errors.
+// and unsupported versions are errors. Version 2 (flow fields) loads only
+// when the flowExperimental gate is on; otherwise it fails closed with an
+// error naming the gate.
 func LoadPolicyFile(path string) (Policy, []byte, error) {
 	var p Policy
 	raw, err := os.ReadFile(path)
@@ -100,10 +102,42 @@ func LoadPolicyFile(path string) (Policy, []byte, error) {
 	if err := dec.Decode(&p); err != nil {
 		return Policy{}, raw, fmt.Errorf("permissions: %s: %w", path, err)
 	}
-	if p.Version != 0 && p.Version != 1 {
+	if p.Version != 0 && p.Version != 1 && p.Version != 2 {
 		return Policy{}, raw, fmt.Errorf("permissions: %s: unsupported version %d (want 1)", path, p.Version)
 	}
+	if p.Version == 2 && !FlowExperimentalEnabled() {
+		return Policy{}, raw, fmt.Errorf("permissions: %s: version 2 requires the flowExperimental gate (set HAKASE_FLOW_EXPERIMENTAL=1)", path)
+	}
+	// V1-DELTA register: registered actions may carry flow keys under
+	// v0/v1 (mirrors Compile); everything else requires version 2.
+	if p.Version != 2 && policyHasUnregisteredFlowKeys(p) {
+		return Policy{}, raw, fmt.Errorf("permissions: %s: flow keys (delta/requires/sanitizable) require version 2", path)
+	}
 	return p, raw, nil
+}
+
+// policyHasUnregisteredFlowKeys reports whether any rule carries flow
+// fields on an action without a V1-DELTA sanction (the only permitted v1
+// flow-key carrier). The loader mirrors Compile: registered actions may
+// carry flow keys under v0/v1, everything else requires version 2.
+func policyHasUnregisteredFlowKeys(p Policy) bool {
+	for _, r := range p.Rules {
+		if r.Delta != nil || r.Requires != nil || r.Sanitizable {
+			if !IsV1DeltaRegistered(strings.ToLower(strings.TrimSpace(r.Action))) {
+				return true
+			}
+		}
+	}
+	for _, ap := range p.Agents {
+		for _, r := range ap.Rules {
+			if r.Delta != nil || r.Requires != nil || r.Sanitizable {
+				if !IsV1DeltaRegistered(strings.ToLower(strings.TrimSpace(r.Action))) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // LayeredPolicy is the merged, compiled result of Load.
@@ -172,9 +206,14 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		agentRules   = map[string][]Rule{}
 		def          = EffectAsk
 		haveDef      bool
+		haveV2       bool
 		entFlags     EnterprisePolicy
 		entLen       int
 		entAgentLens = map[string]int{}
+		// entRequires tracks enterprise actions gated by requires (H5):
+		// lower-layer allows for the same action that drop the gate are
+		// stripped under allowManagedOnly.
+		entRequires = map[string]bool{}
 	)
 
 	strictest := func(d Effect) {
@@ -189,6 +228,16 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 		rules := append([]Rule(nil), p.Rules...)
 		for i := range rules {
 			rules[i].Source = source
+		}
+		if p.Version == 2 {
+			haveV2 = true
+		}
+		if enterprise {
+			for _, r := range rules {
+				if r.Requires != nil {
+					entRequires[strings.ToLower(strings.TrimSpace(r.Action))] = true
+				}
+			}
 		}
 		merged = append(merged, rules...)
 		for name, ap := range p.Agents {
@@ -272,7 +321,9 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 
 	// allowManagedOnly strips allow rules from non-enterprise layers:
 	// only the enterprise prefix (and enterprise agent prefixes) keep
-	// their allows.
+	// their allows. H5: lower-layer allows that drop an enterprise
+	// requires gate for the same action are stripped as well, so a
+	// project layer can never remove enterprise flow requirements.
 	if entFlags.AllowManagedOnly {
 		merged = append(append([]Rule{}, merged[:entLen]...), dropAllows(merged[entLen:])...)
 		for name, rules := range agentRules {
@@ -282,9 +333,23 @@ func (l *Loader) Load(root string) (*LayeredPolicy, error) {
 				agentRules[name] = dropAllows(rules)
 			}
 		}
+		if len(entRequires) > 0 {
+			merged = stripWideningAllows(merged, entLen, entRequires)
+			for name, rules := range agentRules {
+				if el, ok := entAgentLens[name]; ok && el < len(rules) {
+					agentRules[name] = append(append([]Rule{}, rules[:el]...), stripWideningAllows(rules[el:], 0, entRequires)...)
+				} else if !ok {
+					agentRules[name] = stripWideningAllows(rules, 0, entRequires)
+				}
+			}
+		}
 	}
 
-	base := Policy{Version: 1, Default: def, Rules: merged}
+	version := 1
+	if haveV2 {
+		version = 2
+	}
+	base := Policy{Version: version, Default: def, Rules: merged}
 	for name, rules := range agentRules {
 		if base.Agents == nil {
 			base.Agents = map[string]AgentPolicy{}
@@ -311,6 +376,26 @@ func dropAllows(rules []Rule) []Rule {
 	var out []Rule
 	for _, r := range rules {
 		if strings.ToLower(strings.TrimSpace(string(r.Effect))) == string(EffectAllow) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// stripWideningAllows drops lower-layer allow rules for actions gated by
+// enterprise requires when the allow carries no requires of its own.
+// entLen is the enterprise prefix length (kept verbatim); only the tail
+// is filtered. Monotonic flow merge (H5): a lower layer may add gates,
+// never remove enterprise ones.
+func stripWideningAllows(rules []Rule, entLen int, entRequires map[string]bool) []Rule {
+	if entLen > len(rules) {
+		entLen = len(rules)
+	}
+	out := append([]Rule{}, rules[:entLen]...)
+	for _, r := range rules[entLen:] {
+		if strings.ToLower(strings.TrimSpace(string(r.Effect))) == string(EffectAllow) &&
+			r.Requires == nil && entRequires[strings.ToLower(strings.TrimSpace(r.Action))] {
 			continue
 		}
 		out = append(out, r)
@@ -380,8 +465,14 @@ func (l *Loader) cachedProject(root, path string, raw []byte) (Policy, error) {
 	if err := dec.Decode(&p); err != nil {
 		return Policy{}, fmt.Errorf("permissions: %s: %w", path, err)
 	}
-	if p.Version != 0 && p.Version != 1 {
+	if p.Version != 0 && p.Version != 1 && p.Version != 2 {
 		return Policy{}, fmt.Errorf("permissions: %s: unsupported version %d (want 1)", path, p.Version)
+	}
+	if p.Version == 2 && !FlowExperimentalEnabled() {
+		return Policy{}, fmt.Errorf("permissions: %s: version 2 requires the flowExperimental gate (set HAKASE_FLOW_EXPERIMENTAL=1)", path)
+	}
+	if p.Version != 2 && policyHasUnregisteredFlowKeys(p) {
+		return Policy{}, fmt.Errorf("permissions: %s: flow keys (delta/requires/sanitizable) require version 2", path)
 	}
 	l.projects[root] = fileEntry{path: path, mtime: fi.ModTime(), size: int64(len(raw)), fp: want, policy: p, ok: true}
 	return p, nil

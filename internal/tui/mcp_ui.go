@@ -1,20 +1,42 @@
 // mcp_ui.go - the interactive /mcp server-list modal, modeled on the
-// session-list modal pattern (ui.go toggleSessionList / handleSessionListKey /
-// sessionListView). The modal is keyboard-driven; while open it renders as an
-// inline overlay below the main content and swallows keys in Update.
+// session chooser modal (centered overlay with a cursor-following window).
+// The modal is keyboard-driven; while open it renders as a centered overlay
+// and swallows keys in Update.
 //
 // The statuses and state fields live on AppModel (declared in ui.go); the
 // view and key handling live here to keep mcp_* concerns in one place.
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	mcp "amurru/hakase/internal/mcp"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+// chooserRefreshInterval re-snapshots the open chooser (MCP servers,
+// sessions) so rows follow background changes. Both list calls are cheap
+// local reads that never block on network I/O.
+const chooserRefreshInterval = 2 * time.Second
+
+// chooserTickMsg re-snapshots whichever chooser modal is open.
+type chooserTickMsg struct{}
+
+// mcpProbeDoneMsg carries the result of a background reconnect probe.
+type mcpProbeDoneMsg struct {
+	name string
+	err  error
+}
+
+func tickChooser() tea.Cmd {
+	return tea.Tick(chooserRefreshInterval, func(time.Time) tea.Msg {
+		return chooserTickMsg{}
+	})
+}
 
 // toggleVerb returns the verb for enable/disable log messages.
 func toggleVerb(disable bool) string {
@@ -48,7 +70,7 @@ func (m *AppModel) ToggleMCPList() tea.Cmd {
 	m.showSessionList = false // modals are mutually exclusive
 	m.mcpListIndex = 0
 	m.RefreshMCPList()
-	return nil
+	return tickChooser()
 }
 
 // refreshMCPList reloads server statuses from the live manager. Safe to call
@@ -83,6 +105,30 @@ func (m *AppModel) handleMCPListKey(key string) tea.Cmd {
 			m.mcpListIndex++
 		}
 		return nil
+	case "pgup":
+		m.mcpListIndex -= m.mcpVisibleRows()
+		if m.mcpListIndex < 0 {
+			m.mcpListIndex = 0
+		}
+		return nil
+	case "pgdown":
+		m.mcpListIndex += m.mcpVisibleRows()
+		if m.mcpListIndex > len(m.mcpListFiltered)-1 {
+			m.mcpListIndex = len(m.mcpListFiltered) - 1
+		}
+		if m.mcpListIndex < 0 {
+			m.mcpListIndex = 0
+		}
+		return nil
+	case "home", "g":
+		m.mcpListIndex = 0
+		return nil
+	case "end", "G":
+		m.mcpListIndex = len(m.mcpListFiltered) - 1
+		if m.mcpListIndex < 0 {
+			m.mcpListIndex = 0
+		}
+		return nil
 	case "e":
 		return m.mcpToggleSelected(false)
 	case "d":
@@ -105,70 +151,148 @@ func (m *AppModel) mcpToggleSelected(disable bool) tea.Cmd {
 	}
 	m.AppendLog(fmt.Sprintf("MCP server %q %s", srv.Name, toggleVerb(disable)+"d"))
 	m.RefreshMCPList()
+	if !disable {
+		// A newly enabled server is idle until something dials it:
+		// probe now so the modal shows the live result.
+		return m.probeServerCmd(srv.Name)
+	}
 	return nil
 }
 
-// mcpReconnectSelected forces a reconnect of the highlighted server.
+// mcpReconnectSelected dials the highlighted server in the background and
+// reports the live result; the modal stays open throughout.
 func (m *AppModel) mcpReconnectSelected() tea.Cmd {
 	if mcp.MCPManager == nil || len(m.mcpListFiltered) == 0 || m.mcpListIndex >= len(m.mcpListFiltered) {
 		return nil
 	}
-	srv := m.mcpListFiltered[m.mcpListIndex]
-	if err := mcp.MCPManager.Reconnect(srv.Name); err != nil {
-		m.AppendLog(fmt.Sprintf("⚠ failed to reconnect %q: %v", srv.Name, err))
-		return nil
-	}
-	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q on next tool fetch", srv.Name))
-	m.RefreshMCPList()
-	return nil
+	return m.probeServerCmd(m.mcpListFiltered[m.mcpListIndex].Name)
 }
 
-// mcpListView renders the /mcp modal as an inline overlay box, matching the
-// session-list modal's fixed-width box style.
-func (m *AppModel) mcpListView() string {
-	if len(m.mcpListFiltered) == 0 {
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("63")).
-			Padding(1, 2).
-			Render("  (no MCP servers configured)  ")
+// probeServerCmd runs a live dial off the UI loop; the done message
+// refreshes the modal, so the row flips from idle to connected/failed
+// with the real count instead of waiting for the next turn.
+func (m *AppModel) probeServerCmd(name string) tea.Cmd {
+	// Capture the manager on the UI loop: the closure runs on another
+	// goroutine where the global may have been cleared (tests and
+	// shutdown set MCPManager to nil), which would nil-panic or race.
+	mgr := mcp.MCPManager
+	if mgr == nil {
+		return nil
 	}
+	m.AppendLog(fmt.Sprintf("Reconnecting MCP server %q…", name))
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		err := mgr.ProbeServer(ctx, name)
+		return mcpProbeDoneMsg{name: name, err: err}
+	}
+}
+
+// mcpVisibleRows mirrors the session chooser: the visible window follows
+// the cursor so long server lists scroll instead of clipping.
+func (m *AppModel) mcpVisibleRows() int {
+	rows := m.height - 14 // modal margins + title/divider + footer
+	if rows < 3 {
+		rows = 3
+	}
+	if rows > 12 {
+		rows = 12
+	}
+	return rows
+}
+
+// mcpModalView renders the /mcp server list as a centered modal.
+func (m *AppModel) mcpModalView() tea.View {
+	box := chooserBoxStyle.Render(m.mcpListView())
+	footer := helpFooterStyle.Render("↑↓ move · pgup/pgdn jump · e enable · d disable · r reconnect · esc close")
+	content := lipgloss.JoinVertical(lipgloss.Center, box, footer)
+	v := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content))
+	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = true
+	return v
+}
+
+// mcpListView renders the /mcp modal box content: a titled list with the
+// selected row highlighted, windowed scrolling that follows the cursor,
+// and names/errors truncated to the box width. Glyph widths are measured
+// display-cell-aware so the box edges stay aligned.
+func (m *AppModel) mcpListView() string {
+	boxW := m.width - 4
+	if boxW > 76 {
+		boxW = 76
+	}
+	if boxW < 30 {
+		boxW = 30
+	}
+	innerW := boxW - 6 // border + padding on both sides
 
 	var b strings.Builder
-	b.WriteString("┌─ MCP Servers ───────────────────────────────────────┐\n")
-	b.WriteString("│ Esc/q: close │ e: enable │ d: disable │ r: reconnect │\n")
-	b.WriteString("├──────────────────────────────────────────────────────┤\n")
+	b.WriteString(chooserTitleStyle.Render(fmt.Sprintf("MCP Servers (%d)", len(m.mcpListFiltered))))
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", innerW))
+	b.WriteString("\n")
 
-	maxLines := m.chatViewport.Height() - 6
-	if maxLines < 1 {
-		maxLines = 1
+	if len(m.mcpListFiltered) == 0 {
+		b.WriteString("  (no MCP servers configured)\n")
+		return b.String()
 	}
 
-	for i, s := range m.mcpListFiltered {
-		if i >= maxLines {
-			b.WriteString("│  ... (more)                                          │\n")
-			break
-		}
-		marker := " "
-		if i == m.mcpListIndex {
-			marker = "❯"
-		}
-		tools := "0 tools"
-		if s.Status == "connected" {
+	rows := m.mcpVisibleRows()
+	start := m.mcpListIndex - rows + 1
+	if start < 0 {
+		start = 0
+	}
+	if maxStart := len(m.mcpListFiltered) - rows; maxStart > 0 && start > maxStart {
+		start = maxStart
+	}
+	if start > m.mcpListIndex {
+		start = m.mcpListIndex
+	}
+	for i := start; i < len(m.mcpListFiltered) && i < start+rows; i++ {
+		s := m.mcpListFiltered[i]
+		// Only connected servers have a meaningful count; anything else
+		// names its state instead of printing a misleading zero.
+		tools := "idle"
+		switch s.Status {
+		case "connected":
 			tools = fmt.Sprintf("%d tools", s.ToolCount)
+		case "disabled":
+			tools = "off"
+		case "failed":
+			tools = "failed"
+		default:
+			if s.Status != "" && s.Status != "idle" {
+				tools = s.Status
+			}
 		}
-		line := fmt.Sprintf("│ %s %s %s  %s  %s", marker, mcpStatusGlyph(s), s.Name, s.Transport, tools)
+		detail := s.Transport + "  " + tools
 		if s.Status == "failed" && s.Error != "" {
-			line += fmt.Sprintf(" (%s)", s.Error)
+			detail += "  (" + truncateRunes(s.Error, 40) + ")"
 		}
-		// Pad to fill the box width.
-		for len(line) < 58 {
-			line += " "
+		nameMax := innerW - 2 - 1 - 1 - lipgloss.Width(detail) - 2
+		if nameMax < 8 {
+			nameMax = 8
 		}
-		line += "│"
-		b.WriteString(line + "\n")
+		name := truncateRunes(s.Name, nameMax)
+		if pad := nameMax - lipgloss.Width(name); pad > 0 {
+			name += strings.Repeat(" ", pad)
+		}
+		// Cursor marker selects the row; no highlight wash so the
+		// status glyph colors stay readable on the selection.
+		marker := "  "
+		if i == m.mcpListIndex {
+			marker = "> "
+		}
+		row := marker + mcpStatusGlyph(s) + " " + name + "  " + detail
+		if pad := innerW - lipgloss.Width(row); pad > 0 {
+			row += strings.Repeat(" ", pad)
+		}
+		b.WriteString(row + "\n")
 	}
-
-	b.WriteString("└──────────────────────────────────────────────────────┘")
+	if len(m.mcpListFiltered) > rows {
+		b.WriteString(fmt.Sprintf("… %d of %d (scroll for more)\n", rows, len(m.mcpListFiltered)))
+	}
 	return b.String()
 }

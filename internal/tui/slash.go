@@ -118,7 +118,7 @@ var builtinCommands = []SlashCommand{
 		Description: "Show the keyboard shortcut and slash command reference",
 		Usage:       "/help",
 		Run: func(m *AppModel, args string) tea.Cmd {
-			m.showHelp = true
+			m.openHelp()
 			return nil
 		},
 	},

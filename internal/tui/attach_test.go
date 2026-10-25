@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestCurrentWord(t *testing.T) {
@@ -73,6 +75,69 @@ func TestMimeTypeFor(t *testing.T) {
 		if got := mimeTypeFor(path); got != want {
 			t.Fatalf("mimeTypeFor(%q) = %q, want %q", path, got, want)
 		}
+	}
+}
+
+func TestMentionMenuRescansOnReopen(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	m := newTestModel(t)
+	openMenu := func(value string) {
+		m.input.SetValue(value)
+		m.input.CursorEnd()
+		m.filterMentionCandidates()
+	}
+	contains := func(name string) bool {
+		for _, f := range m.mentionFiltered {
+			if f == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	openMenu("@")
+	if contains("late.txt") {
+		t.Fatalf("late.txt must not be listed before creation, got %v", m.mentionFiltered)
+	}
+	// Created while open: stays hidden until the menu reopens.
+	writeFileOrFail(t, filepath.Join(dir, "late.txt"), "x")
+	openMenu("@l")
+	if contains("late.txt") {
+		t.Fatal("menu must stay stable while continuously open")
+	}
+	// Close and reopen: the new file appears.
+	openMenu("no at here")
+	openMenu("@")
+	if !contains("late.txt") {
+		t.Fatalf("reopened menu should list late.txt, got %v", m.mentionFiltered)
+	}
+}
+
+// TestUpdateResetsMentionWasOpenWhenMenuClosed covers the Update-driven
+// path: esc/backspace remove the @ token without a filter recompute (Update
+// only recomputes while the menu is open), so Update must reset the flag
+// whenever the menu is closed. Otherwise the next @ reuses a stale listing.
+func TestUpdateResetsMentionWasOpenWhenMenuClosed(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("@")
+	m.input.CursorEnd()
+	m.filterMentionCandidates()
+	if !m.mentionWasOpen {
+		t.Fatalf("menu should be open after typing @")
+	}
+	// Simulate esc closing the menu the way handleMentionMenuKey does: the
+	// @ token is removed without a filter recompute.
+	m.input.SetValue("")
+	m.input.CursorEnd()
+	if m.mentionMenuOpen() {
+		t.Fatalf("menu should be closed after @ removal")
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "x", Code: 'x'})
+	m = updated.(*AppModel)
+	if m.mentionWasOpen {
+		t.Fatalf("Update must reset mentionWasOpen while the menu is closed")
 	}
 }
 
@@ -365,5 +430,53 @@ func mkdirOrFail(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMentionMenuWindowsLongList(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for i := 0; i < 20; i++ {
+		name := "file" + string(rune('0'+i/10)) + string(rune('0'+i%10)) + ".txt"
+		writeFileOrFail(t, filepath.Join(dir, name), "x")
+	}
+	writeFileOrFail(t, filepath.Join(dir, "zzz-last.txt"), "x")
+
+	m := newTestModel(t)
+	m.input.SetValue("@")
+	m.input.CursorEnd()
+	m.filterMentionCandidates()
+	if len(m.mentionFiltered) < 20 {
+		t.Fatalf("expected 20+ matches, got %v", m.mentionFiltered)
+	}
+
+	m.mentionMenuIndex = len(m.mentionFiltered) - 1
+	rendered := ansiStrip.ReplaceAllString(m.mentionMenuView(), "")
+	if !strings.Contains(rendered, "zzz-last.txt") {
+		t.Fatalf("window should follow the cursor to the last match:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "file00.txt") {
+		t.Fatalf("matches outside the window must scroll away:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "of") {
+		t.Fatalf("menu should note the truncated list:\n%s", rendered)
+	}
+}
+
+func TestMentionMenuTruncatesUnicodeSafely(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	long := strings.Repeat("é", 45) + ".txt"
+	writeFileOrFail(t, filepath.Join(dir, long), "x")
+
+	m := newTestModel(t)
+	m.input.SetValue("@")
+	m.input.CursorEnd()
+	rendered := ansiStrip.ReplaceAllString(m.mentionMenuView(), "")
+	if strings.Contains(rendered, "\ufffd") {
+		t.Fatalf("truncation must not split multibyte runes:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "…") || !strings.Contains(rendered, ".txt") {
+		t.Fatalf("truncated name should keep an ellipsis and the extension:\n%s", rendered)
 	}
 }

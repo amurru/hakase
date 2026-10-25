@@ -1,3 +1,11 @@
+// Package session holds the persisted conversation state: sessions,
+// messages, attachments, gate pauses, and the Flow Guard session
+// data-flow label.
+//
+// The Flow Guard parts are inspired by the OpenAPPA APPA model (Agentic
+// Permissions Policy Algebra), paper arxiv 2607.24625, MIT (c) 2026
+// Archestra Inc. No OpenAPPA code was copied: clean-room Go
+// implementation, no TOML, no sidecar.
 package session
 
 import (
@@ -13,6 +21,8 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
+
+	"amurru/hakase/internal/permissions"
 )
 
 const (
@@ -66,6 +76,15 @@ type Session struct {
 	HintedContextFiles []string `json:"hinted_context_files,omitempty"`
 	// ToolOutputMaxChars overrides default persist-time tool-output cap (Spec CX-003).
 	ToolOutputMaxChars int `json:"tool_output_max_chars,omitempty"`
+	// Flow is the Flow Guard session data-flow label (FG-001/006). A
+	// pointer so omitempty omits it when uninitialized (value structs
+	// cannot be nil and a zero struct is not the start label). Nil =
+	// uninitialized, fail-closed at call sites.
+	Flow *permissions.SessionLabel `json:"flow,omitempty"`
+	// FlowApplied is the idempotency set of admitted fold keys
+	// (length-prefixed "seq:<dec>:<len>:<tool-id>"), persisted alongside
+	// Flow so replay/resume cannot double-fold. Omitted when empty.
+	FlowApplied map[string]bool `json:"flow_applied,omitempty"`
 }
 
 // Message represents a single turn in a chat session.
@@ -124,9 +143,12 @@ type SessionSummary struct {
 }
 
 // NewSession creates a new Session with a generated ID and current timestamps.
+// The Flow Guard label starts at the start label (widest): a new session
+// has observed nothing yet. A pre-v2 session file carries no flow field at
+// all and resumes conservative instead (see RecomputeFlow).
 func NewSession(title string) *Session {
 	now := time.Now().UTC()
-	return &Session{
+	s := &Session{
 		ID:        generateSessionID(),
 		Title:     title,
 		CreatedAt: now,
@@ -134,6 +156,8 @@ func NewSession(title string) *Session {
 		Messages:  make([]Message, 0),
 		TaskRefs:  make([]TaskRef, 0),
 	}
+	s.EnsureFlow()
+	return s
 }
 
 // AddMessage appends a plain text message to the session and updates the

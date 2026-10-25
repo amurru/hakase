@@ -257,6 +257,32 @@ func (m *AppModel) sendInput(text string) (*AppModel, tea.Cmd) {
 	return model.(*AppModel), cmd
 }
 
+// TestSlashCommandModelRemoved pins the H2 re-review decision: the /model
+// switch claimed "applies to the next turn" but only updated the TUI
+// display - the ADK runner bakes the model into its agents at SetupRunner
+// time and exposes no per-turn swap, so the claim was false. The command
+// is removed (not rewired) until a real runner-model swap lands; the
+// active model still shows in the status bar from modelName.
+func TestSlashCommandModelRemoved(t *testing.T) {
+	if cmd := FindSlashCommand("model"); cmd != nil {
+		t.Fatalf("FindSlashCommand(model) = %+v, want nil (switch removed as unwired)", cmd)
+	}
+	m := newTestModel(t)
+	mm, _ := m.sendInput("/model foo-bar")
+	found := false
+	for _, l := range mm.logLines {
+		if strings.Contains(l, "unknown command") && strings.Contains(l, "model") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("/model should be rejected as unknown, got %v", mm.logLines)
+	}
+	if mm.modelName != "test-model" {
+		t.Fatalf("/model must not change the model, got %q", mm.modelName)
+	}
+}
+
 // newModelWithSvc builds a TUI model backed by a real session service (needed
 // for /new and other session-touching commands).
 func newModelWithSvc(t *testing.T) *AppModel {

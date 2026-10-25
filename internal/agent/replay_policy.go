@@ -36,6 +36,9 @@ const (
 )
 
 // replaySafeTools are read-only: introspection, search, status reads.
+// web_fetch/webfetch ride with web_search: plain GET-shaped fetches are
+// as replay-harmless as a search re-query (both re-issue network reads,
+// neither mutates local state).
 var replaySafeTools = map[string]struct{}{
 	"read_file": {}, "search_files": {},
 	"git_status": {}, "git_diff": {}, "git_log": {}, "git_branch": {},
@@ -46,7 +49,8 @@ var replaySafeTools = map[string]struct{}{
 	"recall_knowledge": {}, "cite_knowledge": {},
 	"lint_knowledge":     {},
 	"system_exec_status": {}, "system_exec_list": {},
-	"web_search": {}, "browse": {}, "extract_pdf": {},
+	"web_search": {}, "web_fetch": {}, "webfetch": {},
+	"browse": {}, "extract_pdf": {},
 	"env": {}, "rules": {}, "help": {},
 	"projects": {}, "channels": {}, "session": {}, "task": {},
 	"memory": {},

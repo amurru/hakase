@@ -63,12 +63,60 @@ func LookupForAgent(agentName, action string, resources ...string) (eff Effect, 
 	return eff, rule, true
 }
 
+// LookupWithLabel evaluates an action against resources under a flow
+// label (FG-003). Without an installed v2 policy it mirrors Lookup
+// exactly (v1 parity); with v2, flow can only escalate. ok is false when
+// no policy is installed. detail is the flow reason ("" when no flow
+// check applied). A nil label is fail-closed (evaluated as narrowest).
+func LookupWithLabel(label *SessionLabel, action string, resources ...string) (eff Effect, rule *Rule, detail string, ok bool) {
+	return LookupForAgentWithLabel("", label, action, resources...)
+}
+
+// LookupForAgentWithLabel merges the named agent overlay under the label.
+func LookupForAgentWithLabel(agentName string, label *SessionLabel, action string, resources ...string) (eff Effect, rule *Rule, detail string, ok bool) {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	if installedPolicy == nil {
+		return "", nil, "", false
+	}
+	if agentName == "" {
+		eff, rule, detail = installedPolicy.EvaluateWithLabel(label, action, resources...)
+	} else {
+		eff, rule, detail = installedPolicy.EvaluateForAgentWithLabel(agentName, label, action, resources...)
+	}
+	return eff, rule, detail, true
+}
+
 // Installed returns the active layered policy, or nil when none is
 // installed.
 func Installed() *LayeredPolicy {
 	installedMu.RLock()
 	defer installedMu.RUnlock()
 	return installedLayers
+}
+
+// FlowEnabled reports whether the installed policy enables flow (v2)
+// checks. False when no policy is installed or it is v0/v1: every flow
+// gate passes through unchanged (v1 parity, FG-003 H1 / FG-004 H2).
+// Unlike Installed, this also covers programmatically installed
+// (non-layered) policies, which tests and early wiring use.
+func FlowEnabled() bool {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	return installedPolicy != nil && installedPolicy.FlowEnabled()
+}
+
+// DeltaForInstalled returns the most-narrowing union delta for
+// action+resources under the installed policy (FG-004 folding). ok is
+// false when no policy is installed, the policy is not v2, or no matched
+// rule carries a delta.
+func DeltaForInstalled(action string, resources ...string) (FlowDelta, bool) {
+	installedMu.RLock()
+	defer installedMu.RUnlock()
+	if installedPolicy == nil {
+		return FlowDelta{}, false
+	}
+	return installedPolicy.DeltaFor(action, resources...)
 }
 
 // BypassDisabled reports whether the installed enterprise layer sets

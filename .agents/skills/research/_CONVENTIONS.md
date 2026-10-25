@@ -76,8 +76,13 @@ Apply to EVERY skill body:
 | Artifacts / `data/` / `~/...` outputs | `./outputs/` (hakase convention) |
 
 Notes:
-- hakase has NO native `web_search` tool. The `web_researcher` sub-agent
-  (via `delegate_task`) is the browser/search surface.
+- hakase HAS native `web_search`/`web_fetch` fallback tools
+  (`internal/websearch/tools.go`: shown only while no browser/search MCP
+  server is connected, hidden otherwise). Skills must still NOT call
+  them directly: generic web research goes through the `web_researcher`
+  sub-agent (via `delegate_task`), which is the browser/search surface.
+  The grep gate below enforces this (no `web_search`/`web_extract`
+  toolset refs in skill bodies).
 - CLI tools invoked via `system_exec` must be installed in trusted dirs
   (`/usr /lib /lib64 /bin /sbin /etc /nix /proc /dev /sys /tmp /run`) or the
   skill body must include the install command.
@@ -142,5 +147,7 @@ Every skill must pass:
 ```bash
 hakase skill validate .agents/skills/<name>
 ```
-Exit 0 required. Grep gate: no `skill_view`, `web_search`/`web_extract`
-toolset refs, `fallback_for_toolsets`, `done()`, or `show_html()` in any body.
+Exit 0 required. Grep gate: no `skill_view`, `web_search`/`web_fetch`/
+`web_extract` toolset refs (skills must delegate to `web_researcher`
+instead of calling the native `web_search`/`web_fetch` fallback tools
+directly), `fallback_for_toolsets`, `done()`, or `show_html()` in any body.

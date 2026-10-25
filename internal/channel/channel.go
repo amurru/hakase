@@ -35,10 +35,15 @@ type PushHandler interface {
 	// from a list of choices (multiSelect allows several).
 	ClarifyPrompt(sessionID, id, question string, choices []string, multiSelect bool)
 	// CronEvent reports a cron job lifecycle transition (completed, failed,
-	// silent) - only the user-relevant statuses are routed.
-	CronEvent(status, jobID, name, summary, outputPath string)
+	// silent) - only the user-relevant statuses are routed. producerSessionID
+	// is the run whose taint the payload carries ("" for session-less
+	// producers: recipient-gated fallback); the push withholds per recipient
+	// when either the producer or the recipient label fails send_message.
+	CronEvent(producerSessionID, status, jobID, name, summary, outputPath string)
 	// TaskEvent reports a task-board mutation (completed, failed only).
-	TaskEvent(action string, id, title, status string)
+	// producerSessionID follows CronEvent ("" for shared-board mutations).
+	TaskEvent(producerSessionID, action string, id, title, status string)
 	// DelegationEvent reports a finished sub-agent delegation.
-	DelegationEvent(status, taskID, agent, message string)
+	// producerSessionID is the parent run's session.
+	DelegationEvent(producerSessionID, status, taskID, agent, message string)
 }

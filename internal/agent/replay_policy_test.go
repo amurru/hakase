@@ -24,6 +24,7 @@ func TestReplayPolicySafeAndIdempotent(t *testing.T) {
 	for _, name := range []string{
 		"read_file", "search_files", "git_status", "git_diff",
 		"git_log", "get_task", "list_sessions", "system_exec_list",
+		"web_search", "web_fetch", "webfetch", "browse", "extract_pdf",
 	} {
 		if got := ReplayPolicyFor(name); got != ReplaySafe {
 			t.Errorf("ReplayPolicyFor(%q) = %q, want safe", name, got)

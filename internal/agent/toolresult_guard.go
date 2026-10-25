@@ -2,17 +2,19 @@ package agent
 
 import (
 	hctx "amurru/hakase/internal/context"
-	"strings"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 )
 
 // ToolResultGuard is a BeforeModelCallback that walks all FunctionResponse
-// parts in the request contents and wraps long string values (>32 chars) in
-// <UNTRUSTED_DATA> tags for prompt-injection defense. Strings already containing
-// the tag are left unchanged (double-wrap prevention). The callback returns
-// (nil, nil) to let the LLM call proceed unchanged.
+// parts in the request contents and frames untrusted strings in
+// <UNTRUSTED_DATA> tags for prompt-injection defense (R30: every
+// non-empty string frames - there is no length exemption, so short
+// payloads cannot slip through unframed - and only content carrying
+// both tags counts as already framed). Already-framed strings are left
+// unchanged (idempotent). The callback returns (nil, nil) to let the
+// LLM call proceed unchanged.
 func ToolResultGuard(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
 	if req == nil {
 		return nil, nil
@@ -35,15 +37,24 @@ func ToolResultGuard(ctx agent.Context, req *model.LLMRequest) (*model.LLMRespon
 	return nil, nil
 }
 
-// walkAndWrap recursively walks the given value (map or slice) and wraps any
-// string longer than 32 characters that does not already contain
-// <UNTRUSTED_DATA>.
+// walkAndWrap recursively walks the given value (map or slice) and frames
+// every non-empty string in <UNTRUSTED_DATA> (R30: no length exemption).
+// Content already carrying both framing tags is left unchanged
+// (idempotent double-wrap prevention); a lone tag never suppresses
+// framing and neutralizes on wrap.
 func walkAndWrap(v any) {
 	switch val := v.(type) {
 	case map[string]any:
 		for k, vv := range val {
 			if s, ok := vv.(string); ok {
-				if len(s) > 32 && !strings.Contains(s, "<UNTRUSTED_DATA>") {
+				// R30: every non-empty string wraps - no
+				// HasUntrustedFraming pre-check. WrapUntrustedData
+				// itself owns idempotency (own-frame no-op) and
+				// sanitizes + neutralizes forged frames, so a
+				// guard-side framing test would skip sanitization
+				// for attacker-forged content (M1 fail-closed:
+				// wrap, never skip).
+				if s != "" {
 					val[k] = hctx.WrapUntrustedData(s)
 				}
 			} else {
@@ -53,7 +64,8 @@ func walkAndWrap(v any) {
 	case []any:
 		for i, vv := range val {
 			if s, ok := vv.(string); ok {
-				if len(s) > 32 && !strings.Contains(s, "<UNTRUSTED_DATA>") {
+				// Same no-skip rule as above (M1).
+				if s != "" {
 					val[i] = hctx.WrapUntrustedData(s)
 				}
 			} else {

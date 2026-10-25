@@ -1,0 +1,18 @@
+{
+  "name": "python gated sink asks",
+  "description": "T2.4: python_interpreter is a gated sink (requires trusted); after an untrusted webfetch taint the same call asks instead of running silently.",
+  "policy": {
+    "version": 2,
+    "default": "ask",
+    "rules": [
+      {"action": "webfetch", "resource": "*", "effect": "allow", "delta": {"trust": "suspicious"}},
+      {"action": "python_interpreter", "resource": "*", "effect": "allow", "requires": {"trust": "trusted"}},
+      {"action": "send_message", "resource": "*", "effect": "allow", "requires": {"trust": "trusted", "audience_contains": ["public"]}}
+    ]
+  },
+  "steps": [
+    {"tool": "webfetch", "args": ["https://example.com/data"], "label_before": {"trust": "trusted", "audience": "public"}, "apply_delta_on": "success"},
+    {"tool": "python_interpreter", "args": ["code_hash:abc123"], "label_before": {"trust": "suspicious", "audience": "public"}, "expect": "ask"},
+    {"tool": "send_message", "args": ["#general", "hello"], "label_before": {"trust": "suspicious", "audience": "public"}, "expect": "ask"}
+  ]
+}

@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 
 	"amurru/hakase/internal/interfaces"
+	"amurru/hakase/internal/permissions"
 	hakasesession "amurru/hakase/internal/session"
 	"amurru/hakase/internal/util"
 )
@@ -86,15 +88,43 @@ func unrecordGatePause(pauseID string) {
 
 // pauseRecord builds the session PauseRecord. The ADK session ID comes
 // from the invocation context (per-turn task ID); empty outside a
-// registered run.
+// registered run. S10/H2 persisted boundary: the summary is redacted
+// here as defense-in-depth (callers already redact), and string /
+// []string detail values are redacted so the pause registry never
+// persists cleartext secrets.
 func pauseRecord(ctx context.Context, gate, hakaseSessionID, summary string, detail map[string]any) hakasesession.PauseRecord {
 	return hakasesession.PauseRecord{
 		HakaseSessionID: hakaseSessionID,
 		ADKSessionID:    interfaces.TaskIDFromCtx(ctx),
 		Gate:            gate,
-		Summary:         summary,
-		Detail:          detail,
+		Summary:         util.RedactTruncate(summary, 0),
+		Detail:          redactPauseDetail(detail),
 	}
+}
+
+// redactPauseDetail redacts string and []string detail values for the
+// persisted pause boundary (S10/H2). Non-string values pass through;
+// redaction is idempotent so caller-redacted values are unchanged.
+func redactPauseDetail(detail map[string]any) map[string]any {
+	if detail == nil {
+		return nil
+	}
+	out := make(map[string]any, len(detail))
+	for k, v := range detail {
+		switch t := v.(type) {
+		case string:
+			out[k] = util.RedactTruncate(t, 0)
+		case []string:
+			cp := make([]string, len(t))
+			for i, s := range t {
+				cp[i] = util.RedactTruncate(s, 0)
+			}
+			out[k] = cp
+		default:
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // OpenCall is one unanswered long-running tool call in a paused turn's
@@ -246,6 +276,32 @@ func checkPauseFresh(rec hakasesession.PauseRecord) error {
 	return nil
 }
 
+// assertResumable refuses a fresh-turn re-drive when the paused turn's
+// history already holds completed never-replay side effects: the
+// re-drive would risk executing them twice. Shared by the legacy
+// (tool, command) and flow (session, tool, argsHash, labelVersion)
+// resume paths - both re-drive a fresh turn, so both must gate here.
+func assertResumable(ctx context.Context, rec hakasesession.PauseRecord) error {
+	svc, err := adkServiceForResume()
+	if err != nil {
+		return err
+	}
+	_, completed, err := scanPausedSession(ctx, svc, rec.ADKSessionID)
+	if err != nil {
+		return err
+	}
+	var risky []string
+	for name := range completed {
+		if ReplayPolicyFor(name) == ReplayNever {
+			risky = append(risky, name)
+		}
+	}
+	if len(risky) > 0 {
+		return fmt.Errorf("durable_resume: pause %q unsafe to re-drive: completed side-effecting calls %v would replay; start a new turn instead", rec.PauseID, risky)
+	}
+	return nil
+}
+
 // ResumeClarify answers an interrupted clarify pause after restart and
 // resumes the paused turn. The answer is injected as a
 // FunctionResponse per open call against the paused ADK session; the
@@ -332,40 +388,164 @@ func ResumeClarify(ctx context.Context, r *runner.Runner, pauseID string, answer
 }
 
 // preGrants holds one-shot approval pre-grants installed by
-// ResolveApprovalPause: exact tool+command pairs the next ApproveExec
-// auto-approves without blocking. One-shot (consumed on use) so a
-// grant cannot leak into unrelated later turns.
+// ResolveApprovalPause: the next ApproveExec auto-approves without
+// blocking. One-shot (consumed on use) so a grant cannot leak into
+// unrelated later turns. S10/M3: keyed by (session, hash), never raw
+// command - the key carries no secret and survives pause-record
+// redaction (the persisted command is redacted, the live command is not,
+// but both hash the same unredacted preimage at mint time).
+//
+// S17 hardening: every grant is scoped to (sessionID, tool, argsHash)
+// with a 15-minute TTL and a process-wide cap (1024, evict-oldest: a
+// dropped grant fails closed to a re-ask, never an allow). Empty
+// sessionID never grants (fail-closed). Expiry is lazy on consume plus
+// an opportunistic sweep on insert (no goroutine).
+const (
+	preGrantTTL  = 15 * time.Minute
+	maxPreGrants = 1024
+)
+
+// preGrantNow is the grant clock; a var so tests fake expiry without
+// waiting (S17 hermetic). Production always uses time.Now.
+var preGrantNow = time.Now
+
+// preGrantEntry is one live one-shot grant with its mint deadline.
+type preGrantEntry struct {
+	expires time.Time
+}
+
 var preGrants = struct {
 	sync.Mutex
-	m map[string]struct{}
-}{m: make(map[string]struct{})}
+	m     map[string]preGrantEntry
+	order []string
+}{m: make(map[string]preGrantEntry)}
 
-func preGrantKey(tool, command string) string { return tool + "\x00" + command }
+// preGrantKey binds (session, tool, command-hash). NUL separators keep the
+// legs domain-separated: no value forges another key, and a legacy key
+// never matches a flow (session, tool, argsHash, labelVersion) binding.
+func preGrantKey(tool, command, sessionID string) string {
+	return sessionID + "\x00" + permissions.ArgsHash(tool, command)
+}
 
-// grantApproval installs a one-shot pre-grant. Empty tool/command
+// preGrantKeyByHash binds a precomputed hash in the same domain (the
+// S10/M3 resume path mints from the unredacted grantHash carried in the
+// pause detail, never from the redacted display value).
+func preGrantKeyByHash(hash, sessionID string) string {
+	return sessionID + "\x00" + hash
+}
+
+// sweepPreGrantsLocked drops expired entries. Callers hold preGrants.
+func sweepPreGrantsLocked(now time.Time) {
+	for k, e := range preGrants.m {
+		if !now.Before(e.expires) {
+			delete(preGrants.m, k)
+		}
+	}
+	if len(preGrants.order) > len(preGrants.m)*2 {
+		kept := preGrants.order[:0]
+		for _, k := range preGrants.order {
+			if _, ok := preGrants.m[k]; ok {
+				kept = append(kept, k)
+			}
+		}
+		preGrants.order = kept
+	}
+}
+
+// installPreGrantLocked inserts k with a fresh TTL, evicting oldest-first
+// past the cap (fail-closed direction: the evicted grant re-asks).
+func installPreGrantLocked(k string, now time.Time) {
+	sweepPreGrantsLocked(now)
+	if _, ok := preGrants.m[k]; !ok {
+		preGrants.order = append(preGrants.order, k)
+	}
+	preGrants.m[k] = preGrantEntry{expires: now.Add(preGrantTTL)}
+	for len(preGrants.order) > maxPreGrants {
+		oldest := preGrants.order[0]
+		preGrants.order = preGrants.order[1:]
+		delete(preGrants.m, oldest)
+	}
+}
+
+// grantApproval installs a one-shot pre-grant. Empty tool/command/session
 // never grants (fail-closed).
-func grantApproval(tool, command string) {
-	if tool == "" || command == "" {
+func grantApproval(tool, command, sessionID string) {
+	if tool == "" || command == "" || sessionID == "" {
 		return
 	}
 	preGrants.Lock()
-	preGrants.m[preGrantKey(tool, command)] = struct{}{}
-	preGrants.Unlock()
+	defer preGrants.Unlock()
+	installPreGrantLocked(preGrantKey(tool, command, sessionID), preGrantNow())
 }
 
-// consumePreGrant reports and consumes a matching pre-grant.
-func consumePreGrant(tool, command string) bool {
-	if tool == "" || command == "" {
+// grantPreApprovalByHash installs a one-shot pre-grant by its hash
+// (S10/M3 resume path: the hash was minted from the unredacted command
+// at pause time and carried in the detail as grantHash). Empty hash or
+// empty session never grants (fail-closed).
+func grantPreApprovalByHash(h, sessionID string) {
+	if h == "" || sessionID == "" {
+		return
+	}
+	preGrants.Lock()
+	defer preGrants.Unlock()
+	installPreGrantLocked(preGrantKeyByHash(h, sessionID), preGrantNow())
+}
+
+// consumePreGrant reports and consumes a matching pre-grant. Wrong
+// session, expired, or missing grants return false (the caller re-asks).
+func consumePreGrant(tool, command, sessionID string) bool {
+	if tool == "" || command == "" || sessionID == "" {
 		return false
 	}
 	preGrants.Lock()
 	defer preGrants.Unlock()
-	k := preGrantKey(tool, command)
-	if _, ok := preGrants.m[k]; !ok {
+	k := preGrantKey(tool, command, sessionID)
+	e, ok := preGrants.m[k]
+	if !ok {
 		return false
 	}
 	delete(preGrants.m, k)
+	for i, q := range preGrants.order {
+		if q == k {
+			preGrants.order = append(preGrants.order[:i], preGrants.order[i+1:]...)
+			break
+		}
+	}
+	if !preGrantNow().Before(e.expires) {
+		return false
+	}
 	return true
+}
+
+// flowDetailVersion reads a flow label version out of a pause detail map.
+// Pause registries round-trip through JSON, so the uint64 may come back
+// as a float64, int, json.Number or string; unparseable input fails
+// closed to 0 only in the sense that the grant then cannot match a
+// versioned binding (never silently widened - the re-drive re-checks).
+func flowDetailVersion(v any) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case uint:
+		return uint64(n)
+	case int:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case float64:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case string:
+		if u, err := strconv.ParseUint(strings.TrimSpace(n), 10, 64); err == nil {
+			return u
+		}
+		return 0
+	default:
+		return 0
+	}
 }
 
 // ResolveApprovalPause settles an interrupted approval pause after
@@ -376,10 +556,24 @@ func consumePreGrant(tool, command string) bool {
 // (normal RunTurn), during which the re-issued tool call passes its
 // gate without blocking.
 //
+// Flow scope (S7, one-way door): a pause recorded for a flow ask
+// (detail carries a flowReason) never mints a legacy (tool, command)
+// pre-grant - legacy grants cannot satisfy a FlowReason ask (ApproveExec
+// skips them), so minting one would silently map the old key onto the
+// new flow key. Instead the exact flow binding (session, tool,
+// argsHash, labelVersion) is installed as a one-shot flow grant, which
+// the re-drive consumes like a human approval of that exact call. A
+// legacy pause record without flow keys under an installed v2 policy
+// fails closed with an explicit error (the operator denies it or starts
+// a new turn): it cannot prove what flow check it evaluated.
+//
 // Approval resume refuses (error, record kept) when the paused
 // turn's history already holds completed never-replay side effects:
 // a fresh re-drive would risk executing them twice. The operator then
-// starts a new turn by hand instead.
+// starts a new turn by hand instead. The check (assertResumable)
+// runs before both the flow and legacy grant paths: both re-drive a
+// fresh turn, so a flow pause with settled side effects is equally
+// unsafe to re-drive.
 func ResolveApprovalPause(ctx context.Context, pauseID string, approved bool) (bool, error) {
 	rec, err := findPauseRecord(pauseID)
 	if err != nil {
@@ -403,24 +597,44 @@ func ResolveApprovalPause(ctx context.Context, pauseID string, approved bool) (b
 	if tool == "" || command == "" {
 		return false, fmt.Errorf("durable_resume: pause %q record lacks tool/command; cannot pre-grant safely", pauseID)
 	}
-	svc, err := adkServiceForResume()
-	if err != nil {
+	// S7 flow scoping (one-way door: old records fail closed, never
+	// silently mapped onto the new key).
+	_, hasFlowKeys := rec.Detail["flowReason"]
+	flowReason, _ := rec.Detail["flowReason"].(string)
+	if !hasFlowKeys && permissions.FlowEnabled() {
+		return false, fmt.Errorf("durable_resume: pause %q predates flow scoping and cannot pre-grant safely under a v2 policy; deny it or start a new turn instead", pauseID)
+	}
+	// H-1: gate both grant paths on the re-drive replay check (a flow
+	// re-drive replays settled history the same way a legacy one does).
+	if err := assertResumable(ctx, rec); err != nil {
 		return false, err
 	}
-	_, completed, err := scanPausedSession(ctx, svc, rec.ADKSessionID)
-	if err != nil {
-		return false, err
-	}
-	var risky []string
-	for name := range completed {
-		if ReplayPolicyFor(name) == ReplayNever {
-			risky = append(risky, name)
+	if flowReason != "" {
+		flowArgsHash, _ := rec.Detail["flowArgsHash"].(string)
+		if flowArgsHash == "" {
+			return false, fmt.Errorf("durable_resume: pause %q flow record lacks argsHash; cannot pre-grant safely", pauseID)
 		}
+		// S25: a resume approval is a fresh approval - it mints twin
+		// v1+v2 records so the re-drive dual-consumes exactly once.
+		b := flowAskBinding{
+			sessionID:    rec.HakaseSessionID,
+			tool:         tool,
+			argsHash:     flowArgsHash,
+			labelVersion: flowDetailVersion(rec.Detail["flowLabelVersion"]),
+		}
+		grantFlowCall(b)
+		grantFlowCallV2(b)
+		unrecordGatePause(rec.PauseID)
+		return true, nil
 	}
-	if len(risky) > 0 {
-		return false, fmt.Errorf("durable_resume: pause %q unsafe to re-drive: completed side-effecting calls %v would replay; start a new turn instead", pauseID, risky)
+	// S10/M3: mint the pre-grant in the session scope from the
+	// unredacted hash carried as grantHash (never from the redacted
+	// command display value).
+	if h, _ := rec.Detail["grantHash"].(string); h != "" {
+		grantPreApprovalByHash(h, rec.HakaseSessionID)
+	} else {
+		grantApproval(tool, command, rec.HakaseSessionID)
 	}
-	grantApproval(tool, command)
 	unrecordGatePause(rec.PauseID)
 	return true, nil
 }

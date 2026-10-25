@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -230,7 +231,23 @@ func serverRequestToConfig(req *MCPServerRequest) *config.MCPServerConfig {
 	}
 }
 
-// EnableServer handles POST /mcp/servers/{name}/enable - enables a server.
+// probeStatus maps ProbeServer failures to client status codes: unknown
+// servers are 404, disabled servers are 409 (state conflict: enable first),
+// and dial failures stay 500.
+func probeStatus(err error) int {
+	switch {
+	case errors.Is(err, mcp.ErrMCPServerNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, mcp.ErrMCPServerDisabled):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// EnableServer handles POST /mcp/servers/{name}/enable - enables a server
+// and dials it immediately so the response carries the live result instead
+// of leaving the server idle until the next turn.
 func (api *MCPAPI) EnableServer(w http.ResponseWriter, r *http.Request) {
 	name := mcpName(r)
 	if name == "" {
@@ -248,7 +265,16 @@ func (api *MCPAPI) EnableServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "enabled"})
+	if err := mg.ProbeServer(r.Context(), name); err != nil {
+		writeJSON(w, probeStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+
+	toolCount := 0
+	if st, ok := mg.ServerStatus(name); ok {
+		toolCount = st.ToolCount
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "connected", "toolCount": toolCount})
 }
 
 // DisableServer handles POST /mcp/servers/{name}/disable - disables a server.
@@ -272,7 +298,9 @@ func (api *MCPAPI) DisableServer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 }
 
-// ReconnectServer handles POST /mcp/servers/{name}/reconnect - reconnects a server.
+// ReconnectServer handles POST /mcp/servers/{name}/reconnect - dials the
+// server immediately and reports the live result. Bounded by the server's
+// listing budget, so the request cannot hang indefinitely.
 func (api *MCPAPI) ReconnectServer(w http.ResponseWriter, r *http.Request) {
 	name := mcpName(r)
 	if name == "" {
@@ -285,10 +313,14 @@ func (api *MCPAPI) ReconnectServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := mg.Reconnect(name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if err := mg.ProbeServer(r.Context(), name); err != nil {
+		writeJSON(w, probeStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reconnected"})
+	toolCount := 0
+	if st, ok := mg.ServerStatus(name); ok {
+		toolCount = st.ToolCount
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "connected", "toolCount": toolCount})
 }

@@ -98,6 +98,12 @@ subprocess environments (system_exec / sandboxed Python) so secrets never leak.
 - `landlock` - refused at config load (unimplemented, Phase 3 planned).
 - `off` - disables confinement (opt-in only).
 
+`allowed_commands` gates model-chosen `system_exec` commands only. Gated
+pip installs (`allow_pip_install` + `pip_allowlist` + human approval) bypass
+this list via a pre-approved choke build - do not add `pip` here to make
+installs work; hard denies, deny patterns, permissions/flow verdicts, and
+the path audit still apply to them.
+
 ## Knowledge dir
 
 `knowledge_dir` defaults to `./knowledge`. A leading `~/` expands to the user's home,

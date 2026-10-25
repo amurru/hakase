@@ -4,6 +4,12 @@
 //
 // These interfaces are the CONTRACT that tasks 4-14 implement against.
 // Accuracy of signatures matters more than completeness of prose.
+//
+// The Flow Guard approval contract (the flow reason, args hash and label
+// version that bind an approval to one exact call) is inspired by the
+// OpenAPPA APPA model (Agentic Permissions Policy Algebra), paper arxiv
+// 2607.24625, MIT (c) 2026 Archestra Inc. No OpenAPPA code was copied:
+// clean-room Go implementation, no TOML, no sidecar.
 package interfaces
 
 import (
@@ -30,6 +36,17 @@ type ApprovalRequest struct {
 	// prompt to the conversation bound to that session; empty in
 	// session-less surfaces (TUI, CLI utilities).
 	SessionID string
+	// FlowReason carries the Flow Guard ask reason (docs/flow-guard FG-005).
+	// A non-empty value marks the request as a flow ask: approval.mode=allow
+	// never auto-approves it, and the answer authorizes exactly one call.
+	FlowReason string
+	// FlowArgsHash is the hash of the canonical (tool, action, resources)
+	// triple of the asked call (never the raw args).
+	FlowArgsHash string
+	// FlowLabelVersion is the flow label version the ask was made against.
+	// An approval covers that version only: a label that moved on
+	// invalidates it.
+	FlowLabelVersion uint64
 }
 
 // ApprovalConfig tunes the interactive approval gate.

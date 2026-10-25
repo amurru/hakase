@@ -44,6 +44,11 @@ type SkillMeta struct {
 	Description string `json:"description"`
 	FileName    string `json:"file_name"`
 	SavedAt     string `json:"saved_at"`
+	// JointHash binds the saved code to the exact description approved
+	// at save time (R32: sha256 over normalized code + description).
+	// Hash-only (never raw code); omitempty keeps older skills.json
+	// files backward compatible.
+	JointHash string `json:"joint_hash,omitempty"`
 	// Evolution tracking (plan Phase 3c): Deprecated marks skills whose eval
 	// hit rate fell below the deprecation threshold; EvalScore is the last
 	// full eval-set score; EvolveCount counts successful promotions;

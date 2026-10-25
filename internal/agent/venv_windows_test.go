@@ -13,19 +13,24 @@ import (
 // TestGetVenvPythonWindows exercises the real Windows venv bootstrap: py -3 /
 // python probe order, Scripts/python.exe layout, script execution through the
 // evaluated venv path, and pip present in Scripts (pip --version, no
-// network).
+// network). H1: creation anchors at the workspace (workDir), so the
+// returned path is the absolute workspace-anchored binary.
 func TestGetVenvPythonWindows(t *testing.T) {
 	isolateHome(t)
-	t.Chdir(t.TempDir())
+	wsDir := t.TempDir()
+	t.Chdir(wsDir)
 
-	py, err := getVenvPython(nil)
+	py, err := getVenvPython(nil, wsDir)
 	if err != nil {
 		t.Skipf("python toolchain unavailable on this runner: %v", err)
 	}
 
-	want := filepath.Join(".venv", "Scripts", "python.exe")
+	want := filepath.Join(wsDir, ".venv", "Scripts", "python.exe")
 	if py != want {
 		t.Fatalf("getVenvPython: expected %q, got %q", want, py)
+	}
+	if !filepath.IsAbs(py) {
+		t.Fatalf("getVenvPython: workspace-anchored path must be absolute, got %q", py)
 	}
 	if _, err := os.Stat(py); err != nil {
 		t.Fatalf("venv python missing after bootstrap: %v", err)
@@ -37,7 +42,7 @@ func TestGetVenvPythonWindows(t *testing.T) {
 		t.Fatalf("venv python -c: %v (%s)", err, out)
 	}
 
-	pip := filepath.Join(".venv", "Scripts", "pip.exe")
+	pip := filepath.Join(wsDir, ".venv", "Scripts", "pip.exe")
 	if _, err := os.Stat(pip); err != nil {
 		t.Fatalf("venv pip missing: %v", err)
 	}

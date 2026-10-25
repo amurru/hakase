@@ -1,0 +1,16 @@
+{
+  "name": "read-private-then-send deny",
+  "description": "T0.1 seed: reading a private doc taints the session, a later public send must block (ask-not-deny starter philosophy: allow+requires failure escalates to ask).",
+  "policy": {
+    "version": 2,
+    "default": "ask",
+    "rules": [
+      {"action": "read", "resource": "docs/internal/*", "effect": "allow", "delta": {"audience": ["internal"]}},
+      {"action": "send_message", "resource": "*", "effect": "allow", "requires": {"trust": "trusted", "audience_contains": ["public"]}}
+    ]
+  },
+  "steps": [
+    {"tool": "read", "args": ["docs/internal/secret.md"], "label_before": {"trust": "trusted", "audience": "public"}, "apply_delta_on": "success"},
+    {"tool": "send_message", "args": ["#general", "hello"], "label_before": {"trust": "trusted", "audience": "internal"}, "expect": "ask"}
+  ]
+}

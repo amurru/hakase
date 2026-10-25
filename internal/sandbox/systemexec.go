@@ -214,6 +214,31 @@ type execOptions struct {
 	// human typing the command IS the authorization. Hard denies and sandbox
 	// confinement still apply.
 	operatorAuthorized bool
+	// preApproved records that a narrower gate already collected human
+	// approval for this exact call (S18 pip: allowlist + name-shape +
+	// approval), so the shared choke must not prompt a second time. Only
+	// the allowlist leg and the known-risk threshold ask are satisfied by
+	// it: the approval.mode=deny check, hard denies, deny patterns,
+	// permissions-policy and flow verdicts, unknown-risk asks, and the
+	// path audit all still apply (deny-wins, unknown-sink fail-closed).
+	// Set only by choke builders reached after their own approval gate.
+	preApproved bool
+	// preApproveReason names the narrower gate behind preApproved for the
+	// audit trail (never raw args).
+	preApproveReason string
+	// pipInstall marks a pip package-index install (S22): the bwrap
+	// profile keeps the workspace read-only except .venv/ writable, with
+	// network explicitly OPEN for index egress. The compensating controls
+	// are the S18 gates (name shape + allowlist + human approval), which
+	// run before this build - not the net jail.
+	pipInstall bool
+	// replaceEnv, when useReplaceEnv is set (ExecReplaceEnv), replaces
+	// the ambient process environment instead of merging over it: the
+	// child env is built from replaceEnv plus the per-call env overlay
+	// only, then scrubbed. Pip uses this with the scrubbed S20 child
+	// env (pipEnvMap) so no ambient PYTHONPATH-family key survives.
+	replaceEnv    map[string]string
+	useReplaceEnv bool
 }
 
 // ExecOption customizes how BuildExecCommand constructs a command.
@@ -224,6 +249,70 @@ type ExecOption func(*execOptions)
 // as operator-authorized instead of consulting ApproveFunc.
 func ExecOperatorAuthorized() ExecOption {
 	return func(o *execOptions) { o.operatorAuthorized = true }
+}
+
+// ExecPipInstall marks the command as a pip package-index install (S22):
+// the bwrap profile keeps the workspace read-only except .venv/ writable,
+// with network explicitly OPEN for index egress (the S18 allowlist +
+// approval + name-shape gates above are the compensating controls, not
+// the net jail). Documented as an explicit exception, never silent.
+func ExecPipInstall() ExecOption {
+	return func(o *execOptions) { o.pipInstall = true }
+}
+
+// ExecReplaceEnv replaces the ambient process environment for the child:
+// instead of merging the per-call env over os.Environ, the child env is
+// built from replaceEnv plus the per-call env overlay only, then scrubbed
+// (ScrubEnv, including the S20 PYTHONPATH-family keys). Honored by both
+// the bwrap and plain build branches.
+func ExecReplaceEnv(env map[string]string) ExecOption {
+	return func(o *execOptions) { o.replaceEnv = env; o.useReplaceEnv = true }
+}
+
+// ExecPreApproved marks the build as already human-approved by a narrower
+// gate (S18 pip: name-shape + allowlist + approval). The shared choke
+// consumes it instead of prompting again, but only for the allowlist leg
+// and a known-risk threshold ask: hard denies, deny patterns,
+// permissions-policy and flow verdicts, unknown-risk asks, and the path
+// audit still apply. The reason names the gate for the audit trail.
+func ExecPreApproved(reason string) ExecOption {
+	return func(o *execOptions) { o.preApproved = true; o.preApproveReason = reason }
+}
+
+// buildEnvList renders the child env for one build branch: ambient plus
+// per-call overlay by default, or replaceEnv plus overlay when
+// ExecReplaceEnv is set. Keys are deduplicated with the overlay winning:
+// a replace/ambient entry shadowed by an overlay key is dropped so no key
+// appears twice (exec passes duplicates through and the child reads the
+// first or last depending on libc). ScrubEnv always runs after the merge
+// so secrets and PYTHONPATH-family keys never survive regardless of source.
+func buildEnvList(env map[string]string, bo *execOptions) []string {
+	shadowed := make(map[string]struct{}, len(env))
+	for k := range env {
+		shadowed[k] = struct{}{}
+	}
+	var out []string
+	if !bo.useReplaceEnv {
+		for _, kv := range os.Environ() {
+			if k, _, ok := strings.Cut(kv, "="); ok {
+				if _, dup := shadowed[k]; dup {
+					continue
+				}
+			}
+			out = append(out, kv)
+		}
+	} else {
+		for k, v := range bo.replaceEnv {
+			if _, dup := shadowed[k]; dup {
+				continue
+			}
+			out = append(out, k+"="+v)
+		}
+	}
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return ScrubEnv(out)
 }
 
 // BuildExecCommand builds the hardened exec.Cmd for a system command: harmful-
@@ -300,8 +389,34 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 	// Runs BEFORE AuditSystemCommandPaths so denied commands never reach
 	// path auditing. The audit entries record the decision at the gate
 	// level (DurationMs=0, ExitCode=0) - the post-execution audit is in
-	// the sync/start handlers.
-	decision := EvaluateCommandFunc(sb, command, args)
+	// the sync/start handlers. When the flow-aware evaluator is wired,
+	// the label resolves from ctx (FG-003); otherwise the legacy path.
+	// S9/S14: the resolved label (possibly nil = fail-closed under v2)
+	// flows into both the evaluator and the ask binding below, so an
+	// unregistered session can never pass as widest.
+	var decision GateDecision
+	flowLabel := flowLabelFromCtx(ctx)
+	// Pre-approved narrow-gate builds (S22 pip via ExecPreApproved)
+	// evaluate the policy gate with the command allowlist cleared: the
+	// binary is fixed by the choke (not model-chosen) and the S18
+	// allowlist + name-shape + approval above are the compensating
+	// controls, so the example allowed_commands list (ls, cat, grep,
+	// head, tail, echo, git) must not deny it. Every other leg -
+	// approval.mode=deny above, hard denies, deny patterns,
+	// permissions-policy and flow verdicts, risk - evaluates against
+	// the real config via gateSB, and the path audit below uses the
+	// real sb too.
+	gateSB := sb
+	if bo.preApproved && sb != nil && len(sb.AllowedCommands) > 0 {
+		cp := *sb
+		cp.AllowedCommands = nil
+		gateSB = &cp
+	}
+	if EvaluateCommandWithLabelFunc != nil {
+		decision = EvaluateCommandWithLabelFunc(gateSB, command, args, flowLabel)
+	} else {
+		decision = EvaluateCommandFunc(gateSB, command, args)
+	}
 	var sandboxMode string
 	if sb != nil {
 		sandboxMode = string(sb.Mode)
@@ -312,6 +427,10 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 	if cd == "" {
 		cd, _ = os.Getwd()
 	}
+	// S9/H1 local decision: the Ask branch below sets gateApproved when
+	// the human approved (consumed pre-dispatch grant or in-stack
+	// approval); the path audit consumes it instead of hard-denying.
+	gateApproved := false
 	switch decision.Action {
 	case ActionDeny:
 		AuditCommandFunc(CommandAuditEntry{
@@ -343,19 +462,47 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 				Risk:        decision.Risk.String(),
 				Reason:      decision.Reason,
 			})
+			gateApproved = true
 			break
 		}
-		approved, aerr := ApproveFunc(ctx, interfaces.ApprovalRequest{
-			Tool:      "system_exec",
-			Command:   command,
-			Args:      args,
-			Risk:      decision.Risk.String(),
-			Reason:    decision.Reason,
-			Source:    "direct",
-			ExpiresAt: time.Now().Add(ApprovalExpiryFunc()),
-			SessionID: sessionID,
-		})
-		if aerr != nil || !approved {
+		// S9/H1: a flow Ask already approved at the ADK pre-dispatch
+		// carries its one-shot grant - consume it and skip a second
+		// prompt (the approval covers exactly this call).
+		flowApproved := false
+		{
+			var lv uint64
+			if flowLabel != nil {
+				lv = flowLabel.Version
+			}
+			if tryConsumeShellApproval(sessionID, command, args, lv) {
+				flowApproved = true
+				gateApproved = true
+				AuditCommandFunc(CommandAuditEntry{
+					Timestamp:   time.Now(),
+					Tool:        "system_exec",
+					Command:     command,
+					Args:        args,
+					CWD:         cd,
+					SessionID:   sessionID,
+					SandboxMode: sandboxMode,
+					Decision:    "approved",
+					PolicyRule:  decision.PolicyRule.Citation(),
+					Risk:        decision.Risk.String(),
+					Reason:      "flow grant consumed: " + decision.Reason,
+				})
+			}
+		}
+		if !flowApproved && bo.preApproved && decision.Risk != RiskUnknown &&
+			decision.PolicyRule == nil && !strings.Contains(decision.Reason, "by permissions policy") {
+			// S22: a narrower gate already collected human approval for
+			// this exact call (S18 pip: name-shape + allowlist +
+			// approval), so satisfy a known-risk threshold ask with the
+			// carried approval instead of prompting twice. Unknown-risk
+			// asks still prompt (unknown-sink fail-closed), and
+			// permissions-policy / flow asks fall through to the prompt
+			// below - a pip approval never overrides those verdicts.
+			flowApproved = true
+			gateApproved = true
 			AuditCommandFunc(CommandAuditEntry{
 				Timestamp:   time.Now(),
 				Tool:        "system_exec",
@@ -364,29 +511,70 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 				CWD:         cd,
 				SessionID:   sessionID,
 				SandboxMode: sandboxMode,
-				Decision:    "not_approved",
+				Decision:    "approved",
+				PolicyRule:  decision.PolicyRule.Citation(),
+				Risk:        decision.Risk.String(),
+				Reason:      "pre-approved narrow gate (" + bo.preApproveReason + "): " + decision.Reason,
+			})
+		}
+		if !flowApproved {
+			// S14: bind a flow-caused ask to its exact call (shared pure
+			// helper, no API change); base asks keep empty Flow fields.
+			flowReason, flowHash, flowVersion := flowShellAskBinding(flowLabel, command, args, decision)
+			approved, aerr := ApproveFunc(ctx, interfaces.ApprovalRequest{
+				Tool:      "system_exec",
+				Command:   command,
+				Args:      args,
+				Risk:      decision.Risk.String(),
+				Reason:    decision.Reason,
+				Source:    "direct",
+				ExpiresAt: time.Now().Add(ApprovalExpiryFunc()),
+				SessionID: sessionID,
+				// S14: a flow-caused ask carries its binding (shared pure
+				// helper, no API change) so approval.mode=allow never
+				// auto-approves it; base asks keep empty Flow fields (v1).
+				FlowReason:       flowReason,
+				FlowArgsHash:     flowHash,
+				FlowLabelVersion: flowVersion,
+			})
+			if aerr != nil || !approved {
+				AuditCommandFunc(CommandAuditEntry{
+					Timestamp:   time.Now(),
+					Tool:        "system_exec",
+					Command:     command,
+					Args:        args,
+					CWD:         cd,
+					SessionID:   sessionID,
+					SandboxMode: sandboxMode,
+					Decision:    "not_approved",
+					PolicyRule:  decision.PolicyRule.Citation(),
+					Risk:        decision.Risk.String(),
+					Reason:      decision.Reason,
+				})
+				if aerr != nil {
+					return nil, fmt.Errorf("command approval failed: %w", aerr)
+				}
+				return nil, fmt.Errorf("command not approved by user: %s", command)
+			}
+			// In-stack approval is the audit's local decision (S9/H1):
+			// the audit below admits on gateApproved without a second
+			// prompt or a lingering grant.
+			flowApproved = true
+			gateApproved = true
+			AuditCommandFunc(CommandAuditEntry{
+				Timestamp:   time.Now(),
+				Tool:        "system_exec",
+				Command:     command,
+				Args:        args,
+				CWD:         cd,
+				SessionID:   sessionID,
+				SandboxMode: sandboxMode,
+				Decision:    "approved",
 				PolicyRule:  decision.PolicyRule.Citation(),
 				Risk:        decision.Risk.String(),
 				Reason:      decision.Reason,
 			})
-			if aerr != nil {
-				return nil, fmt.Errorf("command approval failed: %w", aerr)
-			}
-			return nil, fmt.Errorf("command not approved by user: %s", command)
 		}
-		AuditCommandFunc(CommandAuditEntry{
-			Timestamp:   time.Now(),
-			Tool:        "system_exec",
-			Command:     command,
-			Args:        args,
-			CWD:         cd,
-			SessionID:   sessionID,
-			SandboxMode: sandboxMode,
-			Decision:    "approved",
-			PolicyRule:  decision.PolicyRule.Citation(),
-			Risk:        decision.Risk.String(),
-			Reason:      decision.Reason,
-		})
 	case ActionAllow:
 		AuditCommandFunc(CommandAuditEntry{
 			Timestamp:   time.Now(),
@@ -407,7 +595,9 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 	// sandbox's trusted folders (read roots + system dirs). Applies to both
 	// the sync and background tools since both go through here. workingDir
 	// threads through so relative operands resolve the way the process will.
-	if err := AuditSystemCommandPaths(sb, command, args, workingDir); err != nil {
+	// S9/H1: the gate's local decision rides along - an approved Ask
+	// admits here instead of hard-denying.
+	if err := auditSystemCommandPaths(sb, command, args, workingDir, flowLabel, gateApproved); err != nil {
 		return nil, err
 	}
 
@@ -433,7 +623,15 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 		if wd == "" {
 			wd = sb.WorkspaceRoot()
 		}
-		bwCmd, err := wrapBwrapCmd(sb, innerArgv, wd, sb.AllowNetwork, nil)
+		// S22: pip installs keep the workspace read-only except .venv/
+		// writable (pipProfile), with network explicitly OPEN for index
+		// egress (sb.AllowNetwork OR the pip exception).
+		var extraBinds []string
+		if bo.pipInstall {
+			venvDir := filepath.Join(effectiveChildDir(sb, workingDir), ".venv")
+			extraBinds = []string{venvDir}
+		}
+		bwCmd, err := wrapBwrapCmd(sb, innerArgv, wd, sb.AllowNetwork || bo.pipInstall, extraBinds, bo.pipInstall)
 		if err != nil {
 			if sb.AllowFallback {
 				// Explicitly configured to allow fallback: fail LOUD and fall
@@ -468,11 +666,7 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 				return nil, fmt.Errorf("bubblewrap sandbox unavailable (bwrap not installed?) and sandbox.allow_fallback is false: %w", err)
 			}
 		} else {
-			bwCmd.Env = os.Environ()
-			for k, v := range env {
-				bwCmd.Env = append(bwCmd.Env, k+"="+v)
-			}
-			bwCmd.Env = ScrubEnv(bwCmd.Env)
+			bwCmd.Env = buildEnvList(env, bo)
 			if wd != "" {
 				bwCmd.Dir = wd
 			}
@@ -502,16 +696,10 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 		cmd = directCmd
 	}
 
-	// Env merge: start from the agent process env, overlay caller overrides.
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-
-	// Always scrub sensitive env prefixes so secrets (HAKASE_*, AWS_*,
-	// GITHUB_*, OPENAI_*) never leak into subprocesses, even in sandbox-off
-	// mode (Phase 2.5).
-	cmd.Env = ScrubEnv(cmd.Env)
+	// Env: ambient merged with caller overrides by default, or the
+	// ExecReplaceEnv set plus overrides when set (S20 scrubbed pip env).
+	// Scrub runs after the merge in buildEnvList.
+	cmd.Env = buildEnvList(env, bo)
 	// Platform hardening (Windows: NoDefaultCurrentDirectoryInExePath=1).
 	cmd.Env = hardenChildEnv(cmd.Env)
 
@@ -542,10 +730,16 @@ func buildExecCommand(ctx context.Context, sb *SandboxConfig, sessionID string, 
 
 // ScrubEnv returns env with entries whose key starts with any of the
 // sensitive prefixes removed. Used when the sandbox is active so secret
-// material does not leak into sandboxed subprocesses. On Windows the prefix
-// match is case-insensitive (Windows environment names are case-insensitive,
-// so "Aws_secret_access_key" is still readable by children and must not
-// survive the scrub); the Linux match stays byte-exact.
+// material does not leak into sandboxed subprocesses. On Windows the
+// prefix match is case-insensitive (Windows environment names are
+// case-insensitive, so "Aws_secret_access_key" is still readable by
+// children and must not survive the scrub); the Linux match stays
+// byte-exact.
+//
+// S20: the exact PYTHONPATH-family keys (PYTHONPATH, PYTHONHOME,
+// PYTHONSTARTUP, __PYVENV_LAUNCHER__) are always removed too (absent,
+// not empty), case-insensitively on Windows. The scrub runs after the
+// env merge in buildEnvList so no ambient or overlay value survives.
 func ScrubEnv(env []string) []string {
 	prefixes := [...]string{"HAKASE_", "AWS_", "GITHUB_", "OPENAI_"}
 	caseInsensitive := runtime.GOOS == "windows"
@@ -555,9 +749,38 @@ func ScrubEnv(env []string) []string {
 		if envKeyIsSensitive(key, prefixes[:], caseInsensitive) {
 			continue
 		}
+		if isPythonScrubbedKey(key, caseInsensitive) {
+			continue
+		}
 		scrubbed = append(scrubbed, kv)
 	}
 	return scrubbed
+}
+
+// pythonScrubbedKeys is the exact S20 scrub list: these keys are removed
+// from the child env always (absent, not empty).
+var pythonScrubbedKeys = []string{
+	"PYTHONPATH",
+	"PYTHONHOME",
+	"PYTHONSTARTUP",
+	"__PYVENV_LAUNCHER__",
+}
+
+// isPythonScrubbedKey reports whether key is an S20-scrubbed key.
+// Windows matches case-insensitively; Linux matches byte-exact.
+func isPythonScrubbedKey(key string, caseInsensitive bool) bool {
+	for _, k := range pythonScrubbedKeys {
+		if caseInsensitive {
+			if strings.EqualFold(key, k) {
+				return true
+			}
+			continue
+		}
+		if key == k {
+			return true
+		}
+	}
+	return false
 }
 
 // envKeyIsSensitive reports whether key starts with any sensitive prefix.
@@ -611,18 +834,53 @@ func effectiveChildDir(sb *SandboxConfig, workingDir string) string {
 // defense-in-depth and gives an immediate, actionable error in the common
 // case.
 func AuditSystemCommandPaths(sb *SandboxConfig, command string, args []string, workingDir string) error {
+	l := permissions.StartLabel()
+	return AuditSystemCommandPathsWithLabel(sb, command, args, workingDir, &l)
+}
+
+// AuditSystemCommandPathsWithLabel is AuditSystemCommandPaths under a flow
+// label (FG-003). A nil label is fail-closed. Callers with a request
+// context (buildExecCommand) pass flowLabelFromCtx(ctx); direct callers
+// keep the StartLabel wrapper above.
+func AuditSystemCommandPathsWithLabel(sb *SandboxConfig, command string, args []string, workingDir string, label *permissions.SessionLabel) error {
+	return auditSystemCommandPaths(sb, command, args, workingDir, label, false)
+}
+
+// auditSystemCommandPaths is the approval-aware audit (S9/H1): approved
+// carries the gate's local decision (a consumed one-shot grant or an
+// in-stack approval), so an approved Ask admits instead of hard-denying.
+// Deny always denies; Ask without approval denies.
+func auditSystemCommandPaths(sb *SandboxConfig, command string, args []string, workingDir string, label *permissions.SessionLabel, approved bool) error {
 	if sb == nil || sb.Mode == SandboxModeOff {
 		return nil
 	}
-	// Permissions policy (PM-002): deny enforcement against the full
-	// command line. Ask/allow (and no installed policy) leave the audit
-	// unchanged; the gate owns prompting.
-	if eff, rule, ok := permissions.Lookup("shell", command); ok && rule != nil && eff == permissions.EffectDeny {
+	// Permissions policy (PM-002): deny enforcement against the dual
+	// shell identity (S9/M4: ShellLine primary + bare command fallback -
+	// the same strings the gate matches). Ask/allow (and no installed
+	// policy) leave the audit unchanged; the gate owns prompting.
+	shellRes := permissions.ShellResources(command, args)
+	if eff, rule, ok := permissions.Lookup("shell", shellRes...); ok && rule != nil && eff == permissions.EffectDeny {
 		suffix := ""
 		if rule != nil {
 			suffix = fmt.Sprintf(" (rule: %s %q)", rule.Action, rule.Resource)
 		}
 		return fmt.Errorf("command denied by permissions policy%s", suffix)
+	}
+	// Flow Guard pre-dispatch (FG-003): Deny fails closed here (S9/M4
+	// dual identity on shellRes). Ask admits only with the gate's local
+	// decision (approved): the gate runs before this audit and already
+	// prompted on flow Ask. A nil label (present-but-unregistered
+	// session under v2) is fail-closed inside LookupWithLabel
+	// (evaluated as narrowest), so skipping on nil would fail open.
+	// Without a v2 policy the lookup reports ok=false and the audit
+	// keeps exact v1 behavior.
+	if eff, _, detail, ok := permissions.LookupWithLabel(label, "shell", shellRes...); ok && detail != "" && eff != permissions.EffectAllow {
+		if eff == permissions.EffectDeny {
+			return fmt.Errorf("command denied by flow guard: %s", detail)
+		}
+		if !approved {
+			return fmt.Errorf("command denied by flow guard: %s", detail)
+		}
 	}
 	// Relative operands resolve against the same working directory the
 	// executed process gets: an approved override when supplied, otherwise

@@ -289,17 +289,68 @@ func SanitizeContextContent(content string) string {
 	return content
 }
 
+// untrustedOpenTag/untrustedCloseTag frame untrusted content in the model
+// context (R30: both tags are required to count as framed - a lone open
+// tag never suppresses framing, and smuggled tags neutralize on wrap).
+const (
+	untrustedOpenTag  = "<UNTRUSTED_DATA>"
+	untrustedCloseTag = "</UNTRUSTED_DATA>"
+)
+
+// ownFramePrefix/ownFrameSuffix is the exact byte frame WrapUntrustedData
+// emits; a value carrying exactly this frame is our own output (R30
+// idempotency: re-wrapping it is a byte-identical no-op when the inner
+// content still sanitizes clean).
+const (
+	ownFramePrefix = "\n<UNTRUSTED_DATA>\n"
+	ownFrameSuffix = "\n</UNTRUSTED_DATA>\n"
+)
+
+// HasUntrustedFraming reports whether s carries both framing tags (R30
+// both-tags-required). A lone open or close tag never counts as framed:
+// attacker-controlled single tags must not suppress framing.
+func HasUntrustedFraming(s string) bool {
+	return strings.Contains(s, untrustedOpenTag) && strings.Contains(s, untrustedCloseTag)
+}
+
+// neutralizeFramingTags escapes live framing tags smuggled inside
+// untrusted content so a payload close tag cannot break out of the
+// frame. The escaped form carries no live brackets and neutralizes to
+// itself (idempotent).
+func neutralizeFramingTags(s string) string {
+	s = strings.ReplaceAll(s, untrustedOpenTag, "‹UNTRUSTED_DATA›")
+	s = strings.ReplaceAll(s, untrustedCloseTag, "‹/UNTRUSTED_DATA›")
+	return s
+}
+
 // WrapUntrustedData frames the given string in <UNTRUSTED_DATA> tags after
 // sanitizing it through SanitizeContextContent, so untrusted user-supplied
-// content that enters the model context is clearly delimited. Content that
-// already contains <UNTRUSTED_DATA> is returned unchanged (double-wrap
-// prevention) after sanitization.
+// content that enters the model context is clearly delimited (R30):
+//
+//   - both-tags-required: only content carrying both the open and the
+//     close tag counts as framed; a lone tag never suppresses framing.
+//   - neutralize: smuggled framing tags inside the content escape before
+//     the frame is applied, so a payload close tag cannot break out.
+//   - idempotent: re-wrapping our own exact frame is a byte-identical
+//     no-op when the inner content still sanitizes clean; an
+//     attacker-forged frame re-sanitizes its inner content instead of
+//     passing it through.
 func WrapUntrustedData(s string) string {
-	if strings.Contains(s, "<UNTRUSTED_DATA>") {
-		return SanitizeContextContent(s)
+	if strings.HasPrefix(s, ownFramePrefix) && strings.HasSuffix(s, ownFrameSuffix) {
+		inner := s[len(ownFramePrefix) : len(s)-len(ownFrameSuffix)]
+		if clean := neutralizeFramingTags(SanitizeContextContent(inner)); clean == inner {
+			return s
+		} else {
+			return ownFramePrefix + clean + ownFrameSuffix
+		}
 	}
+	// M1 fail-closed: no HasUntrustedFraming early-out. Every non-own
+	// frame - including attacker-forged frames carrying both tags -
+	// sanitizes + neutralizes + frames here, so no caller can skip
+	// sanitization by pre-testing the predicate. The guard layer calls
+	// WrapUntrustedData unconditionally for the same reason.
 	sanitized := SanitizeContextContent(s)
-	return "\n<UNTRUSTED_DATA>\n" + sanitized + "\n</UNTRUSTED_DATA>\n"
+	return ownFramePrefix + neutralizeFramingTags(sanitized) + ownFrameSuffix
 }
 
 // RenderInstructionBlock renders the discovered context files into the

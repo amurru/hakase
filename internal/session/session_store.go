@@ -248,11 +248,30 @@ func (s *SessionStore) saveUnlockedFlocked(session *Session) error {
 // Load reads a session from disk by its ID. A torn file is quarantined aside
 // and reported as a corruption error (not "not found") so callers can
 // distinguish a crash artifact from a missing session.
+//
+// Loading registers the persisted flow label (resume-only: a live
+// registry entry is never overwritten with stale disk state, C1) so a
+// resumed narrowed session never runs widest.
 func (s *SessionStore) Load(id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.loadUnlocked(id)
+	sess, err := s.loadUnlocked(id)
+	if err != nil {
+		return nil, err
+	}
+	// RegisterLoaded seeds the registry; the recomputed flag is consumed
+	// one-time downstream (CheckPreFlow audits flow_recomputed via
+	// TakeFlowRecomputed, the first denial carries the resume notice via
+	// TakeFlowNotice). Load itself stays side-effect-free beyond the seed
+	// so turn-end persistence paths (Load-then-Save) cannot double-audit.
+	// Accepted behaviour (H4): a pre-v2 session resumes conservative and
+	// stays narrowed within the run (labels only Meet, never widen); the
+	// audit trail + one-time notice is the marker, and starting a fresh
+	// session (/new) is the undo - the narrowed label is never written
+	// back wider.
+	_ = RegisterLoaded(sess)
+	return sess, nil
 }
 
 // List returns all non-archived sessions sorted by updated_at descending.
