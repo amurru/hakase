@@ -3,6 +3,7 @@ package sandbox
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestTaskResolveApprovedAskAdmits(t *testing.T) {
 	interfaces.RegisterTaskSession(taskID, sess)
 	t.Cleanup(func() { interfaces.UnregisterTask(taskID) })
 	ctx := &flowH1Ctx{Context: context.Background(), taskID: taskID}
-	raw := dir + "/notes.txt"
+	raw := filepath.Join(dir, "notes.txt")
 	if _, err := taskResolve(ctx, raw, false, ""); err == nil || !strings.Contains(err.Error(), "flow guard") {
 		t.Fatalf("unapproved Ask = %v, want flow-guard denial", err)
 	}

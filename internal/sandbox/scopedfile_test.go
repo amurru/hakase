@@ -108,21 +108,15 @@ func TestS24ParentSymlinkEscapeDenied(t *testing.T) {
 }
 
 // TestS24RootlessParentSymlinkDenied pins M1 for the no-root choke: a
-// symlinked parent refuses even without a confinement root (fail-closed,
-// EvalSymlinks equality). Temp roots resolve first so darwin /tmp (/tmp
-// -> /private/tmp) and /var symlinks never false-positive.
+// symlinked parent refuses even without a confinement root (fail-closed).
+// C1: uses raw t.TempDir() (no EvalSymlinks pre-resolve) so darwin
+// /var and Windows 8.3 aliases exercise the SameFile identity leg.
 func TestS24RootlessParentSymlinkDenied(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink fixtures need privileges on Windows")
 	}
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		base = t.TempDir()
-	}
-	outside, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := t.TempDir()
+	outside := t.TempDir()
 	linkDir := filepath.Join(base, "linkdir")
 	if err := os.Symlink(outside, linkDir); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
@@ -141,10 +135,7 @@ func TestS24RootlessEvalSymlinksFailClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink fixtures need privileges on Windows")
 	}
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		base = t.TempDir()
-	}
+	base := t.TempDir()
 	dangling := filepath.Join(base, "dangling")
 	if err := os.Symlink(filepath.Join(base, "no-such-target-xyz"), dangling); err != nil {
 		t.Skipf("symlink unsupported: %v", err)

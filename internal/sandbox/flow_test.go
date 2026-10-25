@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,7 +55,7 @@ func TestTaskResolveFlowDeny(t *testing.T) {
 			Delta: &permissions.FlowDelta{Trust: "suspicious"}},
 	}})
 	stubFlowLabel(t, flowNarrowed())
-	if _, err := taskResolve(context.Background(), dir+"/notes.txt", true, ""); err == nil {
+	if _, err := taskResolve(context.Background(), filepath.Join(dir, "notes.txt"), true, ""); err == nil {
 		t.Error("narrowed unmapped edit passed, want flow guard denial")
 	} else if !strings.Contains(err.Error(), "flow guard") {
 		t.Errorf("error = %q, want flow guard citation", err)
@@ -63,7 +64,7 @@ func TestTaskResolveFlowDeny(t *testing.T) {
 	// the unmapped edit passes with no flow detail.
 	start := permissions.StartLabel()
 	stubFlowLabel(t, &start)
-	if _, err := taskResolve(context.Background(), dir+"/notes.txt", true, ""); err != nil {
+	if _, err := taskResolve(context.Background(), filepath.Join(dir, "notes.txt"), true, ""); err != nil {
 		t.Errorf("start unmapped edit failed: %v (additive: default alone is not a rule)", err)
 	}
 }
@@ -80,7 +81,7 @@ func TestTaskResolveFlowSourceProceeds(t *testing.T) {
 			Requires: &permissions.FlowRequires{AudienceContains: []string{"public"}}},
 	}})
 	stubFlowLabel(t, flowNarrowed())
-	if _, err := taskResolve(context.Background(), dir+"/notes.txt", false, ""); err == nil {
+	if _, err := taskResolve(context.Background(), filepath.Join(dir, "notes.txt"), false, ""); err == nil {
 		t.Error("narrowed source read passed, want flow guard denial (S9 fail-closed)")
 	} else if !strings.Contains(err.Error(), "flow guard") {
 		t.Errorf("error = %q, want flow guard citation", err)

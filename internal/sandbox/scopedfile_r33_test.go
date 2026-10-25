@@ -14,19 +14,14 @@ import (
 
 // TestR33CreateRootedParentSymlinkDenied pins the rooted re-check: a
 // pre-planted symlink inside the root redirects resolution outside, so
-// the streaming create refuses and nothing lands outside.
+// the streaming create refuses and nothing lands outside. Uses raw
+// TempDir (C1 SameFile identity, no EvalSymlinks pre-resolve).
 func TestR33CreateRootedParentSymlinkDenied(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink fixtures need privileges on Windows")
 	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	outside, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := t.TempDir()
+	outside := t.TempDir()
 	linkDir := filepath.Join(root, "linkdir")
 	if err := os.Symlink(outside, linkDir); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
@@ -42,15 +37,13 @@ func TestR33CreateRootedParentSymlinkDenied(t *testing.T) {
 }
 
 // TestR33CreateRootlessParentSymlinkDenied pins the rootless re-check:
-// streaming through a symlinked parent directory refuses.
+// streaming through a symlinked parent directory refuses. Raw TempDir
+// (C1 SameFile identity).
 func TestR33CreateRootlessParentSymlinkDenied(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink fixtures need privileges on Windows")
 	}
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := t.TempDir()
 	real := filepath.Join(base, "real")
 	if err := os.MkdirAll(real, 0755); err != nil {
 		t.Fatal(err)

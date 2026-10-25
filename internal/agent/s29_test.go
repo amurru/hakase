@@ -182,7 +182,7 @@ func TestS29ChokeInventory(t *testing.T) {
 		}()},
 		{"S24 scoped stream create", func() bool {
 			dir := t.TempDir()
-			f, _, err := sandbox.ScopedCreateFile("", dir+"/s.bin", 0644)
+			f, _, err := sandbox.ScopedCreateFile("", filepath.Join(dir, "s.bin"), 0644)
 			if err != nil {
 				return false
 			}

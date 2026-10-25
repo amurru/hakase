@@ -59,6 +59,24 @@ func resolveInRoot(root, name string) (string, error) {
 	return joined, nil
 }
 
+// sameDirIdentity reports whether dir and realDir (the EvalSymlinks
+// resolution of dir) name the same directory. String comparison
+// false-positives on Windows 8.3 short names (RUNNER~1 vs runneradmin)
+// and on darwin /var -> /private/var: both resolve to the same file but
+// spell differently. os.SameFile on Lstat(dir) vs Stat(realDir) keeps
+// the symlink defense (a symlinked dir has a different Lstat identity
+// than its target) while allowing short-name/case aliases. Callers keep
+// the lstatChain + O_NOFOLLOW legs; this check only replaces the
+// Clean-string equality for the parent re-check.
+func sameDirIdentity(dir, realDir string) bool {
+	fiDir, err1 := os.Lstat(dir)
+	fiReal, err2 := os.Stat(realDir)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return os.SameFile(fiDir, fiReal)
+}
+
 // lstatChain refuses when final or any existing ancestor is a symlink and
 // fails closed on unexpected stat errors (missing ancestors are fine:
 // they are created by MkdirAll before this runs).
@@ -174,10 +192,9 @@ func ScopedWriteFileInRoot(root, name string, data []byte, perm os.FileMode, ove
 // Sandbox-off note: without a root there is no containment to check
 // against, so callers with a known root must prefer ScopedWriteFileInRoot
 // (the confined variant). This path still refuses a symlinked parent
-// (EvalSymlinks equality, fail-closed on error), refuses final-component
-// symlinks via Lstat + O_NOFOLLOW, and uses O_EXCL for create-only. Tests
-// resolve TempDir via EvalSymlinks first (darwin /tmp and /var are
-// themselves symlinks, so unresolved fixtures would false-positive).
+// (EvalSymlinks identity via SameFile, fail-closed on error), refuses
+// final-component symlinks via Lstat + O_NOFOLLOW, and uses O_EXCL for
+// create-only.
 func ScopedWriteFile(path string, data []byte, perm os.FileMode, overwrite bool) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -187,12 +204,16 @@ func ScopedWriteFile(path string, data []byte, perm os.FileMode, overwrite bool)
 		return "", &scopedWriteError{"scoped write refused: cannot create parent directories"}
 	}
 	// M1/M2: no-root parent-swap defense - a symlinked parent must refuse
-	// (fail closed when the parent cannot be resolved).
+	// (fail closed when the parent cannot be resolved). C1: compare by
+	// file identity (SameFile), not spelling, so Windows 8.3 short names
+	// and darwin /var symlinks do not false-positive; a symlinked dir
+	// still refuses via Lstat identity plus the lstatChain + O_NOFOLLOW
+	// legs below.
 	realDir, rerr := filepath.EvalSymlinks(filepath.Dir(abs))
 	if rerr != nil {
 		return "", &scopedWriteError{"scoped write refused: cannot resolve parent directories"}
 	}
-	if filepath.Clean(realDir) != filepath.Clean(filepath.Dir(abs)) {
+	if !sameDirIdentity(filepath.Dir(abs), realDir) {
 		return "", &scopedWriteError{"scoped write refused: symlink in path"}
 	}
 	if err := lstatChain(abs, filepath.Dir(abs)); err != nil {
@@ -267,7 +288,7 @@ func ScopedCreateFile(root, path string, perm os.FileMode) (*os.File, string, er
 		if rerr != nil {
 			return nil, "", &scopedWriteError{"scoped write refused: cannot resolve parent directories"}
 		}
-		if filepath.Clean(realDir) != filepath.Clean(filepath.Dir(abs)) {
+		if !sameDirIdentity(filepath.Dir(abs), realDir) {
 			return nil, "", &scopedWriteError{"scoped write refused: symlink in path"}
 		}
 	}
