@@ -1,7 +1,6 @@
 package tui
 
 import (
-	hakaseagent "amurru/hakase/internal/agent"
 	"amurru/hakase/internal/session"
 	"context"
 	"regexp"
@@ -258,66 +257,29 @@ func (m *AppModel) sendInput(text string) (*AppModel, tea.Cmd) {
 	return model.(*AppModel), cmd
 }
 
-// TestRunSlashCommandModelShowsCurrent verifies P-09: bare /model reports
-// the active model without changing anything.
-func TestRunSlashCommandModelShowsCurrent(t *testing.T) {
+// TestSlashCommandModelRemoved pins the H2 re-review decision: the /model
+// switch claimed "applies to the next turn" but only updated the TUI
+// display - the ADK runner bakes the model into its agents at SetupRunner
+// time and exposes no per-turn swap, so the claim was false. The command
+// is removed (not rewired) until a real runner-model swap lands; the
+// active model still shows in the status bar from modelName.
+func TestSlashCommandModelRemoved(t *testing.T) {
+	if cmd := FindSlashCommand("model"); cmd != nil {
+		t.Fatalf("FindSlashCommand(model) = %+v, want nil (switch removed as unwired)", cmd)
+	}
 	m := newTestModel(t)
-	m.modelName = "test-model"
-
-	mm, cmd := m.sendInput("/model")
-	if cmd != nil {
-		t.Fatalf("/model must not return a command, got %v", cmd)
+	mm, _ := m.sendInput("/model foo-bar")
+	found := false
+	for _, l := range mm.logLines {
+		if strings.Contains(l, "unknown command") && strings.Contains(l, "model") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("/model should be rejected as unknown, got %v", mm.logLines)
 	}
 	if mm.modelName != "test-model" {
 		t.Fatalf("/model must not change the model, got %q", mm.modelName)
-	}
-	found := false
-	for _, l := range mm.logLines {
-		if strings.Contains(l, "test-model") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("/model should log the current model, got %v", mm.logLines)
-	}
-}
-
-// TestRunSlashCommandModelSwitches verifies P-09: /model <name> switches
-// the next turn's model and drops stale provider caps.
-func TestRunSlashCommandModelSwitches(t *testing.T) {
-	m := newTestModel(t)
-	m.modelInfo = &hakaseagent.ModelInfo{Name: "test-model", ContextWindow: 200_000}
-
-	mm, _ := m.sendInput("/model foo-bar")
-	if mm.modelName != "foo-bar" {
-		t.Fatalf("expected model foo-bar, got %q", mm.modelName)
-	}
-	if mm.modelInfo != nil {
-		t.Fatalf("switching models must drop stale provider info, got %+v", mm.modelInfo)
-	}
-	if mm.IsProcessing {
-		t.Fatal("/model must not start a run")
-	}
-}
-
-// TestRunSlashCommandModelBlockedWhileProcessing verifies the switch is
-// refused mid-run like /new and /compact.
-func TestRunSlashCommandModelBlockedWhileProcessing(t *testing.T) {
-	m := newTestModel(t)
-	m.IsProcessing = true
-
-	mm, _ := m.sendInput("/model foo-bar")
-	if mm.modelName != "test-model" {
-		t.Fatalf("model must not switch while processing, got %q", mm.modelName)
-	}
-	found := false
-	for _, l := range mm.logLines {
-		if strings.Contains(l, "cannot switch models") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("blocked switch should explain why, got %v", mm.logLines)
 	}
 }
 

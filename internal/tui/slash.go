@@ -67,31 +67,6 @@ var builtinCommands = []SlashCommand{
 		},
 	},
 	{
-		Name:        "model",
-		Description: "Show or switch the chat model for subsequent turns (`/model [name]`)",
-		Usage:       "/model [name]",
-		Run: func(m *AppModel, args string) tea.Cmd {
-			if args == "" {
-				info := m.modelName
-				if m.modelInfo != nil && m.modelInfo.ContextWindow > 0 {
-					info += fmt.Sprintf(" (ctx %s)", formatTokens(m.modelInfo.ContextWindow))
-				}
-				m.AppendLog("🧠 model: " + info)
-				return nil
-			}
-			if m.IsProcessing {
-				m.AppendLog("⚠ cannot switch models while the agent is working")
-				return nil
-			}
-			m.modelName = args
-			// Provider-reported caps belong to the old model; fresh
-			// ModelInfo arrives with the next turn.
-			m.modelInfo = nil
-			m.AppendLog(fmt.Sprintf("🧠 model switched to %s (applies to the next turn)", args))
-			return nil
-		},
-	},
-	{
 		Name:        "board",
 		Aliases:     []string{"tasks", "task"},
 		Description: "Manage the task board: summary, list, new, get, update, done, fail, cancel, delete, archive, claim",
