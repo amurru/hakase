@@ -48,10 +48,13 @@ func TestRedactTruncate_Passthrough(t *testing.T) {
 	}
 }
 
-// Token-shape guard: the bearer/basic scheme with a common word is prose,
-// not a credential; a shaped token still redacts.
+// Token-shape guard: short common words after the scheme are prose,
+// not credentials; a shaped token still redacts. H1: the all-lowercase
+// floor is len>=10, so an 11-char common word like "information" now
+// redacts (fail-closed tradeoff for opaque tokens); prose stays safe
+// under 10 chars.
 func TestRedactSecrets_SchemeShapeGuard(t *testing.T) {
-	if out, found := RedactSecrets("use bearer information wisely"); found || out != "use bearer information wisely" {
+	if out, found := RedactSecrets("use bearer info wisely"); found || out != "use bearer info wisely" {
 		t.Errorf("prose redacted: found=%v out=%q", found, out)
 	}
 	if out, found := RedactSecrets("Bearer abcdefgh12345678"); !found || !strings.Contains(out, "REDACTED:bearer") {
@@ -70,5 +73,16 @@ func TestRedactSecrets_SchemeShapeGuard(t *testing.T) {
 	}
 	if out, found := RedactSecrets("bearer info"); found || out != "bearer info" {
 		t.Errorf("short lowercase prose redacted: found=%v out=%q", found, out)
+	}
+	// H1: all-lowercase floor is len>=10. Ten opaque lowers redact,
+	// nine do not (prose guard).
+	if out, found := RedactSecrets("Bearer abcdefghij"); !found || !strings.Contains(out, "REDACTED:bearer") {
+		t.Errorf("10-char lowercase bearer missed: found=%v out=%q", found, out)
+	}
+	if out, found := RedactSecrets("Bearer abcdefghi"); found || out != "Bearer abcdefghi" {
+		t.Errorf("9-char lowercase bearer redacted: found=%v out=%q", found, out)
+	}
+	if out, found := RedactSecrets("Basic abcdefghij"); !found || !strings.Contains(out, "REDACTED:basic") {
+		t.Errorf("10-char lowercase basic missed: found=%v out=%q", found, out)
 	}
 }

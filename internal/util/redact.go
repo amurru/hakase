@@ -99,7 +99,7 @@ func RedactSecrets(s string) (string, bool) {
 // unicode whitespace (not just ASCII space); the token is the first
 // field after the scheme. Credential-shaped means carrying a digit,
 // an uppercase letter, or a symbol (anything beyond lowercase
-// letters), or a long opaque string (len>=16) even when all
+// letters), or a long opaque string (len>=10) even when all
 // lowercase.
 func tokenShaped(m string) bool {
 	i := strings.IndexFunc(m, unicode.IsSpace)
@@ -115,7 +115,7 @@ func tokenShaped(m string) bool {
 		return false
 	}
 	tok := fields[0]
-	if len([]rune(tok)) >= 16 {
+	if len([]rune(tok)) >= 10 {
 		return true
 	}
 	for _, r := range tok {
@@ -174,6 +174,10 @@ func RedactedPatterns() []string {
 		"xoxe-1-23456-abcdef",
 		"Bearer abcdefghij1234567890",
 		"Basic dXNlcjpwYXNz",
+		// H1 10-char all-lowercase floor (tokenShaped len>=10): opaque
+		// lowercase tokens redact; shorter lowercase prose does not.
+		"Bearer abcdefghij",
+		"Basic abcdefghij",
 		"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq cor rupted body line\n-----END RSA PRIVATE KEY-----",
 		"-----BEGIN RSA PRIVATE KEY----- (truncated excerpt, no footer)",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
