@@ -260,7 +260,17 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	RegisterLoaded(sess)
+	// RegisterLoaded seeds the registry; the recomputed flag is consumed
+	// one-time downstream (CheckPreFlow audits flow_recomputed via
+	// TakeFlowRecomputed, the first denial carries the resume notice via
+	// TakeFlowNotice). Load itself stays side-effect-free beyond the seed
+	// so turn-end persistence paths (Load-then-Save) cannot double-audit.
+	// Accepted behaviour (H4): a pre-v2 session resumes conservative and
+	// stays narrowed within the run (labels only Meet, never widen); the
+	// audit trail + one-time notice is the marker, and starting a fresh
+	// session (/new) is the undo - the narrowed label is never written
+	// back wider.
+	_ = RegisterLoaded(sess)
 	return sess, nil
 }
 

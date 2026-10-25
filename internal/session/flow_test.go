@@ -12,6 +12,21 @@ import (
 	"amurru/hakase/internal/permissions"
 )
 
+// enableFlowForTest installs a minimal v2 policy so FlowEnabled reports
+// true (H4: recompute only applies when flow is enabled; v1-only installs
+// never narrow). Tests exercising the recompute path must call this;
+// v1 parity is pinned by TestRecomputeFlowV1NoNarrowing below.
+func enableFlowForTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("HAKASE_FLOW_EXPERIMENTAL", "1")
+	cp, err := permissions.Compile(permissions.Policy{Version: 2, Default: "ask"})
+	if err != nil {
+		t.Fatalf("Compile v2: %v", err)
+	}
+	permissions.Install(cp)
+	t.Cleanup(func() { permissions.Install(nil) })
+}
+
 // TestFlowKeyRoundTrip pins the canonical lossless encoding incl. empty
 // tool-ids, colons inside ids, and the max-uint64 boundary.
 func TestFlowKeyRoundTrip(t *testing.T) {
@@ -94,7 +109,9 @@ func TestRegistryConcurrent(t *testing.T) {
 }
 
 // TestRecomputeFlow pins old-file conservative backfill, never widest.
+// H4: only when flow is enabled; v1-only installs keep Flow nil.
 func TestRecomputeFlow(t *testing.T) {
+	enableFlowForTest(t)
 	// A pre-v2 session file carries no flow field at all: the label is
 	// nil until the recompute backfills it conservatively.
 	s := NewSession("old")
@@ -116,6 +133,31 @@ func TestRecomputeFlow(t *testing.T) {
 	}
 	if got := FlowResumeNotice(false); got != "" {
 		t.Errorf("notice = %q, want empty", got)
+	}
+}
+
+// TestRecomputeFlowV1NoNarrowing pins H4: v1-only installs (flow disabled)
+// never recompute and never persist a narrowed label.
+func TestRecomputeFlowV1NoNarrowing(t *testing.T) {
+	// No flow policy installed: FlowEnabled false. Cleanup restores the
+	// (nil) policy even though the test installs nil itself, so a future
+	// edit adding an install above cannot leak it into other tests.
+	permissions.Install(nil)
+	t.Cleanup(func() { permissions.Install(nil) })
+	s := NewSession("v1-old")
+	s.Flow = nil
+	if s.RecomputeFlow() {
+		t.Error("v1 RecomputeFlow = true, want false (no persistent narrowing)")
+	}
+	if s.Flow != nil {
+		t.Errorf("v1 Flow = %+v, want nil", s.Flow)
+	}
+	r := NewFlowRegistry()
+	if recomputed := RegisterLoadedWith(r, s); recomputed {
+		t.Error("v1 RegisterLoadedWith recomputed, want false")
+	}
+	if r.Get(s.ID) != nil {
+		t.Error("v1 registry entry present, want nil")
 	}
 }
 
@@ -177,6 +219,7 @@ func TestSessionFlowPersist(t *testing.T) {
 // verbatim, absent flow recomputes conservative, and Sync round-trips
 // folds back into the session for Save.
 func TestRegisterLoaded(t *testing.T) {
+	enableFlowForTest(t)
 	r := NewFlowRegistry()
 	s := NewSession("resume")
 	s.Flow = &permissions.SessionLabel{Trust: permissions.TrustSuspicious, Audience: permissions.AudienceInternal, Version: 3}
@@ -348,6 +391,7 @@ func TestFlowResumeCompactionVersionUnchanged(t *testing.T) {
 // TestFlowRecomputedNoticeOnce pins the one-time resume notice: it rides
 // the first denial and never repeats.
 func TestFlowRecomputedNoticeOnce(t *testing.T) {
+	enableFlowForTest(t)
 	r := NewFlowRegistry()
 	old := NewSession("pre-v2")
 	old.Flow = nil

@@ -83,9 +83,14 @@ func (s *Session) EnsureFlow() *permissions.SessionLabel {
 // impossible without the v2 rules that produced the history, so any
 // session with tool history (or without) resumes conservative, never
 // widest. Returns true when it recomputed (caller audits flow_recomputed
-// and shows FlowResumeNotice once).
+// and shows FlowResumeNotice once). H4: lazy/conditional - v1-only
+// installs (flow disabled) never recompute and never persist a narrowed
+// label, preserving exact v1 parity.
 func (s *Session) RecomputeFlow() bool {
 	if s.Flow != nil {
+		return false
+	}
+	if !permissions.FlowEnabled() {
 		return false
 	}
 	l := ConservativeLabel()
@@ -381,6 +386,13 @@ func RegisterLoaded(sess *Session) bool {
 // Save back. Returns true when it recomputed.
 func RegisterLoadedWith(r *FlowRegistry, sess *Session) bool {
 	if sess == nil || r == nil {
+		return false
+	}
+	// H4: v1-only installs (flow disabled) never narrow: a nil Flow stays
+	// nil with no registry entry (v1 parity). Persisted labels still
+	// import verbatim so a v2 file opened under v1 keeps its shape in
+	// memory without recomputing or persisting new narrowing.
+	if sess.Flow == nil && !permissions.FlowEnabled() {
 		return false
 	}
 	recomputed := sess.RecomputeFlow()
