@@ -208,13 +208,39 @@ func stripWin32Alias(p string) string {
 
 // PathResources builds the dual-match resource list for a path-shaped
 // operand (S5 shared): canonical primary, raw fallback. Identical legs
-// collapse to one entry.
+// collapse to one entry. POSIX keeps both legs even when they name the
+// same file (a symlink and its target are textually distinct spellings,
+// so rules authored against either spelling still match). Windows-only
+// collapses below are gated on runtime.GOOS: case-insensitive filesystems
+// fold EqualFold spellings, and SameFile folds short-name (8.3) vs
+// long-name spellings of the same file instead of emitting a spurious
+// second leg.
 func PathResources(raw string) []string {
 	canon, _ := CanonicalPath(raw)
 	if canon == "" || canon == raw {
 		return []string{raw}
 	}
+	if runtime.GOOS != "windows" {
+		return []string{canon, raw}
+	}
+	if strings.EqualFold(canon, raw) {
+		return []string{raw}
+	}
+	if sameFilePath(canon, raw) {
+		return []string{raw}
+	}
 	return []string{canon, raw}
+}
+
+// sameFilePath reports whether a and b name the same file (both must
+// exist; missing paths return false so callers keep both legs).
+func sameFilePath(a, b string) bool {
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 // NormalizeURL canonicalizes a URL for policy matching: lowercase scheme

@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -255,6 +256,45 @@ func (cp *CompiledPolicy) EvaluateForAgent(agentName, action string, resources .
 	return cp.evaluateIn(cp.rules, extra, action, resources...)
 }
 
+// matchCandidates returns the spellings a resource matches against.
+// H6: on Windows the volume (drive letter) is stripped as a fallback
+// candidate so "/specific/*" author-facing globs keep matching
+// "D:/specific/..." absolute values; the (?i) pattern prefix already
+// folds case.
+func matchCandidates(res string) []string {
+	v := normalizeSeparators(res)
+	if filepath.IsAbs(v) {
+		v = filepath.Clean(v)
+		v = normalizeSeparators(v)
+	}
+	if runtime.GOOS != "windows" {
+		return []string{v}
+	}
+	vol := filepath.VolumeName(v)
+	if vol == "" {
+		// normalizeSeparators turned \ into /: VolumeName needs the
+		// OS form, so retry on the raw value.
+		if vol2 := filepath.VolumeName(res); vol2 != "" {
+			trimmed := strings.TrimPrefix(v, normalizeSeparators(vol2))
+			if trimmed == "" {
+				trimmed = "/"
+			}
+			if trimmed != v {
+				return []string{v, trimmed}
+			}
+		}
+		return []string{v}
+	}
+	trimmed := strings.TrimPrefix(v, vol)
+	if trimmed == "" {
+		trimmed = "/"
+	}
+	if trimmed == v {
+		return []string{v}
+	}
+	return []string{v, trimmed}
+}
+
 // evaluateIn is the shared matcher over base plus optional overlay rules.
 func (cp *CompiledPolicy) evaluateIn(base, extra []compiledRule, action string, resources ...string) (Effect, *Rule) {
 	action = strings.ToLower(strings.TrimSpace(action))
@@ -265,7 +305,14 @@ func (cp *CompiledPolicy) evaluateIn(base, extra []compiledRule, action string, 
 			if cr.rule.Action != "*" && cr.rule.Action != action {
 				continue
 			}
-			if !cr.re.MatchString(res) {
+			matched := false
+			for _, cand := range matchCandidates(res) {
+				if cr.re.MatchString(cand) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
 			if winner == nil || precedence(cr.rule.Effect) > precedence(winner.rule.Effect) {
@@ -274,13 +321,8 @@ func (cp *CompiledPolicy) evaluateIn(base, extra []compiledRule, action string, 
 		}
 	}
 	for _, res := range resources {
-		v := normalizeSeparators(res)
-		if filepath.IsAbs(v) {
-			v = filepath.Clean(v)
-			v = normalizeSeparators(v)
-		}
-		consider(base, v)
-		consider(extra, v)
+		consider(base, res)
+		consider(extra, res)
 	}
 	if winner == nil {
 		return cp.def, nil
@@ -367,7 +409,6 @@ func (cp *CompiledPolicy) evaluateAgentWithLabel(agentName string, label *Sessio
 	if len(gates) > 0 && !checkRequires(effective, gates) {
 		hash := ShortHash(append([]string{action}, resources...)...)
 		detail := fmt.Sprintf("flow: %s blocked (%s, v%d) by permissions policy (argsHash %s)", action, labelString(effective), effective.Version, hash)
-		RecordFlowBinding("", "pre:"+hash, effective.Version, hash)
 		if baseEff == EffectDeny || denyGate {
 			return EffectDeny, baseRule, detail
 		}
@@ -388,12 +429,14 @@ func (cp *CompiledPolicy) matchingRules(extra []compiledRule, action string, res
 				continue
 			}
 			for _, res := range resources {
-				v := normalizeSeparators(res)
-				if filepath.IsAbs(v) {
-					v = filepath.Clean(v)
-					v = normalizeSeparators(v)
+				matched := false
+				for _, cand := range matchCandidates(res) {
+					if cr.re.MatchString(cand) {
+						matched = true
+						break
+					}
 				}
-				if cr.re.MatchString(v) {
+				if matched {
 					out = append(out, *cr)
 					break
 				}
@@ -491,10 +534,16 @@ func expandPattern(pattern string) string {
 
 // compilePattern translates a glob into an anchored regexp: "*" spans
 // separators, "?" matches one non-separator character, "[...]" classes
-// are passed through, everything else is quoted.
+// are passed through, everything else is quoted. H6: on Windows the
+// filesystem is case-insensitive, so patterns compile case-insensitive
+// ((?i) prefix); POSIX stays case-sensitive.
 func compilePattern(pattern string) (*regexp.Regexp, error) {
 	var sb strings.Builder
-	sb.WriteString("^")
+	if runtime.GOOS == "windows" {
+		sb.WriteString("(?i)^")
+	} else {
+		sb.WriteString("^")
+	}
 	i := 0
 	for i < len(pattern) {
 		switch pattern[i] {

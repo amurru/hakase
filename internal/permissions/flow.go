@@ -292,6 +292,11 @@ type flowBinding struct {
 // not grow it without limit. The oldest entries are dropped first.
 const maxFlowBindings = 4096
 
+// Lock ordering: flowBindings (RWMutex) and flowGrantStore (Mutex) are
+// never held together. Callers record/consume one store at a time in
+// idemKey shape "flow:<tool>:<argsHash>" (see agent.flowIdemKey); the
+// pure policy evaluator (EvaluateWithLabel) records nothing, so no
+// path nests these locks and no inversion is possible.
 type flowBindingsT struct {
 	sync.RWMutex
 	m map[string]flowBinding
