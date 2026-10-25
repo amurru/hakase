@@ -237,6 +237,23 @@ func TestFlowMapToolWebSearchFallback(t *testing.T) {
 	}
 }
 
+// TestFlowMapToolUnknownWebStaysUnknown pins the unknown-sink guard:
+// only the exact "web_search" and "web_search_fallback" spellings map
+// to webfetch. Any other web_* spelling (e.g. web_search_extra) keeps
+// its tool name as the action so a narrowed label fails closed instead
+// of inheriting the webfetch taint rule.
+func TestFlowMapToolUnknownWebStaysUnknown(t *testing.T) {
+	for _, tool := range []string{"web_search_extra", "web_searchx", "web_fetch_extra"} {
+		action, _ := flowMapTool(tool, map[string]any{"query": "hi"})
+		if action == "webfetch" {
+			t.Errorf("%s must not map to webfetch, got %q", tool, action)
+		}
+		if action != tool {
+			t.Errorf("%s action = %q, want tool name passthrough %q", tool, action, tool)
+		}
+	}
+}
+
 // TestCheckPostFlowWebSearchFoldsSuspicious pins F3 end to end: a web_search
 // (or web_search_fallback) result folds the session label to suspicious
 // under a v2 webfetch taint rule, so a later send is gated by the narrowed

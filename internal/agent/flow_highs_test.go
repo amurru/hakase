@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"amurru/hakase/internal/interfaces"
 	"amurru/hakase/internal/permissions"
@@ -24,6 +26,25 @@ import (
 )
 
 const flowHighsSecret = "token=supersecret123456"
+
+// sameFileOrFold reports whether two paths name the same file (SameFile).
+// Case-insensitive folding applies on Windows only (8.3 short vs long
+// spellings, RUNNER~1 vs runneradmin): on POSIX "A" and "a" are distinct
+// files and must never collapse.
+func sameFileOrFold(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if runtime.GOOS == "windows" && strings.EqualFold(a, b) {
+		return true
+	}
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
+}
 
 // stubBenchTool builds a named stub tool outside *testing.T (benchmarks).
 func stubBenchTool(name string) (tool.Tool, error) {
@@ -106,7 +127,8 @@ func TestWalkCycleTerminates(t *testing.T) {
 	}
 }
 
-// S3: over-budget walks fail closed on a narrowed label.
+// S3: over-budget walks fail closed on a narrowed label (egress withholds
+// with the H3 truncated subset + refine note).
 func TestWalkOverBudgetFailClosed(t *testing.T) {
 	installFlowPolicy(t, permissions.Policy{Version: 2, Default: "ask", Rules: []permissions.Rule{
 		{Action: "read", Resource: "*", Effect: permissions.EffectAllow, Delta: &permissions.FlowDelta{Audience: []string{"internal"}}},
@@ -127,6 +149,25 @@ func TestWalkOverBudgetFailClosed(t *testing.T) {
 	}
 	if override == nil || override["withheld"] != true {
 		t.Fatalf("over-budget walk on narrowed label must withhold, got %v", override)
+	}
+	if _, ok := override["refine_note"]; !ok {
+		t.Fatalf("over-budget withhold must carry a refine note, got %v", override)
+	}
+	// H-NEW-2: the egress over-budget withhold audits like any block -
+	// the redacted subset must not bypass the trail.
+	entries, err := ReadAuditEntries(AuditDir(), time.Time{})
+	if err != nil {
+		t.Fatalf("ReadAuditEntries: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Decision == "flow_blocked" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("over-budget egress withhold audited no flow_blocked entry")
 	}
 }
 
@@ -252,8 +293,9 @@ func TestFlowCanonicalSymlink(t *testing.T) {
 	if !resolved {
 		t.Error("existing symlinked path must report resolved")
 	}
-	if canon != filepath.Join(real, "secret.md") {
-		t.Errorf("canon = %q, want %q", canon, filepath.Join(real, "secret.md"))
+	want := filepath.Join(real, "secret.md")
+	if canon != want && !sameFileOrFold(canon, want) {
+		t.Errorf("canon = %q, want %q", canon, want)
 	}
 }
 
@@ -272,12 +314,23 @@ func TestFlowMapToolDualMatchLegs(t *testing.T) {
 	if resources[0] == resources[1] {
 		t.Error("legs must differ for relative input")
 	}
-	// Absolute clean inputs collapse to one leg.
-	abs := filepath.Join(os.TempDir(), "f.md")
-	_, single := flowMapTool("read_file", map[string]any{"path": abs})
-	if len(single) != 1 {
-		t.Errorf("absolute clean input legs = %v, want one", single)
+	// Absolute clean inputs collapse to one leg. H6: use a real temp file
+	// so Windows short-vs-long spellings collapse via SameFile; on
+	// Windows also accept the volume-prefixed second leg as the same
+	// file (short-name alias), never a distinct resource.
+	dir := t.TempDir()
+	absFile := filepath.Join(dir, "f.md")
+	if err := os.WriteFile(absFile, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
 	}
+	_, single := flowMapTool("read_file", map[string]any{"path": absFile})
+	if len(single) == 1 {
+		return
+	}
+	if len(single) == 2 && sameFileOrFold(single[0], single[1]) {
+		return
+	}
+	t.Errorf("absolute clean input legs = %v, want one (or SameFile pair on Windows)", single)
 }
 
 // S5: an absolute deny rule catches a `..` bypass the raw string misses.
@@ -689,8 +742,14 @@ func TestFlowCanonicalHomeAndWinAlias(t *testing.T) {
 	// M1 loop 5: Win32 trailing-dot/space folds apply only to
 	// windows-shaped inputs. A POSIX relative name keeps its trailing
 	// dot (distinct file on POSIX); a drive-absolute spelling folds.
+	// H6: on Windows every path is windows-shaped (the OS strips
+	// trailing dots), so the relative case folds there too.
 	posixTrail, _ := permissions.CanonicalPath("flowtest-dir" + string(filepath.Separator) + "flowtest.txt.")
-	if !strings.HasSuffix(posixTrail, ".") {
+	if runtime.GOOS == "windows" {
+		if strings.HasSuffix(posixTrail, ".") {
+			t.Errorf("Windows trailing dot must fold: %q", posixTrail)
+		}
+	} else if !strings.HasSuffix(posixTrail, ".") {
 		t.Errorf("POSIX trailing dot must survive: %q", posixTrail)
 	}
 	winTrail, _ := permissions.CanonicalPath(`C:\ws\flowtest.txt.`)
@@ -747,8 +806,9 @@ func TestRedactNamedMapTypesNoPanic(t *testing.T) {
 	}
 }
 
-// M1: an incomplete redact (over-budget) withholds even a pure source on
-// a narrowed label - never partial-admit.
+// H3: an incomplete redact (over-budget) on a pure source admits the
+// truncated subset with a refine note - never a full withhold. Egress
+// over-budget still withholds (with the same refine note).
 func TestIncompleteRedactSourceWithholds(t *testing.T) {
 	installFlowPolicy(t, permissions.Policy{Version: 2, Default: "allow", Rules: []permissions.Rule{
 		{Action: "read", Resource: "*", Effect: permissions.EffectAllow},
@@ -766,8 +826,11 @@ func TestIncompleteRedactSourceWithholds(t *testing.T) {
 	if ferr != nil {
 		t.Fatalf("err = %v", ferr)
 	}
-	if override == nil || override["withheld"] != true {
-		t.Fatalf("incomplete redact on narrowed source must withhold, got %v", override)
+	if override == nil || override["truncated"] != true {
+		t.Fatalf("incomplete redact on narrowed source must admit truncated subset, got %v", override)
+	}
+	if _, ok := override["refine_note"]; !ok {
+		t.Fatalf("truncated admit must carry a refine note, got %v", override)
 	}
 }
 

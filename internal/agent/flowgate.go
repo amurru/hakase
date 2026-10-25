@@ -620,6 +620,9 @@ func persistFlowLabel(sessionID string) {
 // budgets): the walker runs on every post-admission result when v2 is
 // enabled, so unbounded reflect recursion is a CPU + alloc regression on
 // the hot path plus a panic surface (cycles, unexported fields).
+// H3: over-budget admissions return the truncated subset (first
+// flowWalkMaxStrings strings / flowWalkMaxBytes bytes) plus a refine
+// note instead of a full withhold, so the model can narrow the query.
 const (
 	flowWalkMaxDepth   = 8
 	flowWalkMaxStrings = 512
@@ -641,8 +644,10 @@ func marshalResultStrings(result map[string]any) []string {
 }
 
 // marshalResultStringsCapped is marshalResultStrings with an over-budget
-// flag: true when depth/count caps truncated the walk. Callers treat
-// over-budget as tainted + audit (fail-closed, S3), never skip.
+// flag: true when depth/count caps truncated the walk. H3: the returned
+// slice is the truncated subset (first flowWalkMaxStrings strings within
+// flowWalkMaxBytes); callers admit the subset with a refine note instead
+// of a full withhold. Never skip (fail-closed, S3).
 func marshalResultStringsCapped(result map[string]any) ([]string, bool) {
 	var out []string
 	var pending []any
@@ -1413,9 +1418,24 @@ func CheckPostFlow(ctx context.Context, t tool.Tool, args, result map[string]any
 		// the SEND will ask at its own pre-dispatch. Withhold only when
 		// this result is addressed outward (sinks) - or when the redact
 		// itself is incomplete (M1: over-budget/un-storable means the
-		// admitted text is not proven clean, even for sources).
+		// admitted text is not proven clean, even for sources). H3:
+		// over-budget admits the truncated subset with a refine note
+		// instead of a full withhold; egress still withholds (with the
+		// same refine note) so the model narrows the query.
 		if walkBudgetExceeded {
-			return withhold(rule), nil
+			if isEgressAction(action) {
+				// Egress over-budget withholds like any tainted sink, but
+				// carries the H3 truncated subset + refine note so the
+				// model narrows the query. Audit both the redaction and
+				// the block, same as the withhold path below (an
+				// unaudited withhold would leave no trail).
+				auditSanitized()
+				AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
+				return flowBudgetOverride(toolName, action, label, pre), nil
+			}
+			auditSanitized()
+			AuditFlowBlock(toolName, action, argsHash, sessionID, rule, label)
+			return flowBudgetAdmit(pre), nil
 		}
 		if isEgressAction(action) {
 			// Sanitize remedy (FG-005/H1): a rule that marked the
