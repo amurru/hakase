@@ -70,8 +70,10 @@ open issue). Per-item notes live there; ordered by expected value:
    synthesizes end-to-end (`audio_provider: piper` + `text_to_speech`
    default voice). Design: `docs/media-generation/spec.md` MG-012.
 
-- `docs/git-tools/tasks.md` T7.x remainder: `git_remote` management,
-  `git_rebase`/`git_merge`, `git_commit --amend`/signing.
+- `docs/git-tools/tasks.md` T7.x — shipped (verified 2026-10-29:
+  `git_remote` list/get_url/add/set_url/remove, `git_merge`, `git_rebase`,
+  amend and signing live in `internal/sandbox/gitops.go`; tasks.md fully
+  checked).
 
 ## Tier 3 — Next bets (ordered by expected value)
 
@@ -102,11 +104,14 @@ per-item notes live in the issues, not here.
    `mcp.gateway.enabled` (default 40). Never hard-fails a turn. Reuses
    `UpsertServer`/`Reconnect`/`Diagnose`.
    Design: `docs/mcp-gateway/` (MG-001..MG-006).
-5. **ADK adoption (phased enabler)** — replace bespoke delegation runner
-   with `agenttool.New` first (H value / L-M effort), then one workflow
-   pilot, then artifacts + `plugin.Plugin`; skills toolset + A2A deferred.
-   Cloud backends stay opt-in only. Design: `docs/adk-adoption/`
-   (AD-001..AD-005).
+5. **ADK adoption (phased enabler)** — shipped (2026-10-28, #86 closed):
+   delegation via `agenttool` (#145), opt-in plan→execute→verify workflow
+   pilot `workflow_delegation` (#147), session artifacts with the gated
+   `load_artifact` tool under a new `artifact` flow action (#148), opt-in
+   `skills_toolset` (#152). Plugin consolidation evaluated and rejected
+   with evidence (delegation bypass); the security considerations from the
+   Flow Guard-era review landed as acceptance criteria. A2A deferred to
+   #151. Design: `docs/adk-adoption/` (AD-001..AD-005).
 6. **Prompt-cache stability** - Phases 1-3 landed 2026-10-11
    (`docs/prompt-cache/`, PC-001..PC-007): one canonical renderer plus a
    per-turn frozen context block assembled at the end of the rendered store,
@@ -135,11 +140,12 @@ distribution slices in item 2 are open.
      downloads the release asset, verifies `SHA256SUMS.txt`, and installs to
      `PATH`; release workflow publishes `hakase-<version>-linux-arm64`. Design:
      `docs/release-distribution/`.
-   - **next: non-interactive `auth set-password`** (`--username`,
-     `--password-stdin`) with a first-run auto-provision, so a web image can
-     boot unattended (today `hakase web` hard-refuses without
-     `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`); prerequisite for
-     the container path.
+   - **shipped: non-interactive `auth set-password`** (`--username`,
+     `--password-stdin`; creates only — overwriting an existing login stays
+     interactive) + first-run auto-provision: `hakase web` provisions from
+     `HAKASE_ADMIN_USERNAME`/`HAKASE_ADMIN_PASSWORD` when credentials are
+     absent (2026-10-29, `docs/release-distribution/tasks.md`). The
+     container path is now unblocked.
    - **then: Dockerfile + compose** as the zero-toolchain "try it" path
      (`-e HAKASE_API_KEY`, `~/.hakase` volume).
    - **deferred for now: prebuilt darwin binaries** (arm64+amd64) and a
