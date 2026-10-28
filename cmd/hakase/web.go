@@ -133,16 +133,31 @@ func runServer(args []string, serveSPA bool) int {
 		fmt.Fprintln(os.Stderr, "         Use a reverse proxy (nginx/Caddy) for TLS termination.")
 	}
 
-	// Security check: credentials must exist.
+	// Security check: credentials must exist - unless unattended first-run
+	// provisioning is configured (Tier 4: HAKASE_ADMIN_USERNAME +
+	// HAKASE_ADMIN_PASSWORD), which lets a container image boot without a
+	// manual setup step. The password env var is readable by same-user
+	// processes: the standard container trade-off, never a replacement for
+	// the interactive flow on an existing install.
 	home := config.HakaseHome()
 	credsPath := filepath.Join(home, "credentials.json")
 	if _, err := os.Stat(credsPath); os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr,
-			"hakase web: no admin login found at "+credsPath+".\n\n"+
-				"Create one with:\n"+
-				"  hakase auth set-password\n"+
-				"or run 'hakase init' to configure hakase and set the admin login together.")
-		return 1
+		provisioned, perr := cli.ProvisionAdminFromEnv(credsPath)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "hakase web: %v\n", perr)
+			return 1
+		}
+		if !provisioned {
+			fmt.Fprintln(os.Stderr,
+				"hakase web: no admin login found at "+credsPath+".\n\n"+
+					"Create one with:\n"+
+					"  hakase auth set-password\n"+
+					"or run 'hakase init' to configure hakase and set the admin login together.\n\n"+
+					"For unattended boots, set both HAKASE_ADMIN_USERNAME and HAKASE_ADMIN_PASSWORD\n"+
+					"(or pipe the password: printf %s \"$PASS\" | hakase auth set-password --username admin --password-stdin).")
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "hakase web: admin login provisioned from HAKASE_ADMIN_USERNAME/HAKASE_ADMIN_PASSWORD (first run).")
 	}
 
 	// Load/generate JWT secret.

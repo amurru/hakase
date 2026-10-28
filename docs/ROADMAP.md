@@ -135,11 +135,12 @@ distribution slices in item 2 are open.
      downloads the release asset, verifies `SHA256SUMS.txt`, and installs to
      `PATH`; release workflow publishes `hakase-<version>-linux-arm64`. Design:
      `docs/release-distribution/`.
-   - **next: non-interactive `auth set-password`** (`--username`,
-     `--password-stdin`) with a first-run auto-provision, so a web image can
-     boot unattended (today `hakase web` hard-refuses without
-     `~/.hakase/credentials.json`, `cmd/hakase/web.go:136`); prerequisite for
-     the container path.
+   - **shipped: non-interactive `auth set-password`** (`--username`,
+     `--password-stdin`; creates only — overwriting an existing login stays
+     interactive) + first-run auto-provision: `hakase web` provisions from
+     `HAKASE_ADMIN_USERNAME`/`HAKASE_ADMIN_PASSWORD` when credentials are
+     absent (2026-10-29, `docs/release-distribution/tasks.md`). The
+     container path is now unblocked.
    - **then: Dockerfile + compose** as the zero-toolchain "try it" path
      (`-e HAKASE_API_KEY`, `~/.hakase` volume).
    - **deferred for now: prebuilt darwin binaries** (arm64+amd64) and a
