@@ -44,6 +44,11 @@ type Deps struct {
 	// Delegation timeout from config (0 = use default 300s).
 	DelegateTimeout time.Duration
 
+	// WorkflowDelegation enables the plan→execute→verify sequential
+	// pipeline for general_purpose delegations (AD-002 pilot,
+	// docs/adk-adoption/spec.md). Off by default.
+	WorkflowDelegation bool
+
 	// The ADK model created from the provider.
 	Model model.LLM
 

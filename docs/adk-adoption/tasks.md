@@ -8,9 +8,9 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs. Security constraints cit
 
 - [x] **T1.1 [BE]** `agenttool.New` wrapper in `delegate.go`; keep gates/filter/cache/HITL. Spec: AD-001.
 - [x] **T1.2 [QA]** delegation parity (isolation, blocked-tools, pause re-capture). Spec: AD-001.
-- [ ] **T1.3 [BE]** one workflow pilot (sequential plan→execute→verify or sleep cycle). Spec: AD-002.
-- [ ] **T1.4 [QA]** workflow label contract: under a v2 policy, in-runner workflow children resolve the registry label through the shared invocation ctx and fold narrowings into the same session; out-of-runner pipelines (sleep) seed an explicit label via `WithDelegateFlowState` (StartLabel v1 parity, never unregistered-fail-closed). Spec: AD-002 security constraints.
-- [ ] **T1.5 [QA]** session-state copy review: test that agenttool children inherit no hakase-written ADK session state; add a review note binding any future session-state writer to re-check the copy path. Spec: AD-001 / Security considerations.
+- [x] **T1.3 [BE]** one workflow pilot (sequential plan→execute→verify or sleep cycle). Spec: AD-002.
+- [x] **T1.4 [QA]** workflow label contract: under a v2 policy, in-runner workflow children resolve the registry label through the shared invocation ctx and fold narrowings into the same session; out-of-runner pipelines (sleep) seed an explicit label via `WithDelegateFlowState` (StartLabel v1 parity, never unregistered-fail-closed). Spec: AD-002 security constraints.
+- [x] **T1.5 [QA]** session-state copy review: test that agenttool children inherit no hakase-written ADK session state; add a review note binding any future session-state writer to re-check the copy path. Spec: AD-001 / Security considerations.
 
 ## Phase 2 — artifacts + plugins
 

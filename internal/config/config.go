@@ -269,6 +269,12 @@ type Config struct {
 	// before it is aborted as timed out. 0 uses the default (300s). Prevents
 	// stuck sub-agents from hanging the orchestrator indefinitely.
 	DelegateTimeoutSeconds int `json:"delegate_timeout_seconds,omitempty"`
+	// WorkflowDelegation routes general_purpose coding delegations through a
+	// deterministic sequential plan→execute→verify pipeline (ADK workflow
+	// agents) instead of a single sub-agent loop. Off by default: the pilot
+	// trades three model stages for a fixed stage order. See
+	// docs/adk-adoption/spec.md AD-002.
+	WorkflowDelegation bool `json:"workflow_delegation,omitempty"`
 	// Debug enables dev-mode structured JSON logging of all system events to
 	// ./logs/ for development and troubleshooting. Off by default.
 	Debug bool `json:"debug,omitempty"`
