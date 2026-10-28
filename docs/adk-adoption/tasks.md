@@ -6,8 +6,8 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs.
 
 ## Phase 1 — delegation + workflows
 
-- [ ] **T1.1 [BE]** `agenttool.New` wrapper in `delegate.go`; keep gates/filter/cache/HITL. Spec: AD-001.
-- [ ] **T1.2 [QA]** delegation parity (isolation, blocked-tools, pause re-capture). Spec: AD-001.
+- [x] **T1.1 [BE]** `agenttool.New` wrapper in `delegate.go`; keep gates/filter/cache/HITL. Spec: AD-001.
+- [x] **T1.2 [QA]** delegation parity (isolation, blocked-tools, pause re-capture). Spec: AD-001.
 - [ ] **T1.3 [BE]** one workflow pilot (sequential plan→execute→verify or sleep cycle). Spec: AD-002.
 
 ## Phase 2 — artifacts + plugins

@@ -1,6 +1,6 @@
-# Spec: ADK Adoption — use more of `google.golang.org/adk/v2 v2.4.0`
+# Spec: ADK Adoption — use more of `google.golang.org/adk/v2` (v2.6.0)
 
-Governing issue: TBD (Tier-3 proposal, supports all P0). Base: `go.mod:36-37` (`adk/v2 v2.4.0`, `genai v1.71.0`).
+Governing issue: #86 (Tier-3, supports all P0). Base: `go.mod:37` (`adk/v2 v2.6.0`, `genai v1.71.0`).
 
 **Scope:** replace bespoke runners with ADK primitives where they already exist. Non-goals: cloud backends by default, `adk web` Dev UI, eval harness port (none in Go module).
 
@@ -14,6 +14,7 @@ Governing issue: TBD (Tier-3 proposal, supports all P0). Base: `go.mod:36-37` (`
 ### Spec AD-001: `agenttool.New` replaces bespoke delegation
 
 - Wrap 3 sub-agents once (`tool/agenttool.New(agent, &Config{SkipSummarization})`) instead of per-call `llmagent.New` + `runner.New` + `InMemoryService` (`internal/agent/delegate.go:337-433`). Keep gate wrappers + blocked-tools filter (`FilterBlockedTools :591-600`, consumed by `BuildSubAgentTools :629-658`; blocked list `:29-37`), delegation cache, HITL pause-capture (`resume.go`). Re-verify `transfer_to_agent` isolation semantics (prompt `agent.go:1891`).
+- Landing notes (T1.1, ADK v2.6.0): the delegate_task handler stays the parent-facing functiontool (structured result preserved; `SkipSummarization` must stay **off** — with it on, the parent LLM never sees the delegation result and cannot continue planning). The run machinery (runner, per-attempt `InMemoryService`, session create with parent-state copy, artifact forwarding, event consumption) moved to `agenttool.New(...).Run`, invoked through a structural `Run(agent.Context, any)` assertion pinned by a canary test. Loop side effects ride llmagent callbacks: reporter streaming + degeneration guard fed per streamed partial chunk (chunk granularity, as the bespoke loop), files harvested in `BeforeTool`. The watchdog cancels through a `cancelableAgentCtx` wrapper (ADK's Context cannot go through `context.WithCancel` directly). `agenttool` generates the child's ADK session id itself, so gate routing uses an `interfaces.WithDelegationRoute` ctx fallback (`SessionIDFromCtx`/`TaskIDFromCtx`). Repair attempts re-run in a fresh agenttool session and therefore restate the goal with the corrective note; per-call `llmagent.New` remains because tool construction closes over the per-delegation reporter/log routing.
 
 ### Spec AD-002: workflow agents for deterministic pipelines
 

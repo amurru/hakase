@@ -34,5 +34,5 @@ Spec: [spec.md](spec.md). Value-ordered, each independently shippable.
 
 - **Session-isolation change**: `agenttool` shares runner session semantics vs per-call `InMemoryService`; re-verify with resume tests.
 - **Over-determinism**: workflows trade flexibility for reliability; pilot on narrow pipeline first.
-- **Callback migration**: signature drift fails at compile (pinned v2.4.0); order regressions caught by wiring tests.
+- **Callback migration**: signature drift fails at compile (pinned v2.6.0); order regressions caught by wiring tests.
 - **Cloud backends**: credentials/cost/exfiltration; opt-in + fail-closed construction only.
