@@ -2704,6 +2704,20 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		return nil, err
 	}
 
+	// SkillsToolset pilot (AD-005/T3.1): when enabled, ADK's SkillToolset
+	// replaces the list/load markdown-skill tools on code_interpreter and
+	// injects the skill catalog into each request via its ProcessRequest.
+	// search_skills and save_skill stay in both modes (no toolset
+	// equivalent). Off by default; behavior is byte-identical when off.
+	var skillsToolset tool.Toolset
+	if cfg.SkillsToolset {
+		ts, tsErr := buildSkillToolset(mdSkills)
+		if tsErr != nil {
+			return nil, tsErr
+		}
+		skillsToolset = ts
+	}
+
 	knowledgeTools, err := deps.CreateKnowledgeToolsFn(log, cfg.KnowledgeDir, cfg.SearchExpansion)
 	if err != nil {
 		return nil, err
@@ -2742,14 +2756,21 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 			cfg.SystemEnv.ApplyTo,
 		) + "\n\n" + unitsBlock),
 		Model: model,
-		Tools: []tool.Tool{
-			pythonTool,
-			saveSkillTool,
-			listSkillsTool,
-			loadMarkdownSkillTool,
-			searchSkillsTool,
-			visionTool,
-		}, // 👈 Attached skill tools here!
+		Tools: func() []tool.Tool {
+			tools := []tool.Tool{pythonTool, saveSkillTool, searchSkillsTool, visionTool}
+			if skillsToolset != nil {
+				// ADK's list/load/load_skill_resource tools come from the
+				// toolset (below), which also injects the catalog.
+				return tools
+			}
+			return append(tools, listSkillsTool, loadMarkdownSkillTool)
+		}(),
+		Toolsets: func() []tool.Toolset {
+			if skillsToolset != nil {
+				return []tool.Toolset{skillsToolset}
+			}
+			return nil
+		}(),
 		GenerateContentConfig: genCfg,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			ThinkingOverrideCallback,

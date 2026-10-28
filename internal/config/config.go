@@ -269,6 +269,13 @@ type Config struct {
 	// before it is aborted as timed out. 0 uses the default (300s). Prevents
 	// stuck sub-agents from hanging the orchestrator indefinitely.
 	DelegateTimeoutSeconds int `json:"delegate_timeout_seconds,omitempty"`
+	// SkillsToolset replaces the list/load markdown-skill tools on the
+	// code_interpreter agent with ADK's SkillToolset (list, load, and
+	// resource tools over the same discovered SKILL.md directories), plus
+	// its catalog injection into each request. Off by default; save_skill
+	// and search_skills stay in both modes. See docs/adk-adoption/spec.md
+	// AD-005.
+	SkillsToolset bool `json:"skills_toolset,omitempty"`
 	// WorkflowDelegation routes general_purpose coding delegations through a
 	// deterministic sequential plan→execute→verify pipeline (ADK workflow
 	// agents) instead of a single sub-agent loop. Off by default: the pilot

@@ -234,6 +234,23 @@ Powered by [Google ADK](https://github.com/google/adk) (`google.golang.org/adk/v
 
 The orchestrator delegates via `delegate_task` or `transfer_to_agent`. Sub-agents include loop guard, task registry, malformed tool-call repair, and audit logging. Providers are Gemini / OpenAI / OpenAI-compatible + fallback.
 
+### ADK surface (docs/adk-adoption/, issue #86)
+
+What hakase uses from `google.golang.org/adk/v2` (v2.6.0) and what it deliberately does not:
+
+| ADK primitive | Status | Where |
+| ----- | ------ | ----- |
+| `llmagent.New` / `runner.New` | adopted from the start | orchestrator + 3 sub-agents (`internal/agent/agent.go`) |
+| `tool/agenttool` | **adopted** | `delegate_task` runs through it; per-delegation `llmagent` + runner construction removed (#145) |
+| `agent/workflowagents` (`sequentialagent`) | **adopted (opt-in)** | plan→execute→verify pilot for `general_purpose` delegations, `workflow_delegation: true` (#147) |
+| `artifact.Service` | **adopted** | in-memory service on the main runner; media producers register artifacts; model reads via the gated `load_artifact` tool (new `artifact` flow action) (#148) |
+| `tool/skilltoolset` | **adopted (opt-in)** | `markdownSkillSource` adapter over the discovered SKILL.md dirs; replaces list/load tools on `code_interpreter` when `skills_toolset: true`; skill text is pinned as semi-trusted guidance that cannot grant tool authority past a gate |
+| `plugin.Plugin` / `runner.PluginConfig` | **evaluated, rejected** | `runner.Run` overwrites the inherited plugin manager and `agenttool` builds a plugin-less runner, so a plugin-only chain would skip delegated sub-agents; security callbacks stay on the agents with the order pinned by `chain_order_test.go` (#149) |
+| `session.InMemoryService` / custom `DurableADKService` | adopted / custom | in-memory default; durable opt-in validated against ADK's `sessiontestsuite` |
+| `session/compaction`, `memory.Service`, cloud backends (`session/database`, `*vertexai`, `artifact/gcsartifact`, telemetry) | **not adopted** | own compaction cascade, memory notes + hybrid KB retrieval, own `internal/tracing`; cloud backends stay opt-in/fail-closed |
+| `server/adkrest`, `server/adka2a`, `launcher` (Dev UI) | **not adopted** | own chi + Vue SPA stays; A2A deferred (T3.2) |
+| `tool/loadmemorytool` / `preloadmemorytool` | **not adopted** | memory tools are custom (auto-memory) |
+
 ---
 
 ## TUI Deep Dive
