@@ -43,13 +43,13 @@ func ContainsPseudoToolCall(text string) bool {
 	return strings.Contains(strings.ToLower(text), PseudoToolCallCloseTag)
 }
 
-// PseudoToolCallRepairMessage builds a corrective user message for the model
-// after it emitted an XML <tool_call> block instead of a native function
-// call. It states that nothing was executed and orders a native re-emit
-// without markup wrappers (models that reach for pseudo-XML also tend to
-// echo the UNTRUSTED_DATA guard tag around it). When attempt is positive,
-// the message is prefixed with "Attempt %d: ".
-func PseudoToolCallRepairMessage(attempt int) *genai.Content {
+// PseudoToolCallRepairText builds the corrective user-turn text for the
+// model after it emitted an XML <tool_call> block instead of a native
+// function call. It states that nothing was executed and orders a native
+// re-emit without markup wrappers (models that reach for pseudo-XML also
+// tend to echo the UNTRUSTED_DATA guard tag around it). When attempt is
+// positive, the text is prefixed with "Attempt %d: ".
+func PseudoToolCallRepairText(attempt int) string {
 	var sb strings.Builder
 	if attempt > 0 {
 		fmt.Fprintf(&sb, "Attempt %d: ", attempt)
@@ -57,16 +57,21 @@ func PseudoToolCallRepairMessage(attempt int) *genai.Content {
 	sb.WriteString("Your previous message contained an XML <tool_call> block instead of a native function call, so no tool was executed. ")
 	sb.WriteString("Re-emit the call using the native function-calling mechanism (a proper function call part with the tool name and JSON arguments). ")
 	sb.WriteString("Do not write XML tags and do not wrap the call in UNTRUSTED_DATA or any other markup.")
-	return genai.NewContentFromText(sb.String(), genai.RoleUser)
+	return sb.String()
 }
 
-// ToolCallRepairMessage builds a corrective user message for the model after a
-// tool call was rejected because its JSON arguments were malformed. The
-// message includes the parse error, instructs the model to escape every
-// newline and quote inside string values, and asks it to emit only the
-// corrected call. When attempt is positive, the message is prefixed with
-// "Attempt %d: ".
-func ToolCallRepairMessage(err error, attempt int) *genai.Content {
+// PseudoToolCallRepairMessage wraps PseudoToolCallRepairText as a user
+// content part.
+func PseudoToolCallRepairMessage(attempt int) *genai.Content {
+	return genai.NewContentFromText(PseudoToolCallRepairText(attempt), genai.RoleUser)
+}
+
+// ToolCallRepairText builds the corrective user-turn text for the model after
+// a tool call was rejected because its JSON arguments were malformed. The
+// text includes the parse error, instructs the model to escape every newline
+// and quote inside string values, and asks it to emit only the corrected
+// call. When attempt is positive, the text is prefixed with "Attempt %d: ".
+func ToolCallRepairText(err error, attempt int) string {
 	var sb strings.Builder
 	if attempt > 0 {
 		fmt.Fprintf(&sb, "Attempt %d: ", attempt)
@@ -74,5 +79,10 @@ func ToolCallRepairMessage(err error, attempt int) *genai.Content {
 	fmt.Fprintf(&sb, "Your previous tool call was rejected because its JSON arguments were malformed. Parse error: %v. ", err)
 	sb.WriteString("Escape every newline and double quote inside string values (\\n and \\\"). ")
 	sb.WriteString("Emit only the corrected tool call, with valid JSON arguments.")
-	return genai.NewContentFromText(sb.String(), genai.RoleUser)
+	return sb.String()
+}
+
+// ToolCallRepairMessage wraps ToolCallRepairText as a user content part.
+func ToolCallRepairMessage(err error, attempt int) *genai.Content {
+	return genai.NewContentFromText(ToolCallRepairText(err, attempt), genai.RoleUser)
 }
