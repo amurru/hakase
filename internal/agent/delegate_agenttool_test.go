@@ -27,10 +27,12 @@ import (
 )
 
 // delegMockEntry is one queued model turn: either a response or an error.
-// chunks, when set, are streamed as partial responses followed by a final
-// aggregated non-partial response, mirroring the real SSE aggregator.
+// call, when set, is emitted as a native function-call part. chunks, when
+// set, are streamed as partial responses followed by a final aggregated
+// non-partial response, mirroring the real SSE aggregator.
 type delegMockEntry struct {
 	text   string
+	call   *genai.FunctionCall
 	chunks []string
 	err    error
 }
@@ -72,6 +74,12 @@ func (m *delegMockModel) GenerateContent(ctx context.Context, req *model.LLMRequ
 		}
 		if e.err != nil {
 			yield(nil, e.err)
+			return
+		}
+		if e.call != nil {
+			yield(&model.LLMResponse{
+				Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: e.call}}},
+			}, nil)
 			return
 		}
 		if len(e.chunks) > 0 {

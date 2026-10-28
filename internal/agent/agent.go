@@ -2717,6 +2717,9 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	if cfg.DelegateTimeoutSeconds > 0 {
 		deps.DelegateTimeout = time.Duration(cfg.DelegateTimeoutSeconds) * time.Second
 	}
+	// Workflow delegation pilot (AD-002): deterministic plan→execute→verify
+	// pipeline for general_purpose delegations. Off by default.
+	deps.WorkflowDelegation = cfg.WorkflowDelegation
 
 	// Load currently saved skills from disk
 	installedSkills := getSkillsPrompt(mdSkills, log, cfg)
