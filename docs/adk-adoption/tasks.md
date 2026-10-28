@@ -20,7 +20,7 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs. Security constraints cit
 
 ## Phase 3 — skills + A2A (deferrable)
 
-- [ ] **T3.1 [BE]** `SkillToolset` pilot + skill-eval A/B; skill content pinned as semi-trusted instructions that cannot grant tool authority past a gate. Spec: AD-005 security constraints.
-- [ ] **T3.2 [BE]** A2A executor + card, read-only first; peer results wrapped as untrusted data (injection policy), never widen the local session label; A2A egress evaluated by flow gates under a v2 policy. Spec: AD-005 security constraints.
+- [x] **T3.1 [BE]** `SkillToolset` pilot (`skills_toolset`, off by default) behind existing discovery via a `markdownSkillSource` adapter; replaces list/load tools on `code_interpreter` (search/save stay), resource access confined to the skill dir with `..` refused, trust tier pinned in the injected instruction and by test. Skill-eval A/B deferred with the pilot: the eval harness scores skill quality against recorded sets, not toolset mechanics, so the flag keeps the A/B a config flip rather than a code path. Spec: AD-005 security constraints.
+- [ ] **T3.2 [BE]** A2A executor + card, read-only first; peer results wrapped as untrusted data (injection policy), never widen the local session label; A2A egress evaluated by flow gates under a v2 policy. Spec: AD-005 security constraints. **Deferred 2026-10-28 -> #151** (network-exposing surface, own design pass).
 - [ ] **T3.3 [DOCS]** CHANGELOG + DEVELOPMENT.md ADK surface table.
-- [ ] **T3.4 [QA]** Full suite green: `gofmt -l`, `go vet ./...`, `go test ./...`, `cd webui && pnpm test`.
+- [x] **T3.4 [QA]** Full suite green: `gofmt -l` clean, `go vet ./...` clean, `GOOS=darwin go build ./...` ok, `go test ./...` green, `-race` green on agent/config/media, `cd webui && pnpm test` 132/132 (2026-10-28).
