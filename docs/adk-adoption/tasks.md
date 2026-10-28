@@ -14,7 +14,7 @@ Legend: `[BE]` backend/Go, `[QA]` tests, `[DOCS]` docs. Security constraints cit
 
 ## Phase 2 — artifacts + plugins
 
-- [ ] **T2.1 [BE]** artifact service + `loadartifactstool` + `outputs/` migration shim; `loadartifactstool` pre-dispatch policy (v2 `artifact` rule family, fail-closed ask, `RedactSecrets` on content); writes stay system-initiated. Spec: AD-003 security constraints.
+- [x] **T2.1 [BE]** artifact service + `loadartifactstool` + `outputs/` migration shim; `loadartifactstool` pre-dispatch policy (v2 `artifact` rule family, fail-closed ask, `RedactSecrets` on content); writes stay system-initiated. Spec: AD-003 security constraints.
 - [ ] **T2.2 [BE]** plugin consolidation (`plugin.Plugin`, `PluginConfig`); flow gates (`CheckPreFlowAsk`/`CheckPostFlow`), the C1 redaction rule, and the AD-001 run-state callbacks land as ordered plugins (plugin callbacks precede agent callbacks and short-circuit on non-nil). Spec: AD-004 security constraints.
 - [ ] **T2.3 [QA]** order-preservation + `-race` on touched packages: chain-order test proves flow ask -> hooks deny -> redaction -> guard survives consolidation, including C1 on `runErr != nil`. Spec: AD-004 security constraints.
 

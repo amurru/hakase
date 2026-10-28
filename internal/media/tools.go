@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
+	"google.golang.org/genai"
 )
 
 // ManifestMu guards manifest appends.
@@ -192,6 +194,7 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 			return GenerateImageOutput{}, err
 		}
 		// Manifest append
+		saveArtifact(ctx, result.Path, result.MimeType)
 		appendManifest(reg.Store(), manifestEntry{
 			TS:         time.Now().UTC().Format(time.RFC3339),
 			Tool:       "generate_image",
@@ -294,6 +297,7 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 		if err != nil {
 			return GenerateVideoOutput{}, err
 		}
+		saveArtifact(ctx, result.Path, result.MimeType)
 		appendManifest(reg.Store(), manifestEntry{
 			TS:         time.Now().UTC().Format(time.RFC3339),
 			Tool:       "generate_video",
@@ -364,6 +368,7 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 		if err != nil {
 			return GenerateAudioOutput{}, err
 		}
+		saveArtifact(ctx, result.Path, result.MimeType)
 		appendManifest(reg.Store(), manifestEntry{
 			TS:         time.Now().UTC().Format(time.RFC3339),
 			Tool:       "generate_audio",
@@ -387,6 +392,45 @@ func CreateMediaTools(reg *Registry, log LogFunc) ([]tool.Tool, error) {
 	tools = append(tools, audioTool)
 
 	return tools, nil
+}
+
+// artifactSaveMaxBytes caps how much of a generated file is copied into the
+// session artifact layer. Artifacts are in-memory turn context; the disk
+// store stays the durable record consumed by the web UI and Telegram.
+const artifactSaveMaxBytes = 8 << 20
+
+// saveArtifact best-effort registers a generated file as a session artifact
+// (AD-003) so the model can list and reload it by name. Disk output remains
+// primary and failures here never fail the generation: the file is already
+// written and reported by path.
+func saveArtifact(ctx agent.Context, path, mime string) {
+	if ctx == nil || ctx.Artifacts() == nil || path == "" {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	buf := make([]byte, artifactSaveMaxBytes+1)
+	n, err := io.ReadFull(f, buf)
+	if n <= 0 || (err != nil && err != io.ErrUnexpectedEOF && err != io.EOF) || n > artifactSaveMaxBytes {
+		util.DebugWarn("media_artifact_skipped", "path", path, "bytes", n, "error", errString(err))
+		return
+	}
+	name := filepath.Base(path)
+	if _, err := ctx.Artifacts().Save(ctx, name, &genai.Part{
+		InlineData: &genai.Blob{MIMEType: mime, Data: buf[:n]},
+	}); err != nil {
+		util.DebugWarn("media_artifact_save_failed", "name", name, "error", err.Error())
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func appendManifest(store *Store, e manifestEntry) {

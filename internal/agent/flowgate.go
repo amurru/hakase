@@ -298,6 +298,17 @@ func flowMapTool(toolName string, args map[string]any) (action string, resources
 	case "webfetch", "web_fetch":
 		u := strArg(args, "url")
 		return "webfetch", []string{permissions.NormalizeURL(u)}
+	case "load_artifact":
+		// AD-003: artifact loads are their own egress path - tool gates
+		// on shell/file/network never see them. The artifact name is the
+		// resource, so a policy can allow a report family and deny the
+		// rest; an empty name maps to "*" so a malformed call cannot
+		// dodge a family rule.
+		name := strArg(args, "name", "artifact_name", "file_name")
+		if name == "" {
+			name = "*"
+		}
+		return "artifact", []string{name}
 	case "web_search", "web_search_fallback":
 		// Search snippets are untrusted ingress like a fetch: they taint
 		// trust under a v2 webfetch rule instead of failing closed as an

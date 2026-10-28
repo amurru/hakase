@@ -34,6 +34,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/artifact"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -2848,6 +2849,14 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		return nil, err
 	}
 
+	// load_artifact tool (AD-003): session artifacts are model-readable
+	// under the flow gate ("artifact" action). Registered unconditionally
+	// because the runner always carries an artifact service now.
+	loadArtifactT, err := registerLoadArtifactTool(log)
+	if err != nil {
+		return nil, err
+	}
+
 	// clarify tool for mid-task user questions.
 	clarifyT, err := registerClarifyTool()
 	if err != nil {
@@ -2911,6 +2920,7 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 	orchestratorTools = append(orchestratorTools, knowledgeTools...)
 	orchestratorTools = append(orchestratorTools, mediaTools...)
 	orchestratorTools = append(orchestratorTools, delegateTaskT)
+	orchestratorTools = append(orchestratorTools, loadArtifactT)
 	orchestratorTools = append(orchestratorTools, fileOpsTools...)
 	orchestratorTools = append(orchestratorTools, gitTools...)
 	orchestratorTools = append(orchestratorTools, systemExecTools...)
@@ -3024,5 +3034,11 @@ func SetupRunner(ctx context.Context, d *Deps, r *Runtime) (*runner.Runner, erro
 		Agent:             rootAgent,
 		SessionService:    adkSessions,
 		AutoCreateSession: true,
+		// AD-003: session-scoped, model-facing artifact layer. Producers
+		// (media) save here in addition to the disk store that the web UI
+		// and Telegram consume; load_artifact reads it under the flow
+		// gate. In-memory by design: artifacts are turn/session context,
+		// not durable outputs (the disk tree stays the durable record).
+		ArtifactService: artifact.InMemoryService(),
 	})
 }
