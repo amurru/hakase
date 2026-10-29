@@ -37,6 +37,21 @@ A high-autonomy, general-purpose AI research and navigation agent built in Go, f
    hakase web                 # Open SPA + API on http://127.0.0.1:8080
    ```
 
+### Docker (zero toolchain)
+
+No installer, no Go/Node/Python on the host - one container with the web UI:
+
+```bash
+export HAKASE_API_KEY=sk-or-v1-...          # your provider key
+export HAKASE_ADMIN_PASSWORD=...            # web UI admin login (username: admin)
+docker compose up -d                        # builds, provisions, serves :8080
+```
+
+All runtime state (config, credentials, knowledge, generated outputs) lives in
+the `hakase-data` volume. Configuration comes entirely from `HAKASE_*`
+environment variables on first boot - no `config.json` needed. See
+[`compose.yaml`](compose.yaml) and [`Dockerfile`](Dockerfile).
+
 ### No config file? Use env vars
 
 You can run `hakase` without creating `config.json` by passing environment variables. Environment variables override `config.json` when present and require no configuration file on disk.

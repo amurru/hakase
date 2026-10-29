@@ -1,0 +1,25 @@
+# Build junk and runtime state never belong in the image context: the web
+# dist is rebuilt inside the image (go:embed needs a fresh copy), and
+# everything under runtime state holds secrets or machine-local paths.
+.git
+.gitignore
+.hakase
+.hakase-tmp
+.hakase*
+config.json
+logs
+downloads
+outputs
+sessions
+tasks.json
+*.log
+
+# Frontend build products (rebuilt in the webui stage).
+webui/node_modules
+webui/dist
+internal/web/dist
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
