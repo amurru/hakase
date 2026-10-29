@@ -146,8 +146,10 @@ distribution slices in item 2 are open.
      `HAKASE_ADMIN_USERNAME`/`HAKASE_ADMIN_PASSWORD` when credentials are
      absent (2026-10-29, `docs/release-distribution/tasks.md`). The
      container path is now unblocked.
-   - **then: Dockerfile + compose** as the zero-toolchain "try it" path
-     (`-e HAKASE_API_KEY`, `~/.hakase` volume).
+   - **shipped: Dockerfile + compose** as the zero-toolchain "try it" path
+     (multi-stage build: pnpm webui -> embedded Go binary -> python3-slim
+     runtime; `-e HAKASE_API_KEY`, admin auto-provisioned, `/data` volume)
+     (2026-10-29).
    - **deferred for now: prebuilt darwin binaries** (arm64+amd64) and a
      Homebrew tap, so macOS can leave the source build (`README.md:55`);
      revisit after the container path lands.

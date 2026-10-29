@@ -1,0 +1,26 @@
+# Zero-toolchain "try it" path (docs/ROADMAP.md Tier 4 item 2).
+#
+#   export HAKASE_API_KEY=sk-...        # your provider key (OpenRouter, etc.)
+#   export HAKASE_ADMIN_PASSWORD=...    # web UI admin login (username defaults to admin)
+#   docker compose up -d
+#
+# All runtime state (config, credentials, knowledge, outputs) lives in the
+# named volume; destroy it with `docker compose down -v` for a fresh start.
+services:
+  hakase:
+    build: .
+    image: hakase
+    ports:
+      - "8080:8080"
+    environment:
+      # Required: the provider key (env-only config; no config.json needed).
+      HAKASE_API_KEY: ${HAKASE_API_KEY:?export HAKASE_API_KEY first}
+      # Required on first boot: admin login, provisioned automatically.
+      HAKASE_ADMIN_USERNAME: ${HAKASE_ADMIN_USERNAME:-admin}
+      HAKASE_ADMIN_PASSWORD: ${HAKASE_ADMIN_PASSWORD:?export HAKASE_ADMIN_PASSWORD first}
+    volumes:
+      - hakase-data:/data
+    restart: unless-stopped
+
+volumes:
+  hakase-data:
