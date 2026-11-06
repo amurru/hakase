@@ -635,3 +635,5 @@ Contributions are welcome! [CONTRIBUTING.md](CONTRIBUTING.md) covers the build, 
 ## License
 
 MIT
+
+<!-- T1.6 gate proof throwaway line, safe to remove -->
