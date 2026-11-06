@@ -8,24 +8,33 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+
+# One queue per workflow+ref; a new push supersedes the previous run on the
+# same ref. The merge_group ref is ephemeral (gh-readonly-queue/*), so
+# cancel-in-progress never drops a merge_group run that another ref needs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: webui/pnpm-lock.yaml
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -76,20 +85,21 @@ jobs:
   # landlock is refused on every platform.
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: webui/pnpm-lock.yaml
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -104,3 +114,37 @@ jobs:
 
       - name: Go tests
         run: go test ./...
+
+  # Single required check for the protect-main ruleset. Both platforms must
+  # report success; skipped/cancelled/failure all fail this job. Runs on
+  # push, pull_request, and merge_group so the check is always present.
+  ci-required:
+    name: ci-required
+    if: always()
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all CI passed
+        run: |
+          if [ "${{ needs.linux.result }}" != "success" ] || [ "${{ needs.windows.result }}" != "success" ]; then
+            echo "linux=${{ needs.linux.result }} windows=${{ needs.windows.result }}"
+            exit 1
+          fi
+
+  # Advisory only: never add this job to required checks. It only runs on
+  # pull_request events, so on merge_group (and push) it is skipped and a
+  # required check that can be skipped would block the queue.
+  pr-title:
+    name: Conventional PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # workflow default; restated because job permissions replace it
+      pull-requests: read # action-semantic-pull-request reads the PR via pulls.get
+    steps:
+      # Resolved 2026-11-06: amannn/action-semantic-pull-request@v6.1.2
+      - uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

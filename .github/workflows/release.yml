@@ -37,8 +37,44 @@ defaults:
     shell: bash
 
 jobs:
+  # Enforcement edge: every release job needs this guard, so a tag that is
+  # not on main (or has no CHANGELOG entry) fails fast instead of publishing
+  # a bad release or silently skipping (windows-cross polls for build's
+  # release; without needs:[guard] it would exit 0 on a missing release).
+  guard:
+    name: Release guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag must be on main and CHANGELOG must be non-empty
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --quiet
+          git fetch origin tag "$TAG" --quiet || true
+          git merge-base --is-ancestor "$TAG" origin/main
+          python3 - <<'EOF'
+          import re, sys, os
+          text = open("CHANGELOG.md").read()
+          unreleased = re.search(r"## \[Unreleased\]\n(.*?)(?=\n## \[)", text, re.S)
+          tag = os.environ.get("TAG", "").lstrip("v")
+          tagged = re.search(r"## \[" + re.escape(os.environ.get("TAG", "")) + r"\]|## \[" + re.escape(tag) + r"\]", text)
+          body = (unreleased.group(1).strip() if unreleased else "")
+          if not body and not tagged:
+              print("CHANGELOG has neither Unreleased notes nor a section for the tag")
+              sys.exit(1)
+          EOF
+
   build:
     name: Build and publish release assets
+    needs: [guard]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and upload the binary + checksums
@@ -139,6 +175,8 @@ jobs:
 
   provenance:
     name: Generate SLSA provenance
+    # Transitive gating: needs [build], and build needs [guard], so a bad
+    # tag fails at guard before this job is even scheduled.
     needs: [build]
     permissions:
       actions: read # read the calling workflow's info for the provenance
@@ -161,9 +199,13 @@ jobs:
 
   windows-cross:
     name: Cross-compile Windows zip
+    # Gated on guard (fail fast on a bad tag) but NOT on build, so a Linux
+    # build failure never blocks the Windows zip - explicit decision: the
+    # polling loop below handles a missing release. Guard is the only need.
+    needs: [guard]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # publish the zip to the release (gated by polling, not by needs)
+      contents: write # publish the zip to the release (polls for build's release; needs guard only)
     steps:
       - name: Checkout (full history + tags for git describe)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,7 +250,7 @@ jobs:
         run: |
           set -euo pipefail
           # The build job creates the release; wait up to 5 min for it to appear
-          # so this job stays non-gating (no `needs:`) but still publishes.
+          # so this job stays independent of build (needs guard only) but still publishes.
           for _ in $(seq 1 60); do
             if gh release view "$TAG" >/dev/null 2>&1; then
               break
@@ -235,6 +277,9 @@ jobs:
 
   windows-test:
     name: Windows tests and smoke
+    # Gated on guard so an invalid tag does not burn Windows runner minutes;
+    # independent of build by design (native test signal, not release output).
+    needs: [guard]
     runs-on: windows-latest
     permissions: {}
     defaults:

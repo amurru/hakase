@@ -153,7 +153,7 @@ Add `timeout-minutes: 30` to `linux` and `windows`. Add the aggregator:
 
 ```yaml
   ci-required:
-    name: Required CI
+    name: ci-required
     if: always()
     needs: [linux, windows]
     runs-on: ubuntu-latest
