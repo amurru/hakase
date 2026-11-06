@@ -32,8 +32,8 @@ Single tests: `go test ./internal/agent/ -run TestName` and
 - **Feature docs.** Substantial features follow the house convention: a
   `docs/<feature>/` directory with `spec.md` + `plan.md` + `tasks.md`.
   See existing feature dirs under `docs/` for the shape.
-- **Branches & PRs.** Fork (or branch) off `develop`; PRs target
-  `develop`. Keep PRs to one logical change.
+- **Branches & PRs.** Fork (or branch) off `main`; PRs target
+  `main`. Agent branches use `ai/<tool>/<issue>-<slug>`. Keep PRs to one logical change.
 - **Commit messages** follow Conventional Commits, matching the existing
   history: `feat(scope): ...`, `fix(scope): ...`, `docs: ...`,
   `chore: ...`, `style: ...`, `test: ...`.

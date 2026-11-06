@@ -27,8 +27,8 @@ repo cloned, so all paths below are repo-relative.
 >   the fix list.
 > - Keep the CodeRabbit summary off. Do not enable top-level posting of
 >   findings as a substitute. The API fetch above is the reliable source.
-> - Repo conventions still apply: branch off develop, PRs target
->   develop, one logical change per PR, verify with go vet and tests
+> - Repo conventions still apply: branch off main, PRs target
+>   main, one logical change per PR, verify with go vet and tests
 >   where the task touches code.
 
 ## Notes for the person assigning the task

@@ -65,7 +65,8 @@ pnpm --dir webui test
 
 ## Workflow
 
-- Branch off `develop`, PRs target `develop`. One logical change per PR.
+- Branch off `main`, PRs target `main`. Agent branches use `ai/<tool>/<issue>-<slug>`. One logical change per PR.
 - Issues first: every unit of work has an issue with file-colon-line evidence. Substantial features follow the house convention `docs/<feature>/` with spec plus plan plus tasks files.
 - Commits follow Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, etc.) and reference issues with `Closes #N`.
+- One issue maps to one agent, one branch, and one PR. The issue lists target files; two open issues with overlapping targets MUST NOT run concurrently. At most 3 open agent PRs.
 - Jules tasks: Jules reads this file automatically. For PR work, also read `.agents/prompts/jules.md` and follow it - fetch inline review comments first and treat unresolved findings as in-scope.

@@ -12,7 +12,7 @@ seriously and handled privately.
 | older releases | ❌ — upgrade |
 
 The project is pre-1.0 and moves fast; please test against the latest
-`develop` branch before reporting.
+`main` branch before reporting.
 
 ## Reporting a vulnerability
 
