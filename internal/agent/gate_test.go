@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"amurru/hakase/internal/permissions"
 	"amurru/hakase/internal/sandbox"
 	"os"
 	"path/filepath"
@@ -247,6 +248,8 @@ func TestHardDenyReason(t *testing.T) {
 		// chmod/chown whole-tree.
 		{name: "chmod -R 777 /", command: "chmod -R 777 /", want: "recursive world-writable permission"},
 		{name: "chown -R root /", command: "chown -R root /", want: "recursive ownership change"},
+		{name: "sh -c -- chmod -R 777 /", command: "sh -c -- 'chmod -R 777 /'", want: "recursive world-writable permission"},
+		{name: "sh -c -- chown -R root /", command: "sh -c -- 'chown -R root /'", want: "recursive ownership change"},
 
 		// Explicit args form (not parsed from string).
 		{name: "rm -rf / via args", command: "rm", args: []string{"-rf", "/"}, want: "recursive force-deletion"},
@@ -810,6 +813,29 @@ func TestInterpreterEscalation(t *testing.T) {
 		{"R", ss("-e", "1+1")},
 		{"dash", ss("-c", "echo hi")},
 		{"fish", ss("-c", "echo hi")},
+		{"node", ss("--eval=console.log(1)")},
+		{"perl", ss("-E", "say 1")},
+		{"php", ss("-recho 1;")},
+		{"python3", ss("-m", "http.server")},
+		{"python3", ss("-mhttp.server")},
+		{"perl", ss("-wEsay 1")},
+		{"php", ss("-nrecho 1;")},
+		{"ruby", ss("-weputs 1")},
+		{"python3", ss("-ucprint(1)")},
+		// Attached payload starting with '-' (shell form "php -r'-...' "
+		// concatenates to one "-r-..." token): the code letter at k==1
+		// counts before the '-' is reached.
+		{"php", ss("-r-echo 1;")},
+		{"perl", ss("-e-print 1")},
+		{"python3", ss("-c-print(1)")},
+		// perl -X is a boolean flag, not a value-taker: "-Xe..." runs -e
+		// code. python -X takes a value (-Xdev), but fail-closed keeps X
+		// out of the shared set, so "-Xdev" over-asks.
+		{"perl", ss("-Xeprint 1")},
+		{"python3", ss("-Xdev", "-c", "print(1)")},
+		// True value-taker pin: "-F:" alone is not a code flag; the
+		// separate "-e" below carries the escalation.
+		{"perl", ss("-F:", "-e", "print 1")},
 	}
 
 	for _, tt := range escalated {
@@ -830,23 +856,22 @@ func TestInterpreterEscalation(t *testing.T) {
 		})
 	}
 
-	// Should NOT be escalated.
+	// Should NOT be escalated (informational flags only; bare
+	// interpreters WITH no args read stdin and escalate per F2, so the
+	// bare forms are asserted inline below, not here).
 	notEscalated := []struct {
 		cmd  string
 		args []string
 	}{
-		{"python3", nil},
 		{"python3", ss("--version")},
 		{"python3", ss("-V")},
 		{"python3", ss("--help")},
-		{"python", nil},
 		{"python", ss("--version")},
 		{"python", ss("-V")},
 		{"python", ss("--help")},
 		{"node", ss("--version")},
 		{"node", ss("-V")},
 		{"bash", ss("--version")},
-		{"bash", nil},
 		{"sh", ss("--version")},
 		{"ruby", ss("--version")},
 	}
@@ -875,6 +900,146 @@ func TestInterpreterEscalation(t *testing.T) {
 	// classifyRisk("python3") bare == RiskMedium still holds.
 	if risk := classifyRisk([]string{"python3"}); risk != RiskMedium {
 		t.Errorf("classifyRisk(python3 bare) = %s, want medium", risk)
+	}
+}
+
+// TestInterpreterInlineCodeFlagTokens pins token-level classification:
+// attached "-"-payloads count as code, perl -X never hides a later code
+// letter (fail-closed over python -Xdev), and true value-taker -F swallows
+// its attached remainder.
+func TestInterpreterInlineCodeFlagTokens(t *testing.T) {
+	code := []string{
+		"-r-echo 1;", "-e-print 1", "-c-print(1)",
+		"-Xeprint 1", "-Xdev", "-wEsay 1", "-nrecho 1;",
+		"-recho 1;", "-mhttp.server", "-ucprint(1)",
+	}
+	for _, tok := range code {
+		if !isInterpreterInlineCodeFlag(tok) {
+			t.Errorf("isInterpreterInlineCodeFlag(%q) = false, want true", tok)
+		}
+	}
+	notCode := []string{"-F:", "-FD", "--version", "-V", "-"}
+	for _, tok := range notCode {
+		if isInterpreterInlineCodeFlag(tok) {
+			t.Errorf("isInterpreterInlineCodeFlag(%q) = true, want false", tok)
+		}
+	}
+}
+
+// TestInterpreterWrapperPrefixes verifies interpreter opaque-code
+// escalation fires behind wrapper prefixes and env trampolines (H1/F1):
+// "sudo python3 -c ..." must ask exactly like "python3 -c ...", and the
+// escalation wins over a sandbox allow.
+func TestInterpreterWrapperPrefixes(t *testing.T) {
+	paths := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	allow := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "allow"},
+	}
+
+	ask := []struct {
+		name string
+		cmd  string
+		args []string
+	}{
+		{name: "sudo python3 -c shell form", cmd: "sudo python3 -c 'print(1)'"},
+		{name: "sudo python3 script shell form", cmd: "sudo python3 evil.py"},
+		{name: "assignment python3 -c shell form", cmd: "FOO=bar python3 -c 'print(1)'"},
+		{name: "sudo env python3 -c shell form", cmd: "sudo env python3 -c 'print(1)'"},
+		{name: "env -S python3 -c shell form", cmd: "env -S python3 -c 'print(1)'"},
+		{name: "sudo python3 -c explicit args", cmd: "sudo", args: ss("python3", "-c", "print(1)")},
+		{name: "env -S python3 -c explicit args", cmd: "env", args: ss("-S", "python3", "-c", "print(1)")},
+		{name: "sudo -u root python3 evil.py shell form", cmd: "sudo -u root python3 evil.py"},
+		{name: "doas -u root python3 evil.py shell form", cmd: "doas -u root python3 evil.py"},
+		{name: "sudo -u root python3 explicit args", cmd: "sudo", args: ss("-u", "root", "python3", "evil.py")},
+		{name: "sudo -n -u root python3 evil.py shell form", cmd: "sudo -n -u root python3 evil.py"},
+		{name: "doas -n -u root python3 evil.py shell form", cmd: "doas -n -u root python3 evil.py"},
+		{name: "sudo -n -u root python3 explicit args", cmd: "sudo", args: ss("-n", "-u", "root", "python3", "evil.py")},
+		{name: "doas -n -u root python3 explicit args", cmd: "doas", args: ss("-n", "-u", "root", "python3", "evil.py")},
+		{name: "nice -n 5 python3 evil.py shell form", cmd: "nice -n 5 python3 evil.py"},
+		{name: "timeout 10s python3 evil.py shell form", cmd: "timeout 10s python3 evil.py"},
+		{name: "node --eval= shell form", cmd: "node --eval='console.log(1)'"},
+		{name: "perl -E shell form", cmd: "perl -E 'say 1'"},
+		{name: "php -r packed shell form", cmd: "php -r'echo 1;'"},
+		{name: "python3 -m shell form", cmd: "python3 -m http.server"},
+		{name: "perl -wE cluster shell form", cmd: "perl -wE'say 1'"},
+		{name: "php -nr cluster shell form", cmd: "php -nr'echo 1;'"},
+		{name: "ruby -we cluster shell form", cmd: "ruby -we'puts 1'"},
+		{name: "python3 -uc cluster shell form", cmd: "python3 -uc'print(1)'"},
+		{name: "sudo perl -wE cluster shell form", cmd: "sudo perl -wE'say 1'"},
+		{name: "sudo php -nr cluster shell form", cmd: "sudo php -nr'echo 1;'"},
+		{name: "sudo ruby -we cluster shell form", cmd: "sudo ruby -we'puts 1'"},
+		{name: "sudo python3 -uc cluster shell form", cmd: "sudo python3 -uc'print(1)'"},
+		{name: "sudo node --eval= shell form", cmd: "sudo node --eval='console.log(1)'"},
+		{name: "php -r attached-dash payload shell form", cmd: "php -r'-echo 1;'"},
+		{name: "perl -e attached-dash payload shell form", cmd: "perl -e'-print 1'"},
+		{name: "python3 -c attached-dash payload shell form", cmd: "python3 -c'-print(1)'"},
+		{name: "perl -Xe cluster shell form", cmd: "perl -Xe'print 1'"},
+		{name: "python3 -Xdev -c shell form", cmd: "python3 -Xdev -c 'print(1)'"},
+		{name: "perl -F: -e shell form", cmd: "perl -F: -e 'print 1'"},
+	}
+	for _, tt := range ask {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := EvaluateCommand(paths, tt.cmd, tt.args)
+			if dec.Action != ActionAsk {
+				t.Fatalf("EvaluateCommand(%q, %v) = %s, want ask (%s)", tt.cmd, tt.args, dec.Action, dec.Reason)
+			}
+			if !strings.Contains(dec.Reason, "interpreter") {
+				t.Errorf("reason should mention interpreter, got: %s", dec.Reason)
+			}
+		})
+	}
+
+	// Escalation wins over a sandbox allow.
+	for _, tt := range ask {
+		t.Run(tt.name+"_allow_still_asks", func(t *testing.T) {
+			dec := EvaluateCommand(allow, tt.cmd, tt.args)
+			if dec.Action != ActionAsk {
+				t.Errorf("EvaluateCommand(%q, %v) under allow = %s, want ask (%s)", tt.cmd, tt.args, dec.Action, dec.Reason)
+			}
+		})
+	}
+}
+
+// TestInterpreterNonCommandPosition verifies an interpreter token that is
+// a plain argument to another command does not escalate: "echo python3
+// hello" and "grep python3 somefile" only print/match text, python3 never
+// executes. Only wrapper-prefix reachability (sudo/nice/FOO=bar/...) or a
+// following inline-code flag (-c/-e/-r/--eval) keeps the escalation; the
+// latter is deliberately fail-closed ("echo python3 -c ..." asks, so
+// "find . -exec python3 -c ..." shapes cannot go quiet).
+func TestInterpreterNonCommandPosition(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	green := []struct {
+		name string
+		cmd  string
+		args []string
+	}{
+		{name: "echo python3 hello shell form", cmd: "echo python3 hello"},
+		{name: "grep python3 file shell form", cmd: "grep python3 somefile"},
+		{name: "echo python3 hello explicit args", cmd: "echo", args: ss("python3", "hello")},
+		{name: "grep python3 explicit args", cmd: "grep", args: ss("python3")},
+		{name: "echo env python3 hello shell form", cmd: "echo env python3 hello"},
+		{name: "grep env python3 file shell form", cmd: "grep env python3 somefile"},
+	}
+	for _, tt := range green {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := EvaluateCommand(sb, tt.cmd, tt.args)
+			if dec.Action != ActionAllow {
+				t.Errorf("EvaluateCommand(%q, %v) = %s, want allow (%s)", tt.cmd, tt.args, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Deliberately fail-closed pin: inline-code flag still asks.
+	if dec := EvaluateCommand(sb, "echo python3 -c 'print(1)'", nil); dec.Action != ActionAsk {
+		t.Errorf("echo python3 -c: want ask (fail-closed code flag), got %s (%s)", dec.Action, dec.Reason)
 	}
 }
 
@@ -1007,10 +1172,19 @@ func TestScriptContentScan(t *testing.T) {
 		t.Errorf("python3 -c: reason should be interpreter escalation, got: %s", dec.Reason)
 	}
 
-	// python3 bare stays MEDIUM (no opaque args -> not escalated).
+	// python3 bare (no args) reads stdin: opaque code execution even
+	// under allow/bwrap (F2 fail-closed), so it escalates to ask.
 	dec = EvaluateCommand(paths, "python3", nil)
-	if dec.Action == ActionAsk && strings.Contains(dec.Reason, "interpreter") {
-		t.Errorf("python3 bare should NOT be escalated, got ask (reason=%s)", dec.Reason)
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 bare: want ask (stdin interpreter), got %s (reason=%s)", dec.Action, dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "interpreter") {
+		t.Errorf("python3 bare: reason should mention interpreter, got: %s", dec.Reason)
+	}
+	// python3 - (explicit stdin operand) escalates the same way.
+	dec = EvaluateCommand(paths, "python3", []string{"-"})
+	if dec.Action != ActionAsk {
+		t.Errorf("python3 -: want ask (stdin interpreter), got %s (reason=%s)", dec.Action, dec.Reason)
 	}
 }
 
@@ -1059,6 +1233,104 @@ func TestResolveBinaryBase(t *testing.T) {
 	}
 }
 
+// TestResolveBinaryBaseGnuProviderPrefix pins the Ubuntu 25.10+ provider
+// layout (rust-coreutils default, GNU coreutils under a "gnu" prefix):
+// canonical paths like /usr/bin/rm are symlinks whose EvalSymlinks target
+// is the provider binary (e.g. /usr/bin/gnurm). The gate must classify by
+// the invoked utility identity, not the provider binary name. Hermetic:
+// simulates the layout in TempDir, so it pins the fix on every platform
+// (the /bin-dependent tests above only catch this on affected distros).
+func TestResolveBinaryBaseGnuProviderPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only: symlink provider layout")
+	}
+	dir := t.TempDir()
+	provider := filepath.Join(dir, "gnurm")
+	if err := os.WriteFile(provider, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write gnurm: %v", err)
+	}
+	link := filepath.Join(dir, "rm")
+	if err := os.Symlink(provider, link); err != nil {
+		t.Fatalf("symlink rm->gnurm: %v", err)
+	}
+
+	if got := resolveBinaryBase(link); got != "rm" {
+		t.Errorf("resolveBinaryBase(rm->gnurm) = %q, want rm", got)
+	}
+	if got := classifyRisk([]string{link}); got != RiskHigh {
+		t.Errorf("classifyRisk(rm->gnurm) = %s, want high", got)
+	}
+
+	// No traversal, no reinterpretation: a real file literally named
+	// gnurm is left alone (fail-closed unknown, never downgraded).
+	if got := resolveBinaryBase(provider); got != "gnurm" {
+		t.Errorf("resolveBinaryBase(gnurm) = %q, want gnurm", got)
+	}
+	if got := classifyRisk([]string{provider}); got != RiskUnknown {
+		t.Errorf("classifyRisk(gnurm) = %s, want unknown", got)
+	}
+
+	// Directory symlinks do NOT qualify for unwrapping: a real gnu*
+	// file reached through a symlinked parent keeps its leaf name and
+	// stays fail-closed unknown (never downgraded to the unwrapped
+	// utility). This also proves the leaf-name comparison is hermetic
+	// when TempDir itself sits under a symlinked TMPDIR (macOS
+	// /var -> /private/var).
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	realBin := filepath.Join(realDir, "gnuls")
+	if err := os.WriteFile(realBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write gnuls: %v", err)
+	}
+	parentLink := filepath.Join(dir, "linkdir")
+	if err := os.Symlink(realDir, parentLink); err != nil {
+		t.Fatalf("symlink linkdir->real: %v", err)
+	}
+	viaDir := filepath.Join(parentLink, "gnuls")
+	if got := resolveBinaryBase(viaDir); got != "gnuls" {
+		t.Errorf("resolveBinaryBase(linkdir/gnuls) = %q, want gnuls (no unwrap through dir symlink)", got)
+	}
+	if got := classifyRisk([]string{viaDir}); got != RiskUnknown {
+		t.Errorf("classifyRisk(linkdir/gnuls) = %s, want unknown", got)
+	}
+
+	// Overly broad prefix stripping must not alias unrelated tools: a
+	// leaf symlink resolving to gnugo keeps the provider name
+	// (fail-closed unknown) instead of unwrapping to "go".
+	realGo := filepath.Join(dir, "gnugo")
+	if err := os.WriteFile(realGo, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write gnugo: %v", err)
+	}
+	aliasLink := filepath.Join(dir, "mytool")
+	if err := os.Symlink(realGo, aliasLink); err != nil {
+		t.Fatalf("symlink mytool->gnugo: %v", err)
+	}
+	if got := resolveBinaryBase(aliasLink); got != "gnugo" {
+		t.Errorf("resolveBinaryBase(mytool->gnugo) = %q, want gnugo (no alias to go)", got)
+	}
+	if got := classifyRisk([]string{aliasLink}); got != RiskUnknown {
+		t.Errorf("classifyRisk(mytool->gnugo) = %s, want unknown", got)
+	}
+
+	// End-to-end: symlinked rm -rf / must hard-deny.
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	dec := EvaluateCommand(sb, link, []string{"-rf", "/"})
+	if dec.Action != ActionDeny {
+		t.Errorf("rm->gnurm -rf /: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// End-to-end: real gnu* file via symlinked dir asks (fail-closed).
+	decDir := EvaluateCommand(sb, viaDir, nil)
+	if decDir.Action != ActionAsk {
+		t.Errorf("linkdir/gnuls: want ask, got %s (%s)", decDir.Action, decDir.Reason)
+	}
+}
+
 // TestGateRegression verifies existing behavior is preserved after hardening.
 func TestGateRegression(t *testing.T) {
 	paths := &sandbox.SandboxConfig{
@@ -1083,6 +1355,11 @@ func TestGateRegression(t *testing.T) {
 		{ss("awk", "-i", "inplace"), RiskMedium},
 		{ss("tar", "-tf", "archive.tar"), RiskLow},
 		{ss("tar", "-xf", "a.tar"), RiskMedium},
+		{ss("gtar", "-tf", "archive.tar"), RiskLow},
+		{ss("gtar", "-cf", "a.tar", "file"), RiskMedium},
+		{ss("bsdtar", "-tf", "archive.tar"), RiskLow},
+		{ss("bsdtar", "-xf", "a.tar"), RiskMedium},
+		{ss("gmake", "-C", "/tmp", "all"), RiskMedium},
 		{ss("kill", "-9", "1234"), RiskHigh},
 		{ss("kill", "1234"), RiskMedium},
 		{ss("chmod", "755", "file"), RiskMedium},
@@ -1278,5 +1555,765 @@ func TestWindowsRiskTableEntries(t *testing.T) {
 	// format was already high risk and stays.
 	if got := classifyRisk(ss("format", "C:")); got != RiskHigh {
 		t.Errorf("classifyRisk(format): want high, got %s", got)
+	}
+}
+
+// TestEnvTrampolineDeny (F1): a destructive payload led by env(1) must deny
+// exactly like the bare utility - the low-risk "env" label must not launder
+// the real command's risk, whether the payload arrives as explicit args or
+// as a shell-form line.
+func TestEnvTrampolineDeny(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	deny := []struct {
+		name string
+		cmd  string
+		args []string
+	}{
+		{name: "env rm -rf / explicit args", cmd: "env", args: ss("rm", "-rf", "/")},
+		{name: "env rm -rf ~ explicit args", cmd: "env", args: ss("rm", "-rf", "~")},
+		{name: "env dd to device explicit args", cmd: "env", args: ss("dd", "if=/dev/zero", "of=/dev/sda")},
+		{name: "env assignment prefix", cmd: "env", args: ss("FOO=bar", "rm", "-rf", "/etc")},
+		{name: "env -i flag prefix", cmd: "env", args: ss("-i", "rm", "-rf", "/")},
+		{name: "env rm -rf / shell form", cmd: "env rm -rf /"},
+		{name: "env dd to device shell form", cmd: "env dd if=/dev/zero of=/dev/sda"},
+	}
+	for _, tt := range deny {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := EvaluateCommand(sb, tt.cmd, tt.args)
+			if dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q, %v) = %s, want deny (reason=%s)", tt.cmd, tt.args, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Risk follows the real utility, not the trampoline.
+	if got := classifyRisk(ss("env", "rm", "-rf", "/")); got != RiskHigh {
+		t.Errorf("classifyRisk(env rm -rf /) = %s, want high", got)
+	}
+	if got := classifyRisk(ss("env", "ls")); got != RiskLow {
+		t.Errorf("classifyRisk(env ls) = %s, want low", got)
+	}
+
+	// Bare env stays low-risk (prints the environment, no payload).
+	if got := classifyRisk(ss("env")); got != RiskLow {
+		t.Errorf("classifyRisk(env) = %s, want low", got)
+	}
+	if dec := EvaluateCommand(sb, "env", nil); dec.Action != ActionAllow {
+		t.Errorf("bare env should stay allowed under paths, got %s (%s)", dec.Action, dec.Reason)
+	}
+}
+
+// TestShellChainingSegments (F2): shell-form lines execute every segment,
+// so a low-risk head must not mask a dangerous tail, and substitution
+// tricks must escalate even with benign payloads.
+func TestShellChainingSegments(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	deny := []struct {
+		name string
+		cmd  string
+	}{
+		{name: "chained rm -rf home root", cmd: "ls && rm -rf ~"},
+		{name: "chained rm -rf filesystem root", cmd: "ls && rm -rf /"},
+		{name: "semicolon rm -rf etc", cmd: "echo ok; rm -rf /etc"},
+		{name: "piped device write tail", cmd: "ls | dd of=/dev/sda"},
+	}
+	for _, tt := range deny {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := EvaluateCommand(sb, tt.cmd, nil)
+			if dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (reason=%s)", tt.cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Unknown tail fails closed to ask even when the head is low-risk.
+	dec := EvaluateCommand(sb, "ls && definitely_not_a_real_binary_xyz", nil)
+	if dec.Action != ActionAsk {
+		t.Errorf("chained unknown tail should ask, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Substitution tricks escalate to ask even with benign payloads.
+	for _, cmd := range []string{"echo $(whoami)", "echo `whoami`", "cat $IFS/etc/hostname"} {
+		t.Run("escalate "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action != ActionAsk {
+				t.Errorf("EvaluateCommand(%q) = %s, want ask (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Benign multi-low chains stay allowed: chaining alone is not a
+	// forced ask, segment-max risk keeps them low.
+	for _, cmd := range []string{"echo a; echo b", "ls && echo done", "cat file | grep foo"} {
+		t.Run("allow "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action != ActionAllow {
+				t.Errorf("EvaluateCommand(%q) = %s, want allow (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+}
+
+// TestSingleAmpersandChaining (H1): single & sequences commands like &&
+// and must not let a low-risk head mask a dangerous tail. &> / &>> are
+// redirects, not separators; |& is one pipe operator.
+func TestSingleAmpersandChaining(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	// Single & tail denies.
+	for _, cmd := range []string{"ls & rm -rf /", "ls & rm -rf ~", "false || rm -rf /"} {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// &> / &>> do not split: one segment, no chaining flag.
+	if segs := splitShellSegments("echo hi &> file"); len(segs) != 1 {
+		t.Errorf("splitShellSegments(echo hi &> file) = %v, want 1 segment", segs)
+	}
+	if segs := splitShellSegments("echo hi &>> file"); len(segs) != 1 {
+		t.Errorf("splitShellSegments(echo hi &>> file) = %v, want 1 segment", segs)
+	}
+	if tricks := detectShellTricks("echo hi &> file"); len(tricks) != 0 {
+		for _, tr := range tricks {
+			if tr == "chaining" {
+				t.Errorf("detectShellTricks(echo hi &> file) = %v, want no chaining", tricks)
+			}
+		}
+	}
+	// Single & and |& do flag chaining and split.
+	if tricks := detectShellTricks("ls & rm -rf /"); !containsStr(tricks, "chaining") {
+		t.Errorf("detectShellTricks(ls & rm) = %v, want chaining", tricks)
+	}
+	if tricks := detectShellTricks("cat file |& grep foo"); !containsStr(tricks, "chaining") {
+		t.Errorf("detectShellTricks(|&) = %v, want chaining", tricks)
+	}
+	if segs := splitShellSegments("ls & rm -rf /"); len(segs) != 2 {
+		t.Errorf("splitShellSegments(ls & rm) = %v, want 2 segments", segs)
+	}
+	if segs := splitShellSegments("cat file |& grep foo"); len(segs) != 2 {
+		t.Errorf("splitShellSegments(|&) = %v, want 2 segments", segs)
+	}
+	// Quoted & never splits.
+	if segs := splitShellSegments("echo \"a & b\""); len(segs) != 1 {
+		t.Errorf("splitShellSegments(quoted &) = %v, want 1 segment", segs)
+	}
+	// Apostrophe inside double quotes must not swallow the rest of the
+	// line: echo "it's" && sudo id is two segments with a high tail.
+	for _, cmd := range []string{`echo "it's" && sudo id`, `echo "it's" & sudo id`, `echo "don't" | grep x`} {
+		t.Run("split "+cmd, func(t *testing.T) {
+			if segs := splitShellSegments(cmd); len(segs) != 2 {
+				t.Errorf("splitShellSegments(%q) = %v, want 2 segments", cmd, segs)
+			}
+		})
+	}
+	if dec := EvaluateCommand(sb, `echo "it's" && sudo id`, nil); dec.Action == ActionAllow {
+		t.Errorf("echo \"it's\" && sudo id should not allow, got allow (%s)", dec.Reason)
+	}
+	if dec := EvaluateCommand(sb, `echo "it's" && rm -rf /`, nil); dec.Action != ActionDeny {
+		t.Errorf("echo \"it's\" && rm -rf /: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	// Benign single-& chain of two lows stays allowed (segment-max low).
+	if dec := EvaluateCommand(sb, "echo a & echo b", nil); dec.Action != ActionAllow {
+		t.Errorf("benign single-& chain should allow, got %s (%s)", dec.Action, dec.Reason)
+	}
+}
+
+func containsStr(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEnvSplitString (H2): -S/--split-string values are command lines and
+// must be spliced, never dropped.
+func TestEnvSplitString(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	denyShell := []string{
+		`env -S "rm -rf /"`,
+		`env --split-string "rm -rf /"`,
+		`env --split-string="rm -rf /"`,
+		`sudo env -S "rm -rf /"`,
+		`sudo env -S "bash -c 'rm -rf /'"`,
+		`echo ok; env --split-string="bash -c 'rm -rf /'"`,
+		`env -S "FOO=bar rm -rf /"`,
+		`env -- rm -rf /`,
+		`env env rm -rf /`,
+	}
+	for _, cmd := range denyShell {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Explicit-args forms splice too.
+	if dec := EvaluateCommand(sb, "env", ss("-S", "rm -rf /")); dec.Action != ActionDeny {
+		t.Errorf("env -S rm -rf / explicit: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	if dec := EvaluateCommand(sb, "env", ss("--split-string", "rm -rf /")); dec.Action != ActionDeny {
+		t.Errorf("env --split-string explicit: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Attached -uFOO does not consume the utility (utility still denies).
+	if dec := EvaluateCommand(sb, "env", ss("-uFOO", "rm", "-rf", "/")); dec.Action != ActionDeny {
+		t.Errorf("env -uFOO rm -rf /: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	// Attached -uFOO with a benign utility stays allowed.
+	if dec := EvaluateCommand(sb, "env", ss("-uFOO", "ls")); dec.Action != ActionAllow {
+		t.Errorf("env -uFOO ls: want allow, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// -- terminator still finds the utility.
+	if dec := EvaluateCommand(sb, "env", ss("--", "rm", "-rf", "/")); dec.Action != ActionDeny {
+		t.Errorf("env -- rm -rf /: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Wrapper-prefixed env in explicit-args form denies too (env hides at
+	// argv[1], not argv[0]).
+	if dec := EvaluateCommand(sb, "sudo", ss("env", "-S", "rm -rf /")); dec.Action != ActionDeny {
+		t.Errorf("sudo env -S rm -rf / explicit: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Missing or unparseable -S value fails closed to ask, never allow.
+	for _, cmd := range []string{"env -S", `env --split-string="unclosed quote`} {
+		t.Run("ask "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action == ActionAllow {
+				t.Errorf("EvaluateCommand(%q) = allow, want fail-closed ask/deny (%s)", cmd, dec.Reason)
+			}
+		})
+	}
+}
+
+// TestAllowlistMultiSegment (M1): allowlist authorizes every segment's
+// real (env-unwrapped) binary.
+func TestAllowlistMultiSegment(t *testing.T) {
+	// Multi-segment: tail not listed denies.
+	sb := &sandbox.SandboxConfig{
+		Mode:            sandbox.SandboxModePaths,
+		Permissions:     map[string]string{"system_exec": "ask"},
+		AllowedCommands: []string{"ls"},
+	}
+	if dec := EvaluateCommand(sb, "ls && echo hi", nil); dec.Action != ActionDeny {
+		t.Errorf("ls && echo hi with allowlist [ls]: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	if dec := EvaluateCommand(sb, "ls & echo hi", nil); dec.Action != ActionDeny {
+		t.Errorf("ls & echo hi with allowlist [ls]: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Env trampoline: allowlist checks the target, not "env".
+	sbEnv := &sandbox.SandboxConfig{
+		Mode:            sandbox.SandboxModePaths,
+		Permissions:     map[string]string{"system_exec": "ask"},
+		AllowedCommands: []string{"ls"},
+	}
+	if dec := EvaluateCommand(sbEnv, "env ls", nil); dec.Action == ActionDeny {
+		t.Errorf("env ls with allowlist [ls]: want not-deny, got deny (%s)", dec.Reason)
+	}
+	if dec := EvaluateCommand(sbEnv, "env rm -rf /tmp/x", nil); dec.Action != ActionDeny {
+		t.Errorf("env rm with allowlist [ls]: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	sbEnvOnly := &sandbox.SandboxConfig{
+		Mode:            sandbox.SandboxModePaths,
+		Permissions:     map[string]string{"system_exec": "ask"},
+		AllowedCommands: []string{"env"},
+	}
+	if dec := EvaluateCommand(sbEnvOnly, "env ls", nil); dec.Action != ActionDeny {
+		t.Errorf("env ls with allowlist [env]: want deny (target ls not listed), got %s (%s)", dec.Action, dec.Reason)
+	}
+}
+
+// TestPolicyDenyPrecedence (H3): a policy deny beats shell-trick ask;
+// a trick still escalates a policy allow to ask.
+func TestPolicyDenyPrecedence(t *testing.T) {
+	// Blanket deny + trick payload must stay deny (not downgraded to ask).
+	installTestPolicy(t, permissions.Policy{Rules: []permissions.Rule{
+		{Action: "shell", Resource: "*", Effect: permissions.EffectDeny},
+	}})
+	for _, cmd := range []string{"echo $(whoami)", "echo `whoami`", "cat <(whoami)"} {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			d := EvaluateCommand(nil, cmd, nil)
+			if d.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) under blanket deny = %s, want deny (%s)", cmd, d.Action, d.Reason)
+			}
+		})
+	}
+}
+
+// TestPolicyAllowStillEscalatesTricks verifies the other half of H3:
+// a policy allow does not silence evasion escalation.
+func TestPolicyAllowStillEscalatesTricks(t *testing.T) {
+	installTestPolicy(t, permissions.Policy{Rules: []permissions.Rule{
+		{Action: "shell", Resource: "*", Effect: permissions.EffectAllow},
+	}})
+	for _, cmd := range []string{"echo $(whoami)", "diff <(ls) <(ls)"} {
+		t.Run("ask "+cmd, func(t *testing.T) {
+			d := EvaluateCommand(nil, cmd, nil)
+			if d.Action != ActionAsk {
+				t.Errorf("EvaluateCommand(%q) under blanket allow = %s, want ask (%s)", cmd, d.Action, d.Reason)
+			}
+		})
+	}
+}
+
+// TestQuotedPayloadNoDeny (M3): quoted destructive text is data, not
+// execution, and must not hard-deny.
+func TestQuotedPayloadNoDeny(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	for _, cmd := range []string{`echo "rm -rf ~"`, `echo "rm -rf /"`, `echo 'rm -rf /'`} {
+		t.Run("allow "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action == ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = deny, want not-deny (%s)", cmd, dec.Reason)
+			}
+		})
+	}
+	// Quoted heredoc marker is not a heredoc trick.
+	if tricks := detectShellTricks(`echo "<<EOF"`); containsStr(tricks, "heredoc") {
+		t.Errorf("quoted <<EOF flagged as heredoc: %v", tricks)
+	}
+	// Unquoted heredoc still flags.
+	if tricks := detectShellTricks("cat <<EOF\nhi\nEOF"); !containsStr(tricks, "heredoc") {
+		t.Errorf("unquoted heredoc missing: %v", tricks)
+	}
+}
+
+// TestProcessSubstitution (M4): <(...) / >(...) bodies are collected and
+// escalate.
+func TestProcessSubstitution(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	views := collectViews("diff <(rm -rf /) <(ls)")
+	found := false
+	for _, v := range views {
+		if strings.Contains(v, "rm -rf /") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("collectViews(diff <(rm -rf /) ...) missing payload: %v", views)
+	}
+	if dec := EvaluateCommand(sb, "diff <(rm -rf /) <(ls)", nil); dec.Action != ActionDeny {
+		t.Errorf("process-sub rm payload: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	if dec := EvaluateCommand(sb, "diff <(ls) <(ls)", nil); dec.Action != ActionAsk {
+		t.Errorf("benign process-sub: want ask (escalation), got %s (%s)", dec.Action, dec.Reason)
+	}
+}
+
+// TestRmWrapperPrefixes (H1): wrapper prefixes must not downgrade
+// Deny->Ask. Every token position is scanned for an rm utility.
+func TestRmWrapperPrefixes(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	deny := []string{
+		"sudo rm -rf /",
+		"sudo rm -rf ~",
+		"nice rm -rf /",
+		"nohup rm -rf /etc",
+		"timeout 10 rm -rf /",
+		"xargs rm -rf /",
+		"find / -exec rm -rf / {} ;",
+		"FOO=bar rm -rf /",
+		`bash -c 'rm -rf /'`,
+		`bash -c "rm -rf /etc"`,
+		`bash -c -- 'rm -rf /'`,
+		`bash -ce -- 'rm -rf /'`,
+		`sudo bash -c 'rm -rf /'`,
+		"ls && sudo rm -rf /",
+		`bash -ec 'rm -rf /'`,
+		`bash -ce 'rm -rf /'`,
+		`bash -cx 'rm -rf /'`,
+		`sh -ce 'rm -rf /'`,
+		`sudo bash -ce 'rm -rf /'`,
+		`sh -xc 'rm -rf /'`,
+		`bash -O extglob -c 'rm -rf /'`,
+		`bash --rcfile /tmp/rc -c 'rm -rf /'`,
+		`bash +O extglob -c 'rm -rf /'`,
+		`su -c 'rm -rf /'`,
+		`su root -c 'rm -rf /'`,
+		`sudo -s 'rm -rf /'`,
+		`sudo -i 'rm -rf /'`,
+		`sudo -i 'rm -rf /etc'`,
+		`csh -c 'rm -rf /'`,
+		`ksh -c 'rm -rf /'`,
+		`sudo -s rm -rf /`,
+	}
+	for _, cmd := range deny {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(sb, cmd, nil)
+			if dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Explicit-args wrapper form also denies.
+	if dec := EvaluateCommand(sb, "sudo", ss("rm", "-rf", "/")); dec.Action != ActionDeny {
+		t.Errorf("sudo rm -rf / explicit: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	if dec := EvaluateCommand(sb, "su", ss("-c", "rm -rf /")); dec.Action != ActionDeny {
+		t.Errorf("su -c explicit: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+	if dec := EvaluateCommand(sb, "sudo", ss("-s", "rm -rf /")); dec.Action != ActionDeny {
+		t.Errorf("sudo -s explicit: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Quoted payload stays green (single token, not == rm).
+	for _, cmd := range []string{`echo "rm -rf /"`, `echo "rm -rf ~"`, `echo 'rm -rf /'`} {
+		t.Run("green "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action == ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = deny, want not-deny (%s)", cmd, dec.Reason)
+			}
+		})
+	}
+
+	// Unknown binary still fails closed to ask (not allow, not deny).
+	if dec := EvaluateCommand(sb, "definitely_not_a_real_binary_xyz --foo", nil); dec.Action != ActionAsk {
+		t.Errorf("unknown binary: want ask, got %s (%s)", dec.Action, dec.Reason)
+	}
+}
+
+// TestFdRedirectNoSplit (H2): FD-duplication/close redirects (>&2,
+// 2>&1, 2>&-) are redirects, not background separators. Splitting
+// "ls >/dev/null 2>&1" into ["...2>", "1"] asks/denies on "1".
+func TestFdRedirectNoSplit(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	// Single segment for all FD-redirect forms.
+	for _, cmd := range []string{
+		"ls >/dev/null 2>&1",
+		"echo hi >&2",
+		"echo hi 2>&-",
+		"echo hi &> file",
+		"echo hi &>> file",
+	} {
+		t.Run("single "+cmd, func(t *testing.T) {
+			if segs := splitShellSegments(cmd); len(segs) != 1 {
+				t.Errorf("splitShellSegments(%q) = %v, want 1 segment", cmd, segs)
+			}
+		})
+	}
+
+	// No background-chaining flag for FD redirects.
+	for _, cmd := range []string{"ls >/dev/null 2>&1", "echo hi >&2", "echo hi 2>&-"} {
+		t.Run("nochain "+cmd, func(t *testing.T) {
+			if hasBackgroundChaining(cmd) {
+				t.Errorf("hasBackgroundChaining(%q) = true, want false", cmd)
+			}
+		})
+	}
+
+	// True background & still splits and flags.
+	if segs := splitShellSegments("ls & rm -rf /"); len(segs) != 2 {
+		t.Errorf("splitShellSegments(ls & rm) = %v, want 2 segments", segs)
+	}
+	if !hasBackgroundChaining("ls & echo hi") {
+		t.Error("hasBackgroundChaining(ls & echo hi) = false, want true")
+	}
+
+	// Escaped > is literal, not a redirect: \>& separates like &.
+	if segs := splitShellSegments(`echo \>& sudo id`); len(segs) != 2 {
+		t.Errorf("splitShellSegments(echo \\>& sudo id) = %v, want 2 segments", segs)
+	}
+	if !hasBackgroundChaining(`echo \>& sudo id`) {
+		t.Error(`hasBackgroundChaining(echo \>& sudo id) = false, want true`)
+	}
+	if dec := EvaluateCommand(sb, `echo \>& sudo id`, nil); dec.Action == ActionAllow {
+		t.Errorf(`echo \>& sudo id should not allow, got allow (%s)`, dec.Reason)
+	}
+
+	// Allowlist: "ls >/dev/null 2>&1" authorizes ls (no phantom "1").
+	allow := &sandbox.SandboxConfig{
+		Mode:            sandbox.SandboxModePaths,
+		Permissions:     map[string]string{"system_exec": "ask"},
+		AllowedCommands: []string{"ls"},
+	}
+	if dec := EvaluateCommand(allow, "ls >/dev/null 2>&1", nil); dec.Action == ActionDeny {
+		t.Errorf("allowlist [ls] with FD redirect: want not-deny, got deny (%s)", dec.Reason)
+	}
+	if dec := EvaluateCommand(allow, "echo hi >&2", nil); dec.Action != ActionDeny {
+		t.Errorf("allowlist [ls] with echo >&2: want deny, got %s (%s)", dec.Action, dec.Reason)
+	}
+
+	// Benign FD redirect stays allowed under paths (low risk, no trick).
+	if dec := EvaluateCommand(sb, "ls >/dev/null 2>&1", nil); dec.Action != ActionAllow {
+		t.Errorf("ls >/dev/null 2>&1: want allow, got %s (%s)", dec.Action, dec.Reason)
+	}
+}
+
+// TestShellCarrierAttachedForms covers attached -c payloads, su
+// --command/--session-command carriers, su -s attached values, and the
+// expanded sudo value flags: all must still hard-deny, and carrier
+// python payloads must still ask under an allow policy. Command-position
+// only: echo-prefixed carriers must not deny.
+func TestShellCarrierAttachedForms(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+	deny := []string{
+		`bash -c'rm -rf /'`,
+		`bash -ec'rm -rf /'`,
+		`sh -c"rm -rf /"`,
+		`csh -c'rm -rf /'`,
+		`ksh -c'rm -rf /'`,
+		`su -c'rm -rf /'`,
+		`su --command='rm -rf /'`,
+		`su --command 'rm -rf /'`,
+		`su --session-command='rm -rf /'`,
+		`su --session-command 'rm -rf /'`,
+		`su -s/bin/csh -c 'rm -rf /'`,
+		`su -w FOO -c 'rm -rf /'`,
+		`su --whitelist-environment=FOO -c 'rm -rf /'`,
+		`su --white FOO -c 'rm -rf /'`,
+		// su runs the last -c: a benign first payload must not mask a
+		// destructive repeat.
+		`su -c 'echo hi' -c 'rm -rf /'`,
+		`su -c'echo hi' -c'rm -rf /'`,
+		`su -c'echo hi' --comm='rm -rf /'`,
+		`su --command 'echo hi' --command 'rm -rf /'`,
+		`su --session-command 'echo hi' --command 'rm -rf /'`,
+		// Empty first payload must not abort the tail scan
+		// (su runs the last -c).
+		`su -c '' -c 'rm -rf /'`,
+		`su -c -- '' -c 'rm -rf /'`,
+		// Long-carrier empty first payloads must not abort the tail
+		// scan either (space-separated, attached =, session-command).
+		`su --command '' -c 'rm -rf /'`,
+		`su --command='' -c 'rm -rf /'`,
+		`su --session-command '' -c 'rm -rf /'`,
+		// Bare -- after a carrier is a separator, not a payload:
+		// an option-shaped candidate re-parses as a repeat
+		// carrier (su runs the last -c).
+		`su -c -- -c'rm -rf /'`,
+		`su -c -- -c 'rm -rf /'`,
+		`su -c '--' -c 'rm -rf /'`,
+		`su --command -- -c'rm -rf /'`,
+		`su --command -- -c 'rm -rf /'`,
+		`su --session-command -- -c'rm -rf /'`,
+		// Bare trailing-c cluster ("-mc") with "--" separator: an
+		// option-shaped candidate re-parses as a repeat carrier
+		// (su runs the last -c), never as this payload.
+		`su -mc -- -c'rm -rf /'`,
+		`su -mc -- -c 'rm -rf /'`,
+		`su -mc -- --command 'rm -rf /'`,
+		`su -mc -- --command='rm -rf /'`,
+		// getopt_long abbreviations resolve to their carrier.
+		`su --comm 'rm -rf /'`,
+		`su --comm='rm -rf /'`,
+		`su --sess 'rm -rf /'`,
+		// find(1) -exec opens command position for the carrier.
+		`find . -exec bash -c 'rm -rf /' \;`,
+		`find . -name x -exec bash -c 'rm -rf /' \;`,
+		`find . -exec su -c 'rm -rf /' \;`,
+		`find . -exec sudo -s 'rm -rf /' \;`,
+		`sudo -D /tmp rm -rf /`,
+		`sudo -D/tmp rm -rf /`,
+		`sudo -T 10 rm -rf /`,
+		`sudo -r sysadm_r rm -rf /`,
+	}
+	for _, cmd := range deny {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+	allow := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "allow"},
+	}
+	for _, cmd := range []string{
+		`bash -c'rm -rf /'`,
+		`su -c'rm -rf /'`,
+		`su --command='rm -rf /'`,
+		`su -s/bin/csh -c 'rm -rf /'`,
+		`su -c 'echo hi' -c 'rm -rf /'`,
+		`su -c'echo hi' -c'rm -rf /'`,
+		`su -c'echo hi' --comm='rm -rf /'`,
+		`su --command 'echo hi' --command 'rm -rf /'`,
+		`su -c '' -c 'rm -rf /'`,
+		`su -c -- '' -c 'rm -rf /'`,
+		`su --command '' -c 'rm -rf /'`,
+		`su --command='' -c 'rm -rf /'`,
+		`su --session-command '' -c 'rm -rf /'`,
+		`su -c -- -c'rm -rf /'`,
+		`su -c -- -c 'rm -rf /'`,
+		`su -c '--' -c 'rm -rf /'`,
+		`su --command -- -c'rm -rf /'`,
+		`su --command -- -c 'rm -rf /'`,
+		`su --session-command -- -c'rm -rf /'`,
+		`su -mc -- -c'rm -rf /'`,
+		`su -mc -- -c 'rm -rf /'`,
+		`su -mc -- --command 'rm -rf /'`,
+		`su -mc -- --command='rm -rf /'`,
+		`su --comm 'rm -rf /'`,
+		`su --sess 'rm -rf /'`,
+		`su -w FOO -c 'rm -rf /'`,
+		`find . -exec bash -c 'rm -rf /' \;`,
+		`find . -exec su -c 'rm -rf /' \;`,
+		`find . -exec sudo -s 'rm -rf /' \;`,
+	} {
+		t.Run("allow-deny "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(allow, cmd, nil); dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) under allow = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+	for _, cmd := range []string{
+		`sudo -D /tmp python3 evil.py`,
+		`sudo -T 10 python3 evil.py`,
+		`sudo -r sysadm_r python3 evil.py`,
+		`sudo -U other python3 evil.py`,
+		`sudo -s 'python3 evil.py'`,
+		`sudo -i python3 evil.py`,
+		`su -c 'python3 evil.py'`,
+		`su --command '' -c 'python3 evil.py'`,
+		`su --command='' -c 'python3 evil.py'`,
+		`su --session-command '' -c 'python3 evil.py'`,
+		`su -mc -- -c 'python3 evil.py'`,
+		`su -mc -- --command 'python3 evil.py'`,
+	} {
+		t.Run("allow-ask "+cmd, func(t *testing.T) {
+			dec := EvaluateCommand(allow, cmd, nil)
+			if dec.Action != ActionAsk {
+				t.Errorf("EvaluateCommand(%q) under allow = %s, want ask (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+	for _, cmd := range []string{`echo su -c 'rm -rf /'`, `echo sudo -s 'rm -rf /'`, `echo "rm -rf /"`} {
+		t.Run("green "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionAllow {
+				t.Errorf("EvaluateCommand(%q) = %s, want allow (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+	// Boundary (pinned): a packed echo payload denies exactly like the
+	// bare command ("echo rm -rf /" denies via the quote-blind rm token
+	// scan, so "sudo -s 'echo rm -rf /'" denies too by design). Only
+	// quoted text inside one token ("echo \"rm -rf /\"") stays green.
+	for _, cmd := range []string{`echo rm -rf /`, `sudo -s 'echo rm -rf /'`} {
+		t.Run("boundary-deny "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+}
+
+// TestGateFailClosedPins pins the Tier1/Tier2 fail-closed loop findings:
+// trailing-slash canonicalization, doubly-nested substitution, execution
+// wrappers, stdin interpreters, and execution-capable tar/sort flags.
+// Preserved green: quoted echo and su carriers stay covered by the su
+// tests above; gnurm unwrapping by TestResolveBinaryBaseGnuProviderPrefix.
+func TestGateFailClosedPins(t *testing.T) {
+	sb := &sandbox.SandboxConfig{
+		Mode:        sandbox.SandboxModePaths,
+		Permissions: map[string]string{"system_exec": "ask"},
+	}
+
+	deny := []string{
+		`rm -rf /etc/`,
+		`rm -rf /tmp/../etc`,
+		`chmod -R 777 /etc/`,
+		`echo $(echo $(rm -rf /))`,
+		`echo $(rm -rf /)`,
+		`printf x | tar -tf - --checkpoint=1 --checkpoint-action='exec=id'`,
+		`tar -xf archive.tar --checkpoint-action=exec=touch`,
+		`tar -xf archive.tar --checkpoint-a=exec=id`,
+		`tar -xf archive.tar --checkpoint-act=exec=touch`,
+		`sudo tar -xf archive.tar --checkpoint-action=exec=id`,
+		`sudo tar -xf archive.tar --checkpoint-a=exec=id`,
+		`sort --compress-program=gzip file`,
+		`sort --compress-prog=gzip file`,
+		`sort --co=gzip file`,
+		`sort --com=gzip file`,
+		`sort --compress-p=gzip file`,
+		`sort -S 1K --co=/tmp/x file`,
+		`sudo sort --co=gzip file`,
+		`echo hi | sort --compress-program=gzip`,
+		`echo hi | sort --co=gzip`,
+	}
+	for _, cmd := range deny {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionDeny {
+				t.Errorf("EvaluateCommand(%q) = %s, want deny (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Execution wrappers delegate to the following utility: an interpreter
+	// behind chroot (NEWROOT is the first plain operand, not a command)
+	// still escalates, including under allow.
+	for _, cmd := range []string{
+		`chroot / python3 evil.py`,
+		`chroot NEWROOT python3 evil.py`,
+		`sudo stdbuf python3 evil.py`,
+	} {
+		t.Run("wrapper-ask "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionAsk {
+				t.Errorf("EvaluateCommand(%q) = %s, want ask (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Stdin interpreters (F2): bare and lone-dash forms read code from
+	// stdin even under allow/bwrap.
+	for _, cmd := range []string{`python3`, `python3 -`, `echo code | python3 -`} {
+		t.Run("stdin-ask "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionAsk {
+				t.Errorf("EvaluateCommand(%q) = %s, want ask (%s)", cmd, dec.Action, dec.Reason)
+			}
+		})
+	}
+
+	// Preserved green under the ask-mode sandbox (sb asks on unknown, but
+	// these allow): quoted text is data, never an executed flag, so the
+	// quote-blind string leg must not fire on it.
+	for _, cmd := range []string{
+		`echo "rm -rf /"`,
+		`echo "tar --checkpoint-action=exec=id"`,
+		`grep -r "sort --compress-program" .`,
+	} {
+		t.Run("green "+cmd, func(t *testing.T) {
+			if dec := EvaluateCommand(sb, cmd, nil); dec.Action != ActionAllow {
+				t.Errorf("quoted text should stay allowed, got %s (%s) for %q", dec.Action, dec.Reason, cmd)
+			}
+		})
 	}
 }
