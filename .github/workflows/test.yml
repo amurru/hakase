@@ -19,13 +19,15 @@ concurrency:
 
 jobs:
   linux:
-    # Pinned to 24.04 (GNU coreutils) instead of ubuntu-latest: ubuntu-latest
-    # now resolves to Ubuntu 26.04, whose uutils coreutils makes /bin/rm a
-    # symlink to gnurm. origin/main's gate tests (TestClassifyRisk/
-    # rm_with_mkfs_prefix, TestSymlinkBypass, TestResolveBinaryBase) assume
-    # GNU coreutils, so they fail on 26.04 until the a24cd90 resolveBinaryBase
-    # fix lands. Approved P0-T1.6B deviation from plan T1.3 (ubuntu-latest);
-    # revisit and drop the pin when a24cd90 is on main.
+    # Pinned to 24.04 (GNU coreutils) instead of ubuntu-latest on this job:
+    # ubuntu-latest resolves to Ubuntu 26.04, the failing linux image. The
+    # uutils coreutils provider switch began upstream at 25.10 (/bin/rm ->
+    # gnurm). TestSymlinkBypass / TestResolveBinaryBase / TestClassifyRisk/
+    # rm_with_mkfs_prefix assume GNU coreutils. P0-T1.6B deviation from T1.3:
+    # unpin only when the resolveBinaryBase provider-prefix fix (gate hardening
+    # PR, P1) has landed AND TestResolveBinaryBase + TestSymlinkBypass pass on
+    # 26.04. Rebase warning: keep ubuntu-24.04; restoring ubuntu-latest
+    # re-reddens linux.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -123,8 +125,8 @@ jobs:
         run: go test ./...
 
   # Single required check for the protect-main ruleset. Both platforms must
-  # report success; skipped/cancelled/failure all fail this job. Runs on
-  # push, pull_request, and merge_group so the check is always present.
+  # report success; any non-success result on linux or windows fails this
+  # check. Runs on push, pull_request, and merge_group so it is always present.
   ci-required:
     name: ci-required
     if: always()
