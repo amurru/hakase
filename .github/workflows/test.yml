@@ -19,7 +19,14 @@ concurrency:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    # Pinned to 24.04 (GNU coreutils) instead of ubuntu-latest: ubuntu-latest
+    # now resolves to Ubuntu 26.04, whose uutils coreutils makes /bin/rm a
+    # symlink to gnurm. origin/main's gate tests (TestClassifyRisk/
+    # rm_with_mkfs_prefix, TestSymlinkBypass, TestResolveBinaryBase) assume
+    # GNU coreutils, so they fail on 26.04 until the a24cd90 resolveBinaryBase
+    # fix lands. Approved P0-T1.6B deviation from plan T1.3 (ubuntu-latest);
+    # revisit and drop the pin when a24cd90 is on main.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
