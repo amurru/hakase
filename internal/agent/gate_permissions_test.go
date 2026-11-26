@@ -70,6 +70,24 @@ func TestGatePermissionsNeverWidensHardDeny(t *testing.T) {
 	if d.Action != ActionDeny {
 		t.Errorf("Action = %q, want deny (hard-deny beats policy allow)", d.Action)
 	}
+	// Wrapper/cluster/env bypass forms must deny too, never widen to
+	// allow under the blanket allow.
+	for _, cmd := range []string{
+		`bash -ce 'rm -rf /'`,
+		`bash -cx 'rm -rf /'`,
+		`sh -ce 'rm -rf /'`,
+		`sudo bash -ce 'rm -rf /'`,
+		`sudo env -S "rm -rf /"`,
+		`sudo env -S "bash -c 'rm -rf /'"`,
+		`echo ok; env --split-string="bash -c 'rm -rf /'"`,
+	} {
+		t.Run("deny "+cmd, func(t *testing.T) {
+			d := EvaluateCommand(nil, cmd, nil)
+			if d.Action != ActionDeny {
+				t.Errorf("Action = %q, want deny (hard-deny beats policy allow, cmd=%q reason=%q)", d.Action, cmd, d.Reason)
+			}
+		})
+	}
 }
 
 // TestGatePermissionsAllowFailsClosedOnUnknown pins RiskUnknown staying
